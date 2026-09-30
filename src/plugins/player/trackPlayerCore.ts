@@ -209,6 +209,10 @@ export const initTrackInfo = async(musicInfo: LX.Player.PlayMusic, mInfo: LX.Pla
 
 export const loadTrackPlayerResource = async(musicInfo: LX.Player.PlayMusic, url: string, time: number, shouldAutoStart: boolean) => {
   const currentTrackIndex = await TrackPlayer.getCurrentTrack()
+  // 起播位置兜底（防御纵深）：上游任何残留或非法值（NaN/Infinity/负数）都不得变成
+  // 一次 seek 或负值起播，非法一律兜成 0。只兜「非法值」，不能写成「非恢复就强制 0」——
+  // 恢复曲的合法非零进度照常 seek，否则会破坏恢复曲从保存进度起播。
+  const startTime = Number.isFinite(time) && time > 0 ? time : 0
   const tracks = buildTracks(musicInfo, url)
   const track = tracks[0]
   await TrackPlayer.add(tracks).then(() => list.push(...tracks))
@@ -218,7 +222,7 @@ export const loadTrackPlayerResource = async(musicInfo: LX.Player.PlayMusic, url
 
   if (currentTrackIndex == null) {
     if (!isTempTrack(track.id as string)) {
-      if (time) await seekToTime(time)
+      if (startTime) await seekToTime(startTime)
       if (!shouldAutoStart) {
         await TrackPlayer.pause()
       } else {
@@ -229,7 +233,7 @@ export const loadTrackPlayerResource = async(musicInfo: LX.Player.PlayMusic, url
   } else {
     await TrackPlayer.pause()
     if (!isTempTrack(track.id as string)) {
-      await seekToTime(time)
+      await seekToTime(startTime)
       await TrackPlayer.play()
       await applyCurrentVolume()
     }

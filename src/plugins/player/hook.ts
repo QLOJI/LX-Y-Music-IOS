@@ -231,12 +231,21 @@ export function useBufferProgress() {
         // case State.Stopped:
         //   console.log('state', 'Stopped')
         //   break
-        // case State.Paused:
-        //   console.log('state', 'Paused')
-        //   break
-        // case State.Playing:
-        //   console.log('state', 'Playing')
-        //   break
+        case State.Paused:
+          // 暂停：缓冲不会自行推进，却仍每秒 getBufferedPosition + setProgress 空转（发热来源之一）。
+          // 直接清掉轮询；恢复播放时由 Playing 分支按「还没缓冲完才轮询」重建。
+          clearItv()
+          break
+        case State.Playing:
+          // 恢复播放：只有「还没缓冲完」才重建 1s 轮询——已缓冲到时长的曲目（本地/整文件就绪）
+          // 不再每秒白唤醒一次 JS 线程；未缓冲完的会在缓冲完成时由 updateBuffer 内部自行停表。
+          // duration 未知（<=0）时先轮询一次，等 updateBuffer 拿到时长后再判。
+          if (duration <= 0 || preBuffered < duration) {
+            clearItv()
+            interval = setInterval(updateBuffer, 1000)
+            void updateBuffer()
+          }
+          break
         case State.Buffering:
           // console.log('state', 'Buffering')
           clearItv()
@@ -258,10 +267,19 @@ export function useBufferProgress() {
           switch (event.state) {
             case 'loading':
             case 'buffering':
-            case 'playing':
               clearItv()
               duration = event.duration ?? duration
               interval = setInterval(updateBuffer, 1000)
+              void updateBuffer()
+              break
+            case 'playing':
+              // 开始/恢复播放：只有「还没缓冲完」才建 1s 轮询。此前无条件建表，
+              // 而首个 updateBuffer 在 buffered 已到时长（本地 FLAC 常态）时又立刻把它清掉
+              // ——每秒白唤醒一次 JS 线程。duration 未知时先按需轮询，拿到时长后再缩小到
+              // 「buffered < duration」这一个条件。
+              clearItv()
+              duration = event.duration ?? duration
+              if (duration <= 0 || preBuffered < duration) interval = setInterval(updateBuffer, 1000)
               void updateBuffer()
               break
             case 'paused':

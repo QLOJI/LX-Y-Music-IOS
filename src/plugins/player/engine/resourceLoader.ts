@@ -33,6 +33,10 @@ export const loadPlaybackResource = async({
 }) => {
   const currentTrackIndex = await TrackPlayer.getCurrentTrack()
   const shouldAutoStart = resolveShouldAutoStart(currentTrackIndex)
+  // 起播位置兜底（防御纵深）：正常上游只会传恢复进度或 0，但任何上游残留或非法值
+  // （NaN/Infinity/负数）都不该变成一次 seek 或负值起播，非法一律兜成 0。
+  // 注意只兜「非法值」，不能写成「非恢复就强制 0」——恢复曲本来就该从保存的非零进度起播。
+  const startTime = Number.isFinite(time) && time > 0 ? time : 0
 
   if (Platform.OS == 'ios' && await shouldUseNativeFlacPlayer(musicInfo, url, quality)) {
     global.lx.playerStatus.ignoreTrackPlayerLifecycle = true
@@ -42,7 +46,7 @@ export const loadPlaybackResource = async({
           await TrackPlayer.stop().catch(() => {})
         })
         clearTracks()
-        const playbackInfo = await startNativeFlacPlayback(musicInfo, url, time, shouldAutoStart, quality ?? null)
+        const playbackInfo = await startNativeFlacPlayback(musicInfo, url, startTime, shouldAutoStart, quality ?? null)
         global.lx.playerTrackId = getNativeFlacTrackId()
         ensureCurrentTrackMetadata({
           title: ('progress' in musicInfo ? musicInfo.metadata.musicInfo.name : musicInfo.name) ?? 'Unknow',
@@ -74,14 +78,14 @@ export const loadPlaybackResource = async({
     await resetNativeFlacPlayback().catch(() => {})
   }
 
-  const track = await loadTrackPlayerResource(musicInfo, url, time, shouldAutoStart)
+  const track = await loadTrackPlayerResource(musicInfo, url, startTime, shouldAutoStart)
   ensureCurrentTrackMetadata({
     title: track.title,
     artist: track.artist,
     album: track.album,
     artwork: typeof track.artwork == 'string' ? track.artwork : undefined,
     duration: track.duration,
-    elapsedTime: time,
+    elapsedTime: startTime,
   })
 }
 

@@ -197,6 +197,18 @@ export class AppEvent extends Event {
     this.emit('changeLoveListVisible', visible)
   }
 
+  /**
+   * 首页 pager 横滑开关（抽屉打开时 false、关闭时 true）。
+   *
+   * 此前只有 src/types/app.d.ts 的类型声明而没有实现，DrawerLayoutFixed.ios.tsx 里的
+   * `global.app_event.changeHomePageScrollEnabled?.(...)` 靠可选调用静默降级成空操作，
+   * 抽屉锁从来没真正生效过。首页横滑（B-7）恢复后必须真正广播，否则抽屉打开时横滑
+   * 会把抽屉底下的页面翻走。
+   */
+  changeHomePageScrollEnabled(enabled: boolean) {
+    this.emit('changeHomePageScrollEnabled', enabled)
+  }
+
   showSonglistTagList(source: SonglistSource, activeId: string) {
     this.emit('showSonglistTagList', source, activeId)
   }

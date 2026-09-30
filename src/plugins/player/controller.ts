@@ -7,7 +7,7 @@ import { getNativeFlacTrackId, setNativeFlacRate, setNativeFlacVolume } from './
 import { getPositionStamped, elapsedSnapshotFields, isEmpty, setStop } from './utils'
 import { exitApp } from '@/core/common'
 import { playNext, setMusicUrl } from '@/core/player/player'
-import { getNextTryQuality, getLastTryQuality, removeMusicUrl } from '@/core/music/utils'
+import { getNextTryQuality, getLastTryQuality, removeMusicUrl, clearAllLastTryQuality } from '@/core/music/utils'
 import { setStatusText } from '@/core/player/playStatus'
 import playerState from '@/store/player/state'
 import settingState from '@/store/setting/state'
@@ -104,7 +104,9 @@ export const initUnifiedPlayerController = () => {
         const urlSourceInfo = (onlineInfo.meta.toggleMusicInfo ?? onlineInfo)
         const lastQuality = getLastTryQuality(urlSourceInfo.id) ?? getLastTryQuality(currentMusicInfo.id)
         const nextQuality = getNextTryQuality(settingState.setting['player.playQuality'], urlSourceInfo, lastQuality)
-        if (nextQuality) {
+        // 【C-11-6】nextQuality 为 null（候选链已到 128k 链尾）或与上次达成档相同（无从降级）
+        // 时不再原档空转，直接落到 ② 同 URL 刷新
+        if (nextQuality && nextQuality !== lastQuality) {
           if (lastQuality) {
             void removeMusicUrl(urlSourceInfo, lastQuality).catch(() => {})
             if (urlSourceInfo !== currentMusicInfo) void removeMusicUrl(currentMusicInfo as LX.Music.MusicInfo, lastQuality).catch(() => {})
@@ -225,6 +227,9 @@ export const initUnifiedPlayerController = () => {
 
   global.app_event.on('musicToggled', () => {
     resetRecoveryState()
+    // 【C-11-6】清掉上一首的「上次达成音质」记录：lastTryQualityMap 按歌曲 id 存，
+    // 不清会让降级索引跨歌残留（切回某首歌时从旧档位续着降级，而不是重新从偏好档试）
+    clearAllLastTryQuality()
     startPreload()
   })
   isInitialized = true

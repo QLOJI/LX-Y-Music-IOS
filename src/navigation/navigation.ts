@@ -1,4 +1,4 @@
-import { Navigation } from 'react-native-navigation'
+import { Navigation, type Options } from 'react-native-navigation'
 
 
 import {
@@ -93,6 +93,51 @@ const getPushBackgroundColor = (theme: LX.ActiveTheme) => {
 // Info.plist 裁决——iPhone 系统仅竖屏 -> 实际只能竖屏；iPad 系统竖横均支持 -> 可竖可横
 // （横屏时走响应式横屏布局）。不再提供手动横屏开关。
 // 注意：RNN 只识别 options.layout.orientation，写在 options 顶层不会生效。
+
+/**
+ * 全 app 所有 push 的统一 options（播放详情 / 歌单详情 / 评论 / 歌手 / 专辑 / 设置详情 /
+ * 下载管理 / 相似歌曲，共 8 个入口共用这一处定义）。
+ *
+ * 【改这里之前先读完：为什么绝不配置 animation(s)】
+ * 本工程曾给 push 配 RNN 自定义转场（translationX 全屏滑动，模板以注释死代码残留在本文件
+ * 下方 pushSettingScreen 中）。但 RNN iOS 的自定义转场依赖 uiManagerDidPerformMounting 时序
+ * 启动、且被取消时永不回调 completeTransition——真实事故是「JS 空闲（未播放音乐）时 push
+ * 整栈卡死、转场期间被再次导航同样卡死」。此后全 app 移除了所有自定义转场与共享元素转场，
+ * 统一走 RNN 系统默认转场。
+ * 「所有页面跳转都用歌曲评论页的转场参数」就落地在这个决定上：评论页当前同样没有任何自定义
+ * 参数、走系统默认；把 8 处 push 收敛到本工厂即达成一致。新增 animations /
+ * sharedElementTransitions 字段 = 回退到已踩爆的坑，禁止。
+ *
+ * 工厂只收口那些「本来就该一致、却各写各的」的字段：topBar / statusBar / navigationBar /
+ * layout（含安全区）。唯一页面级例外：pushSettingDetailScreen 单独保留 gestureEnabled: false。
+ */
+export const pagePushOptions = (theme: LX.ActiveTheme): Options => ({
+  topBar: {
+    visible: false,
+    height: 0,
+    drawBehind: false,
+  },
+  statusBar: {
+    drawBehind: true,
+    visible: true,
+    style: getStatusBarStyle(theme.isDark),
+    backgroundColor: 'transparent',
+  },
+  navigationBar: {
+    visible: true,
+    backgroundColor: theme['c-content-background'],
+  },
+  layout: {
+    orientation: ['portrait', 'landscape'],
+    componentBackgroundColor: getPushBackgroundColor(theme),
+    fitSystemWindows: false,
+    // @ts-expect-error RNN 运行期支持的安全区选项，当前类型未声明
+    safeAreaInsets: {
+      top: 'always',
+      bottom: 'always',
+    },
+  },
+})
 
 
 export async function pushHomeScreen() {
@@ -196,41 +241,13 @@ export function pushPlayDetailScreen(componentId: string) {
   }
   requestAnimationFrame(() => {
     const theme = themeState.theme
-    const componentBackgroundColor = getPushBackgroundColor(theme)
 
     void guardPush(Navigation.push(componentId, {
       component: {
         name: PLAY_DETAIL_SCREEN,
-        options: {
-          topBar: {
-            visible: false,
-            height: 0,
-            drawBehind: false,
-          },
-          statusBar: {
-            drawBehind: true,
-            visible: true,
-            style: getStatusBarStyle(theme.isDark),
-            backgroundColor: 'transparent',
-          },
-          navigationBar: {
-            visible: true,
-            backgroundColor: theme['c-content-background'],
-          },
-          layout: {
-            orientation: ['portrait', 'landscape'],
-            componentBackgroundColor,
-            fitSystemWindows: false,
-            // @ts-expect-error RNN 运行期支持的安全区选项，当前类型未声明
-            safeAreaInsets: {
-              top: 'always',
-              bottom: 'always',
-            },
-          },
-          // 不配置 animations，走系统默认转场。RNN iOS 自定义转场依赖 uiManagerDidPerformMounting
-          // 时序启动、被取消时永不回调 completeTransition：JS 空闲（未播放音乐）时 push 整栈卡死，
-          // 转场期间被再次导航打断同样卡死。全 app 的 push/pop 统一禁用自定义转场。
-        },
+        // 转场与 options 统一走 pagePushOptions：系统默认转场，不能加自定义 animations
+        // （历史卡死事故与理由见该常量注释）。
+        options: pagePushOptions(theme),
       },
     }),
     COMPONENT_IDS.playDetail)
@@ -250,35 +267,8 @@ export function pushSonglistDetailScreen(componentId: string, info: ListInfoItem
           // 独立 push 时没有外部 onBack，详情页的返回按钮需要 componentId 才能pop自己
           componentId,
         },
-        options: {
-          topBar: {
-            visible: false,
-            height: 0,
-            drawBehind: false,
-          },
-          statusBar: {
-            drawBehind: true,
-            visible: true,
-            style: getStatusBarStyle(theme.isDark),
-            backgroundColor: 'transparent',
-          },
-          navigationBar: {
-            visible: true,
-            backgroundColor: theme['c-content-background'],
-          },
-          layout: {
-            orientation: ['portrait', 'landscape'],
-            componentBackgroundColor: getPushBackgroundColor(theme),
-            fitSystemWindows: false,
-            // @ts-expect-error RNN 运行期支持的安全区选项，当前类型未声明
-            safeAreaInsets: {
-              top: 'always',
-              bottom: 'always',
-            },
-          },
-          // 不配置 animations，走系统默认转场：自定义转场在 JS 空闲/被打断时会让整栈卡死
-          // （详见 pushPlayDetailScreen 注释）。共享元素转场一并移除，封面 nativeID 保留无害。
-        },
+        // 转场与 options 统一走 pagePushOptions（详见该常量注释）
+        options: pagePushOptions(theme),
       },
     }),
     COMPONENT_IDS.songlistDetail)
@@ -324,40 +314,17 @@ export function pushCommentScreen(componentId: string) {
     void guardPush(Navigation.push(componentId, {
       component: {
         name: COMMENT_SCREEN,
-        options: {
-          topBar: {
-            visible: false,
-            height: 0,
-            drawBehind: false,
-          },
-          statusBar: {
-            drawBehind: true,
-            visible: true,
-            style: getStatusBarStyle(theme.isDark),
-            backgroundColor: 'transparent',
-          },
-          navigationBar: {
-            visible: true,
-            backgroundColor: theme['c-content-background'],
-          },
-          layout: {
-            orientation: ['portrait', 'landscape'],
-            componentBackgroundColor: getPushBackgroundColor(theme),
-            fitSystemWindows: false,
-            // @ts-expect-error RNN 运行期支持的安全区选项，当前类型未声明
-            safeAreaInsets: {
-              top: 'always',
-              bottom: 'always',
-            },
-          },
-          // 走系统默认转场，原因见 pushPlayDetailScreen 注释
-        },
+        // 评论页是「统一转场」的基准：同样不配自定义参数、走系统默认，详见 pagePushOptions 注释
+        options: pagePushOptions(theme),
       },
     }),
     COMPONENT_IDS.comment)
   })
 }
 
+// 【危险·勿恢复】下面这段被整体注释的 pushSettingScreen 里保留着 RNN 自定义转场
+// （translationX 全屏滑动 duration:300）模板——它正是当年导致「整栈卡死」事故的写法，
+// 仅作历史留档，禁止照抄恢复；原因见上方 pagePushOptions 注释。
 // export function pushSettingScreen(componentId: string) {
 //   /*
 //     Navigation.setDefaultOptions({
@@ -571,24 +538,8 @@ export function pushArtistDetailScreen(componentId: string, artistInfo: { id: st
       passProps: {
         artistInfo,
       },
-      options: {
-        topBar: {
-          visible: false,
-          height: 0,
-        },
-        statusBar: {
-          drawBehind: true,
-          visible: true,
-          style: getStatusBarStyle(theme.isDark),
-          backgroundColor: 'transparent',
-        },
-        layout: {
-          orientation: ['portrait', 'landscape'],
-          componentBackgroundColor: getPushBackgroundColor(theme),
-          fitSystemWindows: false,
-        },
-        // 走系统默认转场，原因见 pushPlayDetailScreen 注释
-      },
+      // 转场与 options 统一走 pagePushOptions（详见该常量注释）
+      options: pagePushOptions(theme),
     },
   }),
   COMPONENT_IDS.ARTIST_DETAIL)
@@ -603,24 +554,8 @@ export function pushAlbumDetailScreen(componentId: string, albumInfo: any) {
       passProps: {
         albumInfo,
       },
-      options: {
-        topBar: {
-          visible: false,
-          height: 0,
-        },
-        statusBar: {
-          drawBehind: true,
-          visible: true,
-          style: getStatusBarStyle(theme.isDark),
-          backgroundColor: 'transparent',
-        },
-        layout: {
-          orientation: ['portrait', 'landscape'],
-          componentBackgroundColor: getPushBackgroundColor(theme),
-          fitSystemWindows: false,
-        },
-        // 走系统默认转场，原因见 pushPlayDetailScreen 注释
-      },
+      // 转场与 options 统一走 pagePushOptions（详见该常量注释）
+      options: pagePushOptions(theme),
     },
   }),
   COMPONENT_IDS.ALBUM_DETAIL_SCREEN)
@@ -629,9 +564,6 @@ export function pushAlbumDetailScreen(componentId: string, albumInfo: any) {
 export function pushSettingDetailScreen(componentId: string, settingId: string) {
   if (!startPush(COMPONENT_IDS.SETTING_DETAIL, { recoverStaleTop: true })) return
   const theme = themeState.theme
-  // 原生转场背景色：优先与目的页实际背景（整屏模糊封面）的平均色一致，避免转场闪白，
-  // 详见 getPushBackgroundColor。
-  const componentBackgroundColor = getPushBackgroundColor(theme)
   void guardPush(Navigation.push(componentId, {
     component: {
       name: SETTING_DETAIL_SCREEN,
@@ -639,27 +571,12 @@ export function pushSettingDetailScreen(componentId: string, settingId: string) 
         settingId,
       },
       options: {
-        topBar: {
-          visible: false,
-          height: 0,
-        },
-        // 关闭侧滑返回：边缘滑动会打断转场，RNN iOS 自定义转场被取消时
-        // 不回调 completeTransition，整个导航栈会失去交互（卡死）。
+        ...pagePushOptions(theme),
+        // 唯一页面级例外：关闭侧滑返回。原始理由是「边缘滑动会打断转场，RNN iOS 自定义
+        // 转场被取消时不回调 completeTransition，整个导航栈失去交互（卡死）」；自定义转场
+        // 现已全部移除，理论上可像评论页一样放开侧滑，但设置页高频进出、且本工程出过
+        // 整栈卡死事故，未做真机回归前不擅自放开（是否放开请主控/真机裁决）。
         gestureEnabled: false,
-        statusBar: {
-          drawBehind: true,
-          visible: true,
-          style: getStatusBarStyle(theme.isDark),
-          backgroundColor: 'transparent',
-        },
-        layout: {
-          orientation: ['portrait', 'landscape'],
-          componentBackgroundColor,
-          fitSystemWindows: false,
-        },
-        // 不配置 animations，走系统默认转场：RNN iOS 的自定义转场（ScreenAnimationController）
-        // 依赖 uiManagerDidPerformMounting 时序、且被打断时永不调用 completeTransition，
-        // 设置页高频进出极易触发整栈卡死。系统默认转场由 UIKit 处理打断，无此问题。
       },
     },
   }), COMPONENT_IDS.SETTING_DETAIL)
@@ -672,24 +589,8 @@ export function pushDownloadManagerScreen(componentId: string) {
   void guardPush(Navigation.push(componentId, {
     component: {
       name: DOWNLOAD_MANAGER_SCREEN,
-      options: {
-        topBar: {
-          visible: false,
-          height: 0,
-        },
-        statusBar: {
-          drawBehind: true,
-          visible: true,
-          style: getStatusBarStyle(theme.isDark),
-          backgroundColor: 'transparent',
-        },
-        layout: {
-          orientation: ['portrait', 'landscape'],
-          componentBackgroundColor: getPushBackgroundColor(theme),
-          fitSystemWindows: false,
-        },
-        // 走系统默认转场，原因见 pushPlayDetailScreen 注释
-      },
+      // 转场与 options 统一走 pagePushOptions（详见该常量注释）
+      options: pagePushOptions(theme),
     },
   }),
   COMPONENT_IDS.DOWNLOAD_MANAGER)
@@ -705,24 +606,8 @@ export function pushSimilarSongsScreen(componentId: string, similarSongs: LX.Mus
       passProps: {
         similarSongs,
       },
-      options: {
-        topBar: {
-          visible: false,
-          height: 0,
-        },
-        statusBar: {
-          drawBehind: true,
-          visible: true,
-          style: getStatusBarStyle(theme.isDark),
-          backgroundColor: 'transparent',
-        },
-        layout: {
-          orientation: ['portrait', 'landscape'],
-          componentBackgroundColor: getPushBackgroundColor(theme),
-          fitSystemWindows: false,
-        },
-        // 走系统默认转场，原因见 pushPlayDetailScreen 注释
-      },
+      // 转场与 options 统一走 pagePushOptions（详见该常量注释）
+      options: pagePushOptions(theme),
     },
   }),
   COMPONENT_IDS.SIMILAR_SONGS_SCREEN)
