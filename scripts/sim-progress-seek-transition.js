@@ -5,9 +5,13 @@
  * 对齐上游 ProgressBar.vue / usePlayProgress 的行为：
  * - 播放 tick（4Hz timeupdate 等价物）直接落位，无过渡（上游直接改 scaleX，无 transition）
  * - 仅当相邻两次进度跳变 >2s 时（seek / 后台恢复大跳 / 切歌归零），对这一次变更挂
- *   180ms 标准曲线（cubic-bezier(.22,1,.36,1)，上游 --duration-fast × --ease-standard）
- *   过渡滑到目标
+ *   200ms 标准曲线（cubic-bezier(.22,1,.36,1)；上游为 --duration-fast: 180ms × --ease-standard，
+ *   本工程按统一动效档 designMotion.quick(200ms) 有意偏离）过渡滑到目标
  * - ≤2s 的短跳（含短 seek）上游同样直接落位，不动画
+ *
+ * 注意：本脚本是自建模型、不读源码，`SEEK_MS` 必须与
+ * src/components/player/progressCore.tsx 的 SEEK_TRANSITION_MS（= designMotion.quick）
+ * 手工保持同步，否则契约与实现会静默脱钩。
  *
  * 区分力反例：本批改前模型（setProgress 事件 800ms 过渡窗 + 窗外 250ms 线性补间）
  * 在普通 tick 上走 250ms 补间（与断言 1 冲突）、在 ≤2s 短 seek 上也挂 200ms 过渡
@@ -18,7 +22,7 @@
 let nowMs = 0
 
 const SEEK_JUMP_SEC = 2
-const SEEK_MS = 180
+const SEEK_MS = 200
 
 /** 1:1 复刻新版 progressCore.useSmoothProgressAnim 的动画参数选择 */
 function createAnim() {
@@ -68,7 +72,7 @@ function assert(cond, msg) { if (!cond) throw new Error(msg) }
 
 const DUR = 300 // 歌曲时长 300s（进度 0.01 = 3s）
 
-console.log('sim-progress-seek-transition：进度条位置驱动（对齐上游：tick 直接落位 + >2s 跳变 180ms 过渡）\n')
+console.log('sim-progress-seek-transition：进度条位置驱动（对齐上游：tick 直接落位 + >2s 跳变 200ms 过渡）\n')
 
 // -- 新模型行为 --
 const a1 = createAnim()
@@ -89,9 +93,9 @@ check('1 播放 tick（Δ<2s）直接落位（duration 0、无过渡）', () => 
 const a2 = createAnim()
 nowMs = 1000; a2.onProgress(0.10, DUR)
 nowMs = 1250; a2.onProgress(0.44, DUR) // seek：Δprogress 0.34 × 300s ≈ 102s > 2s
-check('2 跳变 >2s（seek）挂 180ms 标准曲线过渡', () => {
+check('2 跳变 >2s（seek）挂 200ms 标准曲线过渡', () => {
   const m = a2.moves[a2.moves.length - 1]
-  assert(m.duration === 180, `duration=${m.duration} 应=180（上游 --duration-fast）`)
+  assert(m.duration === 200, `duration=${m.duration} 应=200（designMotion.quick；上游 --duration-fast 为 180）`)
   assert(m.ease === 'bezier(.22,1,.36,1)', `ease=${m.ease} 应=bezier(.22,1,.36,1)（上游 --ease-standard）`)
 })
 
@@ -109,9 +113,9 @@ check('3 短跳 ≤2s（含短 seek）直接落位，不动画（对齐上游 wa
 const a4 = createAnim()
 nowMs = 3000; a4.onProgress(0.30, DUR)
 nowMs = 30000; a4.onProgress(0.40, DUR) // 后台恢复：位置已前进 30s > 2s（等价上游 visibilityChange 分支）
-check('4 后台恢复大跳 >2s 挂 180ms 过渡（上游 visibilityChange 等价）', () => {
+check('4 后台恢复大跳 >2s 挂 200ms 过渡（上游 visibilityChange 等价）', () => {
   const m = a4.moves[a4.moves.length - 1]
-  assert(m.duration === 180 && m.ease === 'bezier(.22,1,.36,1)', JSON.stringify(m))
+  assert(m.duration === 200 && m.ease === 'bezier(.22,1,.36,1)', JSON.stringify(m))
 })
 
 const a5 = createAnim()
@@ -126,9 +130,9 @@ check('5 时长未就绪（duration=0）永不过渡，一律直接落位', () =
 const a6 = createAnim()
 nowMs = 5000; a6.onProgress(0.50, DUR)
 nowMs = 5250; a6.onProgress(0.001, DUR) // 切歌归零：Δ≈150s > 2s
-check('6 切歌归零大跳挂 180ms 过渡（上游同规则触发）', () => {
+check('6 切歌归零大跳挂 200ms 过渡（上游同规则触发）', () => {
   const m = a6.moves[a6.moves.length - 1]
-  assert(m.duration === 180 && m.ease === 'bezier(.22,1,.36,1)', JSON.stringify(m))
+  assert(m.duration === 200 && m.ease === 'bezier(.22,1,.36,1)', JSON.stringify(m))
 })
 
 const a7 = createAnim()
