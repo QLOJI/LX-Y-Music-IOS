@@ -7,14 +7,26 @@ export const designSpacing = {
 } as const
 
 export const designRadius = {
-  sm: 12,
-  md: 18,
-  lg: 24,
-  xl: 32,
+  // 倒角二次下调（对齐 REF lx-music-mobile-ios-adaptation 的圆角参数）。
+  // REF 全工程只有**一个**圆角常量 `BorderRadius.normal = 4`（见本工程 theme/Typography.js
+  // 里遗留的同名令牌），歌曲封面 / 卡片 / 输入框 / 菜单一律用它；只有 Popup 顶角给到 8。
+  // 本工程上一轮已把 md 从 18 收到 8，观感仍明显比 REF 圆，故这一轮直接落到 REF 值：
+  //   sm 6 → 4（= REF normal，小件：列表行内小方块、输入框、chips）
+  //   md 8 → 4（= REF normal；封面与卡片主圆角，46 处引用，改此一处即全局生效）
+  //   lg 12 → 8（= REF 的 Popup 顶角；本工程 lg 主要就用在弹窗/面板顶角与卡片）
+  //   xl 16 → 12（当前 0 引用，仅保持梯度不出现「越小的档反而越大」）
+  // sm 与 md 同值不是笔误：REF 本来就只有一个档，令牌保留两个名字只是为了让
+  // 78 处调用点不必改名 —— 不要为了「看起来有梯度」再把其中一个调回去。
+  sm: 4,
+  md: 4,
+  lg: 8,
+  xl: 12,
   // 玻璃胶囊统一圆角（2026-09-29 定案）：= 透镜圆角（56 药丸的胶囊半高）。
   // tab 栏玻璃 / 迷你播放器玻璃 / 透镜同值；端头曲线由原生宿主统一 circular，
   // 观感完全一致（原 continuous squircle 端头偏方、视觉圆角显小，统一后即
   // 「圆角适当加大」的效果）。
+  // **不随本次下调**：glass 与原生透镜胶囊半高绑定（ModernTabBar/PlayerBar），
+  // 改动会与透镜端头错位（原生 LiquidGlassView 还会把值钳到短边一半）。
   glass: 28,
   pill: 999,
 } as const
@@ -23,10 +35,21 @@ export const designTypography = {
   title: 20,
   body: 15,
   caption: 13,
+  // 全局默认行高比例（A-6 收敛约定）：Text 组件在调用方未显式传 lineHeight 时的兜底
+  // 基线，页面级显式 lineHeight 仍优先覆盖。1.2 ≈ iOS 字体自然行高；不建议低于 1.15
+  // —— 34pt 大标题会被裁掉顶部笔画（Discovery 大标题注释有同款警示）。
+  lineHeightRatio: 1.2,
 } as const
 
+/** 交互动效时长的单一来源。
+ *
+ *  2026-10-01 定案：quick 由 150 → **200**（「所有跳转 / 歌词反应等动画放慢一点」）。
+ *  此前 quick = 150 在本工程内 **0 引用**，实际活跃的动效时长散落在 120/180/200/220/
+ *  300/350 各处、各写各的，所以只改这个数字不会有任何可见效果 —— 必须由调用点
+ *  引用本常量（歌词换行滑动、进度条 seek 过渡、面板淡入等）。新写动画请一律取用
+ *  本常量，不要再内联魔数。 */
 export const designMotion = {
-  quick: 150,
+  quick: 200,
   standard: 250,
   smooth: 350,
 } as const
@@ -36,3 +59,34 @@ export type DesignSpacingToken = keyof typeof designSpacing
 /** 沉底悬浮组件（底部 tab 栏 / 迷你播放条）在安全区之上的额外留缝（pt）。
  *  安全区本身（iPhone 34 / 全面屏 iPad 20 / Home 键 iPad 0）由 useSafeAreaBottom 提供。 */
 export const bottomFloatGap = 4
+
+/** 底部 tab 栏 bar 的基准高度（pt）。与 ModernTabBar 的 height 同源，
+ *  经 createStyle/scaleSizeH **会乘 global.lx.fontSize**。
+ *
+ *  「Tab栏距离」（theme.tabBarDistance）要用它来算播放器底边，才能和 Tab 栏顶边
+ *  用同一个缩放口径 —— 这正是「间距不再随字体大小变化」的关键：两端的缩放必须
+ *  一致，而不是一端缩放、另一端写死常量。 */
+export const tabBarBaseHeight = 56
+
+/** 「Tab栏距离」滑块的满刻度（pt）。
+ *  = 原设计间距 (designSpacing.xl + 48) − (bottomFloatGap + tabBarBaseHeight)
+ *  = 80 − 60 = 20pt，即标准字体（fontSize 1.0）下的既有距离。
+ *  滑块值 0-100 线性映射到 0~本值，100 = 维持原距离，0 = 播放器贴合 Tab 栏。 */
+export const tabBarDistanceMax = 20
+
+/** 收起态悬浮行（左下角圆钮 / 收起态迷你播放器）底边距屏底的统一公式。
+ *
+ *  ⚠️ 圆钮（ModernTabBar）与迷你播放器（PlayerBar）**必须共用这一条**：收起态的
+ *  「同排」此前修不好，就是因为两边各自写表达式（哪怕写成同值），落进设备后也要
+ *  经过不同的父容器 inset 解析路径而分叉。任何一边想改底边距，都只改这里。 */
+export const collapsedFloatBottom = (safeAreaBottom: number): number => safeAreaBottom + bottomFloatGap
+
+/** 收起态圆钮与迷你播放器之间的横向间距（pt）。
+ *  裸值：它只与 scaleSizeW 后的左让位相加；这里若再乘一次 fontSize，
+ *  字体一变间距就会和缩放端分叉（三套缩放口径混用的老毛病）。 */
+export const collapsedPillGap = designSpacing.sm
+
+/** 「Tab栏距离」滑块值（0~100）换算成实际 pt（裸值，不乘 fontSize）。
+ *  它只与 scaleSizeH(tabBarBaseHeight) 相加，两端同口径；
+ *  若此处再乘 fontSize，Tab 栏高会缩放两次、间距随字体漂移（上一版的缺陷）。 */
+export const floatDistance = (settingValue: number): number => (settingValue / 100) * tabBarDistanceMax

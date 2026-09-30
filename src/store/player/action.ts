@@ -47,20 +47,41 @@ export default {
     global.state_event.playStateTextChanged(statusText)
   },
   setNowPlayTime(time: number) {
+    // 已播时间不得越过总时长（需求：「歌曲实际播放时间不能超过进度条上的总时长」）。
+    // 为什么必须钳在这一处，而不是逐个调用点：
+    //   1) 4Hz 原生位置快路径发布的是**歌词时钟外推值**（AppDelegate 里
+    //      anchorElapsed + (now - anchorSystem) * rate），原生侧只有 MAX(0,…) 下限、
+    //      没有 duration 上限钳制，播放到尾部 / 变速 / 缓冲抖动时会短暂越过总时长；
+    //   2) 越过之后 progress 比例虽被下面的 clamp01 挡住（进度条不会冲出容器），
+    //      但左侧时间文字取的是**未钳制**的 time，于是显示成「4:12 / 4:05」
+    //      —— 这就是「播放时间超过最后进度条时间」最直观的样子；
+    //   3) 歌词行点击 / 远程命令走 setProgress 也直接传原始秒数（歌词末行时间可能
+    //      本就超出元数据时长），同一条不变量在这一处收口，覆盖面最广。
+    // maxPlayTime 未就绪（切歌瞬间为 0）时不钳，否则会把真实位置压成 0。
+    // 钳到恰好 maxPlayTime 不影响播完判定：判定用的是 `>= maxPlayTime`，等号依然成立。
+    if (state.progress.maxPlayTime > 0 && time > state.progress.maxPlayTime) {
+      time = state.progress.maxPlayTime
+    }
     state.progress.nowPlayTime = time
     state.progress.nowPlayTimeStr = formatPlayTime2(time)
-    state.progress.progress = state.progress.maxPlayTime ? time / state.progress.maxPlayTime : 0
+    // 比例必须钳到 [0,1]：切歌/时长未就绪时 nowPlayTime 可能大于（尚未刷新的）maxPlayTime，
+    // 不钳会让进度条冲过 100%（对齐 REF store/player/action 的 calcProgress 兜底）。
+    state.progress.progress = state.progress.maxPlayTime ? clamp01(time / state.progress.maxPlayTime) : 0
 
     global.state_event.playProgressChanged({ ...state.progress })
   },
   setMaxplayTime(time: number) {
     state.progress.maxPlayTime = time
     state.progress.maxPlayTimeStr = formatPlayTime2(time)
-    state.progress.progress = time ? state.progress.nowPlayTime / time : 0
+    // 同理，防止旧的 nowPlayTime 残留造成比例越界（time 为 0 时直接归零，避免 NaN）。
+    state.progress.progress = time ? clamp01(state.progress.nowPlayTime / time) : 0
 
     global.state_event.playProgressChanged({ ...state.progress })
   },
   setProgress(currentTime: number, totalTime: number) {
+    // 与 setNowPlayTime 同一条不变量：已播时间不得越过总时长（切歌的 setProgress(0,0)
+    // 不受影响——totalTime 为 0 时不钳）。
+    if (totalTime > 0 && currentTime > totalTime) currentTime = totalTime
     state.progress.nowPlayTime = currentTime
     state.progress.nowPlayTimeStr = formatPlayTime2(currentTime)
     state.progress.maxPlayTime = totalTime
