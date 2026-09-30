@@ -1,4 +1,5 @@
 import { initSetting, showPactModal, updateSetting } from '@/core/common'
+import { loadViewRestoreState } from '@/core/viewRestore'
 import registerPlaybackService from '@/plugins/player/service'
 import initTheme from './theme'
 import initI18n from './i18n'
@@ -79,6 +80,13 @@ export default async() => {
   void initDownloadPath(setting)
     .then(() => { bootLog('Download path inited.') })
     .catch((err: any) => { bootLog(`Download path init failed: ${err?.stack ?? err?.message ?? err}`) })
+  // 「退出前所在界面」的恢复必须赶在 Home 挂载之前：app.ts 是在 init() 返回后才
+  // pushHomeScreen 的，PagerView 用挂载那一刻的 navActiveId 推导 initialPage；
+  // 恢复若晚于挂载，只能靠 navActiveIdUpdated 事件补救，而事件早于监听注册发出就会丢。
+  // 页内子状态（平台/歌单）的待恢复缓存也要先就绪，UI 挂载时才能一次性消费到。
+  // loadViewRestoreState 自身绝不 reject；外层 withTimeout 只为兜住存储 I/O 卡死。
+  await withTimeout(loadViewRestoreState(), 'View restore', undefined)
+  bootLog('View restore inited.')
   await withTimeout(initCommonState(setting), 'Common State', undefined)
   bootLog('Common State inited.')
 

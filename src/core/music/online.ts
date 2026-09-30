@@ -68,7 +68,10 @@ export const getMusicUrl = async({
   if (!silent) console.log('播放：currentMusicInfo:', currentMusicInfo)
 
   if (isWySource && !hasFullDetails) {
-    const availableQualities = Object.keys(currentMusicInfo.meta._qualitys) as LX.Quality[]
+    // 仅用于决定「是否向 wy 拉取音质详情」的位次判断：候选链已改为固定天梯、忽略 _qualitys
+    // （utils.ts C-11-3），这里仍按 QUALITY_RANK（排序基准，含历史档）比位次，语义不变。
+    // `?? {}` 兜底：详情缺失时 Object.keys(undefined) 会直接抛错，连带整条 wy 取链挂掉。
+    const availableQualities = Object.keys(currentMusicInfo.meta._qualitys ?? {}) as LX.Quality[]
     const preferredQualityIndex = QUALITY_RANK.indexOf(preferredQuality)
     const maxAvailableQualityIndex = Math.min(...availableQualities.map(q => QUALITY_RANK.indexOf(q)))
 
@@ -104,9 +107,13 @@ export const getMusicUrl = async({
   if (preferApi) {
     try {
       if (!silent) console.log('Attempting to get music URL via custom API')
+      // 【C-11-3 配套】这里传「调用方显式档」而不是 targetQuality：
+      // 未显式指定（播放主链路）→ 由 handleGetOnlineMusicUrl 按固定天梯从用户偏好档开始逐级降级；
+      // 显式指定（下载 / 失败降级重试）→ 只请求该档。若传 targetQuality（它总非空）会把候选链
+      // 卡成单档，固定天梯在本路径就失效了。
       const result = await handleGetOnlineMusicUrl({
         musicInfo: currentMusicInfo,
-        quality: targetQuality,
+        quality,
         onToggleSource,
         isRefresh,
         allowToggleSource,
@@ -138,7 +145,8 @@ export const getMusicUrl = async({
 
   return handleGetOnlineMusicUrl({
     musicInfo: currentMusicInfo,
-    quality: targetQuality,
+    // 同上面的 preferApi 分支：传显式档而非 targetQuality，让固定天梯降级链生效
+    quality,
     onToggleSource,
     isRefresh,
     allowToggleSource,

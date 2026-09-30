@@ -669,6 +669,17 @@ export default () => {
         seekHoldUntil = 0
       }
     }
+    // 位置守卫，与慢路径 getCurrentTime 的 `if (!position || id != musicInfo.id) return` 对齐：
+    // position=0（切歌/重载瞬间原生时钟尚未锚定，或外推出 0）不发布——发布出去会把已播时间
+    // 瞬间打成 0:00，随后 1s 慢校准再跳回来，观感是进度条无故闪回开头；同时也会把歌词时钟
+    // 锚回 0，让歌词整页跳回第一行。
+    // 放在 seek 窗口记账**之后**：否则「seek 到 0:00」这条路径上的窗口清理会被一并跳过
+    //（上面 else 分支是唯一会清这个窗口的地方；慢路径在同样的守卫下也够不到那里）。
+    // 不做 id 快照比对：本回调是同步的，唯一的异步跳转是上面的 syncFromEngine(musicId)，
+    // 它自带「id 未变 + 代际未变」两道守卫；在这里再存一份 id 只会得到一个恒真的判断。
+    // 位置上限（position ≤ maxPlayTime）也不在这里钳：统一由 setNowPlayTime 收口，
+    // 免得三条路径各钳一次、口径还不一致。
+    if (!position) return
     setNowPlayTime(position)
     audioClock.setAnchor(position * 1000, rate || settingState.setting['player.playbackRate'], true)
     // 行级自愈探针（快路径层，≤250ms 收敛）：守卫条件（确认在播/非缓冲/非拖动/非

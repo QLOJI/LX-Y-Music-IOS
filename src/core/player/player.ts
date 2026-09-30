@@ -145,24 +145,38 @@ const getMusicPlayUrl = async(musicInfo: LX.Music.MusicInfo | LX.Download.ListIt
   })
 }
 
-// 启动恢复的一次性 seek 时间：handleRestorePlay 写入、setMusicUrl 消费后即清。
+// 启动恢复的一次性 seek 意图：handleRestorePlay 写入、setMusicUrl 消费后即清。
 // 旧实现非刷新路径直接取 playerState.progress.nowPlayTime —— 切歌时该值是旧歌的
 // 残留位置（handleStop 归零走异步 stop 事件，与 debounce 后的 URL 加载竞态），
 // 捕获到旧值就把新歌 seek 到旧位置 = 「切歌不从头上播放」（真机有概率复现）。
-let pendingRestoreSeekTime: number | null = null
+// 再补一层歌曲 id 绑定：一个裸数字不区分「这是哪首歌的恢复意图」，恢复曲加载
+// 失败/被取消时意图会残留（旧实现只在成功分支清），被 5s 后自动跳歌或用户手动
+// 点播的任意一首歌误消费，再次把新歌 seek 到旧进度——带 id 后按歌匹配，
+// 任何「另一首歌先加载」的路径都因 id 不匹配自然丢弃该意图。
+let pendingRestoreSeek: { id: string, time: number } | null = null
 export const setMusicUrl = (musicInfo: LX.Music.MusicInfo | LX.Download.ListItem, isRefresh?: boolean, quality?: LX.Quality) => {
   // addLoadTimeout()
   if (!diffCurrentMusicInfo(musicInfo)) return
   if (cancelDelayRetry) cancelDelayRetry()
   global.lx.gettingUrlId = createGettingUrlId(musicInfo)
+  // 恢复意图的消费点必须前移到「发起请求之前」，且无论是否匹配都无条件清空：
+  // - 前移：请求存在 result=null（取消/竞态）与抛错（走 5s 延迟跳歌）等中断分支，
+  //   旧实现把清空放在成功分支里，这些路径会把意图留下来给下一首歌消费——跨歌
+  //   续播旧进度的泄漏口；在任何 await 之前消费，加载失败/被取消同样丢弃意图。
+  // - 无条件清空：意图是一次性的，本次加载若不是它的目标曲（另一首歌先加载），
+  //   它就已经过期，留着只会污染后续歌曲。
+  // - id 匹配：只有恢复曲本身的首次非刷新加载能拿到恢复时间，从保存进度起播。
+  const restoreTime = !isRefresh && pendingRestoreSeek && pendingRestoreSeek.id === musicInfo.id
+    ? pendingRestoreSeek.time
+    : 0
+  pendingRestoreSeek = null
   const currentTimePromise = isRefresh
     ? getPosition().catch(() => playerState.progress.nowPlayTime)
-    // 非 refresh = 新歌：仅启动恢复携带显式恢复时间，其余一律从 0 开始
-    : Promise.resolve(pendingRestoreSeekTime ?? 0)
+    // 非 refresh = 新歌：仅恢复曲的首次加载携带显式恢复时间，其余一律从 0 开始
+    : Promise.resolve(restoreTime)
   void getMusicPlayUrl(musicInfo, isRefresh, false, quality).then(async(result) => {
     if (!result) return
     const currentTime = await currentTimePromise
-    pendingRestoreSeekTime = null // 一次性消费
     currentStreamInfo.musicId = musicInfo.id
     currentStreamInfo.url = result.url
     currentStreamInfo.quality = result.quality
@@ -186,7 +200,8 @@ const handleRestorePlay = async(restorePlayInfo: LX.Player.SavedPlayInfo) => {
 
   // Avoid seeking the 2-second placeholder track during startup restore.
   const restoreTime = settingState.setting['player.isSavePlayTime'] ? restorePlayInfo.time : 0
-  pendingRestoreSeekTime = restoreTime // 交给随后的 setMusicUrl 精确 seek（一次性）
+  // 绑定歌曲 id，交给随后的 setMusicUrl 精确 seek（一次性、只有该曲的非刷新加载会消费）
+  pendingRestoreSeek = { id: musicInfo.id, time: Math.max(0, restoreTime) }
   updatePlayProgress(restoreTime, restorePlayInfo.maxTime)
   global.app_event.seekLyric(restoreTime)
 

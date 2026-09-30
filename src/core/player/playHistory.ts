@@ -79,3 +79,36 @@ export const getPlayHistoryByRange = async(startTime: number, endTime: number) =
   const history = await getPlayHistory()
   return history.filter(item => item.playedAt >= startTime && item.playedAt <= endTime)
 }
+
+const removePlayHistoryInternal = async(ids: string[]): Promise<number> => {
+  const removeIds = new Set(ids)
+  const history = await getPlayHistory()
+  const nextHistory = history.filter(item => !removeIds.has(item.id))
+  // 一条都没删掉时不能静默 return：调用方（OnlineList 的 handleRemoveMusic）拿不到任何
+  // 信号，只能一律 toast「移除成功」，用户看到的就是「点了移除、提示成功、列表纹丝不动」——
+  // 这正是「播放历史移除不了」最直观的表现。改为回传实际删除条数，由调用方决定提示什么。
+  const removedCount = history.length - nextHistory.length
+  if (removedCount === 0) return 0
+  await savePlayHistory(nextHistory)
+  global.app_event.playHistoryUpdated()
+  markListsChanged()
+  return removedCount
+}
+
+/**
+ * 按记录 id 删除播放历史。
+ *
+ * 此前只有追加（addPlayHistory）与按范围查询，**没有删除**，导致播放历史页行菜单
+ * 里的「移除」走 OnlineList 的通用分支时无处可去（见 OnlineList handleRemoveMusic）。
+ * 与 addPlayHistory 保持同一套落盘 + 事件 + 同步标记语义，删除后 WebDAV 已开启时
+ * 会被标记为待上传，不会被远端旧数据合并回来。
+ *
+ * 与 addPlayHistory 共用同一条写入队列：二者都是「读全量 → 改 → 整表落盘」，
+ * 交错执行会拿旧快照互相覆盖（表现为刚删掉的记录重进又出现，或刚播放的记录丢失）。
+ */
+export const removePlayHistory = async(ids: string[]): Promise<number> => {
+  if (!ids.length) return 0
+  const nextTask = addPlayHistoryQueue.catch(() => {}).then(async() => removePlayHistoryInternal(ids))
+  addPlayHistoryQueue = nextTask.then(() => undefined, () => undefined)
+  return nextTask
+}

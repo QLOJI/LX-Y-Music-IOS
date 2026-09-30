@@ -70,6 +70,13 @@ export const getDailyRecPlaylistsCache = (): any[] | null => {
 }
 
 export const setDailyRecPlaylistsCache = (data: any[]) => {
+  // 空数组也是 truthy：若不拦截，调用方的缓存命中判断会把 [] 当成有效缓存，
+  // 本次会话内再进页面直接跳过加载并一直显示空列表。这里做一层防御
+  // （调用方 RecPlaylists 同时还有长度校验），空结果直接清空缓存。
+  if (!data || data.length === 0) {
+    dailyRecPlaylistsCache = null
+    return
+  }
   dailyRecPlaylistsCache = data
 }
 

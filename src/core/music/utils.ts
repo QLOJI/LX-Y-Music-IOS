@@ -415,60 +415,75 @@ export const getOnlineOtherSourcePicByLocal = async(
   })
 }
 
+// 【C-13-2】设置页「下载音质」仍在用本表（含 atmos_plus）渲染 8 项，本次不动它——
+// 播放页的 7 项清单在 PlayHighQuality.tsx 里自行过滤/硬编码文案。
+// 本表不是取流候选链，取流优先级见下面的 PLAY_LADDER。
 export const TRY_QUALITYS_LIST = ['master', 'atmos_plus', 'atmos', 'hires', 'flac24bit', 'flac', '320k'] as const
 
-type TryQualityType = typeof TRY_QUALITYS_LIST[number]
+// 【C-11-1】固定天梯：取流优先级顺序（从高到低），也是需求展示序（设置页 128K→…→Master）的倒排。
+// 关键决策：候选链【忽略曲目 meta._qualitys】——曲目标注经常缺失或错误，按它的交集来筛档
+// 会把高档整个跳过，候选链为空时甚至一个请求都不发就抛 'no available quality'。
+// 本表即「取流优先级顺序」，与 QUALITY_RANK（排序基准）、musicSdk QUALITYS（请求枚举）分工不同。
+// atmos_plus 不入梯（需求 7 档无此档，展示层也隐藏），旧存量设置值由 normalizeQuality 映射兜底。
+const PLAY_LADDER: LX.Quality[] = ['master', 'atmos', 'hires', 'flac24bit', 'flac', '320k', '128k']
+
+// 旧档位归一到天梯档：历史版本把「优先播放的音质」存成过已取消的 atmos_plus（含旧拼写 atmosplus），
+// 它不在天梯里，按「从其下档 atmos 起降级」处理（REF:src/core/music/utils.ts 230-231 同义）。
+// 为什么旧值不迁移/不清除：迁移会改写用户设置存储，且旧值本身仍须能正常取流，映射兜底即可。
+const normalizeQuality = (quality: LX.Quality): LX.Quality => {
+  const q = quality as string
+  return q === 'atmos_plus' || q === 'atmosplus' ? 'atmos' : quality
+}
+
 const lastTryQualityMap = new Map<string, LX.Quality>()
 export const setLastTryQuality = (id: string, quality: LX.Quality) => {
   if (lastTryQualityMap.size > 200) lastTryQualityMap.clear()
   lastTryQualityMap.set(id, quality)
 }
 export const getLastTryQuality = (id: string): LX.Quality | null => lastTryQualityMap.get(id) ?? null
-export const getTryQualityList = (highQuality: LX.Quality, musicInfo: LX.Music.MusicInfoOnline): LX.Quality[] => {
-  const available = Object.keys(musicInfo.meta._qualitys ?? {}) as LX.Quality[]
-  const tryList: LX.Quality[] = TRY_QUALITYS_LIST.includes(highQuality as TryQualityType)
-    ? TRY_QUALITYS_LIST.slice(TRY_QUALITYS_LIST.indexOf(highQuality as TryQualityType)).filter(q => available.includes(q))
-    : []
-  if (!tryList.includes('128k')) tryList.push('128k')
-  return tryList
+// 【C-11-6】切歌复位用：避免上一首的「上次达成音质」跨歌残留成下一首的降级起点
+export const clearLastTryQuality = (id: string) => {
+  lastTryQualityMap.delete(id)
+}
+export const clearAllLastTryQuality = () => {
+  lastTryQualityMap.clear()
+}
+// 由「优先播放的音质」得到本次取流候选队列（固定天梯切片，忽略曲目 _qualitys）：
+// 从所选档开始逐级降级，前一档取不到就试下一档，128k 恒为最后兜底；未知档直落 128k。
+export const getTryQualityList = (highQuality: LX.Quality, _musicInfo: LX.Music.MusicInfoOnline): LX.Quality[] => {
+  const index = PLAY_LADDER.indexOf(normalizeQuality(highQuality))
+  // 未知/不在梯内的档（如仅下载用的 192k）→ 直落 128k 兜底；绝不返回空链（空链 = 不发请求就失败）
+  return index < 0 ? ['128k'] : PLAY_LADDER.slice(index)
 }
 export const getNextTryQuality = (highQuality: LX.Quality, musicInfo: LX.Music.MusicInfoOnline, lastQuality: LX.Quality | null): LX.Quality | null => {
   const tryList = getTryQualityList(highQuality, musicInfo)
   if (!tryList.length) return null
   if (!lastQuality) return tryList[0]
-  const index = tryList.indexOf(lastQuality)
+  // 上次达成档同样按旧值归一后再找位（atmos_plus 落到 atmos 的位置），避免旧值找不到位次
+  // 而跳回候选链首档（向上重试）
+  const index = tryList.indexOf(normalizeQuality(lastQuality))
+  // index == -1（上次达成档完全不在候选链里）→ 从候选链首档重试，仅剩防御意义
   return index == -1 ? tryList[0] : (tryList[index + 1] ?? null)
 }
 // 清除指定歌曲+音质的缓存 URL（失败音质重试前清掉，避免重复命中坏链）
 export const removeMusicUrl = async(musicInfo: LX.Music.MusicInfo | LX.Download.ListItem, quality: LX.Quality) => {
   await removeData(`${storageDataPrefix.musicUrl}${musicInfo.id}_${quality}`)
 }
+// 【C-11-7】档位排序基准（从高到低）：给「曲目标注的可用档」等做排序/位次判断用
+// （如 online.ts 的 wy 详情判定）。本表含 atmos_plus/192k 等历史档，代表「排序」而非「取流顺序」：
+// 取流候选链是 PLAY_LADDER，请求枚举是 musicSdk/utils.js 的 QUALITYS。本表本次不改，避免波及排序类调用。
 export const QUALITY_RANK: readonly LX.Quality[] = ['master', 'atmos_plus', 'atmos', 'hires', 'flac24bit', 'flac', '320k', '192k', '128k']
 
 export const getPlayQuality = (
   preferredQuality: LX.Quality,
   musicInfo: LX.Music.MusicInfoOnline,
 ): LX.Quality => {
-  const availableQualities = musicInfo.meta._qualitys
-
-  const validPreferredQuality = QUALITY_RANK.includes(preferredQuality)
-    ? preferredQuality
-    : '128k'
-
-  const startIndex = QUALITY_RANK.indexOf(validPreferredQuality)
-
-  const searchIndex = startIndex === -1 ? 0 : startIndex
-
-  for (let i = searchIndex; i < QUALITY_RANK.length; i++) {
-    const quality = QUALITY_RANK[i]
-    if (availableQualities[quality]) {
-      console.log(`[音质选择] 偏好: ${preferredQuality} -> 实际: ${quality}`)
-      return quality
-    }
-  }
-
-  console.log(`[音质选择] 偏好: ${preferredQuality} -> 兜底: 128k`)
-  return '128k'
+  // 【C-11-2】语义已改变：返回固定天梯首档 = 本次取流的「起点档」，不再看曲目 meta._qualitys
+  // （旧实现是「该曲标注内首选档」，标注缺失时会崩/跳过高档）。
+  // 因此本函数不再代表「这首歌实际能播什么」——要展示实际达成档请读 playerState.quality
+  // （plugins/player/utils.ts setResource 写入），不要用本函数反推。
+  // 未知/旧档已在 getTryQualityList 内归一兜底（atmos_plus→atmos、其他未知→128k）。
+  return getTryQualityList(preferredQuality, musicInfo)[0]
 }
 
 export const getOnlineOtherSourceMusicUrl = async({
@@ -504,7 +519,6 @@ export const getOnlineOtherSourceMusicUrl = async({
   userApiLog.info(`[换源播放] 是否刷新缓存: ${isRefresh}`)
 
   let musicInfo: LX.Music.MusicInfoOnline | null = null
-  let itemQuality: LX.Quality | null = null
   let tryCount = 0
 
   while ((musicInfo = musicInfos.shift()!)) {
@@ -525,120 +539,72 @@ export const getOnlineOtherSourceMusicUrl = async({
       continue
     }
 
-    const preferredQuality = quality ?? settingState.setting['player.playQuality']
-    itemQuality = getPlayQuality(preferredQuality, musicInfo)
-    userApiLog.info(`[换源播放]   用户偏好音质: ${preferredQuality}`)
-    userApiLog.info(`[换源播放]   实际选择音质: ${itemQuality}`)
-    userApiLog.info(`[换源播放]   支持的音质: ${Object.keys(musicInfo.meta._qualitys ?? {}).join(', ')}`)
+    // 【C-11-4】每个音源都跑完整候选链：固定天梯切片（忽略曲目 meta._qualitys——
+    // 标注缺失/错误时不再整档跳过，也不会出现空链导致一个请求都不发就抛 'no available quality'）。
+    // 显式指定档（下载 / 失败降级重试）只请求该档；未指定则从偏好档开始逐级降级，128k 兜底。
+    const candidates = quality
+      ? [quality]
+      : getTryQualityList(settingState.setting['player.playQuality'], musicInfo)
 
-    if (preferredQuality !== itemQuality) {
-      userApiLog.info(`[换源播放]   音质降级: ${preferredQuality} -> ${itemQuality}`)
-    }
-
+    userApiLog.info(`[换源播放]   候选音质链: ${candidates.join(' -> ')}`)
     userApiLog.info('[换源播放]   选择该音源进行尝试')
     onToggleSource(musicInfo)
-    break
-  }
 
-  if (!musicInfo) {
-    userApiLog.error('[换源播放] ========== 换源失败 ==========')
-    userApiLog.error('[换源播放] 所有音源均已尝试，无法获取播放地址')
-    userApiLog.error(`[换源播放] 歌曲: "${musicName}" - "${musicSinger}"`)
-    userApiLog.error(`[换源播放] 尝试过的音源: ${retryedSource.join(', ')}`)
-    throw new Error(global.i18n.t('toggle_source_failed'))
-  }
+    // 逐档「先查缓存再请求」：未刷新时命中任一档缓存直接返回，省掉后续请求；
+    // 全档失败才切下一个音源（对齐 REF 的「每源完整链」语义）
+    let tryErr: any = null
+    for (const q of candidates) {
+      if (!isRefresh) {
+        const cachedUrl = await getStoreMusicUrl(musicInfo, q)
+        if (cachedUrl) {
+          userApiLog.info(`[换源播放]   音质 ${q} 命中缓存，直接返回播放地址`)
+          userApiLog.info('[换源播放] ========== 换源成功 ==========')
+          userApiLog.info(`[换源播放] 最终音源: "${musicInfo.source}"`)
+          userApiLog.info(`[换源播放] 音质: ${q}`)
+          return { url: cachedUrl, musicInfo, quality: q, isFromCache: true }
+        }
+      }
 
-  if (!itemQuality) {
-    userApiLog.error('[换源播放] ========== 换源失败 ==========')
-    userApiLog.error('[换源播放] 无法确定可用音质')
-    throw new Error(global.i18n.t('toggle_source_failed'))
-  }
+      userApiLog.info(`[换源播放]   尝试音质: ${q}`)
 
-  const cachedUrl = await getStoreMusicUrl(musicInfo, itemQuality)
-  if (cachedUrl && !isRefresh) {
-    userApiLog.info('[换源播放]   命中缓存，直接返回播放地址')
-    userApiLog.info('[换源播放] ========== 换源成功 ==========')
-    userApiLog.info(`[换源播放] 最终音源: "${musicInfo.source}"`)
-    userApiLog.info(`[换源播放] 音质: ${itemQuality}`)
-    return { url: cachedUrl, musicInfo, quality: itemQuality, isFromCache: true }
-  }
+      let reqPromise
+      try {
+        reqPromise = musicSdk[musicInfo.source].getMusicUrl(
+          toOldMusicInfo(musicInfo),
+          q,
+        ).promise
+      } catch (err: any) {
+        userApiLog.error(`[换源播放]   API调用失败: ${err?.message || err}`)
+        reqPromise = Promise.reject(err)
+      }
 
-  const tryGetMusicUrlWithFallback = async(qualities: LX.Quality[]): Promise<{ url: string, type: LX.Quality }> => {
-    if (qualities.length === 0) {
-      throw new Error('no available quality')
-    }
-
-    const currentQuality = qualities[0]
-    userApiLog.info(`[换源播放]   尝试音质: ${currentQuality}`)
-
-    let reqPromise
-    try {
-      reqPromise = musicSdk[musicInfo.source].getMusicUrl(
-        toOldMusicInfo(musicInfo),
-        currentQuality,
-      ).promise
-    } catch (err: any) {
-      userApiLog.error(`[换源播放]   API调用失败: ${err?.message || err}`)
-      reqPromise = Promise.reject(err)
-    }
-
-    return reqPromise
-      .then((result: { url: string, type: LX.Quality }) => {
+      try {
+        const { url, type } = await reqPromise as { url: string, type: LX.Quality }
         userApiLog.info('[换源播放]   请求成功，获取到播放地址')
-        userApiLog.info(`[换源播放]   播放地址长度: ${result.url.length} 字符`)
-        userApiLog.info(`[换源播放]   实际音质: ${result.type}`)
-        return result
-      })
-      .catch(async(err: any) => {
+        userApiLog.info(`[换源播放]   播放地址长度: ${url.length} 字符`)
+        userApiLog.info(`[换源播放]   实际音质: ${type}`)
+        userApiLog.info('[换源播放] ========== 换源成功 ==========')
+        userApiLog.info(`[换源播放] 最终音源: "${musicInfo.source}"`)
+        userApiLog.info(`[换源播放] 音质: ${type}`)
+        return { musicInfo, url, quality: type, isFromCache: false }
+      } catch (err: any) {
         if (err.message == requestMsg.tooManyRequests) {
           userApiLog.error('[换源播放]   请求失败 - 请求过于频繁')
           throw err
         }
-        userApiLog.error(`[换源播放]   音质 ${currentQuality} 请求失败: ${err?.message || err}`)
-
-        if (qualities.length > 1) {
-          userApiLog.info('[换源播放]   尝试更低音质...')
-          return tryGetMusicUrlWithFallback(qualities.slice(1))
-        }
-
-        throw err
-      })
+        userApiLog.error(`[换源播放]   音质 ${q} 请求失败: ${err?.message || err}`)
+        tryErr = err
+      }
+    }
+    userApiLog.error(`[换源播放]   该音源候选音质全部失败: ${tryErr?.message || tryErr}`)
+    userApiLog.info('[换源播放]   尝试下一个音源...')
   }
 
-  const availableQualities = Object.keys(musicInfo.meta._qualitys ?? {}) as LX.Quality[]
-  const sortedQualities = availableQualities
-    .filter(q => QUALITY_RANK.includes(q))
-    .sort((a, b) => QUALITY_RANK.indexOf(a) - QUALITY_RANK.indexOf(b))
-
-  const startIndex = sortedQualities.indexOf(itemQuality)
-  const fallbackQualities = startIndex >= 0
-    ? sortedQualities.slice(startIndex)
-    : sortedQualities
-
-  userApiLog.info('[换源播放]   未命中缓存，发起网络请求获取播放地址')
-
-  return tryGetMusicUrlWithFallback(fallbackQualities)
-    .then(({ url, type }) => {
-      userApiLog.info('[换源播放] ========== 换源成功 ==========')
-      userApiLog.info(`[换源播放] 最终音源: "${musicInfo.source}"`)
-      userApiLog.info(`[换源播放] 歌曲: "${musicInfo.name}" - "${musicInfo.singer}"`)
-      userApiLog.info(`[换源播放] 音质: ${type}`)
-      return { musicInfo, url, quality: type, isFromCache: false }
-    })
-    .catch(async(err: any) => {
-      if (err.message == requestMsg.tooManyRequests) {
-        throw err
-      }
-      userApiLog.error('[换源播放]   该音源所有音质均尝试失败')
-      userApiLog.info('[换源播放]   尝试下一个音源...')
-      return getOnlineOtherSourceMusicUrl({
-        musicInfos,
-        quality,
-        onToggleSource,
-        isRefresh,
-        retryedSource,
-      })
-    })
+  userApiLog.error('[换源播放] ========== 换源失败 ==========')
+  userApiLog.error('[换源播放] 所有音源均已尝试，无法获取播放地址')
+  userApiLog.error(`[换源播放] 歌曲: "${musicName}" - "${musicSinger}"`)
+  userApiLog.error(`[换源播放] 尝试过的音源: ${retryedSource.join(', ')}`)
+  throw new Error(global.i18n.t('toggle_source_failed'))
 }
 
 export const getUserDefinedSourceList = (
@@ -719,12 +685,22 @@ export const handleGetOnlineMusicUrl = async({
   userApiLog.info(`[在线播放]   支持音质列表: ${JSON.stringify(Object.keys(musicInfo.meta._qualitys ?? {}))}`)
 
   const preferredQuality = quality ?? settingState.setting['player.playQuality']
-  const targetQuality = getPlayQuality(preferredQuality, musicInfo)
+  // 【C-11-3】候选链改为固定天梯切片，彻底忽略曲目 meta._qualitys：
+  // 旧实现按 meta._qualitys 求交集排序，曲目标注缺失/错误时高档被整档跳过，
+  // 候选链为空时甚至一个请求都不发就抛 'no available quality'。
+  // 显式指定档（下载 / 失败降级重试）只请求该档，避免下载音质被静默降级；
+  // 未指定（播放主链路）从用户偏好档开始逐级降级，128k 恒为兜底。
+  const candidates = quality
+    ? [quality]
+    : getTryQualityList(settingState.setting['player.playQuality'], musicInfo)
+  // 首档即本次请求的起始档（沿用 targetQuality 旧名，少改下方缓存/日志）
+  const targetQuality = candidates[0]
   userApiLog.info(`[在线播放] 用户偏好音质: ${preferredQuality}`)
-  userApiLog.info(`[在线播放] 实际选择音质: ${targetQuality}`)
-  userApiLog.info(`[在线播放] 支持的音质: ${Object.keys(musicInfo.meta._qualitys ?? {}).join(', ')}`)
+  userApiLog.info(`[在线播放] 起始音质: ${targetQuality}`)
+  userApiLog.info(`[在线播放] 候选音质链: ${candidates.join(' -> ')}`)
+  userApiLog.info(`[在线播放] 曲目标注音质（仅供诊断，不参与候选链）: ${Object.keys(musicInfo.meta._qualitys ?? {}).join(', ')}`)
   if (preferredQuality !== targetQuality) {
-    userApiLog.info(`[在线播放] 音质降级: ${preferredQuality} -> ${targetQuality}`)
+    userApiLog.info(`[在线播放] 音质归一: ${preferredQuality} -> ${targetQuality}`)
   }
   userApiLog.info(`[在线播放] 是否刷新缓存: ${isRefresh}`)
   userApiLog.info(`[在线播放] 是否允许换源: ${allowToggleSource}`)
@@ -736,12 +712,19 @@ export const handleGetOnlineMusicUrl = async({
     return { url: cachedUrl, musicInfo, quality: targetQuality, isFromCache: true }
   }
 
-  const tryGetMusicUrlWithFallback = async(qualities: LX.Quality[]): Promise<{ url: string, type: LX.Quality }> => {
+  const tryGetMusicUrlWithFallback = async(qualities: LX.Quality[]): Promise<{ url: string, type: LX.Quality, isFromCache: boolean }> => {
     if (qualities.length === 0) {
+      // 固定天梯恒返回非空候选链，此处仅为不可达兜底（旧实现空链是常态路径）
       throw new Error('no available quality')
     }
 
     const currentQuality = qualities[0]
+
+    // 逐档先查缓存再请求：候选链里任一下降档命中缓存即返回，省掉网络请求（刷新请求跳过缓存）
+    if (!isRefresh) {
+      const cachedUrl = await getStoreMusicUrl(musicInfo, currentQuality)
+      if (cachedUrl) return { url: cachedUrl, type: currentQuality, isFromCache: true }
+    }
 
     const oldMusicInfo = toOldMusicInfo(musicInfo)
 
@@ -760,7 +743,7 @@ export const handleGetOnlineMusicUrl = async({
         if (!result.url || result.url.length < 10) {
           userApiLog.warn('[在线播放]   警告: 播放地址可能无效')
         }
-        return result
+        return { ...result, isFromCache: false }
       })
       .catch(async(err: any) => {
         if (err.message == requestMsg.tooManyRequests) {
@@ -777,19 +760,9 @@ export const handleGetOnlineMusicUrl = async({
       })
   }
 
-  const availableQualities = Object.keys(musicInfo.meta._qualitys ?? {}) as LX.Quality[]
-  const sortedQualities = availableQualities
-    .filter(q => QUALITY_RANK.includes(q))
-    .sort((a, b) => QUALITY_RANK.indexOf(a) - QUALITY_RANK.indexOf(b))
-
-  const startIndex = sortedQualities.indexOf(targetQuality)
-  const fallbackQualities = startIndex >= 0
-    ? sortedQualities.slice(startIndex)
-    : sortedQualities
-
-  return tryGetMusicUrlWithFallback(fallbackQualities)
-    .then(({ url, type }) => {
-      return { musicInfo, url, quality: type, isFromCache: false }
+  return tryGetMusicUrlWithFallback(candidates)
+    .then(({ url, type, isFromCache }) => {
+      return { musicInfo, url, quality: type, isFromCache }
     })
     .catch(async(err: any) => {
       if (!allowToggleSource) {

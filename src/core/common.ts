@@ -76,8 +76,12 @@ export const removeComponentId = (name: string) => {
 export const setNavActiveId = (id: Parameters<typeof commonActions.setNavActiveId>['0']) => {
   if (id == commonState.navActiveId) return
   commonActions.setNavActiveId(id)
-  if (id != 'nav_setting' && id != 'nav_play_history') {
-    commonActions.setLastNavActiveId(id)
+  // 持久化条件只排除 nav_play_history（底部浮层，保持不持久化）；
+  // nav_setting 需要保存 —— 从设置退出重进要回到设置主界面（B-6）。
+  // lastNavActiveId 则必须继续排除 nav_setting：它是会话内「从设置返回上一个 tab」的
+  // 依据（Setting/index.tsx 的返回键），若被写成 nav_setting，返回键会因同值短路而失效。
+  if (id != 'nav_play_history') {
+    if (id != 'nav_setting') commonActions.setLastNavActiveId(id)
     saveViewPrevState({ id })
   }
 }
