@@ -105,7 +105,8 @@ const gridStyles = createStyle({
     marginBottom: 16,
   },
   artwork: {
-    borderRadius: 6,
+    // 专辑封面：对齐 REF 的封面圆角（4），与 designRadius.md 同值
+    borderRadius: 4,
     marginBottom: 8,
   },
   name: {
@@ -139,7 +140,8 @@ const listStyles = createStyle({
   artwork: {
     width: 60,
     height: 60,
-    borderRadius: 6,
+    // 专辑封面：对齐 REF 的封面圆角（4），与 designRadius.md 同值
+    borderRadius: 4,
   },
   info: {
     flex: 1,

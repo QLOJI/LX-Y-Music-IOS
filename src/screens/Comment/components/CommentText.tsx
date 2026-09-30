@@ -64,7 +64,8 @@ export default memo(({ text }: { text: string }) => {
 const styles = createStyle({
   text: {
     marginTop: 5,
-    lineHeight: 19,
+    // A-6：离群行高收敛 19→18
+    lineHeight: 18,
   },
   toggle: {
     marginTop: 15,

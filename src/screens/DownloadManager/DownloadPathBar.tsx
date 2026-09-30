@@ -48,7 +48,8 @@ const styles = createStyle({
   },
   pathText: {
     fontSize: 12,
-    lineHeight: 18,
+    // A-6：离群行高收敛 18→16（12pt 字号 ≈1.33×）
+    lineHeight: 16,
     marginBottom: 10,
   },
 })

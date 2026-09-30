@@ -215,7 +215,8 @@ const styles = createStyle({
   },
   desc: {
     marginTop: 9,
-    lineHeight: 18,
+    // A-6：离群行高收敛 18→16
+    lineHeight: 16,
   },
   empty: {
     minHeight: 180,
