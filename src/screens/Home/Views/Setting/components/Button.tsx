@@ -1,9 +1,11 @@
-import { memo } from 'react'
+import { memo, useMemo } from 'react'
 
 import Button, { type BtnProps } from '@/components/common/Button'
 import Text from '@/components/common/Text'
 import { designRadius, designSpacing } from '@/theme/DesignTokens'
 import { useTheme } from '@/store/theme/hook'
+import { useSettingValue } from '@/store/setting/hook'
+import { applyOpacity } from '@/utils/colorOpacity'
 import { createStyle } from '@/utils/tools'
 
 type ButtonProps = BtnProps
@@ -13,15 +15,20 @@ type ButtonProps = BtnProps
 // 与页面里的开关行、输入行是同一套控件外观。
 export default memo(({ disabled, onPress, children }: ButtonProps) => {
   const theme = useTheme()
+  const buttonOpacity = useSettingValue('theme.buttonOpacity')
+
+  // 底色与边框随「按钮透明度」淡出，按钮文字（c-primary）不动。
+  // 只改颜色 alpha，不用容器 style.opacity——后者会把文字一起变淡。
+  const buttonStyle = useMemo(() => ({
+    backgroundColor: applyOpacity(theme['c-primary-light-900-alpha-200'], buttonOpacity),
+    borderColor: applyOpacity(theme['c-border-background'], buttonOpacity),
+  }), [theme, buttonOpacity])
 
   return (
     <Button
       style={[
         styles.button,
-        {
-          backgroundColor: theme['c-primary-light-900-alpha-200'],
-          borderColor: theme['c-border-background'],
-        },
+        buttonStyle,
       ]}
       onPress={onPress}
       disabled={disabled}

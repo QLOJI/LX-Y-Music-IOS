@@ -1,8 +1,10 @@
 import { memo, useCallback, useMemo } from 'react'
 import { ScrollView, TouchableOpacity, View } from 'react-native'
 import { createStyle } from '@/utils/tools'
+import { applyOpacity } from '@/utils/colorOpacity'
 import { designRadius, designSpacing } from '@/theme/DesignTokens'
 import { useTheme } from '@/store/theme/hook'
+import { useSettingValue } from '@/store/setting/hook'
 import { useI18n } from '@/lang'
 import commonState from '@/store/common/state'
 import { COMPONENT_IDS } from '@/config/constant'
@@ -18,6 +20,7 @@ export default memo(() => {
   const theme = useTheme()
   const t = useI18n()
   const safeAreaBottom = useSafeAreaBottom()
+  const buttonOpacity = useSettingValue('theme.buttonOpacity')
 
   const handlePress = useCallback((id: SettingScreenIds) => {
     const homeComponentId = commonState.componentIds.find(({ name }) => name === COMPONENT_IDS.home)?.id
@@ -41,12 +44,15 @@ export default memo(() => {
   // （createStyle 会把 padding/margin 过一遍 scaleSizeW），避免列表行位置发生变化。
   const listStyle = useMemo(() => ({ paddingHorizontal: designSpacing.xl }), [])
 
-  // 分类入口统一走「推荐页排行榜按钮」那套视觉语言：圆角 + 1px 边框 + 半透明主题色底
+  // 分类入口统一走「推荐页排行榜按钮」那套视觉语言：圆角 + 1px 边框 + 半透明主题色底。
+  // 底色与边框随「按钮透明度」淡出；文字色与右侧 chevron 图标不动。
+  // 只改颜色的 alpha，不能用容器 style.opacity——那会把按钮文字一起变淡，
+  // 0 时的目标是「只剩文字」而不是「整颗按钮连字一起消失」。
   const categoryItemStyle = useMemo(() => ({
     ...styles.categoryItem,
-    backgroundColor: theme['c-primary-light-900-alpha-200'],
-    borderColor: theme['c-border-background'],
-  }), [theme])
+    backgroundColor: applyOpacity(theme['c-primary-light-900-alpha-200'], buttonOpacity),
+    borderColor: applyOpacity(theme['c-border-background'], buttonOpacity),
+  }), [theme, buttonOpacity])
 
   return (
     <View style={styles.container}>
