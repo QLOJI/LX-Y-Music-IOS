@@ -11,6 +11,8 @@ import GlassOpacity from './Theme/GlassOpacity'
 import CustomBg from './Theme/CustomBg'
 import PicOpacity from './Theme/PicOpacity'
 import SubContainerOpacity from './Theme/SubContainerOpacity'
+import TabBarDistance from './Theme/TabBarDistance'
+import ButtonOpacity from './Theme/ButtonOpacity'
 import { useSettingValue } from '@/store/setting/hook'
 import { isIOS26_2OrAbove } from '@/utils/tools'
 
@@ -38,6 +40,10 @@ export default memo(() => {
       {showGlassOpacity && <GlassOpacity />}
       <SubContainerOpacity />
       <IsFontShadow />
+      {/* 播放器 ↔ tab 栏间距（相对量，不随字体大小变化） */}
+      <TabBarDistance />
+      {/* 按钮底色/边框不透明度（100=现状，0=只剩文字） */}
+      <ButtonOpacity />
     </Section>
   )
 })

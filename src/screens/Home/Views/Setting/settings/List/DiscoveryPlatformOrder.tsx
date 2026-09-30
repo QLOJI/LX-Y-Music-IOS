@@ -8,6 +8,7 @@ import { useTheme } from '@/store/theme/hook'
 import { useSettingValue } from '@/store/setting/hook'
 import { updateSetting } from '@/core/common'
 import { createStyle } from '@/utils/tools'
+import { applyOpacity } from '@/utils/colorOpacity'
 import { designRadius, designSpacing } from '@/theme/DesignTokens'
 import songlistState, { type Source } from '@/store/songlist/state'
 import { getDiscoveryPlatformOrder } from '@/config/constant'
@@ -15,6 +16,7 @@ import { getDiscoveryPlatformOrder } from '@/config/constant'
 export default memo(() => {
   const t = useI18n()
   const theme = useTheme()
+  const buttonOpacity = useSettingValue('theme.buttonOpacity')
   const sourceNameType = useSettingValue('common.sourceNameType')
   const platformOrder = useSettingValue('common.discoveryPlatformOrder')
 
@@ -35,6 +37,17 @@ export default memo(() => {
     [sourceNameType, t],
   )
 
+  // 卡片底色/边框与排序按钮（↑↓）的边框随「按钮透明度」淡出。
+  // 只改颜色 alpha，不用容器 style.opacity——那会把平台名与序号一起变淡。
+  const cardStyle = useMemo(() => ({
+    ...styles.content,
+    backgroundColor: applyOpacity(theme['c-primary-light-900-alpha-200'], buttonOpacity),
+    borderColor: applyOpacity(theme['c-border-background'], buttonOpacity),
+  }), [theme, buttonOpacity])
+  const actionBtnStyle = useMemo(() => ({
+    borderColor: applyOpacity(theme['c-border-background'], buttonOpacity),
+  }), [theme, buttonOpacity])
+
   const moveSource = useCallback((from: number, to: number) => {
     if (to < 0 || to >= orderedSources.length) return
     const next = [...orderedSources]
@@ -47,11 +60,7 @@ export default memo(() => {
       <Text style={styles.tip} size={12} color={theme['c-font-label']}>
         {t('setting_list_discovery_platform_order_tip')}
       </Text>
-      <View style={{
-        ...styles.content,
-        backgroundColor: theme['c-primary-light-900-alpha-200'],
-        borderColor: theme['c-border-background'],
-      }}>
+      <View style={cardStyle}>
         {orderedSources.map((source, index) => {
           const isLast = index === orderedSources.length - 1
           return (
@@ -81,7 +90,7 @@ export default memo(() => {
               </View>
               <Pressable
                 hitSlop={6}
-                style={[styles.actionBtn, { borderColor: theme['c-border-background'] }, index === 0 ? styles.actionDisabled : null]}
+                style={[styles.actionBtn, actionBtnStyle, index === 0 ? styles.actionDisabled : null]}
                 disabled={index === 0}
                 onPress={() => { moveSource(index, index - 1) }}
                 accessibilityRole="button"
@@ -91,7 +100,7 @@ export default memo(() => {
               </Pressable>
               <Pressable
                 hitSlop={6}
-                style={[styles.actionBtn, { borderColor: theme['c-border-background'] }, isLast ? styles.actionDisabled : null]}
+                style={[styles.actionBtn, actionBtnStyle, isLast ? styles.actionDisabled : null]}
                 disabled={isLast}
                 onPress={() => { moveSource(index, index + 1) }}
                 accessibilityRole="button"

@@ -61,8 +61,9 @@ export default memo(() => {
     })
   }
 
+  // A-6：日志行行高离群值收敛 18→16（13pt 字号 ≈1.23×，原 18 为 1.38×）
   const renderLogItem = (item: string, index: number) => (
-    <RNText key={index} selectable={true} style={{ fontSize: 13, lineHeight: 18, paddingVertical: 4 }}>
+    <RNText key={index} selectable={true} style={{ fontSize: 13, lineHeight: 16, paddingVertical: 4 }}>
       {item}
     </RNText>
   )

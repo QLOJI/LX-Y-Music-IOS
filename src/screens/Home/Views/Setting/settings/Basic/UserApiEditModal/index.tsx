@@ -196,7 +196,8 @@ const styles = createStyle({
   },
   tipsText: {
     marginTop: designSpacing.xs,
-    lineHeight: 20,
+    // A-6：离群行高收敛 20→18
+    lineHeight: 18,
     // backgroundColor: 'rgba(0, 0, 0, 0.2)',
   },
   btns: {

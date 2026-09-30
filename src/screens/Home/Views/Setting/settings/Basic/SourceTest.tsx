@@ -1690,31 +1690,34 @@ export default memo(() => {
         showConfirm={false}
       >
         <View style={styles.logContent} onStartShouldSetResponder={() => true}>
-          <Text style={{ fontSize: 14, lineHeight: 22, marginBottom: 12 }}>
+          {/* A-6：本 FAQ 块 9 处 fontSize:14 + lineHeight:22（1.57×）为同类离群值，
+              统一收敛到 20；fixPlan 点名的 1693/1699/1717 为样本行，只改这 3 处
+              会造成同一弹窗内 20/22 混排 */}
+          <Text style={{ fontSize: 14, lineHeight: 20, marginBottom: 12 }}>
             本功能在开发阶段经过大量测试，准确率高达90%+
           </Text>
-          <Text style={{ fontSize: 14, lineHeight: 22, fontWeight: '600', marginBottom: 8 }}>
+          <Text style={{ fontSize: 14, lineHeight: 20, fontWeight: '600', marginBottom: 8 }}>
             常见问题：
           </Text>
-          <Text style={{ fontSize: 14, lineHeight: 22, marginBottom: 12 }}>
+          <Text style={{ fontSize: 14, lineHeight: 20, marginBottom: 12 }}>
             为什么音源元数据标注支持母带级音质，但实际仅能获取FLAC甚至更低规格音频
           </Text>
-          <Text style={{ fontSize: 14, lineHeight: 22, fontWeight: '600', marginBottom: 8 }}>
+          <Text style={{ fontSize: 14, lineHeight: 20, fontWeight: '600', marginBottom: 8 }}>
             最终测试结果受多重客观因素约束，具体如下：
           </Text>
-          <Text style={{ fontSize: 14, lineHeight: 22, marginBottom: 8 }}>
+          <Text style={{ fontSize: 14, lineHeight: 20, marginBottom: 8 }}>
             1. 音源服务稳定性不足（普遍现象）：多数音源底层集成多套请求接口、多组鉴权账号池，不同接口/账号的会员、资源下发权限存在差异；音源服务端随机调度链路，客户端无法控制本次请求使用的接口与账号，因此同一音源短时间内两次测试，返回的最高可用音质存在明显波动。
           </Text>
-          <Text style={{ fontSize: 14, lineHeight: 22, marginBottom: 8 }}>
+          <Text style={{ fontSize: 14, lineHeight: 20, marginBottom: 8 }}>
             2. 目标歌曲版权库未开放对应高音质资源权限，不支持该档位音频分发。
           </Text>
-          <Text style={{ fontSize: 14, lineHeight: 22, marginBottom: 8 }}>
+          <Text style={{ fontSize: 14, lineHeight: 20, marginBottom: 8 }}>
             3. 音源接口BUG：部分音源存在资源档位错配Bug，典型表现为请求master臻品母带返回atmos杜比全景声资源，请求atmos档位却下发flac无损音频，规格标识与实际音频文件不匹配。
           </Text>
-          <Text style={{ fontSize: 14, lineHeight: 22, marginBottom: 8 }}>
+          <Text style={{ fontSize: 14, lineHeight: 20, marginBottom: 8 }}>
             4. 时效问题：今日上午、当前其他设备均可正常获取 master 母带资源，仅当前使用设备、在当前时段无法拉取高音质音频；该场景成因多为音频播放临时 URL 失效、临时鉴权权限受限导致测试失败
           </Text>
-          <Text style={{ fontSize: 14, lineHeight: 22, marginTop: 12, fontWeight: '600' }}>
+          <Text style={{ fontSize: 14, lineHeight: 20, marginTop: 12, fontWeight: '600' }}>
             解决方式：进入软件设置 - 其他设置页面，清除本地缓存后重新执行音质测试。
           </Text>
         </View>
@@ -1750,7 +1753,8 @@ const styles = StyleSheet.create({
     fontSize: designTypography.caption,
     opacity: 0.6,
     marginBottom: 16,
-    lineHeight: 18,
+    // A-6：离群行高收敛 18→16（13pt 字号 ≈1.23×）
+    lineHeight: 16,
   },
   keywordsSection: {
     marginBottom: designSpacing.md,

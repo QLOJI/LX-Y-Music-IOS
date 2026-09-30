@@ -132,16 +132,19 @@ const styles = createStyle({
   },
   text: {
     fontSize: designTypography.body,
-    lineHeight: 24,
+    // A-6：离群行高收敛 24→20（24 配 15pt=1.6×，为全仓最离群样本）
+    lineHeight: 20,
   },
   link: {
     fontSize: designTypography.body,
-    lineHeight: 24,
+    // A-6：同上 24→20
+    lineHeight: 20,
   },
   boldText: {
     fontSize: designTypography.body,
     fontWeight: 'bold',
-    lineHeight: 24,
+    // A-6：同上 24→20
+    lineHeight: 20,
   },
   rewardImage: {
     width: 200,
