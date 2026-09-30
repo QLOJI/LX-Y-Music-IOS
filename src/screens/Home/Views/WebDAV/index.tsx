@@ -703,6 +703,16 @@ export default memo(() => {
     Keyboard.dismiss()
   }, [searchText])
 
+  // 三段标签是**整页唯一一份固定头**，渲染在三个面板之外（见下方 return）。
+  //
+  // 此前它由三个面板各渲染一次：配置页/文件列表页放在 contentContainerStyle=padding:12
+  // 的 ScrollView 里，歌曲列表页放在 FlatList 的 ListHeaderComponent 里（没有那 12px）。
+  // 于是切标签时同一行标签被不同容器的内边距推着平移（左右上下各差 12px），并且三处
+  // 是三个不同的父容器 → 整棵子树跨分支重挂载，「文字和按钮乱动」的观感就是这么来的；
+  // 列表页那份还会跟着列表滚走，不满足「固定不位移」。
+  //
+  // 现在统一采用歌曲列表页的几何（PageTopInset + paddingHorizontal:16）作为唯一基准，
+  // 标签行位于所有滚动容器之外：切换只替换下方面板，标签本身既不重挂载也不位移。
   const renderTabsHeader = () => (
     <>
       <PageTopInset />
@@ -721,7 +731,6 @@ export default memo(() => {
       style={styles.scroll}
       contentContainerStyle={styles.content}
     >
-      {renderTabsHeader()}
       <View style={{ ...styles.panel, borderColor: theme['c-border-background'] }}>
         <Text style={styles.label}>连接状态</Text>
         <Text color={hasConfig ? theme['c-primary-font'] : theme['c-font-label']}>
@@ -787,7 +796,6 @@ export default memo(() => {
       style={styles.scroll}
       contentContainerStyle={styles.content}
     >
-      {renderTabsHeader()}
       <TouchableOpacity
         style={{ ...styles.folderItem, borderBottomColor: theme['c-border-background'] }}
         onPress={() => {
@@ -841,7 +849,6 @@ export default memo(() => {
         data={filteredSongs}
         ListHeaderComponent={
           <>
-            {renderTabsHeader()}
             <View style={{ ...styles.listHeader, borderBottomColor: theme['c-border-background'] }}>
               <View style={styles.listHeaderText}>
           {searchVisible ? (
@@ -944,6 +951,7 @@ export default memo(() => {
 
   return (
     <View style={styles.container}>
+      {renderTabsHeader()}
       {activeTab === 'config' ? renderConfig() : activeTab === 'folders' ? renderFolders() : renderList()}
       <WebDAVListMenu
         ref={webDAVListMenuRef}
@@ -1002,7 +1010,8 @@ const styles = createStyle({
   },
   tip: {
     marginTop: 6,
-    lineHeight: 18,
+    // 行距按 ≈1.2×字号 收敛（原 18 相对 14pt 正文是 1.29，属 A-6 点名的离群值）
+    lineHeight: 16,
   },
   buttonRow: {
     flexDirection: 'row',

@@ -2,6 +2,8 @@ import { forwardRef, useImperativeHandle, useMemo, useRef, useState } from 'reac
 import { ScrollView, TouchableOpacity } from 'react-native'
 import songlistState, { type SortInfo, type Source } from '@/store/songlist/state'
 import { useTheme } from '@/store/theme/hook'
+import { useSettingValue } from '@/store/setting/hook'
+import { applyOpacity } from '@/utils/colorOpacity'
 import Text from '@/components/common/Text'
 import { createStyle } from '@/utils/tools'
 import { designSpacing } from '@/theme/DesignTokens'
@@ -18,6 +20,7 @@ export default forwardRef<SortTabType, SortTabProps>(({ onSortChange }, ref) => 
   const [sortList, setSortList] = useState<SortInfo[]>([])
   const [activeId, setActiveId] = useState<SortInfo['id']>('')
   const theme = useTheme()
+  const buttonOpacity = useSettingValue('theme.buttonOpacity')
   const scrollViewRef = useRef<ScrollView>(null)
 
   useImperativeHandle(ref, () => ({
@@ -39,6 +42,24 @@ export default forwardRef<SortTabType, SortTabProps>(({ onSortChange }, ref) => 
     setActiveId(id)
   }
 
+  // 排序胶囊的底色/边框随「按钮透明度」淡出，文字色不动。只改颜色 alpha，
+  // 不能用容器 style.opacity——那会把胶囊文字一起变淡，0 时就不是「只剩文字」。
+  // 激活态（c-primary 实底）一起处理，否则当前排序仍是实心、其余透明，观感割裂。
+  const activeButtonStyle = useMemo(
+    () => ({
+      backgroundColor: applyOpacity(theme['c-primary'], buttonOpacity),
+      borderColor: applyOpacity(theme['c-primary'], buttonOpacity),
+    }),
+    [theme, buttonOpacity],
+  )
+  const inactiveButtonStyle = useMemo(
+    () => ({
+      backgroundColor: applyOpacity(theme['c-primary-light-900-alpha-300'], buttonOpacity),
+      borderColor: applyOpacity(theme['c-border-background'], buttonOpacity),
+    }),
+    [theme, buttonOpacity],
+  )
+
   return (
     <ScrollView
       ref={scrollViewRef}
@@ -52,11 +73,7 @@ export default forwardRef<SortTabType, SortTabProps>(({ onSortChange }, ref) => 
         const isActive = activeId == s.id
         return (
           <TouchableOpacity
-            style={{
-              ...styles.button,
-              backgroundColor: isActive ? theme['c-primary'] : theme['c-primary-light-900-alpha-300'],
-              borderColor: isActive ? theme['c-primary'] : theme['c-border-background'],
-            }}
+            style={[styles.button, isActive ? activeButtonStyle : inactiveButtonStyle]}
             onPress={() => {
               handleSortChange(s.id)
             }}

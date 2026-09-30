@@ -1,7 +1,8 @@
-import { getSongListSetting, saveSongListSetting } from '@/utils/data'
+import { getSongListSetting, saveSongListSetting, saveViewPrevDetail } from '@/utils/data'
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { StyleSheet, View, BackHandler } from 'react-native'
 import { consumePendingAction } from '@/core/pendingAction'
+import { consumeViewRestore, type ViewPrevDetailState } from '@/core/viewRestore'
 
 import HeaderBar, { type HeaderBarProps, type HeaderBarType } from './HeaderBar'
 import songlistState, { type InitState, type SortInfo, type ListInfoItem } from '@/store/songlist/state'
@@ -21,10 +22,26 @@ export default () => {
   const headerBarRef = useRef<HeaderBarType>(null)
   const t = useI18n()
   const listRef = useRef<ListType>(null)
-  const [selectedList, setSelectedList] = useState<ListInfoItem | null>(null)
+  // 冷启动页内状态恢复（B-6）：上次退出前若停在本页某个歌单详情，重进直接弹回来。
+  // consumeViewRestore 是进程级一次性消费，必须只调用一次 —— useRef 的惰性哨兵保证
+  // 首帧消费、之后（含横屏卸载重挂载）都拿到同一份缓存值，不会重复消费。
+  const restoredDetailRef = useRef<ViewPrevDetailState | null | undefined>(undefined)
+  if (restoredDetailRef.current === undefined) {
+    restoredDetailRef.current = consumeViewRestore('nav_songlist')
+  }
+  const [selectedList, setSelectedList] = useState<ListInfoItem | null>(
+    () => restoredDetailRef.current?.songlist?.playlist ?? null,
+  )
   const [scrollToMusicInfo, setScrollToMusicInfo] = useState<MusicInfoOnline | null>(null)
   const selectedListRef = useRef(selectedList)
   selectedListRef.current = selectedList
+  // 「退出前打开的是哪个歌单」立即落盘（B-6）。关闭时必须显式存 null —— null 是有效状态，
+  // 不存的话下次启动会把用户已经关掉的歌单又弹出来（见 saveViewPrevDetail 的合并语义：
+  // 它按字段浅合并，discovery 的平台选择不会被这里冲掉）。挂载时也会写一次，
+  // 此刻 selectedList 已是恢复后的终值，写回幂等。
+  useEffect(() => {
+    saveViewPrevDetail({ songlist: { playlist: selectedList } })
+  }, [selectedList])
   const songlistInfo = useRef<SonglistInfo>({ source: 'kw', sortId: '5', tagId: '' })
   const [headerKey, setHeaderKey] = useState(Date.now())
   const loadList = useCallback(() => {

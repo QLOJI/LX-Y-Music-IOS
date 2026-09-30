@@ -4,6 +4,7 @@ import { useWySubscribedAlbums } from '@/store/user/hook'
 import wyApi from '@/utils/musicSdk/wy/user'
 import { setWySubscribedAlbums } from '@/store/user/action'
 import { createStyle, toast } from '@/utils/tools'
+import { useI18n } from '@/lang'
 import { useTheme } from '@/store/theme/hook'
 import { useSettingValue } from '@/store/setting/hook'
 import Text from '@/components/common/Text'
@@ -16,6 +17,7 @@ export default memo(() => {
   const subscribedAlbums = useWySubscribedAlbums()
   const [loading, setLoading] = useState(false)
   const theme = useTheme()
+  const t = useI18n()
   const cookie = useSettingValue('common.wy_cookie')
   const isHorizontal = useHorizontalMode()
   // 底部悬浮层（迷你播放器 + 底部 Tab + 安全区）统一避让高度
@@ -49,7 +51,7 @@ export default memo(() => {
   if (!cookie) {
     return (
       <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
-        <Text>请先设置网易云 Cookie</Text>
+        <Text>{t('wy_cookie_not_set')}</Text>
       </View>
     )
   }

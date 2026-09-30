@@ -1,9 +1,11 @@
-import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react'
+import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
 import { Pressable, ScrollView, View } from 'react-native'
 
 import { createStyle } from '@/utils/tools'
+import { applyOpacity } from '@/utils/colorOpacity'
 import { useI18n } from '@/lang'
 import { useTheme } from '@/store/theme/hook'
+import { useSettingValue } from '@/store/setting/hook'
 import Text from '@/components/common/Text'
 import { getTags } from '@/core/songlist'
 import { type Source, type TagInfo } from '@/store/songlist/state'
@@ -22,6 +24,7 @@ export interface TagRowsType {
 export default forwardRef<TagRowsType, TagRowsProps>(({ onTagChange }, ref) => {
   const theme = useTheme()
   const t = useI18n()
+  const buttonOpacity = useSettingValue('theme.buttonOpacity')
   const [groups, setGroups] = useState<TagInfo['tags']>([])
   const [activeId, setActiveId] = useState('')
   // 「默认」已选中时再次点击 → 收起/展开下方各分组行（再次点击「默认」展开）
@@ -78,6 +81,24 @@ export default forwardRef<TagRowsType, TagRowsProps>(({ onTagChange }, ref) => {
     },
   }))
 
+  // 标签胶囊的底色/边框随「按钮透明度」淡出，文字色不动。只改颜色 alpha，
+  // 不能用容器 style.opacity——那会把胶囊文字一起变淡。
+  // 激活态（c-primary 实底）一起处理，避免未激活透明、激活实心的割裂。
+  const activeTagStyle = useMemo(
+    () => ({
+      backgroundColor: applyOpacity(theme['c-primary'], buttonOpacity),
+      borderColor: applyOpacity(theme['c-primary'], buttonOpacity),
+    }),
+    [theme, buttonOpacity],
+  )
+  const inactiveTagStyle = useMemo(
+    () => ({
+      backgroundColor: applyOpacity(theme['c-primary-light-900-alpha-300'], buttonOpacity),
+      borderColor: applyOpacity(theme['c-border-background'], buttonOpacity),
+    }),
+    [theme, buttonOpacity],
+  )
+
   const handlePress = (name: string, id: string) => {
     // 「默认」被选中时再次点击 → 切换分组行的收起/展开（不重复触发筛选）
     if (id === '' && activeId === '') {
@@ -114,15 +135,7 @@ export default forwardRef<TagRowsType, TagRowsProps>(({ onTagChange }, ref) => {
             return (
               <Pressable
                 key={tag.id || `default-${index}`}
-                style={{
-                  ...styles.tagButton,
-                  backgroundColor: isActive
-                    ? theme['c-primary']
-                    : theme['c-primary-light-900-alpha-300'],
-                  borderColor: isActive
-                    ? theme['c-primary']
-                    : theme['c-border-background'],
-                }}
+                style={[styles.tagButton, isActive ? activeTagStyle : inactiveTagStyle]}
                 onPress={() => { handlePress(tag.name, tag.id) }}
               >
                 <Text

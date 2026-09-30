@@ -111,7 +111,8 @@ const styles = createStyle({
   artwork: {
     width: 80,
     height: 80,
-    borderRadius: 8,
+    // 专辑封面：对齐 REF 的封面圆角（4），与 designRadius.md 同值
+    borderRadius: 4,
   },
   info: {
     flex: 1,

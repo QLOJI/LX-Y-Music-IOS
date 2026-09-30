@@ -8,7 +8,7 @@ import { NAV_SHEAR_NATIVE_IDS } from '@/config/constant'
 import { useTheme } from '@/store/theme/hook'
 import Image from '@/components/common/Image'
 import { designRadius, designSpacing, designTypography } from '@/theme/DesignTokens'
-import { formatPlayCount } from '@/utils'
+import { formatPlayCountText } from '@/utils'
 
 const gap = scaleSizeW(15)
 
@@ -20,11 +20,6 @@ interface ListItemProps {
   onPress: (item: ListInfoItem, index: number) => void
 }
 
-const formatCount = (value: ListInfoItem['play_count']) => {
-  const count = Number(value)
-  return Number.isFinite(count) && count > 0 ? formatPlayCount(count) : ''
-}
-
 export default memo(({
   item,
   index,
@@ -34,7 +29,7 @@ export default memo(({
 }: ListItemProps) => {
   const theme = useTheme()
   const itemWidth = width - gap
-  const playCount = formatCount(item.play_count)
+  const playCount = formatPlayCountText(item.play_count)
 
   const handlePress = () => {
     onPress(item, index)
@@ -42,6 +37,8 @@ export default memo(({
 
   const coverStyle = useMemo(
     () => StyleSheet.compose(styles.cover, {
+      // 封面占位底色（封面图未加载时的占位）：封面占位不是按钮，
+      // 不参与「按钮透明度」设置，只随主题色变化。
       backgroundColor: theme['c-primary-light-900-alpha-200'],
     }),
     [theme],
@@ -68,9 +65,11 @@ export default memo(({
           </Text>
         ) : null}
         {playCount ? (
-          <Text style={styles.playCount} size={11} color="#FFFFFF" numberOfLines={1}>
-            {playCount}
-          </Text>
+          <View style={styles.playCount}>
+            <Text style={styles.playCountText} size={11} color="#FFFFFF" numberOfLines={1}>
+              {playCount}
+            </Text>
+          </View>
         ) : null}
       </View>
       <Text style={titleStyle} size={designTypography.body} numberOfLines={2}>
@@ -106,22 +105,32 @@ const styles = createStyle({
     // 圆角背景无需裁剪内容，移除 overflow: 'hidden'。
     paddingHorizontal: 12,
     paddingVertical: 4,
-    borderRadius: 999,
+    borderRadius: designRadius.pill,
     backgroundColor: 'rgba(0, 0, 0, 0.55)',
   },
   playCount: {
     position: 'absolute',
-    top: 8,
-    right: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 4,
-    borderRadius: 999,
+    // 角标统一约定（临时，与 PlaylistCard.tsx、SonglistDetail/index.tsx 逐字一致）：
+    // 贴角 top/right 4（createStyle 会随全局字号缩放）、固定高 20、水平内边距 10 ≥ 半高，
+    // 圆弧不会削到首尾字形；居中交给 View 的 alignItems/justifyContent。
+    top: 4,
+    right: 4,
+    height: 20,
+    paddingHorizontal: 10,
+    borderRadius: designRadius.pill,
     backgroundColor: 'rgba(0, 0, 0, 0.55)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  playCountText: {
+    textAlign: 'center',
   },
   title: {
     marginTop: designSpacing.sm,
     fontWeight: '600',
-    lineHeight: designTypography.body * 1.3,
+    // 按 A-6「所有界面文字间距收敛」的全局约定 ≈1.2×字号收口（原为 1.3×）；
+    // 比例现已由 DesignTokens.lineHeightRatio 提供，引全局令牌，之后一处调优全局生效
+    lineHeight: designTypography.body * designTypography.lineHeightRatio,
   },
   placeholder: {
     margin: gap / 2,
