@@ -111,9 +111,14 @@ const handleRequestData = async(
     headers,
   )
   if (url.includes('music.163.com')) {
-    headers.cookie = settingState.setting['common.wy_cookie']
+    // 仅当 store 里的 cookie 非空时才覆盖：调用方可能显式带了 cookie
+    // （如 songList 的 MUSIC_U=###token 流程）。原来无条件覆盖会在 store cookie
+    // 为空/过期时把调用方传入的 cookie 抹成空串，请求静默失效。
+    const wyCookie = settingState.setting['common.wy_cookie']
+    if (wyCookie) headers.cookie = wyCookie
   } else if (url.includes('y.qq.com')) {
-    headers.cookie = settingState.setting['common.tx_cookie']
+    const txCookie = settingState.setting['common.tx_cookie']
+    if (txCookie) headers.cookie = txCookie
     console.log('[TX] req:', options.method || 'get', url.substring(0, 80))
   }
   options.cache = cache

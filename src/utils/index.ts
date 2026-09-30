@@ -270,6 +270,25 @@ export const formatPlayCount = (num: number): string => {
   return String(num)
 }
 
+/**
+ * 角标数值归一化的唯一入口（推荐页 PlaylistCard、歌单/搜索页 ListItem、歌单详情页共用；
+ * 原先这三处各有一份逐字一致的本地副本，已在此收回）。
+ * 行为（四处逐字等价）：
+ *  - 空值 / 空串 → ''（不渲染角标）
+ *  - 已含「万/亿」的文本 → 原样透传：源可能已格式化（如 "405.1万"），再 Number() 会得到
+ *    NaN 把角标吞掉
+ *  - 纯数字串 → 复用 formatPlayCount 归一到「X万/X亿」（最长约 8-9 字形，任何支持的
+ *    字号下都不会在角标宽度内被截断）
+ *  - 其余（非数字文本、≤0 的数）→ ''
+ */
+export const formatPlayCountText = (value?: string | number | null): string => {
+  const text = value == null ? '' : String(value).trim()
+  if (!text) return ''
+  if (/万|亿/.test(text)) return text
+  const count = Number(text)
+  return Number.isFinite(count) && count > 0 ? formatPlayCount(count) : ''
+}
+
 export const decodeName = (str: string | null = '') => {
   if (!str) return ''
   return he.decode(str)

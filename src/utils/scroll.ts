@@ -58,7 +58,11 @@ const handleScrollY = (
     return noop
   }
   let change = to - start
-  const increment = 5
+  // 步进间隔对齐 REF 参考工程（REF src/utils/scroll.ts:50 increment = 10）：
+  // 由 5ms 改为 10ms，定时器回调次数减半（每段动画少一半的 JS 线程唤醒与
+  // scrollToOffset 桥调用），单步位移略大；easeInOutQuad 步进本身是逐点重算的
+  // 离散采样，10ms 步长在 300~600ms 动画下仍是约 30~60 个采样点，观感连续。
+  const increment = 10
   if (!change) {
     fn()
     return noop

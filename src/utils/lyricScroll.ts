@@ -167,6 +167,18 @@ export class LyricScrollLayout {
     return this.measuredCount > 0 ? this.measuredSum / this.measuredCount : this.defaultHeight
   }
 
+  /**
+   * 逐行行高的只读快照（前 count 行，与歌词行同序）。
+   * 供歌词手动定位浮层（PlayLine）累加出「定位基准线落在第几行」——
+   * 浮层必须与定位计算用同一套行高（getLineHeight 的实测/分桶估算口径），
+   * 否则虚线会压到目标行的上一行或下一行上，拖动时尤其明显。
+   */
+  getLineHeights(count: number): number[] {
+    const heights: number[] = []
+    for (let i = 0; i < count; i++) heights.push(this.getLineHeight(i))
+    return heights
+  }
+
   /** 当前行（激活态）的实际高度，未测得时回退到非激活高度 */
   getActiveLineHeight(lineNum: number): number {
     return this.activeLineHeights[lineNum] ?? this.getLineHeight(lineNum)

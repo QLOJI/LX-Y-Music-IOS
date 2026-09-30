@@ -9,6 +9,9 @@ import {
 } from '@/plugins/storage'
 import { DEFAULT_SETTING, LIST_IDS, storageDataPrefix, type NAV_ID_Type } from '@/config/constant'
 import { throttle } from './common'
+// 类型定义放在恢复模块（core/viewRestore.ts），这里只做类型标注；
+// import type 编译期擦除，不会与 viewRestore.ts 形成运行时循环依赖
+import type { ViewPrevDetailState } from '@/core/viewRestore'
 export { storageDataPrefix }
 // import { gzip, ungzip } from '@/utils/nativeModules/gzip'
 // import { readFile, writeFile, temporaryDirectoryPath, unlink } from '@/utils/fs'
@@ -22,6 +25,7 @@ const playInfoStorageKey = storageDataPrefix.playInfo
 const playHistoryStorageKey = storageDataPrefix.playHistory
 const userListKey = storageDataPrefix.userList
 const viewPrevStateKey = storageDataPrefix.viewPrevState
+const viewPrevDetailKey = storageDataPrefix.viewPrevDetail
 const listScrollPositionKey = storageDataPrefix.listScrollPosition
 const listUpdateInfoKey = storageDataPrefix.listUpdateInfo
 const ignoreVersionKey = storageDataPrefix.ignoreVersion
@@ -314,6 +318,69 @@ export const getViewPrevState = async() => {
 }
 export const saveViewPrevState = (state: { id: NAV_ID_Type }) => {
   saveViewPrevStateThrottle(state)
+}
+
+/**
+ * 立即写入顶层导航 id（不经 1000ms 节流）。
+ *
+ * 兜底入口：常规写入仍走 saveViewPrevState 的节流；在「切 tab 后 1 秒内进程被杀」时，
+ * 节流窗口内的最后一笔会丢失（iOS 强杀不保证触发 AppState 回调，不能靠后台 flush 兜）。
+ * 需要「写下去才算数」的调用方改用本函数。
+ */
+export const saveViewPrevStateNow = (state: { id: NAV_ID_Type }) => {
+  void saveData(viewPrevStateKey, state)
+}
+
+let viewPrevDetail: ViewPrevDetailState | null = null
+let viewPrevDetailLoadTask: Promise<ViewPrevDetailState> | null = null
+
+/** 确保页内子状态已从磁盘读入内存缓存；读失败按空状态处理，绝不抛错 */
+const ensureViewPrevDetail = async(): Promise<ViewPrevDetailState> => {
+  if (viewPrevDetail) return viewPrevDetail
+  viewPrevDetailLoadTask ??= getData<ViewPrevDetailState>(viewPrevDetailKey)
+    .then((detail) => {
+      viewPrevDetail = detail ?? {}
+      return viewPrevDetail
+    })
+    .catch(() => {
+      // 存储异常按「没有待恢复状态」处理：恢复属于体验增强，不该阻断或报错
+      viewPrevDetail = {}
+      return viewPrevDetail
+    })
+  return viewPrevDetailLoadTask
+}
+
+export const getViewPrevDetail = async(): Promise<ViewPrevDetailState> => {
+  return ensureViewPrevDetail()
+}
+
+/**
+ * 保存「退出前所在界面」的页内子状态（推荐页平台选择 / 内嵌歌单详情、歌单页内嵌详情）。
+ *
+ * 合并语义：discovery / songlist 内部按字段浅合并 —— 存平台选择时不能把同层已存的
+ * 歌单详情冲掉；`playlist: null` 表示用户已手动关掉详情，是有效状态，必须落盘，
+ * 否则下次启动会把已关闭的歌单又弹出来。
+ *
+ * 立即写盘、刻意不用 1000ms 节流：单条数据极小，而「切完平台 / 关掉歌单后立刻杀进程」
+ * 时节流窗口内的最后一笔会整笔丢失；iOS 强杀进程也不保证触发 AppState 回调，
+ * 所以不能依赖「后台 flush」兜底。
+ */
+export const saveViewPrevDetail = (patch: ViewPrevDetailState) => {
+  void ensureViewPrevDetail()
+    .then(() => {
+      // 合并基线要在这一刻重新读缓存：同一 tick 内连续保存时，上一笔刚合并进去，
+      // 用进入 then 之前的旧对象会把上一笔冲掉
+      const base = viewPrevDetail ?? {}
+      const merged: ViewPrevDetailState = {
+        discovery: patch.discovery ? { ...base.discovery, ...patch.discovery } : base.discovery,
+        songlist: patch.songlist ? { ...base.songlist, ...patch.songlist } : base.songlist,
+      }
+      viewPrevDetail = merged
+      return saveData(viewPrevDetailKey, merged)
+    })
+    .catch(() => {
+      // 写盘失败静默降级（storage 层已记录错误日志）：下次启动最多退回默认界面
+    })
 }
 
 const idFixRxp = /\.0$/

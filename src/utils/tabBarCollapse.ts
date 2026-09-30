@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react'
 import { onTabBarCollapseChanged } from '@/utils/nativeModules/utils'
+import { scaleSizeW } from '@/utils/pixelRatio'
+import { tabBarBaseHeight } from '@/theme/DesignTokens'
 
 /**
  * 底部 Tab 栏收起状态（iOS 26 风格最小化）：
@@ -64,3 +66,13 @@ export const setMiniPlayerHeight = (height: number): void => {
   miniPlayerHeight = height
   for (const listener of heightListeners) listener(height)
 }
+
+/** 收起态圆钮尺寸的**唯一来源**（ModernTabBar 的圆钮与 PlayerBar 收起态的左侧
+ *  让位共用同一个结果）：
+ *  - 首选用实测的迷你播放器高度（宽=高保持圆形，且与播放器等高，视觉上「同排同高」）；
+ *  - 首帧尚未测量（=0）时用 scaleSizeW(tabBarBaseHeight) 兜底——取的是 tab 栏高的
+ *    token（它本身已经乘过 fontSize），与 Tab 栏同口径。
+ *  以前这里散落着 55（实测）与 57（scaleSizeW(56)）两个写死值分居两文件，
+ *  字体档位一变就对不上；尺寸只能从这里取。 */
+export const getCollapsedPillSize = (measuredHeight: number): number =>
+  measuredHeight > 0 ? measuredHeight : scaleSizeW(tabBarBaseHeight)
