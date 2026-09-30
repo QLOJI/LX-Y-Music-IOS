@@ -75,7 +75,10 @@ export default forwardRef<ActiveListType, ActiveListProps>(
           style={styles.currentListIcon}
           color={theme['c-button-font']}
           name={onBack ? 'chevron-left' : 'chevron-right'}
-          size={onBack ? 18 : 12}
+          // 返回态的箭头尺寸与「设置 → 基本设置」返回按钮里的 chevron-left 一致（20）：
+          // 配合 44 行高 + 槽位左右内边距 12 + 图标左内边距 12，glyph 中心正好落在
+          // 基本设置返回按钮的中心（12 + 12 + 20/2 = 12 + 44/2 = 34pt）。
+          size={onBack ? 20 : 12}
         />
         {fetching ? <Loading color={theme['c-button-font']} style={styles.loading} /> : null}
         <Text style={styles.currentListText} numberOfLines={1} color={theme['c-button-font']}>
@@ -96,13 +99,20 @@ const styles = createStyle({
   currentList: {
     flexDirection: 'row',
     paddingRight: 2,
-    height: 36,
+    // 行高 44 = 「设置 → 基本设置」返回按钮（44x44）的高度：固定槽位的高度由这一行撑起，
+    // 槽内的返回栏/多选栏/搜索栏都是 absolute 铺满，所以行高一致 → 三根横条的垂直中心
+    // 也一致。这里写 height（而不是槽位上写死高度）是为了让缩放口径与设置页按钮一致：
+    // 设置页按钮的 44 也在 createStyle 里，两处都按 global.lx.fontSize 同步缩放，
+    // 用户改字号后中心依然对齐（顶边则走不缩放的 BAR_SLOT_ALIGN_PADDING_TOP）。
+    height: 44,
     alignItems: 'center',
     borderBottomWidth: BorderWidths.normal,
     // backgroundColor: 'rgba(0,0,0,0.2)',
   },
   currentListIcon: {
-    paddingLeft: 15,
+    // 12 = 基本设置返回按钮内 20 号图标两侧的留白 ((44 - 20) / 2)：
+    // 槽位左右内边距同为 12，于是本图标的 glyph 左缘/中心与设置页返回按钮完全重合。
+    paddingLeft: 12,
     paddingRight: 10,
     // paddingTop: 10,
     // paddingBottom: 0,

@@ -86,6 +86,9 @@ export default forwardRef<BlankViewType, BlankViewProps>(({ header, onSearch }, 
 
 const styles = createStyle({
   content: {
+    // 「热门搜索/历史搜索」上方与搜索类型选择器之间的固定间距（A-2）：此前只有
+    // paddingBottom/Horizontal，区块标题顶端几乎贴住上方胶囊行，视觉上紧下松。
+    paddingTop: designSpacing.md,
     paddingBottom: 180,
     paddingHorizontal: designSpacing.lg,
   },

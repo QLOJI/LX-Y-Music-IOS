@@ -7,18 +7,20 @@ import { useI18n } from '@/lang'
 import { useSettingValue } from '@/store/setting/hook'
 import { forceSyncNavActiveId, setNavActiveId } from '@/core/common'
 import { createStyle, toast } from '@/utils/tools'
+import { applyOpacity } from '@/utils/colorOpacity'
 import { designRadius, designSpacing, designTypography } from '@/theme/DesignTokens'
 import songlistState, { type ListInfoItem, type Source } from '@/store/songlist/state'
 import settingState from '@/store/setting/state'
 import boardState, { type BoardItem } from '@/store/leaderboard/state'
 import { getList } from '@/core/songlist'
 import { getBoardsList } from '@/core/leaderboard'
-import { saveLeaderboardSettingSync } from '@/utils/data'
+import { saveLeaderboardSettingSync, saveViewPrevDetail } from '@/utils/data'
+import { consumeViewRestore, type ViewPrevDetailState } from '@/core/viewRestore'
 import { Icon } from '@/components/common/Icon'
 import Text from '@/components/common/Text'
 import PlatformChips from '@/components/home/PlatformChips'
 import DailyRecommendCard from '@/components/home/DailyRecommendCard'
-import HorizontalShelf from '@/components/home/HorizontalShelf'
+import PlaylistGrid from '@/components/home/PlaylistGrid'
 import SonglistDetail from '../../../SonglistDetail'
 
 // 每日推荐入口与「首页推荐平台」联动：网易/酷狗/QQ 有每日推荐页，
@@ -142,6 +144,7 @@ export default memo(() => {
   const { width: winWidth } = useWindowDimensions()
   const isWide = winWidth >= 700
   const t = useI18n()
+  const buttonOpacity = useSettingValue('theme.buttonOpacity')
   const sourceNameType = useSettingValue('common.sourceNameType')
   // 平台文案走全局语言包别名（source_${sourceNameType}_${source}），与歌单页等处的显示一致
   const sourceLabel = useCallback(
@@ -160,9 +163,36 @@ export default memo(() => {
     () => getDiscoveryPlatformOrder(supportedSources, platformOrder),
     [supportedSources, platformOrder],
   )
-  const [selectedSource, setSelectedSource] = useState<Source>((orderedSources[0] as Source) ?? 'kw')
-  // 排序变化时选中平台跟随新的第一位，避免改完设置仍停留在旧平台
+  // B-6：冷启动恢复推荐页的页内子状态（上次选中的平台 / 页内打开的歌单详情）。
+  // consumeViewRestore 是一次性消费：仅当「退出前顶层 id === nav_discovery 且本进程
+  // 尚未消费」时才返回非 null，之后的手动切页/关详情不会再被恢复值覆盖。
+  const restoredDiscoveryRef = useRef<ViewPrevDetailState['discovery'] | null | undefined>(undefined)
+  if (restoredDiscoveryRef.current === undefined) {
+    restoredDiscoveryRef.current = consumeViewRestore('nav_discovery')?.discovery ?? null
+  }
+  const [selectedSource, setSelectedSource] = useState<Source>(() => {
+    const restored = restoredDiscoveryRef.current?.source
+    // 恢复的平台必须仍在当前可用平台里（用户可能刚在设置里停用了它）；
+    // 正常冷启动下 init() 先于 Home push，此处 orderedSources 必已就绪。
+    if (restored && orderedSources.length > 0 && orderedSources.includes(restored as Source)) {
+      return restored as Source
+    }
+    return (orderedSources[0] as Source) ?? 'kw'
+  })
+  // 排序变化时选中平台跟随新的第一位，避免改完设置仍停留在旧平台。
+  // 首次运行只做「恢复的平台已失效则回落到第一位」的兜底，不重置——否则会把
+  // B-6 刚恢复的平台盖掉；此后每次排序变化仍按原语义跟随新第一位。
+  const isFirstOrderEffectRef = useRef(true)
   useEffect(() => {
+    if (isFirstOrderEffectRef.current) {
+      isFirstOrderEffectRef.current = false
+      setSelectedSource(prev => (
+        orderedSources.length > 0 && !orderedSources.includes(prev)
+          ? ((orderedSources[0] as Source) ?? prev)
+          : prev
+      ))
+      return
+    }
     const first = orderedSources[0] as Source | undefined
     if (first) setSelectedSource(first)
   }, [orderedSources])
@@ -172,9 +202,17 @@ export default memo(() => {
   )
   const [playlists, setPlaylists] = useState<ListInfoItem[]>([])
   const [loading, setLoading] = useState(true)
-  const [selectedPlaylist, setSelectedPlaylist] = useState<ListInfoItem | null>(null)
+  const [selectedPlaylist, setSelectedPlaylist] = useState<ListInfoItem | null>(
+    () => restoredDiscoveryRef.current?.playlist ?? null,
+  )
   const selectedPlaylistRef = useRef(selectedPlaylist)
   selectedPlaylistRef.current = selectedPlaylist
+  // B-6：推荐页的页内子状态变化即落盘（平台选择 + 页内歌单详情），退出后重进可恢复。
+  // 立即写盘不节流（理由见 utils/data.ts saveViewPrevDetail 注释）；playlist:null 是
+  // 有效状态（用户已手动关掉详情），必须落盘，否则下次启动会把已关闭的歌单又弹出来。
+  useEffect(() => {
+    saveViewPrevDetail({ discovery: { source: selectedSource, playlist: selectedPlaylist } })
+  }, [selectedSource, selectedPlaylist])
   const loadIdRef = useRef(0)
   const [boards, setBoards] = useState<BoardItem[]>([])
   const boardsLoadIdRef = useRef(0)
@@ -303,27 +341,33 @@ export default memo(() => {
     [theme],
   )
 
+  // 右上角播放历史圆钮（工具栏按钮）：底色随「按钮透明度」淡出，图标色不动。
+  // 只改颜色 alpha，不用容器 style.opacity——后者会把图标一起变淡。
   const historyButtonStyle = useMemo(
     () => StyleSheet.compose(styles.historyButton, {
-      backgroundColor: theme['c-primary-background'],
+      backgroundColor: applyOpacity(theme['c-primary-background'], buttonOpacity),
     }),
-    [theme],
+    [theme, buttonOpacity],
   )
 
-  // 歌单横架数据：12 → 24（getList 第 1 页本身 ~30 条，不产生额外请求）。
-  // 大屏首屏可见卡数多（宽屏 168pt 卡 ≈ 每屏 5~6 张），12 张一滑到底显空。
+  // 推荐歌单网格数据：12 → 24（getList 第 1 页本身 ~30 条，不产生额外请求）。
+  // 大屏网格一屏可见卡数更多（iPad 可显示 4~5 列 × 多行），12 张一屏见底显空。
   const shelfData = useMemo(() => playlists.slice(0, 24), [playlists])
-  const shelfCardWidth = isWide ? 168 : 132
+
+  // 榜单卡片：底色与边框随「按钮透明度」淡出；榜单名文字与榜单图标色不动。
+  // 只作用于颜色 alpha，不用容器 style.opacity（会把内容一起变淡）。
+  const boardCardStyle = useMemo(
+    () => ({
+      backgroundColor: applyOpacity(theme['c-primary-light-900-alpha-200'], buttonOpacity),
+      borderColor: applyOpacity(theme['c-border-background'], buttonOpacity),
+    }),
+    [theme, buttonOpacity],
+  )
 
   const renderBoardCard = useCallback((board: BoardItem, wide: boolean) => (
     <TouchableOpacity
       key={board.id}
-      style={{
-        ...styles.boardCard,
-        ...(wide ? styles.boardCardWide : null),
-        backgroundColor: theme['c-primary-light-900-alpha-200'],
-        borderColor: theme['c-border-background'],
-      }}
+      style={[styles.boardCard, wide ? styles.boardCardWide : null, boardCardStyle]}
       onPress={() => { handleOpenBoard(board) }}
     >
       <Icon name="leaderboard" size={18} color={theme['c-primary']} />
@@ -336,7 +380,7 @@ export default memo(() => {
         {board.name}
       </Text>
     </TouchableOpacity>
-  ), [theme, handleOpenBoard])
+  ), [boardCardStyle, handleOpenBoard])
 
   return (
     <View style={styles.container}>
@@ -430,10 +474,11 @@ export default memo(() => {
         )}
 
         <View style={styles.sectionGap}>
-          <HorizontalShelf
+          {/* 推荐歌单：固定列数纵向网格（与「歌单」页同款列数公式），
+              列宽由容器实测宽度计算，兼容 iPad 横屏 LandscapeCentered 限宽 */}
+          <PlaylistGrid
             title={t('discovery_playlists_title')}
             data={shelfData}
-            cardWidth={shelfCardWidth}
             onPressItem={handleOpenDetail}
           />
         </View>

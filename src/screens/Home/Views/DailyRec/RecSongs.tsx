@@ -23,6 +23,9 @@ import { getDailyRecSongsCache, setDailyRecSongsCache, clearDailyRecSongsCache }
 import type { StylizedSelection } from './StylizedModal'
 
 const BATCH_SIZE = 8
+// 失败后退避窗口：effect 依赖含 isLoading，失败时 setIsLoading(false) 会再次触发 effect，
+// 同一输入的重复触发在窗口内直接跳过，避免「失败→重跑→再失败」的即时重试风暴
+const LOAD_FAIL_BACKOFF = 3000
 
 const similarSongsFetcher = {
   isFetching: false,
@@ -44,6 +47,11 @@ export default memo(({ header, isStylized, stylizedSelection }: RecSongsProps) =
   const playerMusicInfo = usePlayerMusicInfo()
   const theme = useTheme()
   const [isAllSimilarSongsFetched, setIsAllSimilarSongsFetched] = useState(false)
+  // 记录最近一次发起的加载签名（cookie + 风格化选择）与失败时间：
+  // effect 依赖里的 isLoading 会让加载中的 setIsLoading(true/false) 额外触发 effect
+  // （成功时重复请求、失败时形成风暴）。签名没变的重复触发直接跳过，失败后再退避
+  // LOAD_FAIL_BACKOFF；只有输入真正变化或用户下拉刷新才会重新加载
+  const lastLoadRef = useRef({ sig: '', failedAt: 0 })
 
   // 卸载时停止后台相似歌曲预取任务，避免切走后仍跑网络请求/磁盘读写造成卡顿
   useEffect(() => {
@@ -54,9 +62,15 @@ export default memo(({ header, isStylized, stylizedSelection }: RecSongsProps) =
   }, [])
 
   useEffect(() => {
+    // 加载签名：输入没变时（isLoading 抖动引起的重跑）不重复加载
+    const sig = `${cookie}|${isStylized}|${stylizedSelection ? JSON.stringify(stylizedSelection) : ''}`
+    const last = lastLoadRef.current
+    if (last.sig === sig && (!last.failedAt || Date.now() - last.failedAt < LOAD_FAIL_BACKOFF)) return
+    lastLoadRef.current = { sig, failedAt: 0 }
+
     if (!cookie) {
       if (isLoading) {
-        toast('请先设置网易云 Cookie')
+        toast(t('wy_cookie_not_set'))
         setIsLoading(false)
       }
       listRef.current?.setList([], false)
@@ -74,6 +88,9 @@ export default memo(({ header, isStylized, stylizedSelection }: RecSongsProps) =
         listRef.current?.setStatus('idle')
       }).catch((err: any) => {
         console.error(err)
+        // 记失败时间：同一输入的 effect 重跑（isLoading 抖动）在退避窗口内会被上面拦住。
+        // 只在签名仍是当前时才记，避免过期请求的失败覆盖新加载的状态
+        if (lastLoadRef.current.sig === sig) lastLoadRef.current = { sig, failedAt: Date.now() }
         toast(t('load_failed'), 'long')
         listRef.current?.setStatus('error')
       }).finally(() => {
@@ -208,6 +225,9 @@ export default memo(({ header, isStylized, stylizedSelection }: RecSongsProps) =
         await processQueue()
       }).catch((err: any) => {
         console.error(err)
+        // 记失败时间：同一输入的 effect 重跑（isLoading 抖动）在退避窗口内会被上面拦住。
+        // 只在签名仍是当前时才记，避免过期请求的失败覆盖新加载的状态
+        if (lastLoadRef.current.sig === sig) lastLoadRef.current = { sig, failedAt: Date.now() }
         toast(t('load_failed'), 'long')
         listRef.current?.setStatus('error')
       }).finally(() => {
@@ -240,7 +260,7 @@ export default memo(({ header, isStylized, stylizedSelection }: RecSongsProps) =
 
   const handleRefresh = useCallback(() => {
     if (!cookie) {
-      toast('请先设置网易云 Cookie')
+      toast(t('wy_cookie_not_set'))
       listRef.current?.setStatus('idle')
       return
     }

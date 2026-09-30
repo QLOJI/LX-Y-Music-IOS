@@ -2,10 +2,12 @@ import { useEffect, useMemo, useState } from 'react'
 import { ScrollView, TouchableOpacity } from 'react-native'
 
 import { createStyle } from '@/utils/tools'
+import { applyOpacity } from '@/utils/colorOpacity'
 import { type SearchType } from '@/store/search/state'
 import { useI18n } from '@/lang'
 import Text from '@/components/common/Text'
 import { useTheme } from '@/store/theme/hook'
+import { useSettingValue } from '@/store/setting/hook'
 import { getSearchSetting } from '@/utils/data'
 import { designRadius, designSpacing } from '@/theme/DesignTokens'
 
@@ -14,6 +16,7 @@ const SEARCH_TYPE_LIST = ['music', 'songlist', 'singer', 'album'] as const
 export default () => {
   const t = useI18n()
   const theme = useTheme()
+  const buttonOpacity = useSettingValue('theme.buttonOpacity')
   const [type, setType] = useState<SearchType>('music')
 
   useEffect(() => {
@@ -39,18 +42,31 @@ export default () => {
     global.app_event.searchTypeChanged(type)
   }
 
+  // 歌曲/歌单/歌手/专辑切换按钮：底色与边框随「按钮透明度」淡出，文字色不动。
+  // 只改颜色 alpha，不能用容器 style.opacity——那会把文字一起变淡。
+  // 激活态（c-primary 实底）一起处理，避免未激活透明、当前类型实心的割裂。
+  const activeButtonStyle = useMemo(
+    () => ({
+      backgroundColor: applyOpacity(theme['c-primary'], buttonOpacity),
+      borderColor: applyOpacity(theme['c-primary'], buttonOpacity),
+      borderWidth: 1,
+    }),
+    [theme, buttonOpacity],
+  )
+  const inactiveButtonStyle = useMemo(
+    () => ({
+      backgroundColor: applyOpacity(theme['c-primary-light-900-alpha-200'], buttonOpacity),
+      borderColor: applyOpacity(theme['c-border-background'], buttonOpacity),
+      borderWidth: 1,
+    }),
+    [theme, buttonOpacity],
+  )
+
   return (
     <ScrollView style={styles.container} keyboardShouldPersistTaps={'always'} horizontal={true}>
       {list.map((item) => (
         <TouchableOpacity
-          style={{
-            ...styles.button,
-            backgroundColor: type == item.id
-              ? theme['c-primary']
-              : theme['c-primary-light-900-alpha-200'],
-            borderColor: type == item.id ? theme['c-primary'] : theme['c-border-background'],
-            borderWidth: 1,
-          }}
+          style={[styles.button, type == item.id ? activeButtonStyle : inactiveButtonStyle]}
           onPress={() => {
             handleTypeChange(item.id)
           }}

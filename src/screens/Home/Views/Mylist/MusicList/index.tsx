@@ -19,7 +19,8 @@ import ListMusicMultiAdd, {
   type MusicMultiAddModalType as ListAddMultiType,
 } from '@/components/MusicMultiAddModal'
 import { createStyle } from '@/utils/tools'
-import { type LayoutChangeEvent, View, StyleSheet } from 'react-native'
+import { designSpacing } from '@/theme/DesignTokens'
+import { type LayoutChangeEvent, View } from 'react-native'
 import ActiveList, { type ActiveListType } from './ActiveList'
 import MultipleModeBar, { type SelectMode, type MultipleModeBarType } from './MultipleModeBar'
 import ListSearchBar, { type ListSearchBarType } from './ListSearchBar'
@@ -35,8 +36,8 @@ import { handleShowAlbumDetail, handleShowArtistDetail } from '@/components/Onli
 import { useSettingValue } from '@/store/setting/hook.ts'
 import { updateSetting } from '@/core/common.ts'
 import commonState from '@/store/common/state'
+import { useStatusbarHeight } from '@/store/common/hook'
 import SimilarSongsModal, { type SimilarSongsModalType } from '@/components/SimilarSongsModal'
-import PageTopInset from '@/components/common/PageTopInset'
 
 export interface MusicListProps {
   onBack?: () => void
@@ -44,7 +45,17 @@ export interface MusicListProps {
   listId?: string
 }
 
+// 顶部固定槽位顶边的额外间距：必须与「设置 → 基本设置」页的返回按钮对齐
+// （src/screens/SettingDetail/index.tsx 里 header 的 `paddingTop: statusBarHeight + designSpacing.sm`）。
+// statusBarHeight 一律用 useStatusbarHeight()，它内部已含全局 +6pt 偏移，两处都不要再加第二次。
+// 之所以既留常量又必须「内联写进 style」而不是放进 createStyle：
+// createStyle/trasformeStyle 会按 global.lx.fontSize 缩放 paddingTop，而基本设置页那处是
+// 不缩放的内联值——一旦被缩放，用户调大字号后这里的返回栏就会比设置页返回按钮低一截
+// （槽位内的栏高 44 走 createStyle 与设置页按钮的 44 同口径缩放，两边中心才始终同高）。
+const BAR_SLOT_ALIGN_PADDING_TOP = designSpacing.sm
+
 export default ({ onBack, listId }: MusicListProps) => {
+  const statusBarHeight = useStatusbarHeight()
   const activeListRef = useRef<ActiveListType>(null)
   const listMusicSearchRef = useRef<ListMusicSearchType>(null)
   const listRef = useRef<ListType>(null)
@@ -186,38 +197,45 @@ export default ({ onBack, listId }: MusicListProps) => {
 
   return (
     <View style={styles.container}>
-      <View style={{ ...StyleSheet.absoluteFillObject, zIndex: 2 }} pointerEvents="box-none">
-        <MultipleModeBar
-          ref={multipleModeBarRef}
-          onSwitchMode={hancelSwitchSelectMode}
-          onSelectAll={(isAll) => listRef.current?.selectAll(isAll)}
-          onExitSelectMode={hancelExitSelect}
-        />
+      {/*
+        顶部固定槽位：返回栏 / 多选栏 / 搜索栏三根横条共用这一个槽位，不随歌曲列表滚动。
+        改动前的结构是三根横条分属两套定位体系：返回栏被塞进 <List> 的 ListHeaderComponent
+        （跟着列表一起滚走、顶边由 PageTopInset 的 max(12, statusBarHeight-16) 决定），
+        搜索栏/多选栏则各自绝对定位在别的容器上——所以进入详情、点搜索时顶部栏位置会跳。
+        收敛到同一个槽位后：正常流里只有 ActiveList（高度撑起槽位），另外两条栏都是
+        absolute top:0/height:100%，互相替换时位置天然一致（与 REF 工程同构）。
+      */}
+      <View
+        style={{ ...styles.fixedBar, paddingTop: statusBarHeight + BAR_SLOT_ALIGN_PADDING_TOP }}
+      >
+        <View style={styles.barSlot}>
+          <ActiveList
+            ref={activeListRef}
+            onShowSearchBar={handleShowSearch}
+            onScrollToTop={hancelScrollToTop}
+            showCover={showCover}
+            onToggleView={handleToggleView}
+            onBack={onBack}
+          />
+          <MultipleModeBar
+            ref={multipleModeBarRef}
+            onSwitchMode={hancelSwitchSelectMode}
+            onSelectAll={(isAll) => listRef.current?.selectAll(isAll)}
+            onExitSelectMode={hancelExitSelect}
+          />
+          <ListSearchBar
+            ref={listSearchBarRef}
+            onSearch={(keyword) =>
+              listMusicSearchRef.current?.search(keyword, layoutHeightRef.current)
+            }
+            onExitSearch={handleExitSearch}
+          />
+        </View>
       </View>
       <View style={{ flex: 1 }} onLayout={onLayout}>
-        <ListSearchBar
-          ref={listSearchBarRef}
-          onSearch={(keyword) =>
-            listMusicSearchRef.current?.search(keyword, layoutHeightRef.current)
-          }
-          onExitSearch={handleExitSearch}
-        />
         <List
           ref={listRef}
           listId={listId}
-          header={
-            <>
-              <PageTopInset />
-              <ActiveList
-                ref={activeListRef}
-                onShowSearchBar={handleShowSearch}
-                onScrollToTop={hancelScrollToTop}
-                showCover={showCover}
-                onToggleView={handleToggleView}
-                onBack={onBack}
-              />
-            </>
-          }
           onShowMenu={showMenu}
           onMuiltSelectMode={hancelMultiSelect}
           onSelectAll={(isAll) => multipleModeBarRef.current?.setIsSelectAll(isAll)}
@@ -281,5 +299,20 @@ const styles = createStyle({
   container: {
     flex: 1,
     flexDirection: 'column',
+  },
+  // 固定槽位外框：左右/下内边距与「设置 → 基本设置」header 同源（都是 designSpacing.sm=12），
+  // 再叠加槽内的返回栏，返回按钮与返回栏就落在同一个视觉坐标系里。
+  // 注意这里【不能】写 paddingTop：createStyle 会按 global.lx.fontSize 缩放它，
+  // 而顶边必须用与设置页一致的不缩放公式——paddingTop 内联在上面的 JSX 里。
+  fixedBar: {
+    zIndex: 2,
+    paddingHorizontal: designSpacing.sm,
+    paddingBottom: designSpacing.sm,
+  },
+  // 槽位本体（相对定位）：高度由正常流里的 ActiveList 撑起（44，与设置页返回按钮同高），
+  // MultipleModeBar / ListSearchBar 都是 absolute top:0/height:100%，精确铺满本槽位，
+  // 所以三根横条换来换去都不会跳位。ActiveList 用 opacity 隐形而不是卸载，槽位高度才不会塌。
+  barSlot: {
+    position: 'relative',
   },
 })

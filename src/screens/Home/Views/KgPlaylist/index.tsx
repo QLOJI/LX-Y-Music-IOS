@@ -67,6 +67,9 @@ export default memo(() => {
 
   const fetchPlaylists = useCallback(async(isRefresh = false) => {
     if (!kgCookie) {
+      // 静默清空会让用户误以为歌单被删光了：与失败路径的 toast 保持一致给出提示。
+      // 只在非刷新时提示，避免下拉刷新反复弹
+      if (!isRefresh) toast(t('kg_cookie_not_set'))
       setCreatedPlaylists([])
       setCollectedPlaylists([])
       setLoading(false)
@@ -94,7 +97,7 @@ export default memo(() => {
       setLoading(false)
       setRefreshing(false)
     }
-  }, [kgCookie])
+  }, [kgCookie, t])
 
   useEffect(() => {
     void fetchPlaylists()
@@ -169,7 +172,7 @@ export default memo(() => {
         }).then(async(confirmed) => {
           if (!confirmed) return
           if (!kgCookie) {
-            toast('请先登录酷狗音乐，Cookie可能已失效')
+            toast(t('kg_cookie_not_set'))
             return
           }
           if (!item.listid) {
@@ -190,7 +193,7 @@ export default memo(() => {
         })
         break
     }
-  }, [fetchPlaylists, kgCookie])
+  }, [fetchPlaylists, kgCookie, t])
 
   const handleCreatePlaylist = useCallback(async() => {
     const name = newPlaylistName.trim()
@@ -199,7 +202,7 @@ export default memo(() => {
       return
     }
     if (!kgCookie) {
-      toast('请先登录酷狗音乐，Cookie可能已失效')
+      toast(t('kg_cookie_not_set'))
       return
     }
 
@@ -221,7 +224,7 @@ export default memo(() => {
     } catch (err: any) {
       toast(`创建失败: ${err.message}`)
     }
-  }, [newPlaylistName, fetchPlaylists, kgCookie])
+  }, [newPlaylistName, fetchPlaylists, kgCookie, t])
 
   const renderTab = useCallback((tab: TabType, label: string) => {
     const isActive = activeTab === tab
@@ -284,9 +287,9 @@ export default memo(() => {
           ListEmptyComponent={
             loading ? null : (
               <View style={styles.emptyContainer}>
-                {/* 入口已按 Cookie 登录态显隐，空态只提示列表为空 */}
+                {/* 无 Cookie 时不能只说「列表为空」，否则用户分不清「没登录」和「歌单被清空」 */}
                 <Text style={styles.emptyText}>
-                  {playlists.length === 0 ? t('list_empty') : ''}
+                  {kgCookie ? (playlists.length === 0 ? t('list_empty') : '') : t('kg_cookie_not_set')}
                 </Text>
               </View>
             )

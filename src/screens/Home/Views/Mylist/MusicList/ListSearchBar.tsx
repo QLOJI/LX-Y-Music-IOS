@@ -8,6 +8,7 @@ import { useTheme } from '@/store/theme/hook'
 import { useI18n } from '@/lang'
 import { createStyle } from '@/utils/tools'
 import { BorderWidths } from '@/theme'
+import { designMotion } from '@/theme/DesignTokens'
 
 interface SearchInputProps {
   onSearch: (keywork: string) => void
@@ -51,7 +52,6 @@ export default forwardRef<ListSearchBarType, ListSearchBarProps>(
     const [visible, setVisible] = useState(false)
     const [animatePlayed, setAnimatPlayed] = useState(true)
     const animFade = useRef(new Animated.Value(0)).current
-    const animTranslateY = useRef(new Animated.Value(0)).current
     const searchInputRef = useRef<SearchInputType>(null)
 
     const theme = useTheme()
@@ -73,44 +73,31 @@ export default forwardRef<ListSearchBarType, ListSearchBarProps>(
       setVisible(true)
       setAnimatPlayed(false)
       requestAnimationFrame(() => {
-        animTranslateY.setValue(-20)
-
-        Animated.parallel([
-          Animated.timing(animFade, {
-            toValue: 0.92,
-            duration: 200,
-            useNativeDriver: true,
-          }),
-          Animated.timing(animTranslateY, {
-            toValue: 0,
-            duration: 200,
-            useNativeDriver: true,
-          }),
-        ]).start(() => {
+        // 只做原地淡入，不再有 translateY(-20→0) 位移：搜索栏与返回栏同处一个固定槽位，
+        // 「点击搜索后搜索框在同一位置且不可移动」是硬要求，任何位移都会破坏它
+        // （位移还会让输入框短暂越过槽位顶边、盖到状态栏上）。
+        Animated.timing(animFade, {
+          toValue: 0.92,
+          duration: designMotion.quick,
+          useNativeDriver: true,
+        }).start(() => {
           setAnimatPlayed(true)
         })
       })
-    }, [animFade, animTranslateY])
+    }, [animFade])
 
     const handleHide = useCallback(() => {
       setAnimatPlayed(false)
-      Animated.parallel([
-        Animated.timing(animFade, {
-          toValue: 0,
-          duration: 200,
-          useNativeDriver: true,
-        }),
-        Animated.timing(animTranslateY, {
-          toValue: -20,
-          duration: 200,
-          useNativeDriver: true,
-        }),
-      ]).start((finished) => {
+      Animated.timing(animFade, {
+        toValue: 0,
+        duration: designMotion.quick,
+        useNativeDriver: true,
+      }).start((finished) => {
         if (!finished) return
         setVisible(false)
         setAnimatPlayed(true)
       })
-    }, [animFade, animTranslateY])
+    }, [animFade])
 
     const animaStyle = useMemo(
       () => ({
@@ -118,9 +105,8 @@ export default forwardRef<ListSearchBarType, ListSearchBarProps>(
         // backgroundColor: theme['c-content-background'],
         borderBottomColor: theme['c-border-background'],
         opacity: animFade, // Bind opacity to animated value
-        transform: [{ translateY: animTranslateY }],
       }),
-      [animFade, animTranslateY, theme],
+      [animFade, theme],
     )
 
     const component = useMemo(() => {
@@ -141,6 +127,8 @@ export default forwardRef<ListSearchBarType, ListSearchBarProps>(
 )
 
 const styles = createStyle({
+  // 绝对铺满父级「固定槽位」（index.tsx 的 barSlot，高度=返回栏 ActiveList 的 44）：
+  // 搜索栏不再另起定位体系，展开后正好严丝合缝地替换掉返回栏的位置。
   container: {
     flex: 1,
     position: 'absolute',

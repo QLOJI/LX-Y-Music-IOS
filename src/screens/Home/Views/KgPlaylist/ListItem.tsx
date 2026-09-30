@@ -118,7 +118,11 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     backgroundColor: 'rgba(0, 0, 0, 0.3)',
-    borderRadius: 8,
+    // 必须与它所覆盖的 cover（本文件 styles.cover 的 designRadius.md）同值：
+    // 遮罩是绝对定位铺满封面的，圆角一旦大于封面就会在四角露出封面的圆边、
+    // 小于封面则遮罩的直角会切掉封面的圆角。原先写死 8 恰好等于当时的 md=8，
+    // 令牌下调后就会错位，故改为跟随令牌而不是再写一个数字。
+    borderRadius: designRadius.md,
   },
   info: {
     flex: 1,

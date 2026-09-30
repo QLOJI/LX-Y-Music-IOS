@@ -1,10 +1,12 @@
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react'
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
 import { Pressable, TouchableOpacity, View } from 'react-native'
 import { type InitState } from '@/store/hotSearch/state'
 import Text from '@/components/common/Text'
 import { createStyle } from '@/utils/tools'
+import { applyOpacity } from '@/utils/colorOpacity'
 import { designSpacing, designTypography, designRadius } from '@/theme/DesignTokens'
 import { useTheme } from '@/store/theme/hook'
+import { useSettingValue } from '@/store/setting/hook'
 import { useI18n } from '@/lang'
 import { clearHistoryList, getSearchHistory, removeHistoryWord } from '@/core/search/search'
 import { Icon } from '@/components/common/Icon'
@@ -21,12 +23,25 @@ const ListItem = ({
   onRemove: (keyword: string) => void
 }) => {
   const theme = useTheme()
+  const buttonOpacity = useSettingValue('theme.buttonOpacity')
 
-  const chipStyle = {
-    ...styles.button,
-    backgroundColor: theme['c-primary-light-900-alpha-200'],
-    borderColor: theme['c-border-background'],
-  }
+  // 历史搜索胶囊（含行内删除小圆钮）：底色与边框随「按钮透明度」淡出，
+  // 文字与图标色不动。只改颜色 alpha，不能用容器 style.opacity（会把内容一起变淡）。
+  const chipStyle = useMemo(
+    () => ({
+      ...styles.button,
+      backgroundColor: applyOpacity(theme['c-primary-light-900-alpha-200'], buttonOpacity),
+      borderColor: applyOpacity(theme['c-border-background'], buttonOpacity),
+    }),
+    [theme, buttonOpacity],
+  )
+  const removeButtonStyle = useMemo(
+    () => ({
+      ...styles.removeButton,
+      backgroundColor: applyOpacity(theme['c-primary-background-active'], buttonOpacity),
+    }),
+    [theme, buttonOpacity],
+  )
 
   return (
     <Pressable
@@ -40,7 +55,7 @@ const ListItem = ({
       </Text>
       <TouchableOpacity
         hitSlop={8}
-        style={{ ...styles.removeButton, backgroundColor: theme['c-primary-background-active'] }}
+        style={removeButtonStyle}
         onPress={() => {
           onRemove(keyword)
         }}
@@ -63,6 +78,13 @@ export default forwardRef<HistorySearchType, HistorySearchProps>((props, ref) =>
   const isUnmountedRef = useRef(false)
   const t = useI18n()
   const theme = useTheme()
+  const buttonOpacity = useSettingValue('theme.buttonOpacity')
+
+  // 标题右侧的「清空历史」工具钮：底色随设置淡出，橡皮图标色不动
+  const titleBtnStyle = useMemo(
+    () => ({ ...styles.titleBtn, backgroundColor: applyOpacity(theme['c-primary-background-hover'], buttonOpacity) }),
+    [theme, buttonOpacity],
+  )
 
   useEffect(() => {
     isUnmountedRef.current = false
@@ -105,7 +127,7 @@ export default forwardRef<HistorySearchType, HistorySearchProps>((props, ref) =>
         <Text size={designTypography.title} style={styles.title}>{t('search_history_search')}</Text>
         <TouchableOpacity
           onPress={handleClear}
-          style={{ ...styles.titleBtn, backgroundColor: theme['c-primary-background-hover'] }}
+          style={titleBtnStyle}
         >
           <Icon name="eraser" color={theme['c-300']} size={14} />
         </TouchableOpacity>
@@ -126,7 +148,8 @@ export default forwardRef<HistorySearchType, HistorySearchProps>((props, ref) =>
 
 const styles = createStyle({
   titleContent: {
-    marginBottom: designSpacing.sm,
+    // A-2：标题到词条 12→8，对齐 REF 的 8pt 节奏（区块上方 16 / 标题到内容 8 / 词条行距 12）
+    marginBottom: designSpacing.xs,
     flexDirection: 'row',
     alignItems: 'center',
   },
@@ -144,6 +167,8 @@ const styles = createStyle({
   list: {
     flexDirection: 'row',
     flexWrap: 'wrap',
+    // 词条行距的唯一来源：button 不再自带 marginBottom（A-2 去双重间距），
+    // 否则 rowGap 与 marginBottom 会叠加成 24pt
     rowGap: designSpacing.sm,
   },
   button: {
@@ -151,7 +176,6 @@ const styles = createStyle({
     justifyContent: 'center',
     paddingHorizontal: designSpacing.md,
     marginRight: designSpacing.sm,
-    marginBottom: designSpacing.sm,
     borderWidth: 1,
     flexDirection: 'row',
     alignItems: 'center',

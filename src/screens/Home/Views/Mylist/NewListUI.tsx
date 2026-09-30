@@ -11,6 +11,7 @@ import Text from '@/components/common/Text'
 import Image from '@/components/common/Image'
 import { Icon } from '@/components/common/Icon'
 import { createStyle } from '@/utils/tools'
+import { applyOpacity } from '@/utils/colorOpacity'
 import commonState from '@/store/common/state'
 import MusicList from './MusicList'
 import { useHorizontalMode } from '@/utils/hooks'
@@ -67,9 +68,28 @@ const FixedPlaylistCard = memo(({
   onShowMenu: (item: ListItemInfo, position: MenuPosition) => void
 }) => {
   const theme = useTheme()
+  const buttonOpacity = useSettingValue('theme.buttonOpacity')
   const activeId = useActiveListId()
   const fetching = useListFetching(item.id)
   const moreButtonRef = useRef<TouchableOpacity>(null)
+
+  // 歌单卡片底色（含「当前播放列表」高亮态）随「按钮透明度」淡出，文字色不动。
+  // 只改颜色 alpha，不用容器 style.opacity——后者会把卡片里的歌单名一起变淡。
+  const cardStyle = useMemo(
+    () => [
+      styles.cardContainer,
+      {
+        height: CARD_HEIGHT,
+        backgroundColor: applyOpacity(
+          activeId == item.id
+            ? theme['c-primary-background-hover']
+            : theme['c-primary-light-900-alpha-300'],
+          buttonOpacity,
+        ),
+      },
+    ],
+    [theme, buttonOpacity, activeId, item.id],
+  )
 
   const handleShowMenu = () => {
     if (moreButtonRef.current?.measure) {
@@ -86,15 +106,7 @@ const FixedPlaylistCard = memo(({
 
   return (
     <Animated.View
-      style={[
-        styles.cardContainer,
-        {
-          height: CARD_HEIGHT,
-          backgroundColor: activeId == item.id
-            ? theme['c-primary-background-hover']
-            : theme['c-primary-light-900-alpha-300'],
-        },
-      ]}
+      style={cardStyle}
     >
       <TouchableOpacity onPress={onPress} style={styles.cardContent}>
         <Image url={item.cover} style={styles.artwork} />
@@ -153,6 +165,7 @@ const PlaylistCard = memo(({
   onTouchEnd: () => void
 }) => {
   const theme = useTheme()
+  const buttonOpacity = useSettingValue('theme.buttonOpacity')
   const activeId = useActiveListId()
   const fetching = useListFetching(item.id)
   const moreButtonRef = useRef<TouchableOpacity>(null)
@@ -242,11 +255,17 @@ const PlaylistCard = memo(({
     ? [{ translateY }, { scale }]
     : [{ translateY }]
   const shadowOpacity = isDragSource ? 0.25 : 0
-  const backgroundColor = isDragSource
-    ? theme['c-primary-background-active']
-    : activeId == item.id
-      ? theme['c-primary-background-hover']
-      : theme['c-primary-light-900-alpha-300']
+  // 三种态（拖动中 / 当前播放列表 / 普通）的底色都随「按钮透明度」淡出，
+  // 只改颜色 alpha —— 不能用容器 style.opacity：那会把歌单名与图标一起变淡，
+  // 且下方 style 里的 opacity 是拖拽动画专用的 Animated.Value，二者不能混用。
+  const backgroundColor = applyOpacity(
+    isDragSource
+      ? theme['c-primary-background-active']
+      : activeId == item.id
+        ? theme['c-primary-background-hover']
+        : theme['c-primary-light-900-alpha-300'],
+    buttonOpacity,
+  )
 
   return (
     <Animated.View
@@ -299,9 +318,18 @@ const PlaylistCard = memo(({
 
 export default memo(() => {
   const theme = useTheme()
+  const buttonOpacity = useSettingValue('theme.buttonOpacity')
   // 底部悬浮层（迷你播放器 + 底部 Tab + 安全区）统一避让高度
   const bottomInset = useBottomOverlayInset()
   const t = useI18n()
+
+  // 加载失败时的「点击重试」按钮：底色是硬编码的 rgba 常量（不是主题 token），
+  // applyOpacity 同样吃这种格式（在既有 alpha 上乘系数），随「按钮透明度」淡出；
+  // 按钮文字色不动。只改颜色 alpha，不用容器 style.opacity。
+  const retryButtonStyle = useMemo(
+    () => ({ ...styles.retryButton, backgroundColor: applyOpacity('rgba(0,0,0,0.1)', buttonOpacity) }),
+    [buttonOpacity],
+  )
   const allList = useMyList()
   const activeListId = useActiveListId()
   const isHorizontal = useHorizontalMode()
@@ -726,7 +754,7 @@ export default memo(() => {
       {hasError ? (
         <View style={styles.errorContainer}>
           <Text size={16} color={theme['c-font']} style={styles.errorText}>加载失败</Text>
-          <TouchableOpacity onPress={() => { void refreshListInfo() }} style={styles.retryButton}>
+          <TouchableOpacity onPress={() => { void refreshListInfo() }} style={retryButtonStyle}>
             <Text size={14} color={theme['c-primary-font']}>点击尝试重新加载</Text>
           </TouchableOpacity>
         </View>

@@ -1,4 +1,4 @@
-import { useRef, forwardRef, useImperativeHandle } from 'react'
+import { useRef, forwardRef, useImperativeHandle, useMemo } from 'react'
 import { ScrollView, TouchableOpacity, View } from 'react-native'
 
 // import music from '@/utils/musicSdk'
@@ -6,7 +6,9 @@ import { designSpacing } from '@/theme/DesignTokens'
 // import InsetShadow from 'react-native-inset-shadow'
 import SearchInput, { type SearchInputType, type SearchInputProps } from './SearchInput'
 import { createStyle } from '@/utils/tools'
+import { applyOpacity } from '@/utils/colorOpacity'
 import { useTheme } from '@/store/theme/hook'
+import { useSettingValue } from '@/store/setting/hook'
 import { useStatusbarHeight } from '@/store/common/hook'
 import { useI18n } from '@/lang'
 import { Icon } from '@/components/common/Icon'
@@ -48,8 +50,25 @@ export default forwardRef<HeaderBarType, HeaderBarProps>(
   }, ref) => {
     const searchInputRef = useRef<SearchInputType>(null)
     const theme = useTheme()
+    const buttonOpacity = useSettingValue('theme.buttonOpacity')
     const statusBarHeight = useStatusbarHeight()
     const t = useI18n()
+
+    // 搜索平台胶囊：底色随「按钮透明度」淡出，文字色不动。只改颜色 alpha，
+    // 不能用容器 style.opacity——那会把胶囊文字一起变淡。
+    // 激活态（c-primary 实底）一起处理，避免未激活透明、当前平台实心的割裂。
+    const activePlatformStyle = useMemo(
+      () => ({
+        backgroundColor: applyOpacity(theme['c-primary'], buttonOpacity),
+      }),
+      [theme, buttonOpacity],
+    )
+    const inactivePlatformStyle = useMemo(
+      () => ({
+        backgroundColor: applyOpacity(theme['c-primary-light-900-alpha-200'], buttonOpacity),
+      }),
+      [theme, buttonOpacity],
+    )
 
     useImperativeHandle(
       ref,
@@ -70,6 +89,7 @@ export default forwardRef<HeaderBarType, HeaderBarProps>(
     return (
       <View style={[styles.container, { paddingTop: Math.max(designSpacing.sm, statusBarHeight - designSpacing.md) }]}>
         <View style={styles.openHeader}>
+          {/* 搜索框容器是输入控件（不是按钮），不随「按钮透明度」变化 */}
           <View
             style={{
               ...styles.searchBar,
@@ -110,12 +130,7 @@ export default forwardRef<HeaderBarType, HeaderBarProps>(
             return (
               <TouchableOpacity
                 key={sourceId}
-                style={{
-                  ...styles.platformItem,
-                  backgroundColor: isActive
-                    ? theme['c-primary']
-                    : theme['c-primary-light-900-alpha-200'],
-                }}
+                style={[styles.platformItem, isActive ? activePlatformStyle : inactivePlatformStyle]}
                 onPress={() => {
                   onSourceChange(sourceId)
                 }}

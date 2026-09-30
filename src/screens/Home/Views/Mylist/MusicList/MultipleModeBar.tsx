@@ -6,6 +6,7 @@ import Button from '@/components/common/Button'
 import { useTheme } from '@/store/theme/hook'
 import { createStyle } from '@/utils/tools'
 import { BorderWidths } from '@/theme'
+import { designMotion } from '@/theme/DesignTokens'
 
 export type SelectMode = 'single' | 'range'
 
@@ -28,7 +29,6 @@ export default forwardRef<MultipleModeBarType, MultipleModeBarProps>(
     const [visible, setVisible] = useState(false)
     const [animatePlayed, setAnimatPlayed] = useState(true)
     const animFade = useRef(new Animated.Value(0)).current
-    const animTranslateY = useRef(new Animated.Value(0)).current
     const [selectMode, setSelectMode] = useState<SelectMode>('single')
     const [isSelectAll, setIsSelectAll] = useState(false)
     const [visibleBar, setVisibleBar] = useState(true)
@@ -57,44 +57,31 @@ export default forwardRef<MultipleModeBarType, MultipleModeBarProps>(
       setVisible(true)
       setAnimatPlayed(false)
       requestAnimationFrame(() => {
-        animTranslateY.setValue(-20)
-
-        Animated.parallel([
-          Animated.timing(animFade, {
-            toValue: 0.92,
-            duration: 200,
-            useNativeDriver: true,
-          }),
-          Animated.timing(animTranslateY, {
-            toValue: 0,
-            duration: 200,
-            useNativeDriver: true,
-          }),
-        ]).start(() => {
+        // 只做原地淡入，不再有 translateY(-20→0) 位移——与搜索栏同理：多选栏和返回栏/
+        // 搜索栏同处一个固定槽位，首帧就必须落在槽位里。从上方 20pt 滑下来的入场，在用户
+        // 眼里和「顶部栏又没对齐」长得一模一样（分辨不出是动效还是定位 bug）。
+        Animated.timing(animFade, {
+          toValue: 0.92,
+          duration: designMotion.quick,
+          useNativeDriver: true,
+        }).start(() => {
           setAnimatPlayed(true)
         })
       })
-    }, [animFade, animTranslateY])
+    }, [animFade])
 
     const handleHide = useCallback(() => {
       setAnimatPlayed(false)
-      Animated.parallel([
-        Animated.timing(animFade, {
-          toValue: 0,
-          duration: 200,
-          useNativeDriver: true,
-        }),
-        Animated.timing(animTranslateY, {
-          toValue: -20,
-          duration: 200,
-          useNativeDriver: true,
-        }),
-      ]).start((finished) => {
+      Animated.timing(animFade, {
+        toValue: 0,
+        duration: designMotion.quick,
+        useNativeDriver: true,
+      }).start((finished) => {
         if (!finished) return
         setVisible(false)
         setAnimatPlayed(true)
       })
-    }, [animFade, animTranslateY])
+    }, [animFade])
 
     const animaStyle = useMemo(
       () => ({
@@ -102,9 +89,8 @@ export default forwardRef<MultipleModeBarType, MultipleModeBarProps>(
         // backgroundColor: theme['c-content-background'],
         borderBottomColor: theme['c-border-background'],
         opacity: visibleBar ? animFade : 0, // Bind opacity to animated value
-        transform: [{ translateY: animTranslateY }],
       }),
-      [animFade, animTranslateY, theme, visibleBar],
+      [animFade, theme, visibleBar],
     )
 
     const handleSelectAll = useCallback(() => {
@@ -167,6 +153,8 @@ export default forwardRef<MultipleModeBarType, MultipleModeBarProps>(
 )
 
 const styles = createStyle({
+  // 绝对铺满父级「固定槽位」（index.tsx 的 barSlot，高度=返回栏 ActiveList 的 44）：
+  // 多选栏与返回栏/搜索栏共用同一个槽位，进入多选时原地替换、不跳位。
   container: {
     flex: 1,
     position: 'absolute',
