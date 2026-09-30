@@ -113,7 +113,8 @@ export default {
   },
 
   async getRecPlaylists(cookie, retryNum = 0) {
-    if (retryNum > 2) return Promise.reject(new Error('try max num'))
+    const maxRetries = 3
+    const retryDelay = 1000
 
     try {
       const _requestObj = httpFetch('https://music.163.com/weapi/v1/discovery/recommend/resource', {
@@ -130,10 +131,21 @@ export default {
         }),
       })
       const { body, statusCode } = await _requestObj.promise
-      if (statusCode !== 200 || body.code !== 200) throw new Error('获取每日推荐歌单失败')
+      if (statusCode !== 200 || !body || body.code !== 200) {
+        // 优先透出接口自己的 message（如「需要登录」），没有再用兜底文案
+        throw new Error((body && body.message) || '获取每日推荐歌单失败')
+      }
       return body.recommend || []
     } catch (error) {
-      return this.getRecPlaylists(cookie, retryNum + 1)
+      // 冷启动时网络/登录态常常还没就绪，原来的瞬时递归 3 连击极易整体失败；
+      // 复用 getSimilarSongs 的退避模式：失败后等 1 秒再重试，给网络恢复留窗口
+      if (retryNum < maxRetries - 1) {
+        await new Promise(resolve => setTimeout(resolve, retryDelay))
+        return this.getRecPlaylists(cookie, retryNum + 1)
+      }
+      // 重试耗尽后抛出最后一次的真实错误（而不是无信息量的 'try max num'），
+      // 上层 toast 才能显示可读的失败原因
+      throw error
     }
   },
 
