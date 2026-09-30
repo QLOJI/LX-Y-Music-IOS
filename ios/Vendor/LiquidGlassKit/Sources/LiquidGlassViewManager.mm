@@ -521,6 +521,20 @@ RCT_CUSTOM_VIEW_PROPERTY(x, NSNumber, LGLiquidLensHostView) {
   [view setTargetX:[json doubleValue] animated:YES];
 }
 
+// LX 跟手直落（B-7/C-6 横滑跟手 + A-5 长按拖动共用）：拖动期间由 JS 经
+// setNativeProps 每帧写入药丸中心 X。与 x prop 的区别：x 恒定走 0.1s 淡入 +
+// 0.3s 弹簧（点击切页路径），跟手必须零动画直落——否则每帧都会重启弹簧、
+// 透镜永远追不上手指。进入本分支前先对透镜图层 removeAllAnimations，停掉
+// 可能仍在途的点击弹簧（移除动画不改模型值，紧接着由非动画分支写入新中心，
+// 不会出现「先弹回旧目标再跳新位置」）；随后复用既有的 setTargetX:animated:NO
+// 直落分支（不重播淡入/抬落，也不触碰其同位守卫与首次落位逻辑）。
+// 纯增量属性：原生未重编译时 JS 侧写入静默失败（followX 为可选 prop，不写不触发）。
+RCT_CUSTOM_VIEW_PROPERTY(followX, NSNumber, LGLiquidLensHostView) {
+  if (json == nil) return;
+  [view.lens.layer removeAllAnimations];
+  [view setTargetX:[json doubleValue] animated:NO];
+}
+
 // 主题染色：透镜覆层与底部栏玻璃同色（不透明基色，明暗自适应）
 RCT_CUSTOM_VIEW_PROPERTY(tint, NSString, LGLiquidLensHostView) {
   if (json == nil) return;

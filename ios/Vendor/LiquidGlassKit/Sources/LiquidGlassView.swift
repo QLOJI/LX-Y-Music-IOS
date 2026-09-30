@@ -360,8 +360,13 @@ final class LiquidGlassView: MTKView {
         // "黑弧"，且 multiplyBlend 合成在动画期间会失效变黑块。玻璃边缘定义由
         // shader 自身的 fresnel/glare 提供，不再叠加阴影环。
         setupMetal()
+        // 30fps 上限（省电）：MTKView 默认按屏幕刷新率（本工程 Info.plist 解锁了
+        // CADisableMinimumFrameDurationOnPhone，ProMotion 下即 120Hz）连续 draw，
+        // 玻璃内容是静止的——输入不变则每帧输出逐帧相同，高刷下纯属白烧 GPU/CPU。
+        // 30fps 对静止态足够；morph/拖拽等玻璃自身形变由原生层驱动，观感是否变差需真机对照。
+        // 注意：这里只降本视图的渲染帧率，不改 Info.plist 的全局高刷开关。
+        preferredFramesPerSecond = 30
 //        layer.shouldRasterize = true
-//        preferredFramesPerSecond = 30
 //        clipsToBounds = true
 //        autoResizeDrawable = false
 //        contentMode = .center
