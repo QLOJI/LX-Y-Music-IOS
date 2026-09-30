@@ -1,6 +1,8 @@
 import { memo, useMemo } from 'react'
 import { Pressable, StyleSheet, View } from 'react-native'
 import { useTheme } from '@/store/theme/hook'
+import { useSettingValue } from '@/store/setting/hook'
+import { applyOpacity } from '@/utils/colorOpacity'
 import { createStyle } from '@/utils/tools'
 import { designRadius, designSpacing, designTypography } from '@/theme/DesignTokens'
 import Image from '@/components/common/Image'
@@ -66,6 +68,7 @@ const HotSongList = memo(({
   onSongPress,
 }: HotSongListProps) => {
   const theme = useTheme()
+  const buttonOpacity = useSettingValue('theme.buttonOpacity')
 
   const cardStyle = useMemo(
     () => StyleSheet.compose(styles.card, {
@@ -104,11 +107,13 @@ const HotSongList = memo(({
     [theme],
   )
 
+  // 行末的播放圆钮：底色随「按钮透明度」淡出。只改颜色 alpha，
+  // 不用容器 style.opacity——那会把圆钮里的播放图标一起变淡。
   const playButtonStyle = useMemo(
     () => StyleSheet.compose(styles.playButton, {
-      backgroundColor: theme['c-primary-light-900-alpha-200'],
+      backgroundColor: applyOpacity(theme['c-primary-light-900-alpha-200'], buttonOpacity),
     }),
-    [theme],
+    [theme, buttonOpacity],
   )
 
   return (

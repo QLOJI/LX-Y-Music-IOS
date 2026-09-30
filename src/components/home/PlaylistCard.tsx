@@ -2,7 +2,8 @@ import { memo, useMemo } from 'react'
 import { Pressable, StyleSheet, View } from 'react-native'
 import { useTheme } from '@/store/theme/hook'
 import { createStyle } from '@/utils/tools'
-import { designRadius, designTypography } from '@/theme/DesignTokens'
+import { formatPlayCountText } from '@/utils'
+import { designRadius, designSpacing, designTypography } from '@/theme/DesignTokens'
 import { NAV_SHEAR_NATIVE_IDS } from '@/config/constant'
 import type { ListInfoItem } from '@/store/songlist/state'
 import Image from '@/components/common/Image'
@@ -23,25 +24,37 @@ const styles = createStyle({
   },
   playCount: {
     position: 'absolute',
-    top: designRadius.sm,
-    right: designRadius.sm,
-    // 水平内边距 ≥ 圆角半径，且不裁剪内容，避免首尾字形被圆弧削掉
-    paddingHorizontal: 12,
-    paddingVertical: 4,
-    borderRadius: 999,
+    // 角标统一约定（临时，与 Songlist/ListItem.tsx、SonglistDetail/index.tsx 逐字一致）：
+    // 贴角 top/right 4（createStyle 会随全局字号缩放）、固定高 20、水平内边距 10 ≥ 半高，
+    // 圆弧不会削到首尾字形；居中交给 View 的 alignItems/justifyContent。
+    top: 4,
+    right: 4,
+    height: 20,
+    paddingHorizontal: 10,
+    borderRadius: designRadius.pill,
     backgroundColor: 'rgba(0,0,0,0.55)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  playCountText: {
+    textAlign: 'center',
   },
   title: {
-    marginTop: designRadius.sm,
+    // 原写法是 designRadius.sm —— 属于误把圆角令牌当间距用，且圆角整体下调后
+    // 它会跟着缩到 6；这里改用间距令牌，并与歌单页 ListItem 的标题间距保持一致。
+    marginTop: designSpacing.sm,
     fontWeight: '600',
   },
 })
 
 const PlaylistCard = memo(({ item, width, onPress }: PlaylistCardProps) => {
   const theme = useTheme()
+  const playCount = formatPlayCountText(item.play_count)
 
   const coverStyle = useMemo(
     () => StyleSheet.compose(styles.cover, {
+      // 封面占位底色（封面图未加载时的占位）：封面占位不是按钮，
+      // 不参与「按钮透明度」设置，只随主题色变化。
       backgroundColor: theme['c-primary-light-900-alpha-200'],
     }),
     [theme],
@@ -62,9 +75,9 @@ const PlaylistCard = memo(({ item, width, onPress }: PlaylistCardProps) => {
           url={item.img}
           nativeID={`${NAV_SHEAR_NATIVE_IDS.songlistDetail_pic}_from_${item.id}`}
         />
-        {item.play_count ? (
+        {playCount ? (
           <View style={styles.playCount}>
-            <Text size={11} color="#FFFFFF" numberOfLines={1}>{item.play_count}</Text>
+            <Text style={styles.playCountText} size={11} color="#FFFFFF" numberOfLines={1}>{playCount}</Text>
           </View>
         ) : null}
       </View>

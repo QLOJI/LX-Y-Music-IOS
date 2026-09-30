@@ -168,7 +168,28 @@ const List = forwardRef<ListType, ListProps>(
         const list = listDataRef.current
         const index = list.findIndex(item => item.id === musicInfo.id)
         if (index < 0) return
-        list[index] = musicInfo as LX.Music.MusicInfoOnline
+        // 合并而非整体替换：musicInfoUpdate 携带的是全局播放态里的歌曲对象（只含
+        // LX.Music.MusicInfo 的标准字段），而列表行上可能挂着由列表自己写入的额外字段
+        // ——最典型的是播放历史页 PlayHistory 的 normalizeHistoryMusic 写在行上的
+        // playHistoryId / playHistorySource。整体替换会把它们一并抹掉，后果不止是来源
+        // 徽章消失：
+        //   1) 下方 keyExtractor 用 `playHistoryId ?? item.id`，字段一丢整行 key 变化 →
+        //      该行被卸载重挂载（滚动位置/选中态抖动）；
+        //   2) 历史页行菜单的「移除」要靠 playHistoryId 反查记录 id，字段丢了就命中
+        //      OnlineList handleRemoveMusic 的 `!ids.length` 分支，表现为「移除不了」。
+        // （该事件的唯一发出方是 wy 音质详情回填 src/utils/musicSdk/wy/musicDetail.js，
+        //   所以只有正在播放的那首 wy 歌会踩到；这里写成通用合并，不再逐个列表打补丁。）
+        const prev = list[index] as LX.Music.MusicInfoOnline & {
+          playHistoryId?: string
+          playHistorySource?: LX.Player.PlayHistorySource
+        }
+        const merged = { ...(musicInfo as LX.Music.MusicInfoOnline) } as LX.Music.MusicInfoOnline & {
+          playHistoryId?: string
+          playHistorySource?: LX.Player.PlayHistorySource
+        }
+        if (prev.playHistoryId != null) merged.playHistoryId = prev.playHistoryId
+        if (prev.playHistorySource != null) merged.playHistorySource = prev.playHistorySource
+        list[index] = merged
         setListVersion(version => version + 1)
         onListUpdate?.(list)
       }

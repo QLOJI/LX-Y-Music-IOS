@@ -5,6 +5,7 @@ import { useDrag } from '@/utils/hooks'
 import { setPagerScrollEnabled } from '@/utils/pagerScrollControl'
 import { useSettingValue } from '@/store/setting/hook'
 import { clamp01, createStyle } from '@/utils/tools'
+import { designMotion } from '@/theme/DesignTokens'
 
 // 广播「进度条拖动中」状态：
 // playProgress 的逐秒校准（tickCalibrate）依赖该标志让路，否则拖动期间每秒都会被
@@ -39,13 +40,15 @@ export interface ProgressDrag {
  *   进度条以 tick 节奏阶梯前进（此前我们的 250ms 线性补间是超出上游的自造平滑，已按
  *   对齐要求移除）；
  * - 仅当相邻两次进度的跳变 >2s 时（seek / 后台恢复大跳 / 切歌归零），对这一次变更挂
- *   180ms 标准曲线过渡滑到目标——即上游 watch(|Δ|>2s) → activePlayProgressTransition →
- *   barTransition 类（--duration-fast: 180ms × --ease-standard: cubic-bezier(.22,1,.36,1)）；
+ *   标准曲线过渡滑到目标（时长取 designMotion.quick，2026-10-01 统一动效档定为 200ms）——
+ *   即上游 watch(|Δ|>2s) → activePlayProgressTransition → barTransition 类
+ *   （上游时长原为 --duration-fast: 180ms × --ease-standard: cubic-bezier(.22,1,.36,1)，
+ *   本工程时长按统一速率取 200，曲线照搬上游）；
  *   ≤2s 的短跳上游同样直接落位，不动画。
  * translateX 在原生驱动白名单内，用「全宽条 + 负向位移」表达进度：translateX = (p-1) × 容器宽。
  */
 const SEEK_JUMP_SEC = 2
-const SEEK_TRANSITION_MS = 180
+const SEEK_TRANSITION_MS = designMotion.quick
 const SEEK_EASING = Easing.bezier(0.22, 1, 0.36, 1)
 export const useSmoothProgressAnim = (progress: number, duration: number): Animated.Value => {
   const anim = useRef(new Animated.Value(clamp01(progress))).current

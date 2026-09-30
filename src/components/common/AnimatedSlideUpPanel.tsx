@@ -17,7 +17,13 @@ interface Props {
  * 播放详情 → 设置弹层走的是 RN Modal 的 `animationType="fade"`
  * （原生 `RCTModalHostView` 把它映射为 `UIModalTransitionStyleCrossDissolve`，
  * 系统模态过渡约 0.25~0.35s），本面板取同一频段的 300ms + 线性曲线，
- * 与设置弹层同频（2026-09-30 用户定案：「临时播放列表弹出没有动画，改成跟设置一样」）。
+ * 与设置弹层同频（2026-09-30 用户报「临时播放列表弹出没有动画」后定案：「改成跟设置一样」）。
+ *
+ * 【不要为了和 designMotion.quick(=200) 统一而把它改小】面板 300→200 是**加速**，
+ * 与用户「所有动画放慢一点」的诉求方向相反；且 300 与 Modal.tsx 的 300ms 卸载冗余差值=0，
+ * 缩小后差值直逼契约容忍上限（sim-panel-fade-contract.js invariant 6 要求 ≤100ms），
+ * 等于拆掉用户亲测定下的「同频」还踩到容差边缘。本面板属于「用户已针对具体观感定案」
+ * 的例外，不收敛到 quick。
  *
  * 历史坑：旧实现的 show 用的是 `timing(..., duration: 0)`，等于**从来没有动画**
  * （表现为面板瞬间出现）；hide 还依赖 `timing().start()` 回调去卸载，原生动画回调
@@ -25,6 +31,9 @@ interface Props {
  * 即 d26fa34 修掉的「整页点不动的假死」。所以下面坚持两条：
  * ① 卸载走定时器，绝不挂在动画回调上；② 动画值在隐藏态显式归零。
  */
+// 本值必须保持「数字字面量」形式：契约脚本 scripts/sim-panel-fade-contract.js 用
+// `const FADE_DURATION = (\d+)` 解析它；改成引用 designMotion.quick 会让解析结果为
+// null，invariant 1/6 假失败。改引用前必须先更新该脚本。
 const FADE_DURATION = 300
 // 淡出走完再卸载的冗余（与 components/common/Modal.tsx 的「淡出 ≈250~300ms，留冗余」同思路）
 const UNMOUNT_DELAY = FADE_DURATION + 50

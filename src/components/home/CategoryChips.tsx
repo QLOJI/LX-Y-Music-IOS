@@ -1,6 +1,8 @@
 import { memo, useMemo } from 'react'
 import { Pressable, ScrollView } from 'react-native'
 import { useTheme } from '@/store/theme/hook'
+import { useSettingValue } from '@/store/setting/hook'
+import { applyOpacity } from '@/utils/colorOpacity'
 import { createStyle } from '@/utils/tools'
 import { designRadius, designSpacing, designTypography } from '@/theme/DesignTokens'
 import Text from '@/components/common/Text'
@@ -35,21 +37,25 @@ const styles = createStyle({
 
 const CategoryChips = memo(({ options, selectedId, onChange }: CategoryChipsProps) => {
   const theme = useTheme()
+  const buttonOpacity = useSettingValue('theme.buttonOpacity')
 
+  // 底色/边框随「按钮透明度」淡出，文字色不动。不用容器 style.opacity：
+  // 那会把胶囊里的文字一并变淡，0 时就「什么都不剩」而非「只剩文字」。
+  // 激活态（c-primary 实底）一起处理，避免未激活透明、激活实心的割裂。
   const activeChipStyle = useMemo(
     () => ({
-      backgroundColor: theme['c-primary'],
-      borderColor: theme['c-primary'],
+      backgroundColor: applyOpacity(theme['c-primary'], buttonOpacity),
+      borderColor: applyOpacity(theme['c-primary'], buttonOpacity),
     }),
-    [theme],
+    [theme, buttonOpacity],
   )
 
   const inactiveChipStyle = useMemo(
     () => ({
-      backgroundColor: theme['c-primary-light-900-alpha-200'],
-      borderColor: theme['c-border-background'],
+      backgroundColor: applyOpacity(theme['c-primary-light-900-alpha-200'], buttonOpacity),
+      borderColor: applyOpacity(theme['c-border-background'], buttonOpacity),
     }),
-    [theme],
+    [theme, buttonOpacity],
   )
 
   return (

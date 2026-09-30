@@ -1,6 +1,8 @@
 import { memo, useMemo } from 'react'
 import { Pressable, StyleSheet, View } from 'react-native'
 import { useTheme } from '@/store/theme/hook'
+import { useSettingValue } from '@/store/setting/hook'
+import { applyOpacity } from '@/utils/colorOpacity'
 import { createStyle } from '@/utils/tools'
 import { designRadius, designSpacing, designTypography } from '@/theme/DesignTokens'
 import { SvgIcon } from '@/components/common/Icon'
@@ -41,19 +43,22 @@ const styles = createStyle({
 
 const DailyRecommendCard = memo(({ title, subtitle, onPress }: DailyRecommendCardProps) => {
   const theme = useTheme()
+  const buttonOpacity = useSettingValue('theme.buttonOpacity')
 
+  // 整卡是一颗按钮（点击进入每日推荐）：底色与图标底框随「按钮透明度」淡出。
+  // 只改颜色 alpha，不用容器 style.opacity——否则标题/副标题会一起变淡。
   const cardStyle = useMemo(
     () => StyleSheet.compose(styles.card, {
-      backgroundColor: theme['c-primary-light-900-alpha-300'],
+      backgroundColor: applyOpacity(theme['c-primary-light-900-alpha-300'], buttonOpacity),
     }),
-    [theme],
+    [theme, buttonOpacity],
   )
 
   const iconContentStyle = useMemo(
     () => StyleSheet.compose(styles.iconContent, {
-      backgroundColor: theme['c-primary'],
+      backgroundColor: applyOpacity(theme['c-primary'], buttonOpacity),
     }),
-    [theme],
+    [theme, buttonOpacity],
   )
 
   return (

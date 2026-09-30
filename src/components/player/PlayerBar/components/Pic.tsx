@@ -1,6 +1,7 @@
 import { StyleSheet, View } from 'react-native'
 import { usePlayerMusicInfo } from '@/store/player/hook'
 import { scaleSizeH } from '@/utils/pixelRatio'
+import { designRadius } from '@/theme/DesignTokens'
 import Image from '@/components/common/Image'
 import { useCallback } from 'react'
 import { setLoadErrorPicUrl, setMusicInfo } from '@/core/player/playInfo'
@@ -13,7 +14,9 @@ const styles = StyleSheet.create({
   image: {
     width: PIC_HEIGHT,
     height: PIC_HEIGHT,
-    borderRadius: 12,
+    // 原内联 12 与旧 designRadius.sm 同值：改用令牌引用，让迷你封面跟随
+    // 本次倒角整体下调（12→6，向 REF 同元素 2~4 的量级靠拢），以后调整只改令牌
+    borderRadius: designRadius.sm,
   },
 })
 

@@ -28,6 +28,7 @@ import { batchDownload, downloadMusic } from '@/core/download'
 import { useI18n } from '@/lang'
 import { removeWyLikedSong, updateWySubscribedPlaylistTrackCount } from '@/store/user/action.ts'
 import { clearListDetailCache } from '@/core/songlist.ts'
+import { removePlayHistory } from '@/core/player/playHistory'
 import commonState from '@/store/common/state'
 import { useWySubscribedPlaylists } from '@/store/user/hook.ts'
 import type { SubscribedPlaylistInfo } from '@/store/user/state'
@@ -174,7 +175,46 @@ export default forwardRef<OnlineListType, OnlineListProps>(
 
       const musicInfos = info.selectedList.length ? info.selectedList : [info.musicInfo]
 
-      if (listId.startsWith('wy__')) {
+      // 播放历史：本地的历史记录，不走任何在线歌单接口，直接按记录 id 落盘删除。
+      // 必须放在下面 wy__/tx__/kg__ 之前 —— play_history 不是在线歌单前缀，
+      // 之前会一路落到末尾的「不支持的操作」分支，点「移除」什么都不发生。
+      // 记录 id 由 PlayHistory 页 normalizeHistoryMusic 挂在 playHistoryId 上。
+      if (listId === 'play_history') {
+        type HistoryRow = LX.Music.MusicInfoOnline & { playHistoryId?: string }
+        const idOf = (m: LX.Music.MusicInfoOnline) => (m as HistoryRow).playHistoryId
+        const ids = musicInfos.map(idOf).filter((id): id is string => !!id)
+
+        // 兜底反查：行上的 playHistoryId 可能已被 musicInfoUpdate 抹掉（根因见
+        // List.tsx handleMusicInfoUpdate 的合并注释）。历史记录 id 形如
+        // `${musicInfo.id}_${playedAt}`，而每一行同时还保留着原始 musicInfo.id，
+        // 因此可以按歌曲 id 从当前列表里反查回仍在的那一行，捞出它挂着的 playHistoryId。
+        // 只有反查也落空（例如这首歌已不在当前日期区间的列表里）才认定「找不到记录」。
+        if (ids.length < musicInfos.length) {
+          const rows = (listRef.current?.getList() ?? []) as HistoryRow[]
+          for (const m of musicInfos) {
+            if (idOf(m)) continue
+            const hit = rows.find(row => row.id === m.id && row.playHistoryId)
+            if (hit?.playHistoryId) ids.push(hit.playHistoryId)
+          }
+        }
+
+        if (!ids.length) {
+          toast('移除失败：未找到历史记录')
+          return
+        }
+        // 用落盘层回传的真实删除条数判定成败：此前无论删没删掉都提示「移除成功」，
+        // 是「点了移除、提示成功、列表纹丝不动」这种观感的直接来源。
+        void removePlayHistory(ids).then((removedCount) => {
+          if (!removedCount) {
+            toast('移除失败：记录已不存在，请下拉刷新')
+            return
+          }
+          toast(t('list_edit_action_tip_remove_success'))
+          hancelExitSelect()
+        }).catch((err: Error) => {
+          toast('移除失败: ' + err.message)
+        })
+      } else if (listId.startsWith('wy__')) {
         const playlistId = listId.replace('wy__', '')
         const sourcePlaylist = subscribedPlaylists.find(p => String(p.id) === playlistId) as (SubscribedPlaylistInfo & { creator?: { nickname?: string } }) | undefined
         const songIds = musicInfos.map(m => m.meta.songId)

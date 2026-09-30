@@ -9,6 +9,7 @@ import { useBgPic } from '@/store/common/hook'
 import { useBlurredPic } from '@/utils/hooks/useBlurredPic'
 
 import { useSettingValue } from '@/store/setting/hook'
+import { designMotion } from '@/theme/DesignTokens'
 interface Props {
   children: React.ReactNode
   // 进入该页面时，动态背景从底色平滑淡入到完整背景（用于从迷你播放器进入详情页，
@@ -35,7 +36,7 @@ export default ({ children, backgroundFadeIn = false }: Props) => {
   const [blurredPicUri, handleBlurredPicError, blurredPicColor] = useBlurredPic(pic, BLUR_RADIUS)
 
   // 挂载当帧是否已同步拿到模糊图（Home 与详情页共用同一张背景图，缓存命中的是常态）。
-  // 已拿到就说明第一帧就能画出真实背景，此时必须【跳过白底淡入】——那段 350ms 的白底
+  // 已拿到就说明第一帧就能画出真实背景，此时必须【跳过白底淡入】——那段淡入的白底
   // 正是“点迷你播放器进入播放详情页闪白”的主因；不满足时（冷启动 / 首次遇到该背景，
   // 模糊还没算好）仍保留淡入，避免“空白底 → 背景”的硬跳变。
   const hadBlurredPicAtMount = useRef(blurredPicUri != null).current
@@ -54,8 +55,11 @@ export default ({ children, backgroundFadeIn = false }: Props) => {
     bgOpacity.setValue(0)
     const anim = Animated.timing(bgOpacity, {
       toValue: 1,
-      // 与 navigation 整页 alpha 转场（350ms）对齐，确保底色→背景与整页淡入同步完成。
-      duration: 350,
+      // 时长统一取 designMotion.quick（2026-10-01 定案：全局交互动效 150→200）。
+      // 注：旧注释称「与 navigation 整页 alpha 转场（350ms）对齐」，但该自定义转场早已随
+      // 「RNN 自定义转场卡死事故」被移除（push 全部走系统默认转场），本淡入实际是独立的
+      // 一次性装饰动画，按统一速率收口即可。
+      duration: designMotion.quick,
       useNativeDriver: true,
     })
     anim.start()
@@ -133,9 +137,9 @@ export default ({ children, backgroundFadeIn = false }: Props) => {
               flexDirection: 'column',
               backgroundColor: pic ? undefined : theme['c-main-background'],
             },
-            // 内容层不再单独淡入：整页的淡入/淡出由 navigation 的 RNN content alpha 转场统一
-            // 负责，这里若再叠一层 bgOpacity 会造成“双重淡入”让文字出现偏慢。背景白→彩的
-            // 淡入由上方背景层独立负责，二者同步即可形成连贯观感。
+            // 内容层不单独淡入：页面转场走系统默认（无自定义 content alpha 转场），这里若再
+            // 叠一层 bgOpacity 会造成“双重淡入”让文字出现偏慢。背景白→彩的淡入由上方背景层
+            // 独立负责（designMotion.quick），内容层随转场直接呈现。
           ]}
         >
           {contentReady ? children : null}

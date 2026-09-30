@@ -189,7 +189,7 @@ const styles = StyleSheet.create({
   inputRow: { flexDirection: 'row', alignItems: 'center', borderBottomWidth: 1, paddingVertical: 14, marginHorizontal: 20 },
   input: { flex: 1, fontSize: 15, padding: 0 },
   loginBtn: { marginTop: 30, marginHorizontal: 20, paddingVertical: 14, borderRadius: 24, alignItems: 'center', justifyContent: 'center' },
-  smsTip: { textAlign: 'center', marginTop: 20, lineHeight: 18, paddingHorizontal: 20 },
+  smsTip: { textAlign: 'center', marginTop: 20, lineHeight: 16, paddingHorizontal: 20 }, // A-6：离群行高收敛 18→16
   verifyOverlay: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center' },
   verifyBox: { width: '90%', height: 350, borderRadius: 16, overflow: 'hidden', backgroundColor: '#fff' },
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center' },

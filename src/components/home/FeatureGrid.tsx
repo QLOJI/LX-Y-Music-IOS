@@ -5,6 +5,7 @@ import { NAV_MENUS, type NAV_ID_Type } from '@/config/constant'
 import { confirmDialog, createStyle, exitApp as backHome } from '@/utils/tools'
 import { useTheme } from '@/store/theme/hook'
 import { useSettingValue } from '@/store/setting/hook'
+import { applyOpacity } from '@/utils/colorOpacity'
 import { useI18n } from '@/lang'
 import { exitApp, setNavActiveId } from '@/core/common'
 import { designRadius, designSpacing } from '@/theme/DesignTokens'
@@ -92,29 +93,33 @@ const FeatureGrid = memo(() => {
     [navStatus, showBackBtn, showExitBtn, wyCookie, kgCookie, txCookie, myListVisibility],
   )
 
+  const buttonOpacity = useSettingValue('theme.buttonOpacity')
+
+  // 入口行的底色、按下态高亮与图标底框都随「按钮透明度」淡出；文字色与图标色不动。
+  // 只作用于颜色 alpha，不用容器 style.opacity——后者会把整行文字一起变淡。
   const rowStyle = useMemo(
     () => ({
-      backgroundColor: theme['c-primary-light-900-alpha-300'],
+      backgroundColor: applyOpacity(theme['c-primary-light-900-alpha-300'], buttonOpacity),
     }),
-    [theme],
+    [theme, buttonOpacity],
   )
   const rowPressedStyle = useMemo(
     () => ({
-      backgroundColor: theme['c-primary-background-hover'],
+      backgroundColor: applyOpacity(theme['c-primary-background-hover'], buttonOpacity),
     }),
-    [theme],
+    [theme, buttonOpacity],
   )
-  // 图标底框：与歌单卡片的封面占位同款圆角方块
+  // 图标底框：与歌单卡片的封面占位同款圆角方块（属按钮装饰底色，一并淡出）
   const iconBoxStyle = useMemo(
     () => ({
       width: 40,
       height: 40,
       borderRadius: designRadius.md,
-      backgroundColor: theme['c-primary-background'],
+      backgroundColor: applyOpacity(theme['c-primary-background'], buttonOpacity),
       alignItems: 'center' as const,
       justifyContent: 'center' as const,
     }),
-    [theme],
+    [theme, buttonOpacity],
   )
 
   return (

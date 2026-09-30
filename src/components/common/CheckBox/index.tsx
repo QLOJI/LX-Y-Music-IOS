@@ -5,6 +5,8 @@ import CheckBox from './Checkbox'
 import { createStyle, tipDialog } from '@/utils/tools'
 import { scaleSizeH, scaleSizeW } from '@/utils/pixelRatio'
 import { useTheme } from '@/store/theme/hook'
+import { useSettingValue } from '@/store/setting/hook'
+import { applyOpacity } from '@/utils/colorOpacity'
 import Text from '../Text'
 import { Icon } from '../Icon'
 import { designRadius, designSpacing } from '@/theme/DesignTokens'
@@ -51,6 +53,7 @@ export default ({
   block = false,
 }: CheckBoxProps) => {
   const theme = useTheme()
+  const buttonOpacity = useSettingValue('theme.buttonOpacity')
   const [isDisabled, setDisabled] = useState(false)
   const tintColors = {
     true: theme['c-primary'],
@@ -96,6 +99,10 @@ export default ({
   // 统一行样式（对齐推荐页「排行榜」按钮）：圆角 designRadius.md + 1px 边框 +
   // 半透明主题色底。整行（block）时卡片铺满可用宽度、不预留右外边距；
   // 并排的小选项（非 block）保留右外边距，充当相邻选项之间的间隙。
+  // card 变体是按钮式行（设置页所有开关/单选行），底色与边框按「按钮」消费
+  // 「按钮透明度」：只对颜色 alpha 做乘算，勾选标记与文字不受影响
+  //（严禁用容器 style.opacity，那会把内容一起变淡）。
+  // plain 变体供弹窗/菜单等自带底色的场景沿用，不消费。
   const contentStyle = useMemo(() => {
     const base = { ...styles.content, marginBottom: scaleSizeH(marginBottom) }
     if (variant !== 'card') return base
@@ -103,15 +110,15 @@ export default ({
       ...base,
       borderRadius: designRadius.md,
       borderWidth: 1,
-      borderColor: theme['c-border-background'],
-      backgroundColor: theme['c-primary-light-900-alpha-200'],
+      borderColor: applyOpacity(theme['c-border-background'], buttonOpacity),
+      backgroundColor: applyOpacity(theme['c-primary-light-900-alpha-200'], buttonOpacity),
       paddingHorizontal: designSpacing.sm,
       minHeight: block ? 52 : 40,
       marginRight: block ? 0 : designSpacing.sm,
       // 卡片之间保证至少 8pt 行距（调用方传了更大的 marginBottom 时以调用方为准）
       marginBottom: Math.max(scaleSizeH(marginBottom), designSpacing.xs),
     }
-  }, [theme, marginBottom, variant, block])
+  }, [theme, marginBottom, variant, block, buttonOpacity])
 
   const labelStyle = useMemo(() => ({
     ...styles.label,

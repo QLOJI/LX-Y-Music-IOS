@@ -1,8 +1,8 @@
 import { memo, useCallback, useEffect, useMemo, useRef } from 'react'
 import { Animated, Easing, View, TouchableOpacity } from 'react-native'
 import { useHorizontalMode, useKeyboard } from '@/utils/hooks'
-import { scaleSizeW } from '@/utils/pixelRatio'
-import { useTabBarCollapsed, setMiniPlayerHeight } from '@/utils/tabBarCollapse'
+import { scaleSizeW, scaleSizeH } from '@/utils/pixelRatio'
+import { useTabBarCollapsed, setMiniPlayerHeight, useMiniPlayerHeight, getCollapsedPillSize } from '@/utils/tabBarCollapse'
 import Pic from './components/Pic'
 import Title from './components/Title'
 import PlayInfo from './components/PlayInfo'
@@ -15,7 +15,15 @@ import { PLAY_DETAIL_SCREEN } from '@/navigation/screenNames'
 import commonState from '@/store/common/state'
 import { useSafeAreaBottom, useScreenCovered } from '@/store/common/hook'
 import { usePlayerMusicInfo } from '@/store/player/hook'
-import { designRadius, designSpacing, bottomFloatGap } from '@/theme/DesignTokens'
+import {
+  designRadius,
+  designSpacing,
+  bottomFloatGap,
+  tabBarBaseHeight,
+  collapsedFloatBottom,
+  collapsedPillGap,
+  floatDistance,
+} from '@/theme/DesignTokens'
 import LiquidGlass from '@/components/common/LiquidGlass'
 
 export default memo(({ componentId, isHome = false }: { componentId?: string, isHome?: boolean }) => {
@@ -42,13 +50,23 @@ export default memo(({ componentId, isHome = false }: { componentId?: string, is
   // Tab 栏收起时（仅 Home）：迷你播放器下移到收起按钮所在行并左侧让位（对齐参考交互）。
   // 动画为逐帧收窄：bottom/paddingLeft 两布局属性随 220ms 插值同步变化，胶囊边收窄
   // 边滑入落点。收起/展开过程玻璃逐帧变形（背景捕获的动画跟踪由引擎内建）。
+  // 收起态几何与圆钮**同源**（getCollapsedPillSize / collapsedFloatBottom /
+  // collapsedPillGap 三个共享量）：圆钮的左缘、尺寸、底边都由同一组常量算出，
+  // 两边不再各算各的——「同排」靠共享事实来源保证，不靠两边把数字写的一样。
   const tabBarCollapsed = useTabBarCollapsed()
   const effectiveCollapsed = isHome && tabBarCollapsed
+  // 圆钮尺寸（= 实测的播放器高度）：收起态的左侧让位要用它，与 ModernTabBar 取同一个值
+  const miniPlayerHeight = useMiniPlayerHeight()
+  const pillSize = getCollapsedPillSize(miniPlayerHeight)
+  // 「Tab栏距离」滑块（0-100）：展开态播放器底边与 Tab 栏顶边之间的间距来源
+  const tabBarDistance = useSettingValue('theme.tabBarDistance')
   const collapseAnim = useRef(new Animated.Value(effectiveCollapsed ? 1 : 0)).current
   useEffect(() => {
     // bottom/paddingLeft 属布局属性，原生驱动不支持，走 JS 驱动（状态变化低频，开销可忽略）
     Animated.timing(collapseAnim, {
       toValue: effectiveCollapsed ? 1 : 0,
+      // 220 为有意保留（2026-10-01 定案）：收起/展开不属于 designMotion.quick
+      // （150→200）那一档，用户要求整体放慢——把 220 改成 200 反而是加速，与意图相反。
       duration: 220,
       easing: Easing.out(Easing.quad),
       useNativeDriver: false,
@@ -75,12 +93,23 @@ export default memo(({ componentId, isHome = false }: { componentId?: string, is
       // 液态玻璃模式：背景折射由原生 LiquidGlass（vendored LiquidGlassKit）实时渲染，
       // 容器透明、无描边（纯玻璃质感，玻璃材质自带明暗自适应的染色与边缘光）。
       // 外圈投影已移除（用户反馈胶囊下方有「底子」）。
-      // 首页悬浮态比收起态高出一个 tab 栏高 + 12pt 间距；tab 栏底缝收紧
-      // （12→4）后整体同步下移 8，保持与 tab 栏顶的相对间距不变
+      //
+      // 展开态底边 = 安全区 + 底缝 + Tab 栏高 + 「Tab栏距离」滑块距离：
+      //   safeAreaBottom + bottomFloatGap（裸值）+ scaleSizeH(tabBarBaseHeight)
+      //   （与 ModernTabBar 的 bar height 同 token、同函数）+ floatDistance(滑块)（裸值）。
+      //   三段各自只缩放一次：字体变化时播放器底边与 Tab 栏顶边一起移动，两者间距
+      //   恒等于滑块距离（不再随字体漂移）；滑块因此同时接进了渲染路径。
+      //   （横屏沿用既有 76 裸值，未纳入本次口径统一。）
       const bottomExpanded = safeAreaBottom + (isHome
-        ? (isHorizontalMode ? 76 : designSpacing.xl + 48)
+        ? (isHorizontalMode ? 76 : bottomFloatGap + scaleSizeH(tabBarBaseHeight) + floatDistance(tabBarDistance))
         : bottomFloatGap)
-      const bottomCollapsed = safeAreaBottom + bottomFloatGap
+      // 收起态底边：与 ModernTabBar 圆钮共用同一条公式（safeArea + gap），不是重算一遍
+      const bottomCollapsed = collapsedFloatBottom(safeAreaBottom)
+      // 收起态左让位 = 圆钮左缘 + 圆钮尺寸 + 间距，三项全部来自共享事实来源：
+      // 左缘 scaleSizeW(24)（与 Tab 栏左右缘、展开态左 padding 同一个 24 基准，不能再
+      // 混裸值——裸值 + 缩放值混写会让字体 ≠1 时左右缘分叉，第一轮「大小/位置不一致」
+      // 的根因）、尺寸 pillSize（与圆钮同源）、间距 collapsedPillGap（裸值常量）。
+      const paddingLeftCollapsed = scaleSizeW(designSpacing.lg) + pillSize + collapsedPillGap
       return (
         <Animated.View
           style={[
@@ -92,7 +121,9 @@ export default memo(({ componentId, isHome = false }: { componentId?: string, is
               }),
               paddingLeft: collapseAnim.interpolate({
                 inputRange: [0, 1],
-                outputRange: [designSpacing.lg, designSpacing.lg + scaleSizeW(56) + designSpacing.sm],
+                // 两端同为 scaleSizeW 口径：展开端与右 padding（styles.wrapper 的
+                // paddingHorizontal）同值，任意字体下左右缘都与 Tab 栏重合
+                outputRange: [scaleSizeW(designSpacing.lg), paddingLeftCollapsed],
               }),
             },
             // 关键：wrapper 全宽且盖在收起按钮上层，必须 box-none——否则透明区域
@@ -119,7 +150,7 @@ export default memo(({ componentId, isHome = false }: { componentId?: string, is
         </Animated.View>
       )
     },
-    [glassOpacity, liquidGlassOn, screenCovered, theme.isDark, isHome, handleNavigate, safeAreaBottom, isHorizontalMode, collapseAnim],
+    [glassOpacity, liquidGlassOn, screenCovered, theme.isDark, isHome, handleNavigate, safeAreaBottom, isHorizontalMode, collapseAnim, pillSize, tabBarDistance, tabBarCollapsed],
   )
 
   return keyboardShown ? null : playerComponent
