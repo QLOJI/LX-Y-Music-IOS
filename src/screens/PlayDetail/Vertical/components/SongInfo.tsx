@@ -1,5 +1,5 @@
 import { memo, useCallback } from 'react'
-import { View, TouchableOpacity } from 'react-native'
+import { View, TouchableOpacity, type LayoutChangeEvent } from 'react-native'
 import { usePlayMusicInfo } from '@/store/player/hook'
 import { useTheme } from '@/store/theme/hook'
 import { navigations } from '@/navigation'
@@ -12,7 +12,19 @@ import { useIsWyLiked, useIsTxLiked, useIsKgLiked } from '@/store/user/hook'
 import { useWindowSize } from '@/utils/hooks'
 import SourceQualityBadge from '../../components/SourceQualityBadge'
 
-export default memo(({ componentId }: { componentId: string }) => {
+export default memo(({ componentId, onLayout }: {
+  componentId: string
+  /**
+   * 根节点的布局回调（可选）。VerticalNew 用它实测「信息块顶边 → 歌名栏视觉顶边」的距离，
+   * 也就是本组件 styles.container 上的 marginTop。
+   *
+   * 为什么需要它：封面要居中在「返回栏底边 → 歌名栏顶边」之间，而封面所在容器的 flex
+   * 居中只认得信息块的**外框**顶边；外框比歌名栏视觉顶边高这一个 margin，封面因此整体
+   * 偏上 margin/2（大屏约 10pt，肉眼可见）。把这个值交出去，上层才能把居中区间下边界
+   * 平移到歌名栏视觉顶边。**不要删**：删掉后封面会重新偏上。
+   */
+  onLayout?: (event: LayoutChangeEvent) => void
+}) => {
   const playMusicInfo = usePlayMusicInfo()
   const theme = useTheme()
   const { height: winHeight } = useWindowSize()
@@ -90,7 +102,7 @@ export default memo(({ componentId }: { componentId: string }) => {
   }, [songName, artistText])
 
   return (
-    <View style={[styles.container, isSmallWindow && { marginTop: 8, marginBottom: 4 }]}>
+    <View onLayout={onLayout} style={[styles.container, isSmallWindow && { marginTop: 8, marginBottom: 4 }]}>
       <View style={styles.songNameRow}>
         <TouchableOpacity onPress={handleSongNamePress} activeOpacity={0.6} style={styles.songNameTouch}>
           <Text

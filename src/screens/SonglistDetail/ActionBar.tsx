@@ -4,6 +4,8 @@ import Button from '@/components/common/Button'
 
 import { createStyle, toast } from '@/utils/tools'
 import { useTheme } from '@/store/theme/hook'
+import { useSettingValue } from '@/store/setting/hook'
+import { applyOpacity } from '@/utils/colorOpacity'
 import Text from '@/components/common/Text'
 import { Icon } from '@/components/common/Icon'
 import { designRadius, designSpacing } from '@/theme/DesignTokens'
@@ -14,6 +16,7 @@ import { useListInfo } from './state'
 
 export default memo(({ onBack }: { onBack?: () => void }) => {
   const theme = useTheme()
+  const buttonOpacity = useSettingValue('theme.buttonOpacity')
   const t = useI18n()
   const info = useListInfo()
 
@@ -48,7 +51,9 @@ export default memo(({ onBack }: { onBack?: () => void }) => {
         onPress={handlePlayAll}
         style={StyleSheet.compose(styles.controlBtn, {
           flexGrow: 1.45,
-          backgroundColor: theme['c-primary'],
+          // 按钮底色随「按钮透明度」设置淡出；图标/文字色不动
+          // （不用容器 style.opacity，否则内容会一起变淡）
+          backgroundColor: applyOpacity(theme['c-primary'], buttonOpacity),
         })}
       >
         <View style={styles.primaryContent}>
@@ -61,7 +66,8 @@ export default memo(({ onBack }: { onBack?: () => void }) => {
       <Button
         onPress={handleCollection}
         style={StyleSheet.compose(styles.controlBtn, {
-          backgroundColor: theme['c-primary-background'],
+          // 同上：只淡按钮自身底色，文字色不动
+          backgroundColor: applyOpacity(theme['c-primary-background'], buttonOpacity),
         })}
       >
         <Text style={{ ...styles.controlBtnText, color: theme['c-primary-font'] }}>
@@ -71,7 +77,8 @@ export default memo(({ onBack }: { onBack?: () => void }) => {
       <Button
         onPress={onBack}
         style={StyleSheet.compose(styles.controlBtn, {
-          backgroundColor: theme['c-button-background'],
+          // 同上：只淡按钮自身底色，文字色不动
+          backgroundColor: applyOpacity(theme['c-button-background'], buttonOpacity),
         })}
       >
         <Text style={{ ...styles.controlBtnText, color: theme['c-primary-font'] }}>{t('back')}</Text>

@@ -1,5 +1,5 @@
 import { memo, useState, useRef, useMemo, useEffect, useCallback } from 'react'
-import { View, AppState } from 'react-native'
+import { View, AppState, type LayoutChangeEvent } from 'react-native'
 import PagerView, { type PagerViewOnPageSelectedEvent } from 'react-native-pager-view'
 import MiniLyric from '../components/MiniLyric'
 import Pic from './Pic'
@@ -33,6 +33,33 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
   const showLyricRef = useRef(false)
   const playlistRef = useRef<PlayerPlaylistType>(null)
   const [pagerHeight, setPagerHeight] = useState(0)
+  // 「返回栏底边 → 信息栏顶边」的可用高度（pt）。页面容器顶就是返回栏底边，
+  // infoContainer 的 onLayout.y = 从容器顶量到信息块顶边的距离，即该可用高度。
+  // 交接给 MiniLyric 的 maxHeight（可选 prop，W2 拥有）；用 onLayout 实测而不是
+  // 按字号/行数估算——估算会随 global.lx.fontSize 浮动而失真。
+  // setState 用同值短路：onLayout 与重渲染之间不会互相触发，布局真的变了才会更新。
+  const [coverRegionHeight, setCoverRegionHeight] = useState(0)
+  const handleInfoContainerLayout = useCallback(({ nativeEvent }: LayoutChangeEvent) => {
+    const y = Math.round(nativeEvent.layout.y)
+    if (y <= 0) return
+    setCoverRegionHeight(prev => (prev === y ? prev : y))
+  }, [])
+  // 「信息块外框顶边 → 歌名栏视觉顶边」的距离，等于 SongInfo 自己的 marginTop
+  //（大屏 20 / 小屏 8，见 SongInfo.tsx 的 styles.container 及其 isSmallWindow 分支）。
+  //
+  // 为什么需要它：封面要居中在「返回栏底边 → 歌名栏顶边」之间，而 picContainer 的
+  // flex 居中能认的下边界只是信息块的**外框**顶边。外框把 SongInfo 的 marginTop 也算了
+  // 进去，比歌名栏视觉顶边高出这一个 margin —— 于是封面整体偏上 margin/2
+  //（大屏 20/2 = 10pt，正是「封面偏返回栏一点」的量）。
+  // 把它实测出来加进 picContainer 的 paddingTop：paddingTop=M 会让 flex 居中的内容
+  // 在 [M, H] 里重新居中，中心恰好下移 M/2，封面落回真正的中线。
+  // 必须实测而不是写死：小屏 override（8）、global.lx.fontSize 缩放都会改这个值。
+  const [songInfoOffset, setSongInfoOffset] = useState(0)
+  const handleSongInfoLayout = useCallback(({ nativeEvent }: LayoutChangeEvent) => {
+    const y = Math.round(nativeEvent.layout.y)
+    if (y < 0) return
+    setSongInfoOffset(prev => (prev === y ? prev : y))
+  }, [])
   const { height: winHeight } = useWindowSize()
   const miniLyricAlign = useSettingValue('playDetail.style.miniLyricAlign')
   // 用 ref 追踪滑动方向，避免高频 onScroll 触发大量 setState 导致卡顿
@@ -72,10 +99,22 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
   }, [])
 
   useEffect(() => {
+    // 本屏是否在 RNN 组件栈顶（即真正可见）：componentIds 自栈底到栈顶，
+    // 判据与 useScreenCovered / useHomeCovered 同源。被压栈页（评论/设置/歌单详情…）
+    // 盖住时本屏不可见，屏幕常亮必须让位，否则用户翻别的页面时屏幕会一直亮着（常亮泄漏）。
+    const isScreenOnTop = (ids: CommonState['componentIds']) => {
+      return String(ids[ids.length - 1]?.id) === String(componentId)
+    }
+
     let appstateListener = AppState.addEventListener('change', (state) => {
       switch (state) {
         case 'active':
-          if (showLyricRef.current && !commonState.componentIds.find(item => item.name === COMPONENT_IDS.comment)) screenkeepAwake()
+          // 回前台补齐常亮：只有「歌词页在显示 + 本屏可见（未被评论页盖住）」才点亮。
+          if (
+            showLyricRef.current &&
+            isScreenOnTop(commonState.componentIds) &&
+            !commonState.componentIds.find(item => item.name === COMPONENT_IDS.comment)
+          ) screenkeepAwake()
           break
         case 'background':
           screenUnkeepAwake()
@@ -84,8 +123,16 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
     })
 
     const handleComponentIdsChange = (ids: CommonState['componentIds']) => {
-      if (ids.find(item => item.name === COMPONENT_IDS.comment)) screenUnkeepAwake()
-      else if (AppState.currentState === 'active') screenkeepAwake()
+      const commentCovered = !!ids.find(item => item.name === COMPONENT_IDS.comment)
+      // 本屏被压栈页盖住或评论页全屏覆盖：没有可见的歌词页，先熄掉常亮。
+      if (!isScreenOnTop(ids) || commentCovered) {
+        screenUnkeepAwake()
+      } else if (AppState.currentState === 'active' && showLyricRef.current) {
+        // 只有「歌词页在显示 + 本屏可见 + 前台」才重新点亮。原实现无条件 screenkeepAwake()——
+        // 封面页（showLyricRef=false，onPageSelected 里已显式熄灯）和「本屏被压栈页盖住」
+        // 这两种不可见场景也会把屏幕点亮，是常亮泄漏。
+        screenkeepAwake()
+      }
     }
 
     // 进度条拖动期间禁用 PagerView 横滑，避免与“切到歌词页”的原生手势冲突
@@ -116,30 +163,33 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
 
   const containerPaddingH = useMemo(() => scaleSizeW(10), [])
   const isSmallWindow = winHeight < 700
-  // 歌曲信息块（歌名/歌手/专辑 + 迷你歌词）整体上移。
-  // picPageContainerNew 用 justifyContent:'space-between'（封面贴顶、信息块贴底），
-  // 容器高度里扣掉 paddingBottom 后，剩余的多余空间全部落到「封面 ↔ 信息块」的中缝上，
-  // 因此加大底部内边距 = 把信息块整体往上推，封面位置与尺寸都不受影响。
+  // 封面页纵向布局（2026-10-01 改为「封面居中」，需求：旋转封面在返回栏与信息栏之间居中）：
+  // picPageContainerNew 仍是 space-between（信息块贴底），但 picContainer 改成了
+  // flex:1 + justifyContent:'center' —— 它吃掉「信息块以上」的全部剩余空间，封面在其中居中。
+  // 居中区间恰好就是「返回栏底边 → 信息栏顶边」：容器顶 = 返回栏底边；区间下边界 =
+  // 信息块顶边 —— 容器 paddingTop 与信息块 marginTop 同为 containerPaddingH，一上一下正好抵消。
+  // 不要改成写死的 top 偏移：容器高度随机型/字号变化，写死必然再次偏心。
   //
-  // 取值必须保证「封面 + 信息块 + paddingBottom ≤ 容器高度」，否则 flexShrink:0 的
-  // 信息块会被挤出容器底、压到下方控制条上。迷你歌词扩到 3 行并放大字号后信息块明显变高：
-  //   390x844（用户机型）：容器约 511pt，封面 146 + 信息块约 320（3 行 + 行距 8）→ 中缝约 45pt。
-  //                        取 12pt：中缝约 48pt、信息块上移约 95pt、
-  //                        底部仍留 12pt，封面与歌曲名之间保持约 48pt 呼吸间距。
-  //                        12pt 是按用户反馈「三行歌词整体下移一点」定的。注意两个效应会叠加：
-  //                        ① 信息块贴底，减小 paddingBottom 会让整块（歌词 + 歌名）一起下移；
-  //                           42 → 12 即下移 30pt。
-  //                        ② 行距由 2 加大到 8 会让歌词块本身变高 18pt，而信息块贴底，
-  //                           多出的高度全往上长，等价于把歌词块顶（连带整块）再上推 18pt。
-  //                        净效果 = 30 - 18 ≈ 下移 12pt（与需求「整体下移一点」吻合）；
-  //                        红框（歌名）位于歌词块上方、跟着一起动，故同样净下移 12pt。
-  //   小屏（iPhone SE 667pt）：容器仅约 384pt，封面 + 信息块几乎占满，中缝只剩约 11pt，
-  //                        再做上移必然溢出，故小屏不做上移（paddingBottom 归 0），
-  //                        仅保留字号放大与小歌词行数降级（见 MiniLyric 的 isSmallWindow）。
+  // PAGE_BOTTOM_PADDING（大屏 12pt / 小屏 0）的语义与旧版不同了：
+  // 信息块仍贴底，但封面已经居中——paddingBottom 加大 Δ 会把信息块连同封面中心一起上移 Δ/2
+  //（旧版封面贴顶时它只影响中缝、封面完全不动）。
+  // 取值仍须保证「封面 + 信息块 + paddingBottom ≤ 容器高度」，否则 flexShrink:0 的信息块
+  // 会被挤出容器底、压到下方控制条上（封面是居中溢出，信息块是直接顶出）。
+  //   大屏（390x844）：容器约 511pt，取 12pt 给底部留出与控制条的呼吸空间；
+  //                    12 的来源：上一轮按用户反馈「三行歌词整体下移一点」调定
+  //                    （42→12 下移 30pt、行距 2→8 上推 18pt，净下移约 12pt）。
+  //   小屏（iPhone SE 667pt）：容器仅约 384pt，空间不足，paddingBottom 归 0，
+  //                    仅保留字号放大与小歌词行数降级（见 MiniLyric 的 isSmallWindow）。
   const PAGE_BOTTOM_PADDING = 12
   const pageBottomPadding = useMemo(() => ({
     paddingBottom: isSmallWindow ? 0 : PAGE_BOTTOM_PADDING,
   }), [isSmallWindow])
+  // 小歌词的 style 数组 memo 化：内联数组每次渲染都是新引用，会让 memo(MiniLyric) 失效——
+  // 滚动/切歌期父级重渲染会连带小歌词重渲染（抖动隔离的前提，见 W2 的小歌词重写）。
+  const miniLyricStyle = useMemo(() => [
+    styles.miniLyricContainerNew,
+    miniLyricAlignStyles[miniLyricAlign as keyof typeof miniLyricAlignStyles],
+  ], [miniLyricAlign])
 
   return (
     <>
@@ -159,17 +209,25 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
         >
           <View collapsable={false} style={styles.pageContainer}>
             <View collapsable={false} style={[styles.picPageContainerNew, pageBottomPadding, { paddingTop: containerPaddingH }]}>
-              <View style={styles.picContainer}>
-                {/* 移植用户实测正常的 v20260826（e58d1ab1）VerticalOld 封面用法：
-                    不传 maxCoverHeight，让 Pic 内部按 isNewUI=false 计算封面尺寸
-                    （50% 高/85% 宽，container 居中布局）——这正是参考版封面正常的分支。 */}
-                <Pic componentId={componentId} />
+              {/* picContainer 是「返回栏底边 → 信息栏顶边」的居中区域（样式见 styles.picContainer）；
+                  Pic 自己按设置决定尺寸与形状（playDetail.style.coverSize / coverShape），此处不传尺寸。 */}
+              <View style={[styles.picContainer, songInfoOffset > 0 && { paddingTop: songInfoOffset }]}>
+                {/* active：封面自转的可见性门控之一——PagerView 会一直保持封面页挂载，
+                    划到歌词页后必须让 Pic 停掉旋转动画（另一个门控是播放态和屏幕未被覆盖，见 Pic.tsx）。 */}
+                <Pic componentId={componentId} active={pageIndex === 0} />
               </View>
-              <View style={[styles.infoContainer, { paddingHorizontal: containerPaddingH, marginTop: containerPaddingH }]}>
-                <SongInfo componentId={componentId} />
+              <View
+                collapsable={false}
+                style={[styles.infoContainer, { paddingHorizontal: containerPaddingH, marginTop: containerPaddingH }]}
+                onLayout={handleInfoContainerLayout}
+              >
+                <SongInfo componentId={componentId} onLayout={handleSongInfoLayout} />
+                {/* maxHeight = 上方实测的「返回栏底边 → 信息栏顶边」可用高度（W2 契约的可选 prop，
+                    未就绪时不传等价于不限制）。 */}
                 <MiniLyric
+                  maxHeight={coverRegionHeight > 0 ? coverRegionHeight : undefined}
                   onPress={handleSwitchToLyricPage}
-                  style={[styles.miniLyricContainerNew, miniLyricAlignStyles[miniLyricAlign as keyof typeof miniLyricAlignStyles]]}
+                  style={miniLyricStyle}
                 />
               </View>
             </View>
@@ -220,8 +278,12 @@ const styles = createStyle({
     // 旧 UI（v20260826 实测封面正常）的 picPageContainerOld 就没有 overflow。
   },
   picContainer: {
+    // 旧版是 flexShrink:0（封面贴顶、被钉死在返回栏正下方）。
+    // 现在 flex:1（含 flexShrink:1）：吃掉信息块以上的全部剩余空间，封面在其中
+    // 垂直＋水平居中 —— 居中区间即「返回栏底边 → 信息栏顶边」，见组件内注释。
+    flex: 1,
     alignItems: 'center',
-    flexShrink: 0,
+    justifyContent: 'center',
   },
   infoContainer: {
     flex: 0,

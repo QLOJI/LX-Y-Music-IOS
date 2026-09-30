@@ -14,17 +14,29 @@ import { createStyle } from '@/utils/tools'
 import { updateSetting } from '@/core/common'
 import { useTheme } from '@/store/theme/hook'
 import { useSettingValue } from '@/store/setting/hook'
-import { useSafeAreaBottom } from '@/store/common/hook'
+import { useSafeAreaBottom, useComponentIds } from '@/store/common/hook'
+import { useIsPlay } from '@/store/player/hook'
+import playerState from '@/store/player/state'
+import { COMPONENT_IDS } from '@/config/constant'
 import { AnimatedColorText } from '@/components/common/Text'
 import { setSpText } from '@/utils/pixelRatio'
 import settingState from '@/store/setting/state'
-import playerState from '@/store/player/state'
 import { scrollTo } from '@/utils/scroll'
 import { LyricScrollLayout } from '@/utils/lyricScroll'
 import { audioClock } from '@/core/player/audioClock'
 import KaraokeLyric from '@/screens/PlayDetail/components/KaraokeLyric'
+import PlayLine, { type PlayLineType } from '@/screens/PlayDetail/components/PlayLine'
+// 播放页动效时长的统一来源（数值与背景见 lyricAnimation.ts）；
+// 例外：大歌词「换行停留 / 换行滑动」两个时长按需求 #1 直接对齐 REF 参考工程，
+// 以本文件下方的 LINE_CHANGE_HOLD_MS / LINE_CHANGE_GLIDE_REF_MS 定义（原因见其注释）。
+import { IDLE_RETURN_MS, OVERLAY_FADE_MS, getReturnDuration } from '@/screens/PlayDetail/lyricAnimation'
 
 type FlatListType = FlatListProps<Line>
+
+// 大歌词手动定位：拖动超过这么多 pt 才显示定位浮层。
+// 横向翻页会被外层 PagerView 抢走手势，那时列表只收到 beginDrag / endDrag（位移为 0），
+// 不该为此闪一个空浮层出来。（与小歌词 MiniLyric、竖屏大歌词同值同义。）
+const OVERLAY_SHOW_MOVE = 2
 
 interface LineProps {
   line: Line
@@ -51,7 +63,9 @@ const LrcLine = memo(
     const colors = useMemo(() => {
       return isActive
         ? ([theme['c-primary'], theme['c-primary-alpha-200'], 1] as const)
-        : ([theme['c-350'], theme['c-300'], 0.8] as const)
+        // 非激活行透明度 0.8 → 0.6：对齐 REF 『非激活 0.6 → 激活 1』的落差，
+        // 让 200ms 透明度淡入真正可感（0.8→1 的差太小，等于没做柔性切换）。
+        : ([theme['c-350'], theme['c-300'], 0.6] as const)
     }, [isActive, theme])
 
     const handleLayout = ({ nativeEvent }: LayoutChangeEvent) => {
@@ -100,7 +114,12 @@ const LrcLine = memo(
                 color={colors[0]}
                 opacity={colors[2]}
                 size={size}
-                duration={0}
+                // 颜色瞬时 + 透明度 200ms 淡入：原先 duration={0} 让颜色与透明度都走 1ms
+                // 伪瞬时，高亮切换毫无过渡，是「生硬」的直接来源（对齐 REF 的柔软形态）。
+                // 颜色仍即时（colorDuration=0），高亮行不会滞后；放慢的只有透明度。
+                // 两个动画节点必须同为 useNativeDriver:true，混用会 Fatal（见 Text.tsx 注释）。
+                duration={OVERLAY_FADE_MS}
+                colorDuration={0}
               >
                 {line.text}
               </AnimatedColorText>
@@ -118,7 +137,8 @@ const LrcLine = memo(
                 color={colors[1]}
                 opacity={colors[2]}
                 size={size * 0.8}
-                duration={0}
+                duration={OVERLAY_FADE_MS}
+                colorDuration={0}
               >
                 {lrc}
               </AnimatedColorText>
@@ -144,6 +164,14 @@ export default () => {
   const safeAreaBottom = useSafeAreaBottom()
   const lyricLines = useLrcSet()
   const { line } = useLrcPlay()
+  // 播放态（暂停/停止即 false）：暂停时彻底停掉下面的每帧滚动循环（详见循环 effect 的说明）。
+  const isPlay = useIsPlay()
+  // 歌词面板可见性：本组件没有 componentId 入参，改用 RNN 组件栈的栈顶名字判断——
+  // componentIds 是自栈底到栈顶的数组，栈顶是 playDetail（横屏播放页自己）才说明歌词面板
+  // 真的在前台；被评论页/设置页等压栈覆盖（栈顶换名）时不可见，应停帧。
+  // 判据与 useScreenCovered / useHomeCovered 同源（都是拿栈顶条目比）。
+  const ids = useComponentIds()
+  const panelVisible = String(ids[ids.length - 1]?.name) === COMPONENT_IDS.playDetail
   // 逐字时间轴（与 lyricLines 同序）：第 i 项为第 i 行歌词的逐字数组；无逐字（纯 LRC）为 null。
   // 激活行据此走逐字卡拉OK渲染，否则退回整行高亮。
   const wordsByIndex = useLrcWordsMap()
@@ -158,7 +186,9 @@ export default () => {
   const scrollCancelRef = useRef<(() => void) | null>(null)
   // 连续滚动：rAF 目标 offset 不直接写入列表，而是让跟随值按固定时长/固定速率收敛到目标。
   // 逐字歌词无间隙切行、行高测量后的回正修正都是瞬时硬跳（长句换行后行高更大、跳变越明显），
-  // 平滑收敛把这些瞬跳变成约 180ms 的短滑动，消除换行长句切行时的顿挫感。
+  // 平滑收敛把这些瞬跳变成一段平滑滑动（换行节奏见下方 LINE_CHANGE_HOLD_MS /
+  // LINE_CHANGE_GLIDE_REF_MS：停留 600ms + 滑动 600ms，对齐 REF），
+  // 消除换行长句切行时的顿挫感。
   const smoothOffsetRef = useRef(0)
   const lastWrittenOffsetRef = useRef(-1)
   const lastFrameTsRef = useRef(0)
@@ -170,13 +200,32 @@ export default () => {
   const lastContinuousTimeRef = useRef(-1)
   // 上一帧的高亮行索引（用于判断是否切行）。
   const lastContinuousIndexRef = useRef(-1)
-  // 切行滑动：起点偏移 / 终点偏移 / 起始时间戳（< 0 表示不在滑动中）；与竖屏同一套参数。
+  // 切行滑动：起点偏移 / 终点偏移 / 滑动起始时间戳（< 0 表示不在滑动中）；与竖屏同一套参数。
   const glideFromRef = useRef(0)
   const glideToRef = useRef(0)
   const glideStartTsRef = useRef(-1)
-  // 切行滑动时长：固定时长 + easeInOut，起步/收尾平缓、每帧位移连续（原先 40/s 的指数逼近
-  // 单帧就吃掉 47% 距离，观感是“顿一下再猛追”，行高越大越明显）。
-  const LINE_CHANGE_GLIDE_MS = 180
+  // 换行节奏对齐 REF 参考工程（需求 #1「换行动画顺滑不生硬」，与竖屏同一套参数）：
+  //   REF 是「连续换行（diff==1）后先停留 600ms，再用 600ms 滑到新行」——
+  //   停留见 REF Horizontal/Lyric.tsx:244-258（diff==1 时 setTimeout(600) 后才 handleScrollToActive），
+  //   滑动见 REF Horizontal/Lyric.tsx:146（scrollTo(..., 600)）；非连续跳变则立即定位。
+  //   本工程此前是「换行当帧立即起滑、200ms 滑完」，没有停留段，节奏明显更急、更生硬。
+  // ⚠️ 停留窗口锚定在【一串连续换行的第一行】，不是锚定最后一次换行：
+  //   串内后续换行只更新滑动目标、绝不重置 lineChangeTsRef。否则行间隔 <600ms 的快歌里
+  //   窗口会被每次换行续命、列表长时间不动（比原缺陷更糟）。REF 同样是「首个 600ms 到点
+  //   即起滑，后续换行只改目标」，因此不会冻住。「新的一串」判据：距锚点已超过
+  //   停留+滑动（即上一轮整周期已走完）。
+  //   这两个值刻意不放进 lyricAnimation.ts：那里的 LINE_CHANGE_GLIDE_MS 仍被小歌词
+  //   MiniLyric 引用，且是「全局动效放慢」定案的 designMotion.quick(200)；本次只对齐大歌词。
+  const LINE_CHANGE_HOLD_MS = 600
+  const LINE_CHANGE_GLIDE_REF_MS = 600
+  // lineChangeTsRef：当前这串连续换行的停留锚点（< 0 = 不在串内，直接平滑跟随）。
+  const lineChangeTsRef = useRef(-1)
+  // glideStartedRef：本串是否已经起过滑（防止停留到点后每帧重复起滑；新的一串开始时复位；
+  // 跳变/强制定位等无停留段的路径直接置 true）。
+  const glideStartedRef = useRef(true)
+  // 滑动用固定时长 + easeInOutQuad（与 REF utils/scroll.ts 的 easeInOutQuad 同族）：
+  // 起步/收尾平缓、每帧位移连续；原先 40/s 的指数逼近单帧就吃掉 47% 距离，
+  // 观感是“顿一下再猛追”，行高越大越明显。
   // 同一行内的平滑速率：只吸收行高测量带来的一行内小幅修正（12/s ≈ 200ms 收敛 95%）。
   const SMOOTH_RATE_NORMAL = 12
   // 列表可视高度（onLayout 测量），连续滚动按此计算居中偏移。
@@ -186,6 +235,37 @@ export default () => {
   const [listHeight, setListHeight] = useState(0)
   // 回正定时器：进入/切歌后布局（spaceComponent / 行高）尚未完成时，防抖在测量完成后重新精确居中一次。
   const recentreTimerRef = useRef<NodeJS.Timeout | null>(null)
+
+  // ---- 歌词手动定位浮层（PlayLine）：拖动歌词 → 虚线 + 目标行时间 + 播放三角 → 点三角 seek ----
+  // 与竖屏大歌词、同屏小歌词同一套浮层、同一套交互（横屏此前没有，需求 2 的缺口）。
+  // 浮层基准线取 0.5：本文件 handleScrollToActive 用的就是 viewPosition 0.5、留白 50% 视高
+  // （见 listPadding），浮层虚线必须与定位口径一致，否则虚线会压在高亮行的上一行。
+  const playLineRef = useRef<PlayLineType>(null)
+  // 是否允许歌词手动定位（既有设置位，同时控制浮层显隐；竖屏与小歌词读的是同一个键）
+  const isShowLyricProgress = useSettingValue('playDetail.isShowLyricProgressSetting')
+  // 本次拖动开始时的滚动偏移（判断「是否真的动过」，见 OVERLAY_SHOW_MOVE 的说明）
+  const dragStartOffsetRef = useRef<number | null>(null)
+  // 浮层当前是否已显示（放 ref 不放 state：拖动的每一帧都不该让本组件重渲染）
+  const isOverlayShownRef = useRef(false)
+
+  // 把浮层需要的几何喂给它：定位基准线上方的留白 + 逐行行高 + 歌词行（取时间显示）。
+  // 必须与 handleScrollToActive 的定位计算同源：留白 = 视高的 50%（与 listPadding 同值），
+  // 行高取 LyricScrollLayout 的缓存（已测行实测值 / 未测行平均估算，与 getTargetOffsetPrecise 一致）。
+  // 横屏的定位档位是 usePlayed=true（已播放行更粗），而 getLineHeights 走的是 lineHeights——
+  // 这不是偏差：updateLineHeight 会把 bold 行的实测高度同步写进 lineHeights（见该方法内注释），
+  // 且本列表 initialNumToRender = 整首行数，所有行初次挂载即完成实测，估算分支实际不参与。
+  // 只在进入手动定位态时快照一次：行高会随字号设置、翻译行出现而变，拖动开始这一刻的值
+  // 才是用户眼里看到的那一份。
+  const pushPlayLineLayout = useCallback(() => {
+    if (!isShowLyricProgress) return
+    const listH = listHeightRef.current > 0 ? listHeightRef.current : listHeight
+    if (listH <= 0) return
+    playLineRef.current?.updateLayoutInfo({
+      spaceHeight: listH * 0.5,
+      lineHeights: lyricScrollLayoutRef.current.getLineHeights(lyricLines.length),
+    })
+    playLineRef.current?.updateLyricLines(lyricLines)
+  }, [isShowLyricProgress, lyricLines, listHeight])
 
   const initialDistanceRef = useRef(0)
   const initialFontSizeRef = useRef(0)
@@ -295,14 +375,18 @@ export default () => {
       // 不会把列表拽回旧位置。非 force（动画滚动）不改动跟随值，交给循环平滑收敛。
       smoothOffsetRef.current = targetOffset
       lastWrittenOffsetRef.current = targetOffset
-      // 硬跳定位后取消进行中的切行滑动，否则下一帧会被滑动轨迹拉回旧位置；
-      // 同时把“上一次滚动到的行”对齐，避免下一帧把这次硬跳当成切行再滑一次。
+      // 硬跳定位后取消进行中的切行滑动与未走完的停留窗口，否则下一帧会被滑动轨迹
+      // 拉回旧位置、或被停留窗口冻住；同时把“上一次滚动到的行”对齐，避免下一帧把
+      // 这次硬跳当成换行再滑一次。
       glideStartTsRef.current = -1
+      lineChangeTsRef.current = -1
+      glideStartedRef.current = true
       lastContinuousIndexRef.current = index
     } else {
       const currentOffset = scrollInfoRef.current.contentOffset.y
-      const distance = Math.abs(targetOffset - currentOffset)
-      const duration = Math.min(Math.max(distance * 0.5, 120), 300)
+      // 回位/跟随滑动时长按距离线性增长并夹在 [120,300]（同 lyricAnimation.getReturnDuration）：
+      // 近距离不拖沓、远距离不猛冲；不再内联这套 clamp 魔数。
+      const duration = getReturnDuration(targetOffset - currentOffset)
       try {
         scrollCancelRef.current = scrollTo(
           flatListRef.current,
@@ -354,27 +438,64 @@ export default () => {
     const paddingV = listHeight * 0.5
     const offset = layout.getTargetOffsetPrecise(i, listHeight, lyricLines, 0.5, paddingV, 0, false, true)
     if (i !== lastContinuousIndexRef.current) {
+      // REF 把换行分两类（REF Horizontal/Lyric.tsx:244-258）：连续推进一行（diff==1）先停留
+      // 600ms 再滑；非连续跳变立即定位。恢复首帧 lastContinuousIndexRef=-1 属未知态，按跳变处理。
+      const isContinuousAdvance = lastContinuousIndexRef.current >= 0 && i === lastContinuousIndexRef.current + 1
       lastContinuousIndexRef.current = i
-      // 切行：以“列表当前实际位置”为起点、新行居中位置为终点，重新开始一段固定时长的滑动。
-      // 两句紧挨着时（上一段还没滑完就切行）也从当前位置接着滑，位移连续、不闪不跳。
-      glideFromRef.current = smoothOffsetRef.current
-      glideToRef.current = offset
-      glideStartTsRef.current = ts
+      if (!isContinuousAdvance) {
+        // 跳变（seek / 恢复首帧未知态）：取消停留窗口，立即起滑，避免恢复播放后还要干等 600ms。
+        lineChangeTsRef.current = -1
+        glideStartedRef.current = true
+        glideFromRef.current = smoothOffsetRef.current
+        glideToRef.current = offset
+        glideStartTsRef.current = ts
+      } else {
+        const runElapsed = lineChangeTsRef.current >= 0 ? ts - lineChangeTsRef.current : Number.POSITIVE_INFINITY
+        if (runElapsed > LINE_CHANGE_HOLD_MS + LINE_CHANGE_GLIDE_REF_MS) {
+          // 新的一串连续换行（上一轮的停留+滑动整周期已走完）：锚定停留起点，600ms 后再起滑。
+          lineChangeTsRef.current = ts
+          glideStartedRef.current = false
+          glideStartTsRef.current = -1
+        } else if (glideStartTsRef.current >= 0) {
+          // 同一串内、且已经起滑：把滑动重新锚定到「当前位置 → 新目标」。起点就是当前值，
+          // 位移连续不跳变（等价于 REF 每次换行都从当前位置起一段新动画）。
+          glideFromRef.current = smoothOffsetRef.current
+          glideToRef.current = offset
+          glideStartTsRef.current = ts
+        }
+        // 同一串内、仍在停留窗口：什么都不做——只更新目标（起滑那一帧会用上当帧的
+        // offset），停留锚点绝不重置。这是快歌（行间隔 <600ms）不被冻住的关键。
+      }
     }
     const dt = lastFrameTsRef.current > 0 ? Math.min(Math.max((ts - lastFrameTsRef.current) / 1000, 0.001), 0.05) : 0.016
     lastFrameTsRef.current = ts
-    const glideElapsed = ts - glideStartTsRef.current
-    if (glideStartTsRef.current >= 0 && glideElapsed < LINE_CHANGE_GLIDE_MS) {
-      // 切行滑动中：easeInOutQuad。终点取切行当帧记录的新行偏移；若这期间行高测量修正了目标，
-      // 滑动结束后由下面的指数平滑继续收敛（小幅位移，无感），不会硬跳。
-      const p = glideElapsed / LINE_CHANGE_GLIDE_MS
-      const eased = p < 0.5 ? 2 * p * p : 1 - (((-2 * p) + 2) * ((-2 * p) + 2)) / 2
-      smoothOffsetRef.current = glideFromRef.current + (glideToRef.current - glideFromRef.current) * eased
+    const holdElapsed = lineChangeTsRef.current >= 0 ? ts - lineChangeTsRef.current : Number.POSITIVE_INFINITY
+    if (holdElapsed < LINE_CHANGE_HOLD_MS && !glideStartedRef.current) {
+      // 停留窗口内：保持原位不动。这里【必须】跳过下面的指数平滑——目标已切到新行，
+      // 若照常平滑会提前蠕动，停留段就名存实亡（这正是与 REF 观感的关键差异点）。
     } else {
-      glideStartTsRef.current = -1
-      const delta = offset - smoothOffsetRef.current
-      if (Math.abs(delta) < 0.5) smoothOffsetRef.current = offset
-      else smoothOffsetRef.current += delta * (1 - Math.exp(-dt * SMOOTH_RATE_NORMAL))
+      if (lineChangeTsRef.current >= 0 && !glideStartedRef.current) {
+        // 停留到点：起滑（一串连续换行只在这里起滑一次，之后由上面的「重新锚定」跟随新行）。
+        glideStartedRef.current = true
+        glideFromRef.current = smoothOffsetRef.current
+        glideToRef.current = offset
+        glideStartTsRef.current = ts
+      }
+      const glideElapsed = glideStartTsRef.current >= 0 ? ts - glideStartTsRef.current : Number.POSITIVE_INFINITY
+      if (glideElapsed < LINE_CHANGE_GLIDE_REF_MS) {
+        // 滑动中：easeInOutQuad。终点取起滑/重新锚定当帧记录的新行偏移；若这期间行高测量修正了
+        // 目标，滑动结束后由下面的指数平滑继续收敛（小幅位移，无感），不会硬跳。
+        const p = glideElapsed / LINE_CHANGE_GLIDE_REF_MS
+        const eased = p < 0.5 ? 2 * p * p : 1 - (((-2 * p) + 2) * ((-2 * p) + 2)) / 2
+        smoothOffsetRef.current = glideFromRef.current + (glideToRef.current - glideFromRef.current) * eased
+      } else {
+        // 无停留、无滑动（或本串滑动已结束）：指数平滑跟随。同一串内后续换行走这里，
+        // 每帧重算目标，天然跟得上；12/s ≈ 200ms 收敛 95%，位移连续。
+        glideStartTsRef.current = -1
+        const delta = offset - smoothOffsetRef.current
+        if (Math.abs(delta) < 0.5) smoothOffsetRef.current = offset
+        else smoothOffsetRef.current += delta * (1 - Math.exp(-dt * SMOOTH_RATE_NORMAL))
+      }
     }
     if (Math.abs(smoothOffsetRef.current - lastWrittenOffsetRef.current) < 0.5) return
     try {
@@ -385,9 +506,29 @@ export default () => {
 
   const handleScroll = ({ nativeEvent }: NativeSyntheticEvent<NativeScrollEvent>) => {
     scrollInfoRef.current = nativeEvent
+    // 仅手动定位期间喂浮层：自动跟随期间每帧都有一次 scrollToOffset → onScroll，
+    // 此时浮层是隐藏的，喂它只会白白让一个看不见的组件每帧重渲染。
+    // dragStartOffsetRef 只在 handleScrollBeginDrag 里赋值、在收起浮层的每条路径上都清空，
+    // 因此它非空就等价于「用户正按着歌词」——比用 isPauseScrollRef 更准：
+    // 后者在「切歌后等待列表布局」的 800ms 窗口里也是 true，那期间的程序化滚动不该弹浮层。
+    if (dragStartOffsetRef.current == null) return
+    if (!isOverlayShownRef.current) {
+      if (Math.abs(nativeEvent.contentOffset.y - dragStartOffsetRef.current) < OVERLAY_SHOW_MOVE) return
+      isOverlayShownRef.current = true
+      playLineRef.current?.setVisible(true)
+    }
+    playLineRef.current?.updateScrollInfo(nativeEvent)
   }
   const handleScrollBeginDrag = () => {
     isPauseScrollRef.current = true
+    // 先记账、先不显示：等列表真的动了再显示浮层（见 OVERLAY_SHOW_MOVE）。
+    // 用 scrollInfoRef（handleScroll 持续记录的真实滚动信息）而不是另存一份快照：
+    // 大歌词的自动跟随每帧都在写它，ref 里的值就是用户手指按下那一刻的位置。
+    dragStartOffsetRef.current = scrollInfoRef.current?.contentOffset.y ?? 0
+    isOverlayShownRef.current = false
+    // 每次进入手动定位态都重算一次浮层几何：行高会随字号设置、翻译行出现而变化，
+    // 只有拖动开始这一刻的快照才与用户眼前看到的列表一致。
+    pushPlayLineLayout()
     if (delayScrollTimeout.current) {
       clearTimeout(delayScrollTimeout.current)
       delayScrollTimeout.current = null
@@ -404,14 +545,49 @@ export default () => {
 
   const onScrollEndDrag = () => {
     if (!isPauseScrollRef.current) return
+    if (dragStartOffsetRef.current == null) return
+    if (!isOverlayShownRef.current) {
+      // 全程没动过（横向翻页被外层 PagerView 抢走手势、或只是轻点了一下）：
+      // 直接解除定位态，既不显示浮层也不启动回位倒计时，避免列表白冻 IDLE_RETURN_MS。
+      isPauseScrollRef.current = false
+      dragStartOffsetRef.current = null
+      return
+    }
     if (scrollTimoutRef.current) clearTimeout(scrollTimoutRef.current)
     scrollTimoutRef.current = setTimeout(() => {
       scrollTimoutRef.current = null
       isPauseScrollRef.current = false
-      if (!playerState.isPlay) return
+      // 回位的同时收起浮层：浮层虚线是按滚动偏移实时算的，回位动画期间不收，
+      // 虚线会从用户停手的位置一路扫回当前行，像一条乱窜的线。
+      dragStartOffsetRef.current = null
+      isOverlayShownRef.current = false
+      playLineRef.current?.setVisible(false)
+      // 到时即回位，与是否在播放无关（Bug 5，对齐竖屏与同屏小歌词的停手回位）。
+      // 参考工程此回调带「暂停即 return」守卫，本行属有意分歧，勿以参考为准改回。
       handleScrollToActive()
-    }, 3000)
+    }, IDLE_RETURN_MS)
   }
+
+  // 点浮层的播放三角：从虚线指向的那一行开始播。
+  // 与同屏小歌词 MiniLyric、竖屏大歌词的 handlePlayLine 同构（含「收口到总长之前」的防误跳歌）。
+  const handlePlayLine = useCallback((time: number) => {
+    if (scrollTimoutRef.current) {
+      clearTimeout(scrollTimoutRef.current)
+      scrollTimoutRef.current = null
+    }
+    isPauseScrollRef.current = false
+    dragStartOffsetRef.current = null
+    isOverlayShownRef.current = false
+    playLineRef.current?.setVisible(false)
+    // 目标时间若等于/超过歌曲总时长，会被当作「已播放到结尾」而直接切下一首，
+    // 这里收回到总长之前一小段（与参考工程同源，防误跳歌）
+    const maxTime = playerState.progress.maxPlayTime
+    if (maxTime > 0 && time >= maxTime) time = Math.max(maxTime - 0.5, 0)
+    // 只 seek：歌词行跟引擎事件走，落点出声后由换行跟随把该行滑到正中。
+    // 这里**不**提前把列表滚到目标行，避免「先滚回旧行、再滑向新行」的二次动画。
+    // setProgress 事件本身会触发 setForceScroll(true)，无需在这里重复。
+    global.app_event.setProgress(time)
+  }, [])
 
   // 进入/切歌后布局（spaceComponent / 行高）可能尚未完成，首跳落点可能有偏差；
   // 等行测量 / 列表高度就位（防抖 150ms）后静默回正一次，保证高亮行最终严格居中（对齐竖屏）。
@@ -489,6 +665,11 @@ export default () => {
     // 等新列表内容布局完成后再首跳；期间暂停连续滚动循环，避免它按归零后的行号把旧列表拽回顶部。
     pendingInitialScrollRef.current = true
     isPauseScrollRef.current = true
+    // 切歌 / 歌词内容变化时一并收起手动定位浮层：浮层的行高与歌词行都是按下那一刻的快照，
+    // 换歌后这份快照已经属于上一首，留着会看到虚线停在新歌的列表上（浮层本身不会自动消失）。
+    dragStartOffsetRef.current = null
+    isOverlayShownRef.current = false
+    playLineRef.current?.setVisible(false)
     if (!flatListRef.current) return
     flatListRef.current.scrollToOffset({
       offset: 0,
@@ -499,6 +680,8 @@ export default () => {
     lastWrittenOffsetRef.current = -1
     lastFrameTsRef.current = 0
     glideStartTsRef.current = -1
+    lineChangeTsRef.current = -1
+    glideStartedRef.current = true
     lastContinuousIndexRef.current = -1
     if (!lyricLines.length) {
       pendingInitialScrollRef.current = false
@@ -536,9 +719,19 @@ export default () => {
     }
   }, [line, handleScrollToActive])
 
-  // 每帧连续平滑滚动循环：歌词页激活且非用户手动滚动、非强制定位时，基于外推时钟精确时间驱动歌词连续上移。
+  // 每帧连续平滑滚动循环：歌词面板可见【且正在播放】且非用户手动滚动、非强制定位时，
+  // 基于外推时钟精确时间驱动歌词连续上移。
   // iOS 后台 / 锁屏时 rAF 暂停（歌词停滚无妨）；前台播放每帧（~16ms）定位，消除原来的行级跳变。
   useEffect(() => {
+    // 双门控：播放态 × 面板可见性，任一不满足即取消 rAF（cancel，不是把速度改 0/让循环空转）。
+    // 暂停时时钟冻结、循环体只会逐帧早退，但帧请求照样逐帧被唤醒（120Hz 解锁后成本翻倍）；
+    // 面板被压栈页覆盖时同样不该继续逐帧定位——停帧才真正省下这份常驻开销，恢复时重跑本 effect。
+    // 停帧前把 wasPauseRef 置真：恢复首帧必须像「手动滚动恢复」一样按列表真实位置重取平滑基准，
+    // 否则会被暂停/覆盖前的旧基准拽回去（与 isPauseScrollRef 的恢复路径同源处理）。
+    if (!isPlay || !panelVisible) {
+      wasPauseRef.current = true
+      return
+    }
     let rafId = 0
     const loop = (ts: number) => {
       if (isPauseScrollRef.current) {
@@ -551,8 +744,11 @@ export default () => {
           smoothOffsetRef.current = scrollInfoRef.current?.contentOffset.y ?? 0
           lastWrittenOffsetRef.current = smoothOffsetRef.current
           lastFrameTsRef.current = ts
-          // 恢复首帧不承接暂停前的切行滑动
+          // 恢复首帧不承接暂停前的切行滑动/停留窗口：lastContinuousIndexRef 置 -1 后，
+          // 下一帧按「跳变」处理立即起滑，不会先干等 600ms。
           glideStartTsRef.current = -1
+          lineChangeTsRef.current = -1
+          glideStartedRef.current = true
           lastContinuousIndexRef.current = -1
         }
         scrollToActiveContinuous(ts)
@@ -561,7 +757,7 @@ export default () => {
     }
     rafId = requestAnimationFrame(loop)
     return () => { cancelAnimationFrame(rafId) }
-  }, [lyricLines, scrollToActiveContinuous])
+  }, [isPlay, panelVisible, lyricLines, scrollToActiveContinuous])
 
   // 拖动进度条 / 跳转 / 恢复播放等用户动作期间强制让歌词列表立即滚动到高亮行，
   // 保证高亮行与进度条（及音频）绝对同步，结束后回归连续滚动。
@@ -652,6 +848,11 @@ export default () => {
       scrollCancelRef.current = null
     }
     isPauseScrollRef.current = false
+    // 点歌词行也是一次主动跳转，等同于点了浮层的播放三角：无论浮层当时是否显示，
+    // 都要清掉定位态与浮层，避免「点完行之后浮层还挂在屏幕上」。
+    dragStartOffsetRef.current = null
+    isOverlayShownRef.current = false
+    playLineRef.current?.setVisible(false)
     // 点击歌词视为用户主动跳转：强制立即定位，越过连续滚动循环，使高亮行与音频绝对同步。
     setForceScroll(true)
     const line = lyricLines[index]
@@ -710,6 +911,14 @@ export default () => {
         removeClippedSubviews={false}
         extraData={[line, wordsByIndex]}
       />
+      {
+        // 歌词手动定位浮层：虚线压在容器正中（= 高亮行被 handleScrollToActive 居中的位置），
+        // 拖动时实时跟随。topPercent 必须与定位用的 viewPosition 一致（都是 0.5），
+        // 否则虚线会压在高亮行的上一行。
+        isShowLyricProgress ? (
+          <PlayLine ref={playLineRef} topPercent={0.5} onPlayLine={handlePlayLine} />
+        ) : null
+      }
     </View>
   )
 }

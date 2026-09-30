@@ -12,6 +12,17 @@ import { useStatusbarHeight } from '@/store/common/hook'
 import { useSettingValue } from '@/store/setting/hook'
 import { useLandscapeLayout, getLeftWidth } from '@/utils/landscapeLayout'
 
+// 封面自转的循环周期（ms）：25s 转满一圈后无缝重来，是持续循环动画。
+// 刻意不引用 designMotion —— 那组常量管的是「跳转 / 切行 / 淡入」这类一次性交互过渡；
+// 自转周期属于动画本身的表现（转速），不参与「全局交互动效放慢」的调整（150→200 不适用）。
+const SPIN_CYCLE_DURATION = 25000
+
+// 方形封面的圆角：与竖屏 Pic.tsx 同值，且同样保持独立字面量不并入 designRadius 令牌
+// （令牌的 sm/md 面向列表封面与卡片，语义不同；当前恰好同为 4）。
+// 横竖屏两处必须同值，否则切一下方向方形封面的圆角观感就不一致，
+// 由 scripts/sim-cover-shape.js 的 invariant 4 与跨文件比对钉住。
+const SQUARE_RADIUS = 4
+
 export default memo(({ componentId: _componentId }: { componentId: string }) => {
   const musicInfo = usePlayerMusicInfo()
   const { width: winWidth, height: winHeight } = useWindowSize()
@@ -33,7 +44,7 @@ export default memo(({ componentId: _componentId }: { componentId: string }) => 
   const createAnimation = useCallback((value: number) => {
     return Animated.timing(spinValue, {
       toValue: 1,
-      duration: 25000 * (1 - value),
+      duration: SPIN_CYCLE_DURATION * (1 - value),
       easing: Easing.linear,
       useNativeDriver: true,
     })
@@ -101,7 +112,7 @@ export default memo(({ componentId: _componentId }: { componentId: string }) => 
     )
     baseWidth -= baseWidth * (global.lx.fontSize - 1) * 0.3
     const imgWidth = baseWidth * (coverSize / 100)
-    const radius = isSquare ? 4 : imgWidth / 2
+    const radius = isSquare ? SQUARE_RADIUS : imgWidth / 2
     return {
       width: imgWidth,
       height: imgWidth,

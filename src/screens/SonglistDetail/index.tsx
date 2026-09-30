@@ -10,6 +10,9 @@ import { NAV_SHEAR_NATIVE_IDS, COMPONENT_IDS } from '@/config/constant'
 import { createStyle, toast } from '@/utils/tools'
 import { scaleSizeW } from '@/utils/pixelRatio'
 import { useTheme } from '@/store/theme/hook'
+import { useSettingValue } from '@/store/setting/hook'
+import { applyOpacity } from '@/utils/colorOpacity'
+import { formatPlayCountText } from '@/utils'
 import { designRadius, designSpacing, designTypography } from '@/theme/DesignTokens'
 
 import commonState from '@/store/common/state'
@@ -33,7 +36,9 @@ const IMAGE_WIDTH = scaleSizeW(104)
 
 const ListHeader = ({ detailInfo, info, onBack, showSearchBar, searchText, isFuzzySearch, onToggleSearch, onSearchTextChanged, onToggleSearchMode }: { detailInfo: DetailInfo, info: ListInfoItem, onBack?: () => void, showSearchBar: boolean, searchText: string, isFuzzySearch: boolean, onToggleSearch: () => void, onSearchTextChanged: (text: string) => void, onToggleSearchMode: () => void }) => {
   const theme = useTheme()
+  const buttonOpacity = useSettingValue('theme.buttonOpacity')
   const statusBarHeight = useStatusbarHeight()
+  const playCountText = formatPlayCountText(detailInfo.playCount)
   const loggedInUserId = useWyUid()
   const isSubscribed = useIsWyPlaylistSubscribed(info.id)
 
@@ -85,10 +90,12 @@ const ListHeader = ({ detailInfo, info, onBack, showSearchBar, searchText, isFuz
                 style={styles.cover}
               />
             )}
-            {detailInfo.playCount ? (
-              <Text style={styles.playCount} numberOfLines={1}>
-                {detailInfo.playCount}
-              </Text>
+            {playCountText ? (
+              <View style={styles.playCount}>
+                <Text style={styles.playCountText} size={11} color="#FFFFFF" numberOfLines={1}>
+                  {playCountText}
+                </Text>
+              </View>
             ) : null}
           </View>
           <View
@@ -112,7 +119,11 @@ const ListHeader = ({ detailInfo, info, onBack, showSearchBar, searchText, isFuz
             </View>
           </View>
           <TouchableOpacity
-            style={{ ...styles.searchIcon, backgroundColor: theme['c-primary-background'] }}
+            style={{
+              ...styles.searchIcon,
+              // 按钮按「按钮透明度」消费：只对底色 alpha 做乘算，图标不受影响
+              backgroundColor: applyOpacity(theme['c-primary-background'], buttonOpacity),
+            }}
             onPress={onToggleSearch}
           >
             <Icon name="search-2" size={20} color={theme['c-font-label']} />
@@ -334,16 +345,20 @@ const styles = createStyle({
   },
   playCount: {
     position: 'absolute',
-    bottom: 8,
-    right: 8,
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    fontSize: 11,
-    fontWeight: '600',
-    borderRadius: 999,
-    overflow: 'hidden',
+    // 角标统一约定（临时，与 PlaylistCard.tsx、SongList/ListItem.tsx 逐字一致）：
+    // 从原先的「右下角 bottom:8/right:8 + paddingH 8（小于半高，圆弧有削字隐患）」改为右上角
+    // 贴角 top/right 4、固定高 20、水平内边距 10 ≥ 半高；居中交给 View 的居中三件套。
+    top: 4,
+    right: 4,
+    height: 20,
+    paddingHorizontal: 10,
+    borderRadius: designRadius.pill,
     backgroundColor: 'rgba(0,0,0,0.55)',
-    color: '#fff',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  playCountText: {
+    textAlign: 'center',
   },
   descContainer: {
     flexDirection: 'row',
@@ -354,7 +369,7 @@ const styles = createStyle({
   searchIcon: {
     width: 40,
     height: 40,
-    borderRadius: 999,
+    borderRadius: designRadius.pill,
     marginLeft: designSpacing.sm,
     justifyContent: 'center',
     alignItems: 'center',
@@ -370,6 +385,8 @@ const styles = createStyle({
     flex: 1,
     height: 32,
     borderWidth: 0,
+    // 4 已低于最小圆角档 designRadius.sm(6)：按「就近向下取档」没有更小的档位，
+    // 保持 REF 量级的小圆角（改 sm 反而会把圆角放大回 6，与「倒角减小」相反）
     borderRadius: 4,
     paddingHorizontal: 10,
     fontSize: 14,
@@ -390,6 +407,7 @@ const styles = createStyle({
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
+    // 同 searchInput：4 低于最小档 sm(6)，保持 REF 量级的小圆角
     borderRadius: 4,
   },
 })

@@ -2,10 +2,11 @@ import { memo, useEffect, useMemo, useRef, useState, useCallback } from 'react'
 import { View, Animated, Easing, TouchableWithoutFeedback } from 'react-native'
 import FastImage from '@d11/react-native-fast-image'
 import { useIsPlay, usePlayerMusicInfo, usePlayMusicInfo } from '@/store/player/hook'
+import playerState from '@/store/player/state'
 import { useWindowSize } from '@/utils/hooks'
 import { useSettingValue } from '@/store/setting/hook'
 import Image, { defaultHeaders } from '@/components/common/Image'
-import { useStatusbarHeight } from '@/store/common/hook'
+import { useStatusbarHeight, useScreenCovered } from '@/store/common/hook'
 import { HEADER_HEIGHT } from './components/Header'
 import { createStyle, toast, requestStoragePermission } from '@/utils/tools'
 import Menu, { type MenuType, type Menus } from '@/components/common/Menu'
@@ -16,6 +17,11 @@ import { getFileExtensionFromUrl } from '@/screens/Home/Views/Mylist/MusicList/d
 import settingState from '@/store/setting/state'
 
 const AnimatedCover = Animated.createAnimatedComponent(FastImage)
+
+// 封面自转的循环周期（ms）：25s 转满一圈后无缝重来，是持续循环动画。
+// 刻意不引用 designMotion —— 那组常量管的是「跳转 / 切行 / 淡入」这类一次性交互过渡；
+// 自转周期属于动画本身的表现（转速），不参与「全局交互动效放慢」的调整（150→200 不适用）。
+const SPIN_CYCLE_DURATION = 25000
 
 /**
  * 竖屏播放页封面。
@@ -33,9 +39,15 @@ const AnimatedCover = Animated.createAnimatedComponent(FastImage)
  *   全链路不使用 overflow:'hidden' 裁切——iOS 上 clipsToBounds 祖先
  *   会把带 transform 的后代剔除出渲染树。
  * - 不使用 RNN sharedElementTransitions：iOS 上会被原生层劫持成错位大图；封面与导航转场解耦。
- * - 尺寸：min(屏宽 * 0.65, 可用高 * 0.5)，居中。
+ * - 尺寸：基准 min(屏宽 * 0.65, 可用高 * 0.5)，再乘设置 'playDetail.style.coverSize'
+ *   （50~150%，默认 100%），上限 min(屏宽 * 0.9, 可用高 * 0.66) 防 150% 撑爆布局；
+ *   与横屏 Pic.tsx 消费同一个设置键。
+ * - 位置：本组件只产出固定尺寸的封面，居中由上层容器（VerticalNew 的 picContainer）负责。
+ * - 自转启停门控：播放态（useIsPlay）× 可见性（active=封面页是 PagerView 当前页 ×
+ *   本屏未被压栈页覆盖）同时成立才驱动；任一不满足立即取消动画（cancel，不是转速改 0），
+ *   恢复驱动时按已播进度重新起算角度（见下方动画区）。
  */
-export default memo(({ componentId: _componentId }: { componentId: string }) => {
+export default memo(({ componentId, active = true }: { componentId: string, active?: boolean }) => {
   const playerMusicInfo = usePlayerMusicInfo()
   const playMusicInfo = usePlayMusicInfo()
   const { width: winWidth, height: winHeight } = useWindowSize()
@@ -43,11 +55,22 @@ export default memo(({ componentId: _componentId }: { componentId: string }) => 
   const isPlay = useIsPlay()
   const isCoverSpin = useSettingValue('playDetail.isCoverSpin')
   const coverShape = useSettingValue('playDetail.style.coverShape')
+  // 封面显示大小（设置弹层滑块 50~150%）：与横屏 Pic.tsx 同一个设置键（'playDetail.style.coverSize'）。
+  // 非法值（NaN / 非 number）兜底 100 = 基准尺寸，避免历史数据把封面算成 0 或 NaN。
+  const coverSizeRaw = useSettingValue('playDetail.style.coverSize')
+  const coverSize = typeof coverSizeRaw === 'number' && !isNaN(coverSizeRaw) ? coverSizeRaw : 100
   // 方形封面强制不旋转（两者互斥，见 SettingCoverShape.tsx 的说明）。
   // 注意：`isCoverSpin` 在下面被替换为 `allowSpin` 参与动画启停判断，
   // 这样「方形时不旋转」只需一处判据，不会出现「方形 + 旋转」被部分应用。
   const isSquare = coverShape === 'square'
   const allowSpin = isCoverSpin && !isSquare
+
+  // 自转可见性：封面页是 PagerView 当前页（VerticalNew 下传 active），且本屏没有被压栈页
+  // （评论/设置/歌单详情…）覆盖（useScreenCovered 与其它页面同一套 RNN 栈顶判据）。
+  // 两者任一不满足即封面不可见：PagerView 会一直保持封面页挂载，不加这道门时滑到歌词页、
+  // 或被别的页面盖住后，原生动画仍被逐帧驱动，纯白烧电。
+  const screenCovered = useScreenCovered(componentId)
+  const spinVisible = active && !screenCovered
 
   // 封面 URL：playerMusicInfo.pic 已兼容在线 + 下载两种来源（playInfo.ts setPlayerMusicInfo）。
   // 同时兜底 playMusicInfo.musicInfo.meta.picUrl，保证和参考版 e58d1ab1 的数据入口一致。
@@ -70,16 +93,27 @@ export default memo(({ componentId: _componentId }: { componentId: string }) => 
   // 当前歌曲 id，用于切歌时重置旋转角度
   const musicId = playerMusicInfo.id
 
-  // 圆形封面尺寸
+  // 封面尺寸：基准与历史公式一致（min(65% 屏宽, 50% 可用高)），100% 时逐像素不变；
+  // 再按滑块比例线性缩放。
+  //
+  // 上限必须是「保护性」的，不能把滑块的有效区间吃掉 —— 否则用户看到的不是「有上限」，
+  // 而是「调不动」。旧上限 min(90% 屏宽, 66% 可用高) 在 390x844 上给出
+  // base≈253.5 / max≈351，滑块推到约 138% 之后封面就不再变大，150% 档与 138% 档
+  // 视觉完全相同。现放宽到 min(屏宽, 85% 可用高)：150% 档在常见机型上取 base*1.5
+  //（大屏/小屏 ≈0.97~0.98 屏宽，iPad 竖屏 ≈0.74 可用高）都在上限之内，
+  // 于是「封面显示大小」全程 50~150% 线性生效；上限仍拦住极端机型把封面撑到压住信息块。
   const size = useMemo(() => {
     const availableHeight = winHeight - statusBarHeight - HEADER_HEIGHT
-    return Math.min(winWidth * 0.65, availableHeight * 0.5)
-  }, [winWidth, winHeight, statusBarHeight])
+    const base = Math.min(winWidth * 0.65, availableHeight * 0.5)
+    const max = Math.min(winWidth, availableHeight * 0.85)
+    return Math.min(base * (coverSize / 100), max)
+  }, [winWidth, winHeight, statusBarHeight, coverSize])
 
   // ---- 旋转动画：采用与横屏/沉浸一致的 createAnimation/start/stop 模式 ----
   // 原 Animated.loop 在首屏挂载时常不启动（进页面不转、切歌才转），
-  // 这里改为 stopAnimation -> 取当前角度 -> 重新 timing 的可靠循环方式，
-  // 进页面（歌曲已播放）即开始旋转，暂停时停止，切歌时重置角度重新旋转。
+  // 这里改为 stopAnimation -> 取当前角度 -> 重新 timing 的可靠循环方式。
+  // 启停由两个门控决定（见下面两个 effect）：播放态 × 可见性；
+  // 停即取消动画（cancel），恢复驱动时按已播进度重新起算角度。
   const spinValue = useRef(new Animated.Value(0)).current
   const animationRef = useRef<Animated.CompositeAnimation | null>(null)
   const isAnimating = useRef(false)
@@ -88,27 +122,45 @@ export default memo(({ componentId: _componentId }: { componentId: string }) => 
   const createAnimation = useCallback((value: number) => {
     return Animated.timing(spinValue, {
       toValue: 1,
-      duration: 25000 * (1 - value),
+      duration: SPIN_CYCLE_DURATION * (1 - value),
       easing: Easing.linear,
       useNativeDriver: true,
     })
   }, [spinValue])
 
-  const startAnimation = useCallback(() => {
+  // 起转角（0~1）=「已播位置」在自转周期内的相位。
+  // 恢复驱动时用它重锚，而不是沿用上次停下的角度、也不是归零——后两者在真机上分别是
+  // 「暂停久了转一大截」和「恢复时肉眼可见地跳一下」：
+  //  - 不可见/暂停期间角度不推进也不补转，恢复时直接对齐播放位置；
+  //  - 对齐的是播放位置：位置没变（普通暂停/恢复）看不出跳变；位置变过（拖动进度条）
+  //    则角度跟着进度走，与进度条语义一致。
+  const getSpinPhase = useCallback(() => {
+    const position = playerState.progress.nowPlayTime
+    const cycle = SPIN_CYCLE_DURATION / 1000
+    if (!Number.isFinite(position) || position <= 0) return 0
+    return (position % cycle) / cycle
+  }, [])
+
+  const startAnimation = useCallback((reanchor = true) => {
     if (isAnimating.current || !allowSpin || isUnmounted.current) return
     isAnimating.current = true
-    spinValue.stopAnimation((value) => {
-      if (isUnmounted.current) return
-      animationRef.current = createAnimation(value)
+    // 先确保在途动画已被取消（驱动只有「停/起」两态，不是把转速降为 0）。
+    spinValue.stopAnimation(() => {
+      if (isUnmounted.current || !isAnimating.current) return
+      // reanchor=true（恢复驱动 / 首次驱动）：按已播进度重新起算角度。
+      // reanchor=false（25s 周期到点的自然续转）：从 0 接上（0°≡360°，无缝）——
+      // 接力点不重锚，避免进度更新的粒度（前台 4Hz，非前台更粗）在接力瞬间造成微小回跳。
+      const from = reanchor ? getSpinPhase() : 0
+      spinValue.setValue(from)
+      animationRef.current = createAnimation(from)
       animationRef.current.start(({ finished }) => {
         if (finished && isAnimating.current && !isUnmounted.current) {
-          spinValue.setValue(0)
           isAnimating.current = false
-          startAnimation()
+          startAnimation(false)
         }
       })
     })
-  }, [spinValue, createAnimation, allowSpin])
+  }, [spinValue, createAnimation, allowSpin, getSpinPhase])
 
   const stopAnimation = useCallback(() => {
     if (!isAnimating.current) return
@@ -118,21 +170,30 @@ export default memo(({ componentId: _componentId }: { componentId: string }) => 
     spinValue.stopAnimation()
   }, [spinValue])
 
+  // 启停门控：播放态 × 可见性，任一不满足即取消动画；恢复驱动时由 startAnimation
+  // 按已播进度重锚起转角（见 getSpinPhase）。
   useEffect(() => {
     if (isPlay && allowSpin) {
-      startAnimation()
+      if (spinVisible) startAnimation()
+      else stopAnimation()
     } else {
       stopAnimation()
     }
-  }, [isPlay, allowSpin, startAnimation, stopAnimation])
+  }, [isPlay, allowSpin, spinVisible, startAnimation, stopAnimation])
 
+  // 切歌：重置角度并按新歌的播放位置起转。
+  // 依赖只留 musicId —— isPlay / 可见性 / 形状开关的变化统一由上面的启停 effect 消费；
+  // 历史写法把 isPlay 放进依赖，导致每次暂停/恢复都 setValue(0) 归零，
+  // 恢复播放时封面角度会肉眼可见地跳一下（本轮一并修掉）。
   useEffect(() => {
     stopAnimation()
     spinValue.setValue(0)
-    if (isPlay && allowSpin && musicId) {
+    if (isPlay && allowSpin && spinVisible && musicId) {
       startAnimation()
     }
-  }, [musicId, isPlay, allowSpin, startAnimation, stopAnimation, spinValue])
+    // 只以切歌为重置时机；其余判据变化由启停 effect / startAnimation 的相位重锚处理
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [musicId])
 
   useEffect(() => {
     return () => {
@@ -215,7 +276,11 @@ export default memo(({ componentId: _componentId }: { componentId: string }) => 
   }
 
   // 方形封面的圆角：小圆角，保留图本身的方形观感。
-  // 与横屏 Pic.tsx 的方形分支保持同一个 4（两处都是「非圆形」档）。
+  // 保持独立字面量而不并入 designRadius 令牌：这 4pt 是按「自转方形封面」的观感手调的，
+  // 令牌里同值的 sm/md 面向的是列表封面与卡片（46 处引用），两者语义不同 ——
+  // 令牌再动时这里应当独立评估，而不是被一起带走。（当前恰好同为 4。）
+  // 与横屏 Pic.tsx 的方形分支保持同值（两处必须一致，否则横竖屏切一下形状观感不一致），
+  // 由 scripts/sim-cover-shape.js 的 invariant 4 与跨文件比对钉住。
   const SQUARE_RADIUS = 4
   const radius = isSquare ? SQUARE_RADIUS : size / 2
   // 外层容器：只负责固定尺寸与定位，**不做 overflow 裁切**。
