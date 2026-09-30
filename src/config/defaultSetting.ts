@@ -135,6 +135,10 @@ const defaultSetting: LX.AppSetting = {
   'playDetail.vertical.style.lrcFontSize': 200,
   'playDetail.horizontal.style.lrcFontSize': 220,
   'playDetail.isShowLyricProgressSetting': true,
+  // 小歌词逐字高亮：当前行按「已唱 / 未唱」两色推进（该行有逐字时间戳时走真实时间轴，
+  // 没有则按字符数均分该行时长做线性推进）；关 = 回到整行高亮。
+  // 默认开：这正是本轮「小歌词逐字效果」需求本身。
+  'playDetail.isMiniLyricKaraoke': true,
 
   'search.isShowHotSearch': false,
   'search.isShowHistorySearch': true,
@@ -197,6 +201,14 @@ const defaultSetting: LX.AppSetting = {
   'theme.customBgPicPath': '',
   'theme.picOpacity': 76,
   'theme.subContainerOpacity': 50,
+  // 播放器（迷你播放条）底边与底部 tab 栏之间的间距，0-100 线性映射到 0~20pt。
+  // 100 = 标准字体下的既有距离（与旧硬编码 80 − 60 等值），0 = 播放器贴合 tab 栏。
+  // 该间距**不随字体大小变化**（见 DesignTokens.tabBarBaseHeight 注释）。
+  'theme.tabBarDistance': 100,
+  // 按钮族（圆角 + 1px 边框 + 半透明主题底）的底色与边框不透明度，0-100。
+  // 100 = 完全不透明（默认，视觉与既有版本一致）；0 = 底色/边框全透明，只剩文字。
+  // 作用于底色/边框的颜色 alpha，**不是**容器 style.opacity（否则文字会一起淡出）。
+  'theme.buttonOpacity': 100,
 }
 
 if (new Date().getMonth() < 2) {

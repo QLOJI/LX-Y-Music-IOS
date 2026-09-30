@@ -40,6 +40,9 @@ export const storageDataPrefix = {
   setting: '@setting_v1',
   userList: '@user_list',
   viewPrevState: '@view_prev_state',
+  // 「退出前所在界面」的页内子状态（推荐页所选平台/打开的歌单、歌单页打开的歌单）。
+  // 与 viewPrevState 分 key 存：结构复杂，读取失败时整体退化为空对象。
+  viewPrevDetail: '@view_prev_detail',
 
   list: '@list__',
   listScrollPosition: '@list_scroll_position',
