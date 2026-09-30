@@ -5,6 +5,10 @@ import Accelerate
 let lxSoundEffectConfigNotification = Notification.Name("LXSoundEffectConfigDidChangeNotification")
 let lxSoundEffectBandFrequencies: [Float] = [31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000]
 
+private func lxConvolveLog(_ message: String) {
+    NSLog("[LXConvolve] %@", message)
+}
+
 private struct LXBiquadCoefficients {
     var b0: Float
     var b1: Float
@@ -426,6 +430,8 @@ final class LXEqualizerAudioMixController {
     private var eqStates: [[LXBiquadState]] = []
     private var convolutionEngine: LXConvolutionEngine?
     private var pendingConvolutionLoadID: UInt64 = 0
+    private var loggedMissingConvolutionAssetUri = ""
+    private var loggedMissingConvolutionFileName = ""
     private var dynamicsProcessor: LXDynamicsProcessor?
     private var pitchEngine: LXPhaseVocoderPitchShifter?
     private var pannerEngine: LXSpatialPannerEngine?
@@ -864,6 +870,13 @@ final class LXEqualizerAudioMixController {
     private func processConvolution(_ samples: inout [Float], activeChannels: Int) {
         guard let engine = convolutionEngine else {
             let dryGain = config.hasConvolution ? (config.convolutionMainGain / 10) : 1
+            if config.hasConvolution,
+               config.convolutionAssetUri != loggedMissingConvolutionAssetUri ||
+               config.convolutionFileName != loggedMissingConvolutionFileName {
+                loggedMissingConvolutionAssetUri = config.convolutionAssetUri
+                loggedMissingConvolutionFileName = config.convolutionFileName
+                lxConvolveLog("processConvolution: convolution engine unavailable for configured IR (assetUri=\(config.convolutionAssetUri), fileName=\(config.convolutionFileName), sendGain=\(config.convolutionSendGain)); falling back to dry gain only, sendGain dropped")
+            }
             if dryGain != 1 {
                 for channel in 0..<activeChannels {
                     samples[channel] *= dryGain
@@ -1148,12 +1161,18 @@ private final class LXConvolutionEngine {
 
     init?(config: LXSoundEffectConfiguration, sampleRate: Double, channelCount: Int) {
         let effectiveChannels = max(1, min(channelCount, 2))
-        guard let assetKey = Self.assetKey(assetUri: config.convolutionAssetUri, fileName: config.convolutionFileName) else { return nil }
+        guard let assetKey = Self.assetKey(assetUri: config.convolutionAssetUri, fileName: config.convolutionFileName) else {
+            lxConvolveLog("init skipped: cannot resolve convolution asset (assetUri=\(config.convolutionAssetUri), fileName=\(config.convolutionFileName))")
+            return nil
+        }
         guard let response = Self.loadImpulseResponse(
             assetUri: config.convolutionAssetUri,
             fileName: config.convolutionFileName,
             sampleRate: sampleRate
-        ) else { return nil }
+        ) else {
+            lxConvolveLog("init skipped: impulse response load failed (assetUri=\(config.convolutionAssetUri), fileName=\(config.convolutionFileName), sampleRate=\(sampleRate)); convolution stays disabled so sendGain has no effect")
+            return nil
+        }
 
         self.assetKey = assetKey
         self.sampleRate = sampleRate
@@ -1178,7 +1197,10 @@ private final class LXConvolutionEngine {
         )
         self.inputBuffer = Array(repeating: Array(repeating: 0, count: self.blockSize), count: effectiveChannels)
         self.outputQueue = Array(repeating: Array(repeating: 0, count: self.blockSize), count: self.outputChannels)
-        guard kernel?.isReady() == true else { return nil }
+        guard kernel?.isReady() == true else {
+            lxConvolveLog("init skipped: shared IR convolution kernel not ready (assetUri=\(config.convolutionAssetUri), fileName=\(config.convolutionFileName))")
+            return nil
+        }
     }
 
     func matches(config: LXSoundEffectConfiguration, sampleRate: Double, channelCount: Int) -> Bool {
@@ -1274,8 +1296,19 @@ private final class LXConvolutionEngine {
     }
 
     private static func loadImpulseResponse(assetUri: String, fileName: String, sampleRate: Double) -> [[Float]]? {
-        guard let url = resolveAssetURL(assetUri: assetUri, fileName: fileName) else { return nil }
-        guard let audioFile = try? AVAudioFile(forReading: url) else { return nil }
+        guard let url = resolveAssetURL(assetUri: assetUri, fileName: fileName) else {
+            lxConvolveLog("loadImpulseResponse: cannot resolve IR asset URL (assetUri=\(assetUri), fileName=\(fileName))")
+            return nil
+        }
+        let readURL = (url.scheme == "http" || url.scheme == "https") ? localFileURL(forRemote: url, fileName: fileName) : url
+        guard let sourceURL = readURL else {
+            lxConvolveLog("loadImpulseResponse: remote IR fetch failed (assetUri=\(assetUri), fileName=\(fileName)); convolution disabled")
+            return nil
+        }
+        guard let audioFile = try? AVAudioFile(forReading: sourceURL) else {
+            lxConvolveLog("loadImpulseResponse: AVAudioFile cannot open \(sourceURL.absoluteString) (assetUri=\(assetUri), fileName=\(fileName))")
+            return nil
+        }
 
         let frameCapacity = AVAudioFrameCount(audioFile.length)
         guard let buffer = AVAudioPCMBuffer(pcmFormat: audioFile.processingFormat, frameCapacity: frameCapacity) else { return nil }
@@ -1324,6 +1357,39 @@ private final class LXConvolutionEngine {
             return bundleURL
         }
         return nil
+    }
+
+    // Remote (dev/Metro http assetUri) impulse responses are downloaded once into a temp
+    // cache because AVAudioFile can only open local files. Runs on the serial convolution
+    // load queue, so synchronous IO here is intended.
+    private static func localFileURL(forRemote url: URL, fileName: String) -> URL? {
+        let fileManager = FileManager.default
+        let cacheDirectory = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("lx-convolution-ir", isDirectory: true)
+        do {
+            try fileManager.createDirectory(at: cacheDirectory, withIntermediateDirectories: true, attributes: nil)
+        } catch {
+            lxConvolveLog("localFileURL: cannot create IR cache directory \(cacheDirectory.path): \(error.localizedDescription)")
+            return nil
+        }
+
+        let targetURL = cacheDirectory.appendingPathComponent(fileName)
+        if fileManager.fileExists(atPath: targetURL.path),
+           let attributes = try? fileManager.attributesOfItem(atPath: targetURL.path),
+           let fileSize = attributes[.size] as? NSNumber,
+           fileSize.int64Value > 0 {
+            return targetURL
+        }
+
+        do {
+            let data = try Data(contentsOf: url)
+            try data.write(to: targetURL, options: .atomic)
+            lxConvolveLog("localFileURL: cached remote IR \(url.absoluteString) -> \(targetURL.path) (\(data.count) bytes)")
+            return targetURL
+        } catch {
+            lxConvolveLog("localFileURL: failed to fetch or write remote IR \(url.absoluteString): \(error.localizedDescription)")
+            return nil
+        }
     }
 
     private static func resample(_ input: [Float], from inputSampleRate: Double, to outputSampleRate: Double) -> [Float] {
