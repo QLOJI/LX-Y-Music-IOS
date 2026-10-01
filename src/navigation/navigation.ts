@@ -41,6 +41,27 @@ interface StartPushOptions {
    */
   recoverStaleTop?: boolean
 }
+// ---- 转场窗口（2026-10-01）：让底部玻璃在整段页面转场期间保持暂停 ----
+// 现象：每次切换画面（进详情页 / 返回），底部 tab 栏和迷你播放器都会短暂闪一下。
+// 原因：玻璃每帧都在采「自己背后那一块屏幕」当折射源，而转场期间那块背景是
+// 「旧页正在滑走 + 新页正在盖上来」的中间态——采进胶囊就是那一下。省电门
+// （useHomeCovered / useScreenCovered）只在**账本变化**时暂停：push 时新页
+// setComponentId 发生在它自己 mount 之后（转场已经开始若干帧），pop 时
+// screenPopped 事件也早于转场结束，两头都盖不住整段转场。
+// 这里在**发起 push 的那一刻**就把玻璃按住，并按 RNN 系统默认转场时长（iOS 默认
+// 0.35s）留一段窗口；pop 事件再续一次窗口（该事件无论落在转场头还是尾，这个窗口
+// 都能把整段转场罩住）。窗口结束后玻璃恢复，下一帧重捕获的是已定格的背景。
+const NAV_TRANSITION_SETTLE_MS = 420
+let navTransitionTimer: ReturnType<typeof setTimeout> | null = null
+function beginNavTransitionWindow() {
+  if (navTransitionTimer) clearTimeout(navTransitionTimer)
+  commonActions.setNavTransitioning(true)
+  navTransitionTimer = setTimeout(() => {
+    navTransitionTimer = null
+    commonActions.setNavTransitioning(false)
+  }, NAV_TRANSITION_SETTLE_MS)
+}
+
 const startPush = (id: COMPONENT_IDS, options: StartPushOptions = {}) => {
   if (pendingPushes.has(id)) return false
   if (isTopScreen(id)) {
@@ -50,6 +71,8 @@ const startPush = (id: COMPONENT_IDS, options: StartPushOptions = {}) => {
     if (stale) commonActions.removeComponentId(stale.id)
   }
   pendingPushes.add(id)
+  // 玻璃转场窗口：必须在 Navigation.push 之前开，晚一帧就会采到转场中间态
+  beginNavTransitionWindow()
   // 安全兜底：即使 push 的 Promise 始终不结算（如 RNN 返回 undefined 或原生转场挂起），
   // 也确保锁最终释放，避免界面永久卡死只能重启。
   setTimeout(() => { endPush(id) }, 800)
@@ -62,6 +85,10 @@ const endPush = (id: COMPONENT_IDS) => { pendingPushes.delete(id) }
 export const handleScreenPopped = (componentId: string) => {
   const target = commonState.componentIds.find(item => item.id === componentId)
   commonActions.removeComponentId(componentId)
+  // 转场窗口续期：见 beginNavTransitionWindow。该事件可能落在返回转场的开头
+  // （此时正好罩住整段返回动画），也可能落在结尾（再晚 420ms 恢复，背景已定格，
+  // 代价只是这一小段继续暂停渲染）。
+  beginNavTransitionWindow()
   if (target) endPush(target.name)
 }
 const guardPush = async(promise: Promise<string> | undefined, id: COMPONENT_IDS): Promise<void> => {

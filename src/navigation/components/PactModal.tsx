@@ -6,6 +6,7 @@ import Button from '@/components/common/Button'
 import { createStyle, openUrl, tipDialog } from '@/utils/tools'
 import { useSettingValue } from '@/store/setting/hook'
 import { useTheme } from '@/store/theme/hook'
+import { applyOpacity } from '@/utils/colorOpacity'
 import Text from '@/components/common/Text'
 import ModalContent from './ModalContent'
 import { exitApp } from '@/utils/nativeModules/utils'
@@ -230,6 +231,8 @@ const Content = () => {
 
 const Footer = ({ componentId }: { componentId: string }) => {
   const theme = useTheme()
+  // 按钮底面颜色的 alpha 随「按钮透明度」设置淡出
+  const buttonOpacity = useSettingValue('theme.buttonOpacity')
   const isAgreePact = useSettingValue('common.isAgreePact')
   // const checkUpdate = useDispatch('common', 'checkUpdate')
   const [time, setTime] = useState(5)
@@ -291,7 +294,8 @@ const Footer = ({ componentId }: { componentId: string }) => {
       <View style={styles.btns}>
         {isAgreePact ? null : (
           <Button
-            style={{ ...styles.btn, backgroundColor: theme['c-button-background'] }}
+            // 按钮底面随「按钮透明度」淡出；只改颜色 alpha，不用容器 opacity
+            style={{ ...styles.btn, backgroundColor: applyOpacity(theme['c-button-background'], buttonOpacity) }}
             onPress={handleRejct}
           >
             <Text color={theme['c-button-font']}>不接受</Text>
@@ -299,7 +303,8 @@ const Footer = ({ componentId }: { componentId: string }) => {
         )}
         <Button
           disabled={confirmBtn.disabled}
-          style={{ ...styles.btn, backgroundColor: theme['c-button-background'] }}
+          // 按钮底面随「按钮透明度」淡出；只改颜色 alpha，不用容器 opacity
+          style={{ ...styles.btn, backgroundColor: applyOpacity(theme['c-button-background'], buttonOpacity) }}
           onPress={handleConfirm}
         >
           <Text color={theme['c-button-font']}>{confirmBtn.text}</Text>

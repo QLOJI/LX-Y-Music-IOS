@@ -6,6 +6,8 @@ import Video, { type VideoRef } from 'react-native-video'
 import { createStyle, openUrl, toast } from '@/utils/tools'
 
 import { useTheme } from '@/store/theme/hook'
+import { useSettingValue } from '@/store/setting/hook'
+import { applyOpacity } from '@/utils/colorOpacity'
 import Text from '@/components/common/Text'
 import { useAnnouncementInfo } from '@/store/announcement/hook'
 import ModalContent from './ModalContent'
@@ -219,6 +221,8 @@ const MarkdownText = ({ content }: { content: string }) => {
 
 const AnnouncementModal = ({ componentId }: { componentId: string }) => {
   const theme = useTheme()
+  // 弹窗按钮的底面随「按钮透明度」淡出：只改颜色 alpha（applyOpacity），不用容器 style.opacity——后者会把按钮文字一起淡掉
+  const buttonOpacity = useSettingValue('theme.buttonOpacity')
   const { announcementInfo } = useAnnouncementInfo()
   const [isVisible, setIsVisible] = useState(true)
 
@@ -314,7 +318,10 @@ const AnnouncementModal = ({ componentId }: { componentId: string }) => {
             {enabledButtons.map((btn, index) => (
               <TouchableOpacity
                 key={index}
-                style={[styles.actionBtn, { backgroundColor: theme['c-button-background'] }]}
+                style={[styles.actionBtn, {
+                  // 底面随「按钮透明度」淡出；文字色不动
+                  backgroundColor: applyOpacity(theme['c-button-background'], buttonOpacity),
+                }]}
                 onPress={() => { handleButtonPress(btn.url) }}
               >
                 <Text color={theme['c-button-font']}>{btn.text}</Text>

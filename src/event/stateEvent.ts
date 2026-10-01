@@ -72,6 +72,16 @@ export class StateEvent extends Event {
     this.emit('safeAreaBottomUpdated', size)
   }
 
+  // 首次从原生侧拿到底部安全区（含兜底）时发一次，用于让底部悬浮层开始下发
+  safeAreaReadyUpdated(ready: boolean) {
+    this.emit('safeAreaReadyUpdated', ready)
+  }
+
+  // 页面转场开始 / 结束（见 navigation.beginNavTransitionWindow）
+  navTransitioningUpdated(transitioning: boolean) {
+    this.emit('navTransitioningUpdated', transitioning)
+  }
+
   apiSourceUpdated(source: LX.AppSetting['common.apiSource']) {
     this.emit('apiSourceUpdated', source)
   }
