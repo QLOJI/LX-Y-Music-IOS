@@ -18,6 +18,7 @@ import { SvgIcon } from '@/components/common/SvgIcon'
 import settingAction from '@/store/setting/action'
 import { useStatus } from '@/store/userApi'
 import { designRadius, designSpacing, designTypography } from '@/theme/DesignTokens'
+import { applyOpacity } from '@/utils/colorOpacity'
 
 const sources = [
   { id: 'kw', name: '酷我' },
@@ -162,6 +163,7 @@ export default memo(() => {
   const t = useI18n()
   const theme = useTheme()
   const subContainerOpacity = useSettingValue('theme.subContainerOpacity')
+  const buttonOpacity = useSettingValue('theme.buttonOpacity')
   const apiStatus = useStatus() // 监听API状态变化，触发重新渲染
   const [isTesting, setIsTesting] = useState(false)
 
@@ -1404,7 +1406,11 @@ export default memo(() => {
                 disabled={testingSourceId === source.id || !keywords[source.id as keyof SourceKeywords].trim()}
                 ripple={{ borderless: true, radius: 20 }}
                 style={[
-                  { ...styles.singleTestBtn, backgroundColor: theme['c-primary'] },
+                  {
+                    ...styles.singleTestBtn,
+                    // 按钮底面随「按钮透明度」淡出（只改颜色 alpha，文字色不动）
+                    backgroundColor: applyOpacity(theme['c-primary'], buttonOpacity),
+                  },
                   testingSourceId === source.id && styles.singleTestBtnDisabled,
                 ]}
               >
@@ -1420,7 +1426,14 @@ export default memo(() => {
           onPress={handleTest}
           disabled={isTesting || !Object.values(keywords).some(k => k.trim())}
           ripple={{ borderless: true, radius: 22 }}
-          style={[{ ...styles.startTestBtn, backgroundColor: theme['c-primary'] }, isTesting && styles.disabledBtn]}
+          style={[
+            {
+              ...styles.startTestBtn,
+              // 按钮底面随「按钮透明度」淡出（只改颜色 alpha，文字色不动）
+              backgroundColor: applyOpacity(theme['c-primary'], buttonOpacity),
+            },
+            isTesting && styles.disabledBtn,
+          ]}
         >
           开始测试
         </Button>
@@ -1428,14 +1441,25 @@ export default memo(() => {
           onPress={handleStop}
           disabled={!isTesting}
           ripple={{ borderless: true, radius: 22 }}
-          style={[{ ...styles.stopTestBtn, backgroundColor: '#E74C3C' }, !isTesting && styles.disabledBtn]}
+          style={[
+            {
+              ...styles.stopTestBtn,
+              // 按钮底面随「按钮透明度」淡出（只改颜色 alpha，文字色不动）
+              backgroundColor: applyOpacity('#E74C3C', buttonOpacity),
+            },
+            !isTesting && styles.disabledBtn,
+          ]}
         >
           终止测试
         </Button>
         <Button
           onPress={() => faqModalRef.current?.setVisible(true)}
           ripple={{ borderless: true, radius: 18 }}
-          style={{ ...styles.logBtn, backgroundColor: theme['c-button-background'] }}
+          style={{
+            ...styles.logBtn,
+            // 按钮底面随「按钮透明度」淡出（只改颜色 alpha，文字色不动）
+            backgroundColor: applyOpacity(theme['c-button-background'], buttonOpacity),
+          }}
         >
           常见问题
         </Button>
@@ -1527,7 +1551,11 @@ export default memo(() => {
         <Button
           onPress={openLogModal}
           ripple={{ borderless: true, radius: 18 }}
-          style={{ ...styles.logBtn, backgroundColor: theme['c-button-background'] }}
+          style={{
+            ...styles.logBtn,
+            // 按钮底面随「按钮透明度」淡出（只改颜色 alpha，文字色不动）
+            backgroundColor: applyOpacity(theme['c-button-background'], buttonOpacity),
+          }}
         >
           测试日志
         </Button>
@@ -1541,7 +1569,10 @@ export default memo(() => {
             </Text>
             <Button
               onPress={() => { setResults([]) }}
-              style={styles.clearResultBtn}
+              style={[styles.clearResultBtn, {
+                // 按钮边框随「按钮透明度」淡出（只改颜色 alpha，文字色不动）
+                borderColor: applyOpacity('#E74C3C', buttonOpacity),
+              }]}
             >
               清空
             </Button>

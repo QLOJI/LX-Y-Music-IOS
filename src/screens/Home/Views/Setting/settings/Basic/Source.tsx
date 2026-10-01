@@ -122,6 +122,7 @@ const UserApiItem = memo(({
   dragHandleHint,
 }: UserApiItemProps) => {
   const theme = useTheme()
+  const buttonOpacity = useSettingValue('theme.buttonOpacity')
   const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const isActivatedRef = useRef(false)
   const currentDyRef = useRef(0)
@@ -205,7 +206,8 @@ const UserApiItem = memo(({
       style={[
         styles.userApiItem,
         {
-          backgroundColor: isDragSource ? theme['c-primary-background-active'] : 'transparent',
+          // 拖动中行的激活高亮底色随「按钮透明度」淡出；只改颜色 alpha，不用容器 opacity
+          backgroundColor: isDragSource ? applyOpacity(theme['c-primary-background-active'], buttonOpacity) : 'transparent',
           borderBottomColor: theme['c-border-background'],
           opacity,
           transform,

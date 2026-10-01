@@ -3,6 +3,8 @@ import Text from '@/components/common/Text'
 import { View, TouchableOpacity } from 'react-native'
 import { createStyle, openUrl } from '@/utils/tools'
 import { useTheme } from '@/store/theme/hook'
+import { useSettingValue } from '@/store/setting/hook'
+import { applyOpacity } from '@/utils/colorOpacity'
 import { useI18n } from '@/lang'
 import Dialog, { type DialogType } from '@/components/common/Dialog'
 import Button from '@/components/common/Button'
@@ -69,6 +71,7 @@ export default forwardRef<UserApiEditModalType, {}>((props, ref) => {
   // 待执行的原生面板调用（在 Dialog 完全卸载后才会真正执行）
   const pendingProceedRef = useRef<(() => void) | null>(null)
   const theme = useTheme()
+  const buttonOpacity = useSettingValue('theme.buttonOpacity')
   const t = useI18n()
 
   const handleShow = () => {
@@ -152,7 +155,8 @@ export default forwardRef<UserApiEditModalType, {}>((props, ref) => {
       </View>
       <View style={styles.btns}>
         <Button
-          style={{ ...styles.btn, backgroundColor: theme['c-button-background'] }}
+          // 按钮底色随「按钮透明度」淡出；只改颜色 alpha，不用容器 style.opacity
+          style={{ ...styles.btn, backgroundColor: applyOpacity(theme['c-button-background'], buttonOpacity) }}
           onPress={handleCancel}
         >
           <Text size={designTypography.body} color={theme['c-button-font']}>
@@ -160,7 +164,8 @@ export default forwardRef<UserApiEditModalType, {}>((props, ref) => {
           </Text>
         </Button>
         <ImportBtn
-          btnStyle={{ ...styles.btn, backgroundColor: theme['c-button-background'] }}
+          // 按钮底色随「按钮透明度」淡出（btnStyle 透传给菜单内部 Button）；只改颜色 alpha，不用容器 style.opacity
+          btnStyle={{ ...styles.btn, backgroundColor: applyOpacity(theme['c-button-background'], buttonOpacity) }}
           onBeforeNativePicker={hideDialogForNativePicker}
           onAfterNativePicker={showDialogAfterNativePicker}
         />

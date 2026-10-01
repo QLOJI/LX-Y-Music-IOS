@@ -10,6 +10,7 @@ import { BG_IMAGES, getAllThemes, type LocalTheme } from '@/theme/themes'
 import Text from '@/components/common/Text'
 import { createStyle } from '@/utils/tools'
 import { scaleSizeH } from '@/utils/pixelRatio'
+import { applyOpacity } from '@/utils/colorOpacity'
 import { designRadius, designSpacing, designTypography } from '@/theme/DesignTokens'
 import { Icon } from '@/components/common/Icon'
 import ImageBackground from '@/components/common/ImageBackground'
@@ -94,10 +95,12 @@ const MoreBtn = ({
 }) => {
   const theme = useTheme()
   const t = useI18n()
+  const buttonOpacity = useSettingValue('theme.buttonOpacity')
 
+  // 「更多主题」按钮底色随设置淡出：只改颜色自身 alpha，不用容器 opacity，0 时只剩文字与图标
   return showAll ? null : (
     <TouchableOpacity
-      style={{ ...styles.moreBtn, backgroundColor: theme['c-primary-background-active'] }}
+      style={{ ...styles.moreBtn, backgroundColor: applyOpacity(theme['c-primary-background-active'], buttonOpacity) }}
       activeOpacity={0.5}
       onPress={() => {
         setShowAll(!showAll)

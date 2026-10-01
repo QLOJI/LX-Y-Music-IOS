@@ -3,6 +3,7 @@ import Text from '@/components/common/Text'
 import { View, TouchableOpacity, ScrollView } from 'react-native'
 import { confirmDialog, createStyle } from '@/utils/tools'
 import { useTheme } from '@/store/theme/hook'
+import { applyOpacity } from '@/utils/colorOpacity'
 import { useI18n } from '@/lang'
 import { useUserApiList, state as userApiState } from '@/store/userApi'
 import { useSettingValue } from '@/store/setting/hook'
@@ -32,6 +33,7 @@ const ListItem = ({
   onExport: (id: string) => void
 }) => {
   const theme = useTheme()
+  const buttonOpacity = useSettingValue('theme.buttonOpacity')
   const t = useI18n()
   const changeAllowShowUpdateAlert = (check: boolean) => {
     onChangeAllowShowUpdateAlert(item.id, check)
@@ -47,7 +49,8 @@ const ListItem = ({
     <View
       style={{
         ...styles.listItem,
-        backgroundColor: activeId == item.id ? theme['c-primary-background-active'] : 'transparent',
+        // 选中行高亮底色随「按钮透明度」淡出；只改颜色 alpha，不用容器 style.opacity
+        backgroundColor: activeId == item.id ? applyOpacity(theme['c-primary-background-active'], buttonOpacity) : 'transparent',
       }}
     >
       <View style={styles.listItemLeft}>

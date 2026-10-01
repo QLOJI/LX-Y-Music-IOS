@@ -4,6 +4,8 @@ import { type LayoutChangeEvent, View } from 'react-native'
 import Input, { type InputType } from '@/components/common/Input'
 import { createStyle } from '@/utils/tools'
 import { useTheme } from '@/store/theme/hook'
+import { useSettingValue } from '@/store/setting/hook'
+import { applyOpacity } from '@/utils/colorOpacity'
 import { useI18n } from '@/lang'
 import Dialog, { type DialogType } from '@/components/common/Dialog'
 import Button from '@/components/common/Button'
@@ -66,6 +68,7 @@ export default forwardRef<DislikeEditModalType, DislikeEditModalProps>(({ onSave
   const inputRef = useRef<RuleInputType>(null)
   const [visible, setVisible] = useState(false)
   const theme = useTheme()
+  const buttonOpacity = useSettingValue('theme.buttonOpacity')
   const t = useI18n()
 
   const handleShow = (rules: string) => {
@@ -109,7 +112,8 @@ export default forwardRef<DislikeEditModalType, DislikeEditModalProps>(({ onSave
       </View>
       <View style={styles.btns}>
         <Button
-          style={{ ...styles.btn, backgroundColor: theme['c-button-background'] }}
+          // 按钮底色随「按钮透明度」淡出；只改颜色 alpha，不用容器 style.opacity
+          style={{ ...styles.btn, backgroundColor: applyOpacity(theme['c-button-background'], buttonOpacity) }}
           onPress={handleCancel}
         >
           <Text size={designTypography.body} color={theme['c-button-font']}>
@@ -117,7 +121,8 @@ export default forwardRef<DislikeEditModalType, DislikeEditModalProps>(({ onSave
           </Text>
         </Button>
         <Button
-          style={{ ...styles.btn, backgroundColor: theme['c-primary'] }}
+          // 同上：只改颜色 alpha，不用容器 style.opacity
+          style={{ ...styles.btn, backgroundColor: applyOpacity(theme['c-primary'], buttonOpacity) }}
           onPress={handleConfirm}
         >
           <Text size={designTypography.body} color={theme['c-000']}>
