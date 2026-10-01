@@ -6,6 +6,7 @@ import { createStyle } from '@/utils/tools'
 import { useTheme } from '@/store/theme/hook'
 import { useSettingValue } from '@/store/setting/hook'
 import { applyOpacity } from '@/utils/colorOpacity'
+import { useButtonRadius } from '@/utils/buttonRadius'
 import Text from '@/components/common/Text'
 import { useI18n } from '@/lang'
 import ModalContent from './ModalContent'
@@ -73,6 +74,7 @@ const styles = createStyle({
 const ListModeModal = () => {
   const theme = useTheme()
   const buttonOpacity = useSettingValue('theme.buttonOpacity')
+  const buttonRadius = useButtonRadius()
   const t = useI18n()
   const [isOverwrite, setOverwrite] = useState(false)
 
@@ -92,11 +94,15 @@ const ListModeModal = () => {
             <Text size={14}>{t('sync__mode_merge_tip')}</Text>
             <View style={styles.btns}>
               <Button
-                style={{
-                  ...styles.btn,
-                  // 按钮底色随「按钮透明度」淡出；只改颜色 alpha，不用容器 style.opacity
-                  backgroundColor: applyOpacity(theme['c-button-background'], buttonOpacity),
-                }}
+                style={[
+                  {
+                    ...styles.btn,
+                    // 按钮底色随「按钮透明度」淡出；只改颜色 alpha，不用容器 style.opacity
+                    backgroundColor: applyOpacity(theme['c-button-background'], buttonOpacity),
+                  },
+                  // 「按钮圆角」行内覆盖；36 = styles.btn 的设计高度（与 createStyle 里的 height 同值）
+                  { borderRadius: buttonRadius(36) },
+                ]}
                 onPress={() => {
                   handleSelectMode('merge_local_remote')
                 }}
@@ -106,11 +112,15 @@ const ListModeModal = () => {
                 </Text>
               </Button>
               <Button
-                style={{
-                  ...styles.btn,
-                  // 按钮底色随「按钮透明度」淡出；只改颜色 alpha，不用容器 style.opacity
-                  backgroundColor: applyOpacity(theme['c-button-background'], buttonOpacity),
-                }}
+                style={[
+                  {
+                    ...styles.btn,
+                    // 按钮底色随「按钮透明度」淡出；只改颜色 alpha，不用容器 style.opacity
+                    backgroundColor: applyOpacity(theme['c-button-background'], buttonOpacity),
+                  },
+                  // 「按钮圆角」行内覆盖；36 = styles.btn 的设计高度（与 createStyle 里的 height 同值）
+                  { borderRadius: buttonRadius(36) },
+                ]}
                 onPress={() => {
                   handleSelectMode('merge_remote_local')
                 }}
@@ -125,11 +135,15 @@ const ListModeModal = () => {
             <Text size={14}>{t('sync__mode_overwrite_label')}</Text>
             <View style={styles.btns}>
               <Button
-                style={{
-                  ...styles.btn,
-                  // 按钮底色随「按钮透明度」淡出；只改颜色 alpha，不用容器 style.opacity
-                  backgroundColor: applyOpacity(theme['c-button-background'], buttonOpacity),
-                }}
+                style={[
+                  {
+                    ...styles.btn,
+                    // 按钮底色随「按钮透明度」淡出；只改颜色 alpha，不用容器 style.opacity
+                    backgroundColor: applyOpacity(theme['c-button-background'], buttonOpacity),
+                  },
+                  // 「按钮圆角」行内覆盖；36 = styles.btn 的设计高度（与 createStyle 里的 height 同值）
+                  { borderRadius: buttonRadius(36) },
+                ]}
                 onPress={() => {
                   handleSelectMode('overwrite_local_remote')
                 }}
@@ -139,11 +153,15 @@ const ListModeModal = () => {
                 </Text>
               </Button>
               <Button
-                style={{
-                  ...styles.btn,
-                  // 按钮底色随「按钮透明度」淡出；只改颜色 alpha，不用容器 style.opacity
-                  backgroundColor: applyOpacity(theme['c-button-background'], buttonOpacity),
-                }}
+                style={[
+                  {
+                    ...styles.btn,
+                    // 按钮底色随「按钮透明度」淡出；只改颜色 alpha，不用容器 style.opacity
+                    backgroundColor: applyOpacity(theme['c-button-background'], buttonOpacity),
+                  },
+                  // 「按钮圆角」行内覆盖；36 = styles.btn 的设计高度（与 createStyle 里的 height 同值）
+                  { borderRadius: buttonRadius(36) },
+                ]}
                 onPress={() => {
                   handleSelectMode('overwrite_remote_local')
                 }}
@@ -166,11 +184,15 @@ const ListModeModal = () => {
             <Text size={14}>{t('sync__mode_other_label')}</Text>
             <View style={styles.btns}>
               <Button
-                style={{
-                  ...styles.btn,
-                  // 按钮底色随「按钮透明度」淡出；只改颜色 alpha，不用容器 style.opacity
-                  backgroundColor: applyOpacity(theme['c-button-background'], buttonOpacity),
-                }}
+                style={[
+                  {
+                    ...styles.btn,
+                    // 按钮底色随「按钮透明度」淡出；只改颜色 alpha，不用容器 style.opacity
+                    backgroundColor: applyOpacity(theme['c-button-background'], buttonOpacity),
+                  },
+                  // 「按钮圆角」行内覆盖；36 = styles.btn 的设计高度（与 createStyle 里的 height 同值）
+                  { borderRadius: buttonRadius(36) },
+                ]}
                 onPress={() => {
                   handleSelectMode('cancel')
                 }}
@@ -210,6 +232,7 @@ const ListModeModal = () => {
 const DislikeModeModal = () => {
   const theme = useTheme()
   const buttonOpacity = useSettingValue('theme.buttonOpacity')
+  const buttonRadius = useButtonRadius()
   const t = useI18n()
   const handleSelectMode = (mode: LX.Sync.Dislike.SyncMode) => {
     global.app_event.selectSyncMode({ type: 'dislike', mode })
@@ -226,11 +249,15 @@ const DislikeModeModal = () => {
             <Text size={14}>{t('sync__mode_merge_tip')}</Text>
             <View style={styles.btns}>
               <Button
-                style={{
-                  ...styles.btn,
-                  // 按钮底色随「按钮透明度」淡出；只改颜色 alpha，不用容器 style.opacity
-                  backgroundColor: applyOpacity(theme['c-button-background'], buttonOpacity),
-                }}
+                style={[
+                  {
+                    ...styles.btn,
+                    // 按钮底色随「按钮透明度」淡出；只改颜色 alpha，不用容器 style.opacity
+                    backgroundColor: applyOpacity(theme['c-button-background'], buttonOpacity),
+                  },
+                  // 「按钮圆角」行内覆盖；36 = styles.btn 的设计高度（与 createStyle 里的 height 同值）
+                  { borderRadius: buttonRadius(36) },
+                ]}
                 onPress={() => {
                   handleSelectMode('merge_local_remote')
                 }}
@@ -240,11 +267,15 @@ const DislikeModeModal = () => {
                 </Text>
               </Button>
               <Button
-                style={{
-                  ...styles.btn,
-                  // 按钮底色随「按钮透明度」淡出；只改颜色 alpha，不用容器 style.opacity
-                  backgroundColor: applyOpacity(theme['c-button-background'], buttonOpacity),
-                }}
+                style={[
+                  {
+                    ...styles.btn,
+                    // 按钮底色随「按钮透明度」淡出；只改颜色 alpha，不用容器 style.opacity
+                    backgroundColor: applyOpacity(theme['c-button-background'], buttonOpacity),
+                  },
+                  // 「按钮圆角」行内覆盖；36 = styles.btn 的设计高度（与 createStyle 里的 height 同值）
+                  { borderRadius: buttonRadius(36) },
+                ]}
                 onPress={() => {
                   handleSelectMode('merge_remote_local')
                 }}
@@ -259,11 +290,15 @@ const DislikeModeModal = () => {
             <Text size={14}>{t('sync__mode_overwrite_label')}</Text>
             <View style={styles.btns}>
               <Button
-                style={{
-                  ...styles.btn,
-                  // 按钮底色随「按钮透明度」淡出；只改颜色 alpha，不用容器 style.opacity
-                  backgroundColor: applyOpacity(theme['c-button-background'], buttonOpacity),
-                }}
+                style={[
+                  {
+                    ...styles.btn,
+                    // 按钮底色随「按钮透明度」淡出；只改颜色 alpha，不用容器 style.opacity
+                    backgroundColor: applyOpacity(theme['c-button-background'], buttonOpacity),
+                  },
+                  // 「按钮圆角」行内覆盖；36 = styles.btn 的设计高度（与 createStyle 里的 height 同值）
+                  { borderRadius: buttonRadius(36) },
+                ]}
                 onPress={() => {
                   handleSelectMode('overwrite_local_remote')
                 }}
@@ -273,11 +308,15 @@ const DislikeModeModal = () => {
                 </Text>
               </Button>
               <Button
-                style={{
-                  ...styles.btn,
-                  // 按钮底色随「按钮透明度」淡出；只改颜色 alpha，不用容器 style.opacity
-                  backgroundColor: applyOpacity(theme['c-button-background'], buttonOpacity),
-                }}
+                style={[
+                  {
+                    ...styles.btn,
+                    // 按钮底色随「按钮透明度」淡出；只改颜色 alpha，不用容器 style.opacity
+                    backgroundColor: applyOpacity(theme['c-button-background'], buttonOpacity),
+                  },
+                  // 「按钮圆角」行内覆盖；36 = styles.btn 的设计高度（与 createStyle 里的 height 同值）
+                  { borderRadius: buttonRadius(36) },
+                ]}
                 onPress={() => {
                   handleSelectMode('overwrite_remote_local')
                 }}
@@ -292,11 +331,15 @@ const DislikeModeModal = () => {
             <Text size={14}>{t('sync__mode_other_label')}</Text>
             <View style={styles.btns}>
               <Button
-                style={{
-                  ...styles.btn,
-                  // 按钮底色随「按钮透明度」淡出；只改颜色 alpha，不用容器 style.opacity
-                  backgroundColor: applyOpacity(theme['c-button-background'], buttonOpacity),
-                }}
+                style={[
+                  {
+                    ...styles.btn,
+                    // 按钮底色随「按钮透明度」淡出；只改颜色 alpha，不用容器 style.opacity
+                    backgroundColor: applyOpacity(theme['c-button-background'], buttonOpacity),
+                  },
+                  // 「按钮圆角」行内覆盖；36 = styles.btn 的设计高度（与 createStyle 里的 height 同值）
+                  { borderRadius: buttonRadius(36) },
+                ]}
                 onPress={() => {
                   handleSelectMode('cancel')
                 }}

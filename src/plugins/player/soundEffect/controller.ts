@@ -6,6 +6,9 @@ import {
   isSoundEffectSettingKey,
   normalizeConvolutionGain,
   normalizeEqualizerGain,
+  normalizePannerSoundR,
+  normalizePannerSpeed,
+  normalizePitchShifterPlaybackRate,
 } from './constants'
 import { nativeEqualizerAdapter } from './adapters/nativeEqualizerAdapter'
 import type {
@@ -95,19 +98,22 @@ const buildCurrentConvolutionConfig = (): SoundEffectConvolutionConfig => {
   }
 }
 
-// 【2026-09-29 用户定案】环绕声像不再暴露：恒定下发复位值，清掉存量用户的原生残留
+// 环绕/变调重新启用后不再恒定下发复位值，改回从 setting 读取（原「清原生残留」的理由不再成立）；
+// normalize 对键缺失兜底到 5 / 25，避免原生收到 NaN
 const buildCurrentPannerConfig = (): SoundEffectPannerConfig => {
+  const setting = settingState.setting
   return {
-    enabled: false,
-    soundR: 5,
-    speed: 25,
+    enabled: !!setting['player.soundEffect.panner.enable'],
+    soundR: normalizePannerSoundR(setting['player.soundEffect.panner.soundR']),
+    speed: normalizePannerSpeed(setting['player.soundEffect.panner.speed']),
   }
 }
 
-// 【2026-09-29 用户定案】变调不再暴露：恒定下发 1（原生链残留复位）
+// 变调重新启用：从 setting 读取，normalize 对键缺失兜底到 1
 const buildCurrentPitchShifterConfig = (): SoundEffectPitchShifterConfig => {
+  const setting = settingState.setting
   return {
-    playbackRate: 1,
+    playbackRate: normalizePitchShifterPlaybackRate(setting['player.soundEffect.pitchShifter.playbackRate']),
   }
 }
 
@@ -133,11 +139,12 @@ const buildCurrentConfig = (overrides?: Partial<SoundEffectConfig>): SoundEffect
     },
     panner: {
       enabled: overrides?.panner?.enabled ?? pannerBase.enabled,
-      soundR: overrides?.panner?.soundR ?? pannerBase.soundR,
-      speed: overrides?.panner?.speed ?? pannerBase.speed,
+      // override 与 setting 两条来源统一走 normalize，保证下发值始终在原生夹取范围内
+      soundR: normalizePannerSoundR(overrides?.panner?.soundR ?? pannerBase.soundR),
+      speed: normalizePannerSpeed(overrides?.panner?.speed ?? pannerBase.speed),
     },
     pitchShifter: {
-      playbackRate: overrides?.pitchShifter?.playbackRate ?? pitchShifterBase.playbackRate,
+      playbackRate: normalizePitchShifterPlaybackRate(overrides?.pitchShifter?.playbackRate ?? pitchShifterBase.playbackRate),
     },
   }
 }

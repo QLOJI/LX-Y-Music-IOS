@@ -48,6 +48,12 @@ global.lx = {
   // 见 core/common.ts 的 forceSyncNavActiveId()：一次性标记，请求 Home 的 PagerView
   // 强制同步到当前 navActiveId（绕过 setNavActiveId 的同值短路）。
   homePagerForceSync: false,
+
+  // 见 event/appEvent.ts 的 jumpListPosition()：一次性标记，表示「本次切到『我的』
+  // 是为了定位当前播放歌曲」。由「我的」歌曲列表挂载时消费并复位。
+  // 用于兜住时序：长按迷你播放器封面时该列表可能尚未挂载，200ms 后补发的
+  // jumpListPosition 事件会丢，只能靠这个标记在挂载时补做定位。
+  jumpMyListPosition: false,
 }
 
 global.app_event = createAppEventHub() as typeof globalThis.app_event

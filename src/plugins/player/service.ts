@@ -198,8 +198,9 @@ export default () => {
     const wasBgPlaying = wasBackgroundPlaying
     wasBackgroundPlaying = false
     if (global.lx.isPlayedStop || playerState.isPlay) return cancelResumePending()
-    // 回到前台且已暂停：若退到后台前正在播放，则自动续播（用户手动暂停/切歌/自然结束都会先清除标记）
-    if (wasBgPlaying) scheduleAutoResume()
+    // 回到前台且已暂停：仅在开启「返回软件时自动播放」且暂停确由系统中断/其它音频抢占造成时自动续播
+    //（shouldResumeAfterDuck 只在被系统打断或退后台预置时置位，用户手动暂停/切歌/自然结束都会先清除标记）
+    if (wasBgPlaying && shouldResumeAfterDuck && settingState.setting['player.autoPlayOnReturn']) scheduleAutoResume()
   })
   // 一旦进入播放(任意途径触发)，清除待续播标记，避免后续重复自动播放
   global.app_event.on('play', () => {

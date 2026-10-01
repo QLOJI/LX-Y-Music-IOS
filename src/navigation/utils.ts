@@ -102,50 +102,65 @@ export const showVersionModal = () => {
   setTimeout(() => pendingOverlays.delete(VERSION_MODAL), 500)
   const theme = themeState.theme
 
-  void Navigation.showOverlay({
-    component: {
-      name: VERSION_MODAL,
-      options: {
-        layout: {
-          componentBackgroundColor: 'transparent',
-        },
-        overlay: {
-          interceptTouchOutside: true,
-        },
-        statusBar: {
-          drawBehind: true,
-          visible: true,
-          style: getStatusBarStyle(theme.isDark),
-          backgroundColor: 'transparent',
-        },
-        navigationBar: {
-          // visible: false,
-          backgroundColor: theme['c-content-background'],
-        },
-        // animations: {
+  // 与 showPactModal 对齐：overlay 展示失败必须兜底重试（窗口未就绪、转场竞态等都可能让
+  // showOverlay 静默失败，透明 overlay 一旦残留，interceptTouchOutside 会拦截全屏触摸），
+  // 失败时由 handleFail 统一接管、不留未捕获的 reject。重试间隔取去抖窗口之后（600ms），最多 3 次。
+  const show = (attempt: number) => {
+    const handleFail = (err: unknown) => {
+      console.error('[Version] showOverlay failed:', attempt, err)
+      if (attempt >= 3) return
+      setTimeout(() => { show(attempt + 1) }, 600)
+    }
+    try {
+      void Navigation.showOverlay({
+        component: {
+          name: VERSION_MODAL,
+          options: {
+            layout: {
+              componentBackgroundColor: 'transparent',
+            },
+            overlay: {
+              interceptTouchOutside: true,
+            },
+            statusBar: {
+              drawBehind: true,
+              visible: true,
+              style: getStatusBarStyle(theme.isDark),
+              backgroundColor: 'transparent',
+            },
+            navigationBar: {
+              // visible: false,
+              backgroundColor: theme['c-content-background'],
+            },
+            // animations: {
 
-        //   showModal: {
-        //     enter: {
-        //       enabled: true,
-        //       alpha: {
-        //         from: 0,
-        //         to: 1,
-        //         duration: 300,
-        //       },
-        //     },
-        //     exit: {
-        //       enabled: true,
-        //       alpha: {
-        //         from: 1,
-        //         to: 0,
-        //         duration: 300,
-        //       },
-        //     },
-        //   },
-        // },
-      },
-    },
-  })
+            //   showModal: {
+            //     enter: {
+            //       enabled: true,
+            //       alpha: {
+            //         from: 0,
+            //         to: 1,
+            //         duration: 300,
+            //       },
+            //     },
+            //     exit: {
+            //       enabled: true,
+            //       alpha: {
+            //         from: 1,
+            //         to: 0,
+            //         duration: 300,
+            //       },
+            //     },
+            //   },
+            // },
+          },
+        },
+      }).catch(handleFail)
+    } catch (err) {
+      handleFail(err)
+    }
+  }
+  show(1)
 }
 
 export const showSyncModeModal = () => {
@@ -154,50 +169,65 @@ export const showSyncModeModal = () => {
   setTimeout(() => pendingOverlays.delete(SYNC_MODE_MODAL), 500)
   const theme = themeState.theme
 
-  void Navigation.showOverlay({
-    component: {
-      name: SYNC_MODE_MODAL,
-      options: {
-        layout: {
-          componentBackgroundColor: 'transparent',
-        },
-        overlay: {
-          interceptTouchOutside: true,
-        },
-        statusBar: {
-          drawBehind: true,
-          visible: true,
-          style: getStatusBarStyle(theme.isDark),
-          backgroundColor: 'transparent',
-        },
-        navigationBar: {
-          // visible: false,
-          backgroundColor: theme['c-content-background'],
-        },
-        // animations: {
+  // 与 showPactModal 对齐：overlay 展示失败必须兜底重试（窗口未就绪、转场竞态等都可能让
+  // showOverlay 静默失败，透明 overlay 一旦残留，interceptTouchOutside 会拦截全屏触摸），
+  // 失败时由 handleFail 统一接管、不留未捕获的 reject。重试间隔取去抖窗口之后（600ms），最多 3 次。
+  const show = (attempt: number) => {
+    const handleFail = (err: unknown) => {
+      console.error('[SyncMode] showOverlay failed:', attempt, err)
+      if (attempt >= 3) return
+      setTimeout(() => { show(attempt + 1) }, 600)
+    }
+    try {
+      void Navigation.showOverlay({
+        component: {
+          name: SYNC_MODE_MODAL,
+          options: {
+            layout: {
+              componentBackgroundColor: 'transparent',
+            },
+            overlay: {
+              interceptTouchOutside: true,
+            },
+            statusBar: {
+              drawBehind: true,
+              visible: true,
+              style: getStatusBarStyle(theme.isDark),
+              backgroundColor: 'transparent',
+            },
+            navigationBar: {
+              // visible: false,
+              backgroundColor: theme['c-content-background'],
+            },
+            // animations: {
 
-        //   showModal: {
-        //     enter: {
-        //       enabled: true,
-        //       alpha: {
-        //         from: 0,
-        //         to: 1,
-        //         duration: 300,
-        //       },
-        //     },
-        //     exit: {
-        //       enabled: true,
-        //       alpha: {
-        //         from: 1,
-        //         to: 0,
-        //         duration: 300,
-        //       },
-        //     },
-        //   },
-        // },
-      },
-    },
-  })
+            //   showModal: {
+            //     enter: {
+            //       enabled: true,
+            //       alpha: {
+            //         from: 0,
+            //         to: 1,
+            //         duration: 300,
+            //       },
+            //     },
+            //     exit: {
+            //       enabled: true,
+            //       alpha: {
+            //         from: 1,
+            //         to: 0,
+            //         duration: 300,
+            //       },
+            //     },
+            //   },
+            // },
+          },
+        },
+      }).catch(handleFail)
+    } catch (err) {
+      handleFail(err)
+    }
+  }
+  show(1)
 }
 
 // export const showToast = (text) => {
@@ -216,34 +246,43 @@ export const showAnnouncementModal = () => {
   const theme = themeState.theme
   console.log('[Announcement] Theme loaded:', !!theme)
 
-  try {
-    void Navigation.showOverlay({
-      component: {
-        name: ANNOUNCEMENT_MODAL,
-        options: {
-          layout: {
-            componentBackgroundColor: 'transparent',
-          },
-          overlay: {
-            interceptTouchOutside: true,
-          },
-          statusBar: {
-            drawBehind: true,
-            visible: true,
-            style: getStatusBarStyle(theme.isDark),
-            backgroundColor: 'transparent',
-          },
-          navigationBar: {
-            backgroundColor: theme['c-content-background'],
+  // 与 showPactModal 对齐：overlay 展示失败必须兜底重试（窗口未就绪、转场竞态等都可能让
+  // showOverlay 静默失败，透明 overlay 一旦残留，interceptTouchOutside 会拦截全屏触摸），
+  // 失败时由 handleFail 统一接管、不留未捕获的 reject。重试间隔取去抖窗口之后（600ms），最多 3 次。
+  const show = (attempt: number) => {
+    const handleFail = (err: unknown) => {
+      console.error('[Announcement] showOverlay failed:', attempt, err)
+      if (attempt >= 3) return
+      setTimeout(() => { show(attempt + 1) }, 600)
+    }
+    try {
+      void Navigation.showOverlay({
+        component: {
+          name: ANNOUNCEMENT_MODAL,
+          options: {
+            layout: {
+              componentBackgroundColor: 'transparent',
+            },
+            overlay: {
+              interceptTouchOutside: true,
+            },
+            statusBar: {
+              drawBehind: true,
+              visible: true,
+              style: getStatusBarStyle(theme.isDark),
+              backgroundColor: 'transparent',
+            },
+            navigationBar: {
+              backgroundColor: theme['c-content-background'],
+            },
           },
         },
-      },
-    }).then(() => {
-      console.log('[Announcement] Overlay shown successfully')
-    }).catch((err) => {
-      console.error('[Announcement] Failed to show overlay:', err)
-    })
-  } catch (err) {
-    console.error('[Announcement] Exception showing overlay:', err)
+      }).then(() => {
+        console.log('[Announcement] Overlay shown successfully')
+      }).catch(handleFail)
+    } catch (err) {
+      handleFail(err)
+    }
   }
+  show(1)
 }

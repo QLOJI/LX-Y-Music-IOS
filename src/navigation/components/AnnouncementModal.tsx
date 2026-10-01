@@ -8,6 +8,7 @@ import { createStyle, openUrl, toast } from '@/utils/tools'
 import { useTheme } from '@/store/theme/hook'
 import { useSettingValue } from '@/store/setting/hook'
 import { applyOpacity } from '@/utils/colorOpacity'
+import { useButtonRadius } from '@/utils/buttonRadius'
 import Text from '@/components/common/Text'
 import { useAnnouncementInfo } from '@/store/announcement/hook'
 import ModalContent from './ModalContent'
@@ -109,6 +110,7 @@ const parseInlineMarkdown = (text: string, theme: any): React.ReactNode[] => {
 
 const CodeBlock = ({ code, theme }: { code: string, theme: any }) => {
   const [copied, setCopied] = useState(false)
+  const buttonRadius = useButtonRadius()
 
   const handleCopy = useCallback(() => {
     Clipboard.setString(code)
@@ -119,7 +121,8 @@ const CodeBlock = ({ code, theme }: { code: string, theme: any }) => {
 
   return (
     <View style={[styles.markdownCodeBlock, { backgroundColor: theme['c-content-background'] }]}>
-      <TouchableOpacity style={styles.copyBtn} onPress={handleCopy}>
+      {/* 「按钮圆角」行内覆盖；复制按钮无固定高度，省略参数走默认参考高度（56） */}
+      <TouchableOpacity style={[styles.copyBtn, { borderRadius: buttonRadius() }]} onPress={handleCopy}>
         <Text style={[styles.copyBtnText, { color: copied ? theme['c-primary'] : theme['c-font-label'] }]}>
           {copied ? '已复制' : '复制'}
         </Text>
@@ -223,6 +226,7 @@ const AnnouncementModal = ({ componentId }: { componentId: string }) => {
   const theme = useTheme()
   // 弹窗按钮的底面随「按钮透明度」淡出：只改颜色 alpha（applyOpacity），不用容器 style.opacity——后者会把按钮文字一起淡掉
   const buttonOpacity = useSettingValue('theme.buttonOpacity')
+  const buttonRadius = useButtonRadius()
   const { announcementInfo } = useAnnouncementInfo()
   const [isVisible, setIsVisible] = useState(true)
 
@@ -318,10 +322,15 @@ const AnnouncementModal = ({ componentId }: { componentId: string }) => {
             {enabledButtons.map((btn, index) => (
               <TouchableOpacity
                 key={index}
-                style={[styles.actionBtn, {
-                  // 底面随「按钮透明度」淡出；文字色不动
-                  backgroundColor: applyOpacity(theme['c-button-background'], buttonOpacity),
-                }]}
+                style={[
+                  styles.actionBtn,
+                  {
+                    // 底面随「按钮透明度」淡出；文字色不动
+                    backgroundColor: applyOpacity(theme['c-button-background'], buttonOpacity),
+                  },
+                  // 「按钮圆角」行内覆盖；36 = styles.actionBtn 的设计高度（与 createStyle 里的 height 同值）
+                  { borderRadius: buttonRadius(36) },
+                ]}
                 onPress={() => { handleButtonPress(btn.url) }}
               >
                 <Text color={theme['c-button-font']}>{btn.text}</Text>

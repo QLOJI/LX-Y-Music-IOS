@@ -60,9 +60,13 @@ export const isNativeFlacPlayerAvailable = () => Platform.OS == 'ios' && isStrea
 
 const FLAC_QUALITIES = new Set<LX.Quality>(['flac', 'flac24bit', 'hires', 'master', 'atmos', 'atmos_plus'])
 
-export const shouldUseNativeFlacPlayer = async(_musicInfo: LX.Player.PlayMusic, _url: string, quality?: LX.Quality | null) => {
-  if (!settingState.setting['player.useNativeFlacPlayer']) return false
-  return quality != null && FLAC_QUALITIES.has(quality)
+// 【去门控】不再读 player.useNativeFlacPlayer 开关：无损档一律走原生 AVAudioEngine，
+// 才能拿到 AppDelegate 的进程内打断续播（其它音频结束即自动续播，无需回前台），对齐参考工程。
+export const shouldUseNativeFlacPlayer = async(musicInfo: LX.Player.PlayMusic, _url: string, quality?: LX.Quality | null) => {
+  if (!isNativeFlacPlayerAvailable()) return false
+  if (quality != null) return FLAC_QUALITIES.has(quality)
+  // 调用方未传音质档时回退设置里的「优先播放音质」；本地歌曲不走原生流式解码
+  return getMusicInfo(musicInfo).source != 'local' && FLAC_QUALITIES.has(settingState.setting['player.playQuality'])
 }
 
 export const prefetchNativeFlacPlayback = async(musicInfo: LX.Player.PlayMusic, url: string, quality?: LX.Quality | null) => {

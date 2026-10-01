@@ -102,6 +102,11 @@ const defaultSetting: LX.AppSetting = {
   'player.soundEffect.convolution.fileName': '',
   'player.soundEffect.convolution.mainGain': 10,
   'player.soundEffect.convolution.sendGain': 0,
+  // 以下 4 键对应「3D 环绕 / 变调」两个音效区块（另一批代理的音效设置接线需要这些键存在）
+  'player.soundEffect.panner.enable': false,
+  'player.soundEffect.panner.soundR': 5,
+  'player.soundEffect.panner.speed': 25,
+  'player.soundEffect.pitchShifter.playbackRate': 1,
   'player.soundEffect.eq.31': 0,
   'player.soundEffect.eq.62': 0,
   'player.soundEffect.eq.125': 0,
@@ -116,12 +121,15 @@ const defaultSetting: LX.AppSetting = {
   'player.isEnableAudioPreload': false,
   'player.cacheSize': '1024',
   'player.isEnableAudioOffload': false,
-  'player.useNativeFlacPlayer': false,
+  // 「原生 FLAC 播放器」开关已移除（去门控）：无损档一律走原生引擎，见 nativeFlac.ts 注释。
+  // 该键不再被读取；旧安装里残留的值为死数据。
   'player.isShowLyricTranslation': true,
   'player.isShowLyricRoma': false,
   'player.isShowNotificationImage': true,
   'player.isS2t': true,
-  'player.autoPlayOnReturn': false,
+  // 返回软件时自动播放：默认开（用户明确要求「其它音频结束播放后不用回前台也会自动续播」）。
+  // 仅当暂停由系统音频中断/其它音频抢占造成时才会恢复，用户主动按的暂停不会被恢复（见 service.ts）。
+  'player.autoPlayOnReturn': true,
   // 蓝牙歌词：开 = 把当前歌词行推送到系统媒体信息（控制中心 / 锁屏 / 车机 / 蓝牙音箱
   // 读的都是同一份 MPNowPlayingInfoCenter，artist 字段承载歌词行）；
   // 关 = 只显示歌名·歌手，不推送歌词行。默认开，保持既有行为。
@@ -209,6 +217,9 @@ const defaultSetting: LX.AppSetting = {
   // 100 = 完全不透明（默认，视觉与既有版本一致）；0 = 底色/边框全透明，只剩文字。
   // 作用于底色/边框的颜色 alpha，**不是**容器 style.opacity（否则文字会一起淡出）。
   'theme.buttonOpacity': 100,
+  // 按钮族圆角：0 = 直角（默认），100 = 半圆，中间值按各按钮自身高度的一半线性换算。
+  // 生效值来自 useButtonRadius() 的行内覆盖（createStyle 会把圆角在加载时固化，必须在调用点覆盖），见 utils/buttonRadius.ts。
+  'theme.buttonRadius': 0,
 }
 
 if (new Date().getMonth() < 2) {

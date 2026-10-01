@@ -1,4 +1,6 @@
+import { setNavActiveId } from '@/core/common'
 import Event from './Event'
+import commonState from '@/store/common/state'
 import { type Source as SonglistSource } from '@/store/songlist/state'
 import { type SearchType } from '@/store/search/state'
 import DownloadTask = LX.Download.DownloadTask
@@ -183,6 +185,36 @@ export class AppEvent extends Event {
    */
   searchTypeChanged(type: SearchType) {
     this.emit('searchTypeChanged', type)
+  }
+
+  /**
+   * 请求「我的」页把当前播放歌曲滚动到可见位置（长按迷你播放器左侧封面触发）。
+   *
+   * 两条通道，缺一不可：
+   * - 事件通道：emit('jumpListPosition')。已在「我的」页时立即发；否则先切导航、
+   *   200ms 后补发（等 PagerView 落页与「我的」页挂载）。
+   * - 标记通道：同时置 global.lx.jumpMyListPosition。本工程的「我的」页是 PagerView
+   *   懒挂载 + 详情覆盖层条件渲染的（覆盖层每次打开都是全新挂载的子树），上面那个
+   *   补发的事件很可能**没有任何监听者**，只能由 NewListUI 挂载时消费这个标记补做。
+   *
+   * 两个分支都要置标记（这点与参考工程不同）：参考工程的「我的」歌曲列表常驻，
+   * 已经在 nav_love 时 emit 必然有人听；本工程「已经在我的页但覆盖层没开」恰恰是
+   * 最常见的一种状态，那一路只 emit 的话事件必丢。
+   *
+   * 消费契约：NewListUI 读到即复位（它是「我的」页本体，只要挂载着两通道就都能走完）。
+   * 见 NewListUI.tsx 的 jumpListPosition 监听与挂载消费 effect、
+   * MusicList/List.tsx 的 jumpListPosition 监听（覆盖层已开时的定位）。
+   */
+  jumpListPosition() {
+    global.lx.jumpMyListPosition = true
+    if (commonState.navActiveId == 'nav_love') {
+      this.emit('jumpListPosition')
+    } else {
+      setNavActiveId('nav_love')
+      setTimeout(() => {
+        this.emit('jumpListPosition')
+      }, 200)
+    }
   }
 
   searchDeepLink(keyword: string, source: string, type: string) {

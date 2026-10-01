@@ -199,12 +199,19 @@ export const getEqualizerBandSettingKey = (frequency: EqualizerFrequency): Sound
   return bandSettingKeyMap[frequency]
 }
 
+// 2026-10-01 收口：panner/pitchShifter 键已并入 types.ts 的 SoundEffectSettingKey，
+// 白名单直接使用统一联合（原先临时补的扩展联合类型已折叠删除）
 export const soundEffectSettingKeys: readonly SoundEffectSettingKey[] = Object.freeze([
   'player.soundEffect.enabled',
   'player.soundEffect.preset',
   'player.soundEffect.convolution.fileName',
   'player.soundEffect.convolution.mainGain',
   'player.soundEffect.convolution.sendGain',
+  // 环绕/变调重新启用：这四键必须进白名单，否则改设置不会触发 applyCurrentConfig，滑块完全无效
+  'player.soundEffect.panner.enable',
+  'player.soundEffect.panner.soundR',
+  'player.soundEffect.panner.speed',
+  'player.soundEffect.pitchShifter.playbackRate',
   ...equalizerFrequencies.map(getEqualizerBandSettingKey),
 ])
 
@@ -230,6 +237,20 @@ export const createEqualizerGainsRecord = (gains?: readonly number[]) => {
 
 export const normalizeEqualizerGain = (gain: number) => Math.round(gain * 10) / 10
 export const normalizeConvolutionGain = (gain: number) => Math.min(50, Math.max(0, Math.round(gain)))
+// 变调/环绕设置可能暂时读到 undefined（默认值由另一批代理补进 defaultSetting.ts），
+// 这里分别兜底到 5 / 25 / 1，避免把 NaN 传给原生
+export const normalizePannerSoundR = (soundR?: number | null) => {
+  const value = typeof soundR == 'number' && Number.isFinite(soundR) ? Math.round(soundR) : 5
+  return Math.min(30, Math.max(1, value))
+}
+export const normalizePannerSpeed = (speed?: number | null) => {
+  const value = typeof speed == 'number' && Number.isFinite(speed) ? Math.round(speed) : 25
+  return Math.min(50, Math.max(1, value))
+}
+export const normalizePitchShifterPlaybackRate = (value?: number | null) => {
+  const rate = typeof value == 'number' && Number.isFinite(value) ? Math.round(value * 100) / 100 : 1
+  return Math.min(1.5, Math.max(0.5, rate))
+}
 
 export const hasEnabledEqualizerGains = (gains: readonly number[]) => {
   return gains.some(gain => normalizeEqualizerGain(gain) != 0)
@@ -246,7 +267,10 @@ export const getEqualizerGains = (setting = settingState.setting) => {
 
 export const isSoundEffectActive = (setting = settingState.setting) => {
   return hasEnabledEqualizerGains(equalizerFrequencies.map(frequency => setting[getEqualizerBandSettingKey(frequency)])) ||
-    !!setting['player.soundEffect.convolution.fileName']
+    !!setting['player.soundEffect.convolution.fileName'] ||
+    // 环绕/变调重新启用后同样计入「生效中」（供右上角音效按钮上高亮色）
+    !!setting['player.soundEffect.panner.enable'] ||
+    normalizePitchShifterPlaybackRate(setting['player.soundEffect.pitchShifter.playbackRate']) != 1
 }
 
 const createEqualizerSettingPatch = (presetId: LX.SoundEffectPresetId, gains: readonly number[]): Partial<LX.AppSetting> => {
@@ -300,6 +324,7 @@ export const createConvolutionSettingPatch = (source: string | null): Partial<LX
   }
 }
 
+// 类型守卫沿用统一联合：panner/pitchShifter 键同样命中（播放器设置监听 keys.some(isSettingKey) 依赖它触发 applyCurrentConfig）
 export const isSoundEffectSettingKey = (key: keyof LX.AppSetting): key is SoundEffectSettingKey => {
   return soundEffectSettingKeys.includes(key as SoundEffectSettingKey)
 }

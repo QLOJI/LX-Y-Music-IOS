@@ -22,6 +22,12 @@ export type SoundEffectSettingKey =
   | SoundEffectConvolutionSettingKey
   | 'player.soundEffect.enabled'
   | 'player.soundEffect.preset'
+  // 2026-10-01 收口：panner（3D 环绕）/ pitchShifter（变调）键并入统一联合
+  // （原先临时补在 constants.ts 的扩展联合类型已折叠删除）
+  | 'player.soundEffect.panner.enable'
+  | 'player.soundEffect.panner.soundR'
+  | 'player.soundEffect.panner.speed'
+  | 'player.soundEffect.pitchShifter.playbackRate'
 
 export type EqualizerPresetNameKey =
   | 'setting_play_sound_effect_preset_none'
