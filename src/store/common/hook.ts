@@ -51,6 +51,51 @@ export const useSafeAreaBottom = () => {
   return value
 }
 
+/**
+ * 底部安全区是否已经拿到过一次真实值（启动首帧为 false）。
+ *
+ * 用途只有一处：底部悬浮层（底部 Tab 栏 / 首页迷你播放器）**首帧不下发**。
+ * 两者的 bottom 完全由 safeAreaBottom 决定，而它是 SizeView 挂载后异步向原生取的
+ * （启动时 state 里是 0）：先按 0 画出来（整条沉到屏幕最下、压在 Home 指示器上），
+ * 一两帧后拿到真实值（iPhone 34pt / iPad 20pt）再整体上跳一次 —— 用户看到的就是
+ * 「启动软件时底部 tab 栏和迷你播放器抽动」。等安全区就绪再画，位置一次到位，
+ * 代价只是这两条比页面内容晚一两帧出现（首屏本来还在转场，看不出）。
+ *
+ * 兜底在 SizeView：原生 getSafeAreaInsets 万一不回调，250ms 后按现有值放行，
+ * 绝不允许「原生卡住 → 底部栏永远不出现」。
+ */
+export const useSafeAreaReady = () => {
+  const [value, update] = useState(state.safeAreaReady)
+
+  useEffect(() => {
+    global.state_event.on('safeAreaReadyUpdated', update)
+    return () => {
+      global.state_event.off('safeAreaReadyUpdated', update)
+    }
+  }, [])
+
+  return value
+}
+
+/**
+ * 是否有进行中的页面转场（push / pop）。
+ * 转场期间玻璃（Tab 栏 / 迷你播放器 / 透镜）必须暂停渲染：转场中途采到的背景是
+ * 「上一页正在滑走 + 新页正在盖上来」的中间态，采进胶囊就是每次切页闪的那一下。
+ * 详见 navigation.beginNavTransitionWindow。
+ */
+export const useNavTransitioning = () => {
+  const [value, update] = useState(state.navTransitioning)
+
+  useEffect(() => {
+    global.state_event.on('navTransitioningUpdated', update)
+    return () => {
+      global.state_event.off('navTransitioningUpdated', update)
+    }
+  }, [])
+
+  return value
+}
+
 // 底部悬浮层（悬浮迷你播放器 + 底部 Tab）的固定部分总高（pt），
 // 实际避让高度还需叠加底部安全区（useBottomOverlayInset）。
 export const BOTTOM_OVERLAY_BASE_HEIGHT = 180

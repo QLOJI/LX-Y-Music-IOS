@@ -12,9 +12,21 @@ export default {
     global.state_event.statusbarHeightUpdated(size)
   },
   setSafeAreaBottom(size: number) {
+    // 「已知安全区」标记必须在同值短路之前打：首帧同步拿到的就是兜底值 0 的机型
+    // （带 Home 键的 iPad / iPhone SE）会因 size 相同被短路，标记永远不亮 →
+    // 底部悬浮层永远不下发。标记只置一次，之后的尺寸变化仍走下面的同值短路。
+    if (!state.safeAreaReady) {
+      state.safeAreaReady = true
+      global.state_event.safeAreaReadyUpdated(true)
+    }
     if (state.safeAreaBottom == size) return
     state.safeAreaBottom = size
     global.state_event.safeAreaBottomUpdated(size)
+  },
+  setNavTransitioning(transitioning: boolean) {
+    if (state.navTransitioning == transitioning) return
+    state.navTransitioning = transitioning
+    global.state_event.navTransitioningUpdated(transitioning)
   },
   setComponentId(name: COMPONENT_IDS, id: string) {
     state.componentIds.push({ name, id })

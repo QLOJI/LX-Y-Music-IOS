@@ -6,6 +6,14 @@ export interface InitState {
   // 底部安全区高度（pt）：Home 指示器 / iPad 底部区域。
   // 底部弹层与列表据此补 paddingBottom，避免最后一行被系统 UI 遮挡。
   safeAreaBottom: number
+  // 底部安全区是否已从原生侧拿到过一次真实值（启动首帧为 false）。
+  // 底部悬浮层（Tab 栏 / 迷你播放器）在 false 期间不下发，见 useSafeAreaReady：
+  // 它俩的 bottom 完全由 safeAreaBottom 决定，先用 0 画出来、几十毫秒后拿到真实的
+  // 34pt（iPhone）再整体上跳一次，就是用户看到的「启动时底部抽动」。
+  safeAreaReady: boolean
+  // 是否有进行中的页面转场（push / pop）。转场期间所有玻璃暂停渲染，
+  // 见 useNavTransitioning（原因写在 navigation.beginNavTransitionWindow）。
+  navTransitioning: boolean
   componentIds: Array<{ name: COMPONENT_IDS, id: string }>
   navActiveId: NAV_ID_Type
   lastNavActiveId: NAV_ID_Type
@@ -19,6 +27,8 @@ const state: InitState = {
   fontSize: global.lx.fontSize,
   statusbarHeight: 0,
   safeAreaBottom: 0,
+  safeAreaReady: false,
+  navTransitioning: false,
   componentIds: [],
   navActiveId: 'nav_discovery',
   lastNavActiveId: 'nav_discovery',
