@@ -5,7 +5,7 @@ import { useSettingValue } from '@/store/setting/hook'
 import { applyOpacity } from '@/utils/colorOpacity'
 import { useButtonRadius } from '@/utils/buttonRadius'
 import { createStyle } from '@/utils/tools'
-import { designSpacing, designTypography } from '@/theme/DesignTokens'
+import { controlGap, designSpacing, designTypography } from '@/theme/DesignTokens'
 import Text from '@/components/common/Text'
 
 export interface PlatformOption {
@@ -37,8 +37,10 @@ const styles = createStyle({
   },
   chip: {
     height: 34,
+    // 内边距 md(16) 是全部胶囊行的基准值（排序/标签/搜索平台/搜索类型已统一到此值）
     paddingHorizontal: designSpacing.md,
-    marginRight: designSpacing.sm,
+    // 胶囊之间的外间距：全应用按钮行统一 controlGap（值与原 sm 相同，仅收敛来源）
+    marginRight: controlGap,
     borderRadius: 999,
     justifyContent: 'center',
     borderWidth: 1,

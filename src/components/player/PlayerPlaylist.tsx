@@ -9,6 +9,7 @@ import listState from '@/store/list/state'
 import { usePlayerMusicInfo, useTempPlayList, usePlayInfo } from '@/store/player/hook'
 import { createStyle, toast } from '@/utils/tools'
 import { scaleSizeH } from '@/utils/pixelRatio'
+import { useButtonRadius } from '@/utils/buttonRadius'
 import { LIST_ITEM_HEIGHT, LIST_IDS } from '@/config/constant'
 import MusicAddModal, { type MusicAddModalType } from '@/components/MusicAddModal'
 import { useSettingValue } from '@/store/setting/hook'
@@ -64,6 +65,7 @@ export default forwardRef<PlayerPlaylistType, {}>((props, ref) => {
   const panelRef = useRef<AnimatedSlideUpPanelType>(null)
   const t = useI18n()
   const theme = useTheme()
+  const buttonRadius = useButtonRadius()
   const playerMusicInfo = usePlayerMusicInfo()
   const tempPlayList = useTempPlayList()
   // 当前播放列表 id 必须通过 hook 订阅 playInfoChanged，不能直接读 playerState.playInfo：
@@ -329,7 +331,10 @@ export default forwardRef<PlayerPlaylistType, {}>((props, ref) => {
                 </Text>
               )}
             </View>
-            <TouchableOpacity onPress={() => panelRef.current?.setVisible(false)} style={styles.closeButton}>
+            <TouchableOpacity
+              onPress={() => panelRef.current?.setVisible(false)}
+              // 关闭图标按钮可见高度 ≈ 44（14 号图标 + 上下 padding 15×2）
+              style={[styles.closeButton, { borderRadius: buttonRadius(44) }]}>
               <Icon name="close" size={14} color={theme['c-font-label']} />
             </TouchableOpacity>
           </View>

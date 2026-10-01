@@ -7,8 +7,9 @@ import Slider from '@/components/common/Slider'
 import { updateSetting } from '@/core/common'
 import { useI18n } from '@/lang'
 import SoundEffectPresetSaveModal, { type SoundEffectPresetSaveModalType } from './SoundEffectPresetSaveModal'
+import { useButtonRadius } from '@/utils/buttonRadius'
 import { applyOpacity } from '@/utils/colorOpacity'
-import { createStyle, confirmDialog, toast } from '@/utils/tools'
+import { createStyle, confirmDialog, tipDialog, toast } from '@/utils/tools'
 import { useTheme } from '@/store/theme/hook'
 import { useSetting, useSettingValue } from '@/store/setting/hook'
 import {
@@ -35,6 +36,11 @@ import {
 
 const minGain = -15
 const maxGain = 15
+// 变调/环绕重新启用：从参考工程补回这四项常量（数值与原生夹取范围一致）
+const minPitchPlaybackRate = 0.5
+const maxPitchPlaybackRate = 1.5
+const defaultSurroundSpeed = 25
+const defaultSurroundDistance = 5
 const maxUserPresetCount = 31
 
 type TranslateValues = Record<string, string | number | boolean>
@@ -45,6 +51,8 @@ type LayoutMode = 'split' | 'stacked'
 
 const formatGain = (gain: number) => `${gain > 0 ? '+' : ''}${Number.isInteger(gain) ? gain : gain.toFixed(1)}db`
 const formatPercent = (value: number) => `${Math.round(value) * 10}%`
+const formatPlaybackRate = (value: number) => `${value.toFixed(2)}x`
+const formatPlain = (value: number) => `${Math.round(value)}`
 
 const PlaceholderCheckbox = memo(({
   checked,
@@ -121,6 +129,7 @@ const PresetAddButton = memo(({
 }) => {
   const theme = useTheme()
   const buttonOpacity = useSettingValue('theme.buttonOpacity')
+  const buttonRadius = useButtonRadius()
 
   return (
     <TouchableOpacity
@@ -134,6 +143,8 @@ const PresetAddButton = memo(({
         // 按钮虚线边框随「按钮透明度」淡出；只改颜色 alpha，不用容器 style.opacity
         borderColor: applyOpacity(theme['c-primary-font-active'], buttonOpacity),
         opacity: disabled ? 0.35 : 0.7,
+        // 「+」虚线按钮可见高度 ≈ 23（+ 号行高 15 + 上下 padding 4×2）
+        borderRadius: buttonRadius(23),
       }}>
       <Text size={15} color={theme['c-primary-font-active']} style={styles.presetAddText}>+</Text>
     </TouchableOpacity>
@@ -172,6 +183,7 @@ const EqualizerSection = memo(({
   const t = useI18n() as TranslateFn
   const theme = useTheme()
   const buttonOpacity = useSettingValue('theme.buttonOpacity')
+  const buttonRadius = useButtonRadius()
   const dividerColor = theme['c-primary-alpha-500']
 
   const equalizerRows = useMemo(() => {
@@ -191,7 +203,12 @@ const EqualizerSection = memo(({
             activeOpacity={0.7}
             onPress={onReset}
             // 按钮底色随「按钮透明度」淡出；只改颜色 alpha，不用容器 style.opacity
-            style={{ ...styles.resetButton, backgroundColor: applyOpacity(theme['c-button-background'], buttonOpacity) }}>
+            style={{
+              ...styles.resetButton,
+              backgroundColor: applyOpacity(theme['c-button-background'], buttonOpacity),
+              // 重置小按钮可见高度 ≈ 22（12 号文字行高 14 + 上下 padding 4×2）
+              borderRadius: buttonRadius(22),
+            }}>
             <Text size={12} color={theme['c-button-font']}>{t('setting_play_sound_effect_reset')}</Text>
           </TouchableOpacity>
         </View>
@@ -268,6 +285,8 @@ const EqualizerSection = memo(({
                 backgroundColor: isActive
                   ? applyOpacity(theme['c-button-background-selected'], buttonOpacity)
                   : applyOpacity(theme['c-button-background'], buttonOpacity),
+                // 预设芯片可见高度 ≈ 23（13 号文字行高 15 + 上下 padding 4×2）
+                borderRadius: buttonRadius(23),
               }}
               onPress={() => { onPresetPress(preset.id) }}>
               <Text size={13} color={isActive ? theme['c-button-font-selected'] : theme['c-button-font']}>
@@ -288,6 +307,8 @@ const EqualizerSection = memo(({
                 backgroundColor: isActive
                   ? applyOpacity(theme['c-button-background-selected'], buttonOpacity)
                   : applyOpacity(theme['c-button-background'], buttonOpacity),
+                // 预设芯片可见高度 ≈ 23（13 号文字行高 15 + 上下 padding 4×2）
+                borderRadius: buttonRadius(23),
               }}
               onPress={() => { onUserPresetPress(preset) }}
               onLongPress={() => { onUserPresetLongPress(preset) }}>
@@ -333,6 +354,7 @@ const EnvironmentSection = memo(({
   const t = useI18n() as TranslateFn
   const theme = useTheme()
   const buttonOpacity = useSettingValue('theme.buttonOpacity')
+  const buttonRadius = useButtonRadius()
   const disabledConvolution = !selectedSource
 
   return (
@@ -391,6 +413,8 @@ const EnvironmentSection = memo(({
                 backgroundColor: isActive
                   ? applyOpacity(theme['c-button-background-selected'], buttonOpacity)
                   : applyOpacity(theme['c-button-background'], buttonOpacity),
+                // 预设芯片可见高度 ≈ 23（13 号文字行高 15 + 上下 padding 4×2）
+                borderRadius: buttonRadius(23),
               }}
               onPress={() => { onUserPresetPress(preset) }}
               onLongPress={() => { onUserPresetLongPress(preset) }}>
@@ -401,6 +425,119 @@ const EnvironmentSection = memo(({
           )
         })}
         <PresetAddButton onPress={onSavePreset} disabled={disabledConvolution || saveDisabled} />
+      </View>
+    </View>
+  )
+})
+
+// 变调区块：从参考工程移植（0.01 步进滑块 + 重置 + 说明按钮）
+const PitchSection = memo(({
+  playbackRate,
+  onReset,
+  onValueChange,
+  onShowTip,
+}: {
+  playbackRate: number
+  onReset: () => void
+  onValueChange: (value: number) => void
+  onShowTip: () => void
+}) => {
+  const t = useI18n() as TranslateFn
+  const theme = useTheme()
+  const buttonOpacity = useSettingValue('theme.buttonOpacity')
+  const buttonRadius = useButtonRadius()
+
+  return (
+    <View style={styles.section}>
+      <View style={styles.sectionHeader}>
+        <View style={styles.sectionHeaderTitle}>
+          <Text style={styles.sectionTitle}>{t('setting_play_sound_effect_pitch')}</Text>
+          <TouchableOpacity
+            activeOpacity={0.7}
+            onPress={onShowTip}
+            // 帮助图标按钮可见高度 ≈ 18（14 号图标 + 四周 padding 2）
+            style={[styles.tipButton, { borderRadius: buttonRadius(18) }]}>
+            <Icon name="help" size={14} color={theme['c-font-label']} />
+          </TouchableOpacity>
+        </View>
+        <View style={styles.headerActions}>
+          <TouchableOpacity
+            activeOpacity={0.7}
+            onPress={onReset}
+            // 按钮底色随「按钮透明度」淡出；只改颜色 alpha，不用容器 style.opacity
+            style={{
+              ...styles.resetButton,
+              backgroundColor: applyOpacity(theme['c-button-background'], buttonOpacity),
+              // 重置小按钮可见高度 ≈ 22（12 号文字行高 14 + 上下 padding 4×2）
+              borderRadius: buttonRadius(22),
+            }}>
+            <Text size={12} color={theme['c-button-font']}>{t('setting_play_sound_effect_reset')}</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+      <PlaceholderSliderRow
+        label=""
+        value={playbackRate}
+        minimumValue={minPitchPlaybackRate}
+        maximumValue={maxPitchPlaybackRate}
+        step={0.01}
+        onValueChange={value => { onValueChange(Number(value)) }}
+        formatter={formatPlaybackRate}
+      />
+    </View>
+  )
+})
+
+// 环绕区块：从参考工程移植（启用勾选 + 速度/距离滑块）
+const SurroundSection = memo(({
+  enabled,
+  speed,
+  distance,
+  onToggle,
+  onSpeedChange,
+  onDistanceChange,
+}: {
+  enabled: boolean
+  speed: number
+  distance: number
+  onToggle: () => void
+  onSpeedChange: (value: number) => void
+  onDistanceChange: (value: number) => void
+}) => {
+  const t = useI18n() as TranslateFn
+  const theme = useTheme()
+
+  return (
+    <View style={styles.section}>
+      <View style={styles.sectionHeader}>
+        <Text style={styles.sectionTitle}>{t('setting_play_sound_effect_surround')}</Text>
+        <PlaceholderCheckbox
+          checked={enabled}
+          label={t('setting_play_sound_effect_surround_enable')}
+          onPress={onToggle}
+        />
+      </View>
+      <View>
+        <PlaceholderSliderRow
+          label={t('setting_play_sound_effect_surround_speed')}
+          value={speed}
+          minimumValue={1}
+          maximumValue={50}
+          step={1}
+          onValueChange={value => { onSpeedChange(Number(value)) }}
+          formatter={formatPlain}
+          valueColor={speed != defaultSurroundSpeed ? theme['c-primary-font-active'] : undefined}
+        />
+        <PlaceholderSliderRow
+          label={t('setting_play_sound_effect_surround_distance')}
+          value={distance}
+          minimumValue={1}
+          maximumValue={30}
+          step={1}
+          onValueChange={value => { onDistanceChange(Number(value)) }}
+          formatter={formatPlain}
+          valueColor={distance != defaultSurroundDistance ? theme['c-primary-font-active'] : undefined}
+        />
       </View>
     </View>
   )
@@ -422,6 +559,11 @@ export default memo(({ showTip = true, layoutMode = 'split' }: {
   const convolutionSource = setting['player.soundEffect.convolution.fileName']
   const convolutionMainGain = Number.isFinite(setting['player.soundEffect.convolution.mainGain']) ? setting['player.soundEffect.convolution.mainGain'] : 10
   const convolutionSendGain = Number.isFinite(setting['player.soundEffect.convolution.sendGain']) ? setting['player.soundEffect.convolution.sendGain'] : 0
+  // 变调/环绕设置默认值由另一批代理补进 defaultSetting.ts；这里照 convolution 的写法兜底，防止设置未就绪时滑块拿到 undefined
+  const pitchPlaybackRate = Number.isFinite(setting['player.soundEffect.pitchShifter.playbackRate']) ? setting['player.soundEffect.pitchShifter.playbackRate'] : 1
+  const surroundEnabled = !!setting['player.soundEffect.panner.enable']
+  const surroundSpeed = Number.isFinite(setting['player.soundEffect.panner.speed']) ? setting['player.soundEffect.panner.speed'] : defaultSurroundSpeed
+  const soundDistance = Number.isFinite(setting['player.soundEffect.panner.soundR']) ? setting['player.soundEffect.panner.soundR'] : defaultSurroundDistance
   const activeEqUserPresetId = useMemo(() => userEqPresetList.find(preset =>
     equalizerFrequencies.every(frequency => preset[`hz${frequency}` as keyof LX.SoundEffect.EQPreset] == previewGains[frequency]),
   )?.id ?? null, [previewGains, userEqPresetList])
@@ -496,6 +638,21 @@ export default memo(({ showTip = true, layoutMode = 'split' }: {
 
   const handleUpdateConvolutionSendGain = (value: number) => {
     updateSetting({ 'player.soundEffect.convolution.sendGain': Math.round(value) })
+  }
+
+  const handleResetPitch = () => {
+    updateSetting({ 'player.soundEffect.pitchShifter.playbackRate': 1 })
+  }
+
+  const handleShowPitchTip = () => {
+    void tipDialog({
+      title: t('setting_play_sound_effect_pitch'),
+      message: t('setting_play_sound_effect_pitch_tip'),
+    })
+  }
+
+  const handleUpdatePitch = (value: number) => {
+    updateSetting({ 'player.soundEffect.pitchShifter.playbackRate': value })
   }
 
   const handleShowSaveEqPreset = () => {
@@ -587,6 +744,18 @@ export default memo(({ showTip = true, layoutMode = 'split' }: {
     setUserConvolutionPresetList(await removeUserConvolutionPreset(preset.id))
   }
 
+  const handleToggleSurround = () => {
+    updateSetting({ 'player.soundEffect.panner.enable': !surroundEnabled })
+  }
+
+  const handleUpdateSurroundSpeed = (value: number) => {
+    updateSetting({ 'player.soundEffect.panner.speed': Math.round(value) })
+  }
+
+  const handleUpdateSurroundDistance = (value: number) => {
+    updateSetting({ 'player.soundEffect.panner.soundR': Math.round(value) })
+  }
+
   if (layoutMode == 'stacked') {
     return (
       <View style={styles.container}>
@@ -623,6 +792,24 @@ export default memo(({ showTip = true, layoutMode = 'split' }: {
             layoutMode={layoutMode}
           />
         </View>
+        <View style={{ ...styles.sectionBlock, ...styles.sectionBlockWithDivider, borderTopColor: dividerColor }}>
+          <PitchSection
+            playbackRate={pitchPlaybackRate}
+            onReset={handleResetPitch}
+            onValueChange={handleUpdatePitch}
+            onShowTip={handleShowPitchTip}
+          />
+        </View>
+        <View style={{ ...styles.sectionBlock, ...styles.sectionBlockWithDivider, borderTopColor: dividerColor }}>
+          <SurroundSection
+            enabled={surroundEnabled}
+            speed={surroundSpeed}
+            distance={soundDistance}
+            onToggle={handleToggleSurround}
+            onSpeedChange={handleUpdateSurroundSpeed}
+            onDistanceChange={handleUpdateSurroundDistance}
+          />
+        </View>
         {showTip ? (
           <View style={styles.tip}>
             <Text size={12} color={theme['c-font-label']}>{t('setting_play_sound_effect_tip')}</Text>
@@ -651,6 +838,24 @@ export default memo(({ showTip = true, layoutMode = 'split' }: {
               saveDisabled={isConvolutionPresetLimitReached}
               onUserPresetPress={handleApplyConvolutionPreset}
               onUserPresetLongPress={preset => { void handleRemoveConvolutionPreset(preset) }}
+            />
+          </View>
+          <View style={{ ...styles.sectionBlock, ...styles.sectionBlockWithDivider, borderTopColor: dividerColor }}>
+            <PitchSection
+              playbackRate={pitchPlaybackRate}
+              onReset={handleResetPitch}
+              onValueChange={handleUpdatePitch}
+              onShowTip={handleShowPitchTip}
+            />
+          </View>
+          <View style={{ ...styles.sectionBlock, ...styles.sectionBlockWithDivider, borderTopColor: dividerColor }}>
+            <SurroundSection
+              enabled={surroundEnabled}
+              speed={surroundSpeed}
+              distance={soundDistance}
+              onToggle={handleToggleSurround}
+              onSpeedChange={handleUpdateSurroundSpeed}
+              onDistanceChange={handleUpdateSurroundDistance}
             />
           </View>
           {showTip ? (

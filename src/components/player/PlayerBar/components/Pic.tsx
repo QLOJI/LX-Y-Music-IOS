@@ -14,8 +14,9 @@ const styles = StyleSheet.create({
   image: {
     width: PIC_HEIGHT,
     height: PIC_HEIGHT,
-    // 原内联 12 与旧 designRadius.sm 同值：改用令牌引用，让迷你封面跟随
-    // 本次倒角整体下调（12→6，向 REF 同元素 2~4 的量级靠拢），以后调整只改令牌
+    // 迷你播放器封面走设计令牌（designRadius.sm = 4），**不接**全局「按钮圆角」设置：
+    // 它不是用户点名的那八类按钮面（歌单封面/榜单/平台胶囊/搜索框/热门与历史/设置内各按钮），
+    // 与小封面同族的也是令牌值。以后调整只改令牌。
     borderRadius: designRadius.sm,
   },
 })
@@ -32,6 +33,9 @@ export default () => {
 
   return (
     <View>
+      {/* 这里曾经有一层行内 `borderRadius: buttonRadius(40)` 覆盖（全局按钮圆角默认 0），
+          把令牌的 4pt 圆角压成了直角 —— 与「封面走令牌」的既有记录直接矛盾。
+          已删除：圆角只由 styles.image 的令牌决定，不再有第二个真值来源。 */}
       <Image
         url={musicInfo.pic}
         style={styles.image}
