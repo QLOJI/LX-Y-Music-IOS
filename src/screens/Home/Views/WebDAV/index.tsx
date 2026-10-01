@@ -69,8 +69,10 @@ const TabButton = ({ label, tab, activeTab, onPress }: {
     <TouchableOpacity
       style={{
         ...styles.tab,
-        // 胶囊底色与边框随「按钮透明度」淡出；只改颜色 alpha，不用容器 style.opacity
-        backgroundColor: applyOpacity(activeTab === tab ? theme['c-primary'] : theme['c-primary-light-900-alpha-300'], buttonOpacity),
+        // 胶囊底色与边框随「按钮透明度」淡出；只改颜色 alpha，不用容器 style.opacity。
+        // 选中态底色由「主色实底」改为主色 20% 淡染：选中文字已改成主题主色
+        // （与设置里「LX-Y Music 字体大小预览」同色），同色实心底会把文字吃掉
+        backgroundColor: applyOpacity(activeTab === tab ? theme['c-primary-alpha-800'] : theme['c-primary-light-900-alpha-300'], buttonOpacity),
         borderColor: applyOpacity(activeTab === tab ? theme['c-primary'] : theme['c-border-background'], buttonOpacity),
         // 标签胶囊圆角随「按钮圆角」设置行内覆盖；高度取 styles.tab 的源值 32（胶囊自身高度）
         borderRadius: buttonRadius(32),
@@ -80,7 +82,7 @@ const TabButton = ({ label, tab, activeTab, onPress }: {
       <Text
         style={{
           ...styles.tabText,
-          color: activeTab === tab ? theme['c-primary-light-1000'] : theme['c-font-label'],
+          color: activeTab === tab ? theme['c-primary'] : theme['c-font-label'],
         }}
       >
         {label}

@@ -308,8 +308,10 @@ export default memo(() => {
             <TouchableOpacity
               style={{
                 ...styles.modeBtn,
-                // 选中态底面随「按钮透明度」淡出；transparent 分支保持原样
-                backgroundColor: pickerMode === 'single' ? applyOpacity(theme['c-primary'], buttonOpacity) : 'transparent',
+                // 选中态底面随「按钮透明度」淡出；transparent 分支保持原样。
+                // 选中态底色由「主色实底」改为主色 20% 淡染：选中文字已改成主题主色
+                // （与设置里「LX-Y Music 字体大小预览」同色），同色实心底会把文字吃掉
+                backgroundColor: pickerMode === 'single' ? applyOpacity(theme['c-primary-alpha-800'], buttonOpacity) : 'transparent',
                 // 弹层模式按钮高 34：按自身高度 34 折算半高，行内覆盖「按钮圆角」
                 borderRadius: buttonRadius(34),
               }}
@@ -320,7 +322,7 @@ export default memo(() => {
             >
                 <Text
                   size={designTypography.caption}
-                  color={pickerMode === 'single' ? theme['c-primary-light-1000'] : theme['c-font-label']}
+                  color={pickerMode === 'single' ? theme['c-primary'] : theme['c-font-label']}
                 >
                   单日
                 </Text>
@@ -328,8 +330,10 @@ export default memo(() => {
             <TouchableOpacity
               style={{
                 ...styles.modeBtn,
-                // 选中态底面随「按钮透明度」淡出；transparent 分支保持原样
-                backgroundColor: pickerMode === 'range' ? applyOpacity(theme['c-primary'], buttonOpacity) : 'transparent',
+                // 选中态底面随「按钮透明度」淡出；transparent 分支保持原样。
+                // 选中态底色由「主色实底」改为主色 20% 淡染：选中文字已改成主题主色
+                // （与设置里「LX-Y Music 字体大小预览」同色），同色实心底会把文字吃掉
+                backgroundColor: pickerMode === 'range' ? applyOpacity(theme['c-primary-alpha-800'], buttonOpacity) : 'transparent',
                 // 弹层模式按钮高 34：按自身高度 34 折算半高，行内覆盖「按钮圆角」
                 borderRadius: buttonRadius(34),
               }}
@@ -337,7 +341,7 @@ export default memo(() => {
             >
                 <Text
                   size={designTypography.caption}
-                  color={pickerMode === 'range' ? theme['c-primary-light-1000'] : theme['c-font-label']}
+                  color={pickerMode === 'range' ? theme['c-primary'] : theme['c-font-label']}
                 >
                   范围
                 </Text>

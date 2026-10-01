@@ -396,8 +396,10 @@ export default memo(() => {
                 key={id}
                 style={[
                   styles.tabItem,
-                  // 选中态胶囊底面随「按钮透明度」淡出
-                  tab === id && { ...styles.tabItemActive, backgroundColor: applyOpacity(theme['c-primary'], buttonOpacity) },
+                  // 选中态胶囊底面随「按钮透明度」淡出；底色由「主色实底」改为主色 20% 淡染，
+                  // 因为选中文字已改成主题主色（与设置里「LX-Y Music 字体大小预览」同色），
+                  // 同色实心底会把文字吃掉
+                  tab === id && { ...styles.tabItemActive, backgroundColor: applyOpacity(theme['c-primary-alpha-800'], buttonOpacity) },
                   // 页签胶囊高 38：按自身高度 38 折算半高，行内覆盖「按钮圆角」
                   { borderRadius: buttonRadius(38) },
                 ]}
@@ -405,7 +407,7 @@ export default memo(() => {
               >
                 <Text
                   size={designTypography.caption}
-                  color={tab === id ? theme['c-primary-light-1000'] : theme['c-font-label']}
+                  color={tab === id ? theme['c-primary'] : theme['c-font-label']}
                 >
                   {id === 'local' ? '本地' : '下载'}
                 </Text>
