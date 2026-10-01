@@ -73,16 +73,35 @@ export const removeComponentId = (name: string) => {
   commonActions.removeComponentId(name)
 }
 
+// 「我的」页的子页 id（入口全在 FeatureGrid，页脚挂在我的主列表下）。
+// 权威归属见 ModernTabBar 的 CHILD_TAB_PARENT（那批全部映射到 nav_love）。
+// 这些 id **不写盘**：需求（B-6）要求「我的」退出重进只回主界面，
+// 若把 nav_webdav / nav_local_download 之类写进 viewPrevState，冷启动就会直接
+// 停在上次点进去的子页上（而不是「我的」主界面）。
+// 注意不写盘 ≠ 不生效：setNavActiveId 本身照常切页，只是磁盘上的 viewPrevState
+// 保留着最后一次「主界面」的值（例如从别处点进「我的」时的 nav_love）。
+const LOVE_SUBPAGE_IDS: string[] = [
+  'nav_my_playlist',
+  'nav_kg_playlist',
+  'nav_tx_playlist',
+  'nav_followed_artists',
+  'nav_subscribed_albums',
+  'nav_webdav',
+  'nav_local_download',
+]
+
 export const setNavActiveId = (id: Parameters<typeof commonActions.setNavActiveId>['0']) => {
   if (id == commonState.navActiveId) return
   commonActions.setNavActiveId(id)
-  // 持久化条件只排除 nav_play_history（底部浮层，保持不持久化）；
+  // 持久化条件排除两类：
+  //  - nav_play_history：底部浮层，保持不持久化；
+  //  - 「我的」的子页（LOVE_SUBPAGE_IDS）：只回主界面。
   // nav_setting 需要保存 —— 从设置退出重进要回到设置主界面（B-6）。
   // lastNavActiveId 则必须继续排除 nav_setting：它是会话内「从设置返回上一个 tab」的
   // 依据（Setting/index.tsx 的返回键），若被写成 nav_setting，返回键会因同值短路而失效。
   if (id != 'nav_play_history') {
     if (id != 'nav_setting') commonActions.setLastNavActiveId(id)
-    saveViewPrevState({ id })
+    if (!LOVE_SUBPAGE_IDS.includes(id)) saveViewPrevState({ id })
   }
 }
 
