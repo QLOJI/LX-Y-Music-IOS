@@ -28,6 +28,7 @@ import { playList } from '@/core/player/player'
 import { useI18n } from '@/lang'
 import { handleRemove } from '../MusicList/listAction'
 import Button from '@/components/common/Button'
+import { useButtonRadius } from '@/utils/buttonRadius'
 
 type FlatListProps = _FlatListProps<DuplicateMusicItem>
 const ITEM_HEIGHT = scaleSizeH(56)
@@ -69,6 +70,8 @@ const ListItem = memo(
   }) => {
     const theme = useTheme()
     const buttonOpacity = useSettingValue('theme.buttonOpacity')
+    // 图标按钮：可见高度 = 图标 18 + 上下 padding 8×2 = 34
+    const buttonRadius = useButtonRadius()
     const isSelected = selectedList.includes(info)
 
     return (
@@ -117,7 +120,11 @@ const ListItem = memo(
         </View>
         <View style={styles.listItemBtns}>
           <Button
-            style={styles.listItemBtn}
+            style={[
+              styles.listItemBtn,
+              // 图标按钮：可见高度 = 图标 18 + 上下 padding 8×2 = 34
+              { borderRadius: buttonRadius(34) },
+            ]}
             onPress={() => {
               onPlay(info)
             }}
@@ -125,7 +132,11 @@ const ListItem = memo(
             <Icon name="play-outline" style={{ color: theme['c-button-font'] }} size={18} />
           </Button>
           <Button
-            style={styles.listItemBtn}
+            style={[
+              styles.listItemBtn,
+              // 图标按钮：可见高度 = 图标 18 + 上下 padding 8×2 = 34
+              { borderRadius: buttonRadius(34) },
+            ]}
             onPress={() => {
               onRemove(index)
             }}

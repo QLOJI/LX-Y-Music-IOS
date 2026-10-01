@@ -1,6 +1,7 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef } from 'react'
 import OnlineList, { type OnlineListType, type OnlineListProps } from '@/components/OnlineList'
 import { search } from '@/core/search/music'
+import { stageOnlineListToDefault } from '@/core/playListToDefault'
 import searchMusicState, { type Source } from '@/store/search/music/state'
 
 // export type MusicListProps = Pick<OnlineListProps,
@@ -101,11 +102,25 @@ export default forwardRef<MusicListType, { header?: OnlineListProps['ListHeaderC
       })
   }
 
+  // 搜索点歌：把当前已加载的整份搜索结果按顺序写入试听列表(DEFAULT)，并从所选歌曲处播放。
+  // 与歌单/榜单同一套语义（是否清空旧内容由 player.isAutoCleanPlayedList 决定）：
+  // 只有传了 onPlayList，OnlineList 的行点击才会走「整份写入」而不是「单曲加进列表」。
+  // 列表身份带上关键词：core/search/music.ts 已保证单源搜索也会同步 searchText，
+  // 否则换关键词后 staged id 不变，stage 会把上一份结果误判成「同一份列表」而原位替换掉。
+  const handlePlayList: OnlineListProps['onPlayList'] = (index) => {
+    const source = searchMusicState.source
+    const info = searchMusicState.listInfos[source]
+    if (info?.list.length) {
+      void stageOnlineListToDefault(`search__${source}__${searchMusicState.searchText}`, info.list, index)
+    }
+  }
+
   return (
     <OnlineList
       ref={listRef}
       listId="search"
       ListHeaderComponent={header}
+      onPlayList={handlePlayList}
       onRefresh={handleRefresh}
       onLoadMore={handleLoadMore}
       checkHomePagerIdle

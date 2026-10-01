@@ -1,7 +1,6 @@
-import { createList, setTempList } from '@/core/list'
-import { playList } from '@/core/player/player'
+import { createList } from '@/core/list'
 import { getListDetail, getListDetailAll } from '@/core/leaderboard'
-import { LIST_IDS } from '@/config/constant'
+import { refreshDefaultList, stageOnlineListToDefault } from '@/core/playListToDefault'
 import listState from '@/store/list/state'
 import syncSourceList from '@/core/syncSourceList'
 import { confirmDialog, toMD5, toast } from '@/utils/tools'
@@ -9,7 +8,8 @@ import { confirmDialog, toMD5, toast } from '@/utils/tools'
 const getListId = (id: string) => `board__${id}`
 
 /**
- * 榜单点歌：把榜单写进临时列表并从点的那一首开始播。
+ * 榜单点歌：把榜单整份写入试听列表(DEFAULT)并从点的那一首开始播
+ * （是否清空旧内容由 player.isAutoCleanPlayedList 决定，见 playListToDefault）。
  *
  * 必须保证「点了一定有响应」：原先直接用入参 index 去 playList，
  * 而榜单切换/刷新期间传进来的 list 与 index 可能不同源（快照为空或是第 1 页、行下标来自另一份数据），
@@ -44,24 +44,26 @@ export const handlePlay = async(id: string, list?: LX.Music.MusicInfoOnline[], i
   let playIndex = targetMusic ? currentList.findIndex((m) => m.id == targetMusic.id) : -1
   if (playIndex < 0) playIndex = Math.min(Math.max(index, 0), currentList.length - 1)
 
-  await setTempList(listId, [...currentList])
-  // playList 内部任何一步失败（播放引擎异常等）都会以 Promise 拒绝收场且无 UI 反馈，
-  // 这里补兜底提示，避免表现为「点了没反应」。
-  void playList(LIST_IDS.TEMP, playIndex).catch((err: any) => {
+  // 播放链路任何一步失败（播放引擎异常等）都会以 Promise 拒绝收场且无 UI 反馈，
+  // 这里补兜底提示，避免表现为「点了没反应」。失败后仍继续拉整榜（与原 void 语义一致）。
+  await stageOnlineListToDefault(listId, [...currentList], playIndex).catch((err: any) => {
     console.log('[Leaderboard handlePlay] playList failed:', err?.message)
     toast('播放失败，请重试')
   })
 
-  // 完整榜单拉全后补全临时列表；正在播的那首按歌曲身份维护位置，不受列表替换影响
+  // 完整榜单拉全后原位扩容试听列表顶部这一段；正在播的那首按歌曲身份维护位置，不受列表替换影响。
+  // （是否仍以这份榜单为顶部由 playListToDefault 内部校验，取代原 tempListMeta.id == listId 守卫）
   let fullList: LX.Music.MusicInfoOnline[] = []
   try {
     fullList = await getListDetailAll(id)
   } catch (err) {
     fullList = []
   }
-  if (fullList.length > currentList.length && listState.tempListMeta.id == listId) {
-    console.log(`[Leaderboard handlePlay] 完整榜单已加载：${fullList.length} 首，更新临时列表`)
-    await setTempList(listId, [...fullList])
+  if (fullList.length > currentList.length) {
+    console.log(`[Leaderboard handlePlay] 完整榜单已加载：${fullList.length} 首，更新试听列表顶部`)
+    await refreshDefaultList(listId, [...fullList]).catch((err: any) => {
+      console.log('[Leaderboard handlePlay] refreshDefaultList failed:', err?.message)
+    })
   }
 }
 

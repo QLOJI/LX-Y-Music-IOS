@@ -3,6 +3,7 @@ import { ScrollView, TouchableOpacity } from 'react-native'
 
 import { createStyle } from '@/utils/tools'
 import { applyOpacity } from '@/utils/colorOpacity'
+import { useButtonRadius } from '@/utils/buttonRadius'
 import { type SearchType } from '@/store/search/state'
 import { useI18n } from '@/lang'
 import Text from '@/components/common/Text'
@@ -17,6 +18,7 @@ export default () => {
   const t = useI18n()
   const theme = useTheme()
   const buttonOpacity = useSettingValue('theme.buttonOpacity')
+  const buttonRadius = useButtonRadius()
   const [type, setType] = useState<SearchType>('music')
 
   useEffect(() => {
@@ -66,7 +68,12 @@ export default () => {
     <ScrollView style={styles.container} keyboardShouldPersistTaps={'always'} horizontal={true}>
       {list.map((item) => (
         <TouchableOpacity
-          style={[styles.button, type == item.id ? activeButtonStyle : inactiveButtonStyle]}
+          style={[
+            styles.button,
+            type == item.id ? activeButtonStyle : inactiveButtonStyle,
+            // 类型切换按钮圆角随「按钮圆角」设置行内覆盖；高度取 styles.button 的源值 36
+            { borderRadius: buttonRadius(36) },
+          ]}
           onPress={() => {
             handleTypeChange(item.id)
           }}

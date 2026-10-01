@@ -7,6 +7,7 @@ import { designSpacing } from '@/theme/DesignTokens'
 import SearchInput, { type SearchInputType, type SearchInputProps } from './SearchInput'
 import { createStyle } from '@/utils/tools'
 import { applyOpacity } from '@/utils/colorOpacity'
+import { useButtonRadius } from '@/utils/buttonRadius'
 import { useTheme } from '@/store/theme/hook'
 import { useSettingValue } from '@/store/setting/hook'
 import { useStatusbarHeight } from '@/store/common/hook'
@@ -53,6 +54,7 @@ export default forwardRef<HeaderBarType, HeaderBarProps>(
     const buttonOpacity = useSettingValue('theme.buttonOpacity')
     const statusBarHeight = useStatusbarHeight()
     const t = useI18n()
+    const buttonRadius = useButtonRadius()
 
     // 搜索平台胶囊：底色随「按钮透明度」淡出，文字色不动。只改颜色 alpha，
     // 不能用容器 style.opacity——那会把胶囊文字一起变淡。
@@ -96,6 +98,8 @@ export default forwardRef<HeaderBarType, HeaderBarProps>(
               flexShrink: 1,
               backgroundColor: theme['c-primary-light-900-alpha-300'],
               borderColor: theme['c-border-background'],
+              // 搜索框圆角随「按钮圆角」设置行内覆盖；高度取 styles.searchBar.height 的源值 48
+              borderRadius: buttonRadius(48),
             }}
           >
             <View style={styles.searchIcon}>
@@ -130,7 +134,12 @@ export default forwardRef<HeaderBarType, HeaderBarProps>(
             return (
               <TouchableOpacity
                 key={sourceId}
-                style={[styles.platformItem, isActive ? activePlatformStyle : inactivePlatformStyle]}
+                style={[
+                  styles.platformItem,
+                  isActive ? activePlatformStyle : inactivePlatformStyle,
+                  // 平台胶囊圆角随「按钮圆角」设置行内覆盖；高度取 styles.platformItem 的 minHeight 源值 38（单行胶囊实际高度）
+                  { borderRadius: buttonRadius(38) },
+                ]}
                 onPress={() => {
                   onSourceChange(sourceId)
                 }}

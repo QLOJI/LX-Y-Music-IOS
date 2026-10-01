@@ -9,6 +9,7 @@ import { createStyle, toast } from '@/utils/tools'
 import { useDownloadTasks } from '@/store/download/hook'
 import { useSettingValue } from '@/store/setting/hook'
 import { applyOpacity } from '@/utils/colorOpacity'
+import { useButtonRadius } from '@/utils/buttonRadius'
 import { usePlayMusicInfo } from '@/store/player/hook'
 import { overwriteListMusics } from '@/core/list'
 import { playList } from '@/core/player/player'
@@ -153,6 +154,7 @@ export default memo(() => {
   const t = useI18n()
   const theme = useTheme()
   const buttonOpacity = useSettingValue('theme.buttonOpacity')
+  const buttonRadius = useButtonRadius()
   const isHorizontal = useHorizontalMode()
   const safeAreaBottom = useSafeAreaBottom()
   // 底部悬浮层（迷你播放器 + 底部 Tab + 安全区）统一避让高度
@@ -369,7 +371,7 @@ export default memo(() => {
             <View style={styles.headerActions}>
               <TouchableOpacity
                 // 按钮底面随「按钮透明度」淡出
-                style={{ ...styles.headerBtn, backgroundColor: applyOpacity(theme['c-primary-background'], buttonOpacity) }}
+                style={{ ...styles.headerBtn, backgroundColor: applyOpacity(theme['c-primary-background'], buttonOpacity), borderRadius: buttonRadius(32) /* 批量管理按钮高 32：按自身高度 32 折算半高，行内覆盖「按钮圆角」 */ }}
                 onPress={selecting ? exitSelecting : enterSelecting}
               >
                 <Text size={designTypography.caption} color={theme['c-primary-font']}>
@@ -378,7 +380,7 @@ export default memo(() => {
               </TouchableOpacity>
               <TouchableOpacity
                 // 按钮底面随「按钮透明度」淡出
-                style={{ ...styles.refreshBtn, backgroundColor: applyOpacity(theme['c-primary-background'], buttonOpacity) }}
+                style={{ ...styles.refreshBtn, backgroundColor: applyOpacity(theme['c-primary-background'], buttonOpacity), borderRadius: buttonRadius(32) /* 刷新按钮高 32：按自身高度 32 折算半高，行内覆盖「按钮圆角」 */ }}
                 onPress={handleRefresh}
               >
                 <Text size={designTypography.caption} color={theme['c-primary-font']}>
@@ -396,6 +398,8 @@ export default memo(() => {
                   styles.tabItem,
                   // 选中态胶囊底面随「按钮透明度」淡出
                   tab === id && { ...styles.tabItemActive, backgroundColor: applyOpacity(theme['c-primary'], buttonOpacity) },
+                  // 页签胶囊高 38：按自身高度 38 折算半高，行内覆盖「按钮圆角」
+                  { borderRadius: buttonRadius(38) },
                 ]}
                 onPress={() => { setTab(id) }}
               >
@@ -482,7 +486,7 @@ export default memo(() => {
                 },
               ]}
             >
-              <TouchableOpacity style={styles.selectBarBtn} onPress={toggleSelectAll}>
+              <TouchableOpacity style={[styles.selectBarBtn, { borderRadius: buttonRadius(22) /* 小按钮可见高 ≈ 文字 + 上下 padding 4×2 ≈ 22 */ }]} onPress={toggleSelectAll}>
                 <Text size={designTypography.caption} color={theme['c-primary-font']}>
                   {tab === 'download'
                     ? completedTasks.length > 0 && completedTasks.every(t => selectedIds.has(t.id))
@@ -497,7 +501,7 @@ export default memo(() => {
                 已选 {selectedIds.size} 项
               </Text>
               <TouchableOpacity
-                style={[styles.selectBarBtn, selectedIds.size === 0 && styles.selectBarBtnDisabled]}
+                style={[styles.selectBarBtn, selectedIds.size === 0 && styles.selectBarBtnDisabled, { borderRadius: buttonRadius(22) /* 同「全选」按钮：可见高 ≈ 22 */ }]}
                 onPress={handleDeleteSelected}
               >
                 <Text

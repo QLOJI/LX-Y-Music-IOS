@@ -7,6 +7,7 @@ import { useTheme } from '@/store/theme/hook'
 import { useActiveListId, useListFetching } from '@/store/list/hook'
 import listState from '@/store/list/state'
 import { createStyle } from '@/utils/tools'
+import { useButtonRadius } from '@/utils/buttonRadius'
 import Text from '@/components/common/Text'
 import { LIST_IDS } from '@/config/constant'
 import Loading from '@/components/common/Loading'
@@ -25,6 +26,8 @@ export interface ActiveListType {
 export default forwardRef<ActiveListType, ActiveListProps>(
   ({ onShowSearchBar, onScrollToTop, showCover, onToggleView, onBack }, ref) => {
     const theme = useTheme()
+    // 图标按钮 height: '100%' 铺满返回栏行高 44：按 44 折算半高
+    const buttonRadius = useButtonRadius()
     const currentListId = useActiveListId()
     const fetching = useListFetching(currentListId)
     const currentListName = useMemo(() => {
@@ -84,10 +87,10 @@ export default forwardRef<ActiveListType, ActiveListProps>(
         <Text style={styles.currentListText} numberOfLines={1} color={theme['c-button-font']}>
           {onBack ? '返回' : currentListName}
         </Text>
-        <TouchableOpacity style={styles.currentListBtns} onPress={onToggleView}>
+        <TouchableOpacity style={[styles.currentListBtns, { borderRadius: buttonRadius(44) }]} onPress={onToggleView}>
           <Icon color={theme['c-button-font']} name={showCover ? 'menu' : 'album'} />
         </TouchableOpacity>
-        <TouchableOpacity style={styles.currentListBtns} onPress={onShowSearchBar}>
+        <TouchableOpacity style={[styles.currentListBtns, { borderRadius: buttonRadius(44) }]} onPress={onShowSearchBar}>
           <Icon color={theme['c-button-font']} name="search-2" />
         </TouchableOpacity>
       </TouchableOpacity>

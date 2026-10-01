@@ -4,6 +4,7 @@ import { type InitState } from '@/store/hotSearch/state'
 import Text from '@/components/common/Text'
 import { createStyle } from '@/utils/tools'
 import { applyOpacity } from '@/utils/colorOpacity'
+import { useButtonRadius } from '@/utils/buttonRadius'
 import { designSpacing, designTypography, designRadius } from '@/theme/DesignTokens'
 import { useTheme } from '@/store/theme/hook'
 import { useSettingValue } from '@/store/setting/hook'
@@ -24,6 +25,7 @@ const ListItem = ({
 }) => {
   const theme = useTheme()
   const buttonOpacity = useSettingValue('theme.buttonOpacity')
+  const buttonRadius = useButtonRadius()
 
   // 历史搜索胶囊（含行内删除小圆钮）：底色与边框随「按钮透明度」淡出，
   // 文字与图标色不动。只改颜色 alpha，不能用容器 style.opacity（会把内容一起变淡）。
@@ -45,7 +47,11 @@ const ListItem = ({
 
   return (
     <Pressable
-      style={chipStyle}
+      style={[
+        chipStyle,
+        // 历史搜索词条胶囊圆角随「按钮圆角」设置行内覆盖；高度取 styles.button 的源值 36
+        { borderRadius: buttonRadius(36) },
+      ]}
       onPress={() => {
         onSearch(keyword)
       }}
@@ -55,7 +61,11 @@ const ListItem = ({
       </Text>
       <TouchableOpacity
         hitSlop={8}
-        style={removeButtonStyle}
+        style={[
+          removeButtonStyle,
+          // 行内删除小圆钮圆角随「按钮圆角」设置行内覆盖；高度取 styles.removeButton 的源值 18
+          { borderRadius: buttonRadius(18) },
+        ]}
         onPress={() => {
           onRemove(keyword)
         }}
@@ -79,6 +89,7 @@ export default forwardRef<HistorySearchType, HistorySearchProps>((props, ref) =>
   const t = useI18n()
   const theme = useTheme()
   const buttonOpacity = useSettingValue('theme.buttonOpacity')
+  const buttonRadius = useButtonRadius()
 
   // 标题右侧的「清空历史」工具钮：底色随设置淡出，橡皮图标色不动
   const titleBtnStyle = useMemo(
@@ -127,7 +138,11 @@ export default forwardRef<HistorySearchType, HistorySearchProps>((props, ref) =>
         <Text size={designTypography.title} style={styles.title}>{t('search_history_search')}</Text>
         <TouchableOpacity
           onPress={handleClear}
-          style={titleBtnStyle}
+          style={[
+            titleBtnStyle,
+            // 「清空历史」工具钮圆角随「按钮圆角」设置行内覆盖；高度取 styles.titleBtn 的源值 32
+            { borderRadius: buttonRadius(32) },
+          ]}
         >
           <Icon name="eraser" color={theme['c-300']} size={14} />
         </TouchableOpacity>

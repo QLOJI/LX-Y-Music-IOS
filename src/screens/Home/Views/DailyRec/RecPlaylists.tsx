@@ -6,6 +6,7 @@ import { createStyle, toast } from '@/utils/tools'
 import { useI18n } from '@/lang'
 import { useTheme } from '@/store/theme/hook'
 import { useHorizontalMode } from '@/utils/hooks'
+import { useButtonRadius } from '@/utils/buttonRadius'
 import wyApi from '@/utils/musicSdk/wy/dailyRec'
 import wy from '@/utils/musicSdk/wy/index'
 import ListItem from '../MyPlaylist/ListItem'
@@ -23,6 +24,7 @@ export default memo(({ header, onOpenDetail }: { header?: ReactElement, onOpenDe
   const isHorizontal = useHorizontalMode()
   // 底部悬浮层（迷你播放器 + 底部 Tab + 安全区）统一避让高度
   const bottomInset = useBottomOverlayInset()
+  const buttonRadius = useButtonRadius()
   // 只认最后一次发起的加载：cookie 变化 / 连续重试时丢弃过期响应，避免旧结果覆盖新结果
   const loadIdRef = useRef(0)
 
@@ -134,7 +136,14 @@ export default memo(({ header, onOpenDetail }: { header?: ReactElement, onOpenDe
         {loadError ? (
           <Text style={styles.emptyDetail} color={theme['c-font-label']} size={12}>{loadError}</Text>
         ) : null}
-        <TouchableOpacity style={styles.retry} onPress={handleRefresh}>
+        <TouchableOpacity
+          style={[
+            styles.retry,
+            // 「重新加载」文字按钮圆角随「按钮圆角」设置行内覆盖；可见高度 ≈ 17 = 单行 15 号文字行高 17（无纵向 padding）
+            { borderRadius: buttonRadius(17) },
+          ]}
+          onPress={handleRefresh}
+        >
           <Text color={theme['c-primary']}>{t('list_reload')}</Text>
         </TouchableOpacity>
       </View>

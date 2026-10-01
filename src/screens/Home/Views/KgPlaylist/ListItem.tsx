@@ -9,6 +9,7 @@ import Text from '@/components/common/Text'
 import { useTheme } from '@/store/theme/hook'
 import { useSettingValue } from '@/store/setting/hook'
 import { applyOpacity } from '@/utils/colorOpacity'
+import { useButtonRadius } from '@/utils/buttonRadius'
 import { Icon } from '@/components/common/Icon'
 import type { Position } from '@/components/common/Menu'
 import { scaleSizeH } from '@/utils/pixelRatio'
@@ -33,6 +34,7 @@ interface ListItemProps {
 export default memo(({ item, onPress, onMenuPress }: ListItemProps) => {
   const theme = useTheme()
   const buttonOpacity = useSettingValue('theme.buttonOpacity')
+  const buttonRadius = useButtonRadius()
   const menuBtnRef = useRef<TouchableOpacity>(null)
 
   const handleMenuPress = () => {
@@ -53,11 +55,26 @@ export default memo(({ item, onPress, onMenuPress }: ListItemProps) => {
     >
       <View style={styles.coverContainer}>
         {item.isFavorites ? (
-          <View style={[styles.cover, styles.favoritesPlaceholder, { backgroundColor: theme['c-primary-background'] }]}>
+          <View
+            style={[
+              styles.cover,
+              styles.favoritesPlaceholder,
+              { backgroundColor: theme['c-primary-background'] },
+              // 「我喜欢」占位与歌单封面同槽位：跟随同一高度 40，避免设置后两态圆角分叉
+              { borderRadius: buttonRadius(40) },
+            ]}
+          >
             <Icon name="love-filled" color="#FF4D6A" size={20} />
           </View>
         ) : (
-          <Image url={item.cover} style={styles.cover} />
+          <Image
+            url={item.cover}
+            style={[
+              styles.cover,
+              // 歌单封面圆角随「按钮圆角」设置行内覆盖；高度取 styles.cover.height 源值 40
+              { borderRadius: buttonRadius(40) },
+            ]}
+          />
         )}
       </View>
 
@@ -73,7 +90,11 @@ export default memo(({ item, onPress, onMenuPress }: ListItemProps) => {
       {showMenu && (
         <TouchableOpacity
           ref={menuBtnRef}
-          style={styles.menuButton}
+          style={[
+            styles.menuButton,
+            // 图标按钮圆角随「按钮圆角」设置行内覆盖；可见高度 ≈ 30 = 图标 20 + 上下 padding 5×2
+            { borderRadius: buttonRadius(30) },
+          ]}
           onPress={(e) => {
             e.stopPropagation()
             handleMenuPress()

@@ -12,7 +12,7 @@ import listState from '@/store/list/state'
 import playerState from '@/store/player/state'
 import { getListPosition, getListPrevSelectId, saveListPosition } from '@/utils/data'
 // import { useMusicList } from '@/store/list/hook'
-import { getListMusics } from '@/core/list'
+import { getListMusics, setActiveList } from '@/core/list'
 import ListItem, { ITEM_HEIGHT } from './ListItem'
 import { createStyle, getRowInfo } from '@/utils/tools'
 import { useHorizontalMode } from '@/utils/hooks'
@@ -140,6 +140,11 @@ const List = forwardRef<ListType, ListProps>(
       // FlatList 调 scrollToIndex / scrollToOffset —— 每次进出都留一串迟到回调，
       // 是本页「反复进出后只剩列表能滑、其余点击全失效」的可疑来源之一。
       let cancelled = false
+      // 「正在换列表」标志：换列表链是「异步取数据 → rAF → 再 rAF」，数据落地前
+      // flatListRef 里还是旧列表。长按封面跳转若在这段窗口里直接 scrollToIndex，
+      // 要么滚到错的歌、要么抛越界。置位后由内层 rAF 消费 waitJumpListPositionRef
+      // 补做滚动（那里数据已经 setList 完）。
+      let isUpdatingList = true
       const rafIds: number[] = []
       const scheduleRaf = (fn: () => void) => {
         rafIds.push(requestAnimationFrame(() => {
@@ -149,6 +154,7 @@ const List = forwardRef<ListType, ListProps>(
       }
       const updateList = (id: string) => {
         if (cancelled || currentListIdRef.current == id) return
+        isUpdatingList = true
         setList([])
         listDataRef.current = []
         currentListIdRef.current = id
@@ -163,6 +169,7 @@ const List = forwardRef<ListType, ListProps>(
               setList(list)
               setListVersion((v) => v + 1)
               scheduleRaf(() => {
+                isUpdatingList = false
                 listFirstScrollRef.current = true
                 if (waitJumpListPositionRef.current) {
                   waitJumpListPositionRef.current = false
@@ -208,6 +215,54 @@ const List = forwardRef<ListType, ListProps>(
         })
       }
 
+      // 长按迷你播放器封面 → 跳到「正在播放的那条列表 + 正在播放的那一首」（对齐参考工程）。
+      // 与挂载时「listId 属性 == 播放列表 id」那条路径互补：这里覆盖的是**列表已经挂载**
+      // 的情况（横屏分栏常驻、竖屏覆盖层正开着），此时 props.listId 不会重新触发挂载链，
+      // 必须靠这次事件驱动。
+      const handleJumpPosition = () => {
+        // 延后一帧：同一次长按里 NewListUI 也在处理这个事件（设 openListIdRef、
+        // setActiveList、打开覆盖层），本组件可能正好处于「props.listId 变了、挂载链
+        // 刚起步」的中间态，此刻 currentListIdRef 还是旧值、FlatList 里还是旧数据，
+        // 立即判定会选错分支。等一帧让它先落定。
+        // 用 scheduleRaf 而不是裸 requestAnimationFrame，是为了吃到卸载护栏
+        // （裸 rAF 会在组件卸载后照样回调，对已销毁的 FlatList 调滚动）。
+        scheduleRaf(() => {
+          const listId = playerState.playMusicInfo.listId
+          if (!listId) return
+          // 判据用 currentListIdRef（**实际装着哪条列表**）而不是 listState.activeListId：
+          // 长按跳转有两个入口，NewListUI 会先把 activeListId 设成目标列表再打开覆盖层，
+          // 若这里仍拿 activeListId 判定，会走进「同一条列表」分支、只对旧数据滚一下，
+          // 列表根本不会换。只有「实际装着的列表 ≠ 目标列表」才需要换。
+          if (listId != currentListIdRef.current) {
+            // 先把等待标志立起来再触发载入：事件中心（Event 基类）的 emit 是
+            // setImmediate 异步派发的，setActiveList 会经 state_event.mylistToggled
+            // 在下一个宏任务里回到 updateList；顺序反了会漏掉这一轮。
+            waitJumpListPositionRef.current = true
+            if (listState.activeListId != listId) {
+              // 常规路径：经 mylistToggled → updateList 换列表
+              setActiveList(listId)
+            } else {
+              // activeListId 已经是目标列表（NewListUI 先设过），mylistToggled 会被
+              // setActiveList 的「id 未变则早退」吞掉，这里直接换。
+              updateList(listId)
+            }
+          } else if (playerState.playInfo.playIndex > -1) {
+            if (isUpdatingList) {
+              // 数据还没落地，交给内层 rAF
+              waitJumpListPositionRef.current = true
+            } else {
+              try {
+                flatListRef.current?.scrollToIndex({
+                  index: Math.floor(playerState.playInfo.playIndex / (rowInfoRef.current.rowNum ?? 1)),
+                  viewPosition: 0.3,
+                  animated: true,
+                })
+              } catch {}
+            }
+          }
+        })
+      }
+
       // 初始载入哪条列表：
       // 1) 优先用父级显式传入的 listId（用户刚点的那一条）——「点开我的收藏 →
       //    返回 → 立刻再点开」时，持久化的「上次选中列表」可能还是返回时写入的
@@ -221,6 +276,7 @@ const List = forwardRef<ListType, ListProps>(
 
       global.state_event.on('mylistToggled', updateList)
       global.app_event.on('myListMusicUpdate', handleChange)
+      global.app_event.on('jumpListPosition', handleJumpPosition)
 
       return () => {
         cancelled = true
@@ -228,6 +284,7 @@ const List = forwardRef<ListType, ListProps>(
         rafIds.length = 0
         global.state_event.off('mylistToggled', updateList)
         global.app_event.off('myListMusicUpdate', handleChange)
+        global.app_event.off('jumpListPosition', handleJumpPosition)
       }
       // listId 刻意不进依赖：只在挂载时读一次即可（覆盖层每次打开都是全新挂载），
       // 进了依赖反而会在同一实例内因父级重渲染而重复跑整条加载链。

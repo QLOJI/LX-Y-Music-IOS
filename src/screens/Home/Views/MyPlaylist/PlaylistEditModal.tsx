@@ -9,6 +9,7 @@ import wyApi from '@/utils/musicSdk/wy/user'
 import { updateWySubscribedPlaylist } from '@/store/user/action'
 import { type SubscribedPlaylistInfo } from '@/store/user/state.ts'
 import { designRadius, designSpacing } from '@/theme/DesignTokens'
+import { useButtonRadius } from '@/utils/buttonRadius'
 
 interface PlaylistInfo {
   id: string
@@ -27,6 +28,8 @@ export default forwardRef<PlaylistEditModalType, {}>((props, ref) => {
   const [name, setName] = useState('')
   const [desc, setDesc] = useState('')
   const theme = useTheme()
+  // 名称输入框无高度覆写，按 common/Input 的默认高度 32 折算半高；描述框按自身静态高度 100 折算
+  const buttonRadius = useButtonRadius()
 
   useImperativeHandle(ref, () => ({
     show(info) {
@@ -94,7 +97,11 @@ export default forwardRef<PlaylistEditModalType, {}>((props, ref) => {
           value={name}
           onChangeText={setName}
           placeholder="请输入歌单名"
-          style={{ backgroundColor: theme['c-primary-input-background'] }}
+          style={{
+            // 输入框按 common/Input 的默认高度 32（本处未覆写高度）折算半高
+            borderRadius: buttonRadius(32),
+            backgroundColor: theme['c-primary-input-background'],
+          }}
         />
         <Text style={[styles.label, { marginTop: 15 }]}>描述</Text>
         <Input
@@ -102,7 +109,11 @@ export default forwardRef<PlaylistEditModalType, {}>((props, ref) => {
           onChangeText={setDesc}
           placeholder="请输入描述"
           multiline
-          style={{ height: 100, borderRadius: designRadius.sm, backgroundColor: theme['c-primary-input-background'] }}
+          style={[
+            { height: 100, borderRadius: designRadius.sm, backgroundColor: theme['c-primary-input-background'] },
+            // 多行输入框静态高度 100：按自身高度折算半高
+            { borderRadius: buttonRadius(100) },
+          ]}
         />
       </View>
     </ConfirmAlert>

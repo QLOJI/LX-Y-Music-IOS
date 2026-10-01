@@ -7,6 +7,7 @@ import { getList } from '@/core/hotSearch'
 import Text from '@/components/common/Text'
 import { createStyle } from '@/utils/tools'
 import { applyOpacity } from '@/utils/colorOpacity'
+import { useButtonRadius } from '@/utils/buttonRadius'
 import { designSpacing, designTypography } from '@/theme/DesignTokens'
 import { useTheme } from '@/store/theme/hook'
 import { useSettingValue } from '@/store/setting/hook'
@@ -30,6 +31,7 @@ const ListItem = ({
 }) => {
   const theme = useTheme()
   const buttonOpacity = useSettingValue('theme.buttonOpacity')
+  const buttonRadius = useButtonRadius()
 
   // 热门搜索胶囊：底色与边框随「按钮透明度」淡出，文字与放大镜图标色不动。
   // 只改颜色 alpha，不能用容器 style.opacity（会把胶囊内容一起变淡）。
@@ -44,7 +46,11 @@ const ListItem = ({
 
   return (
     <Button
-      style={chipStyle}
+      style={[
+        chipStyle,
+        // 热门搜索词条胶囊圆角随「按钮圆角」设置行内覆盖；高度取 styles.button 的源值 44
+        { borderRadius: buttonRadius(44) },
+      ]}
       onPress={() => {
         onSearch(keyword)
       }}

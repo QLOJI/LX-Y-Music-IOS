@@ -5,7 +5,6 @@ import { Icon } from '@/components/common/Icon'
 import { createStyle, type RowInfo } from '@/utils/tools'
 import { useTheme } from '@/store/theme/hook'
 import { useSettingValue } from '@/store/setting/hook'
-import settingState from '@/store/setting/state'
 import { useAssertApiSupport } from '@/store/common/hook'
 import { scaleSizeH } from '@/utils/pixelRatio'
 import { applyOpacity } from '@/utils/colorOpacity'
@@ -18,6 +17,7 @@ import { useIsWyLiked, useIsTxLiked, useIsKgLiked } from '@/store/user/hook'
 import { handleLikeMusic, handleTxLikeMusic, handleKgLikeMusic } from '@/components/OnlineList/listAction'
 import useCoverUrl from '@/utils/hooks/useCoverUrl'
 import { designRadius, designSpacing } from '@/theme/DesignTokens'
+import { useButtonRadius } from '@/utils/buttonRadius'
 
 export const ITEM_HEIGHT = scaleSizeH(LIST_ITEM_HEIGHT)
 
@@ -26,12 +26,13 @@ export const ITEM_HEIGHT = scaleSizeH(LIST_ITEM_HEIGHT)
 // 「列表无封面但播放有封面」的问题（播放时 player 走同一 getPicPath 动态获取）。
 // 结果带缓存与并发限制，见 core/music/coverUrl.ts。
 
-const useQualityTag = (musicInfo: LX.Music.MusicInfo) => {
+// showHighest 由组件顶层订阅后经参数传入（见文件底部的默认导出）：memo 比较器只能看到
+// props，hook 订阅值必须走 prop 才能参与比较，保证开关切换时行会重渲染。
+const useQualityTag = (musicInfo: LX.Music.MusicInfo, showHighest: boolean) => {
   const t = useI18n()
   let info: { type: BadgeType | null, text: string } = { type: null, text: '' }
   if (musicInfo.source === 'local') return info
   const qualitys = (musicInfo.meta as LX.Music.MusicInfoMeta_online)?._qualitys ?? {}
-  const showHighest = settingState.setting['common.quality_show_highest']
 
   if (showHighest) {
     if (qualitys.master) {
@@ -45,6 +46,11 @@ const useQualityTag = (musicInfo: LX.Music.MusicInfo) => {
       info.text = t('quality_lossless_atmos')
     } else if (qualitys.hires) {
       info.type = 'secondary'
+      // hires 档文案统一为 Hi-Res，此前误映射成 24bit（对齐 SourceQualityBadge 的权威映射）
+      info.text = t('quality_hires')
+    } else if (qualitys.flac24bit) {
+      info.type = 'secondary'
+      // 补上此前缺失的 flac24bit 档（tx/kg 等源会产出），否则这一档一颗标都不显示
       info.text = t('quality_lossless_24bit')
     } else if (qualitys.flac) {
       info.type = 'sq'
@@ -55,6 +61,9 @@ const useQualityTag = (musicInfo: LX.Music.MusicInfo) => {
     }
   } else {
     if (qualitys.hires) {
+      info.type = 'secondary'
+      info.text = t('quality_hires')
+    } else if (qualitys.flac24bit) {
       info.type = 'secondary'
       info.text = t('quality_lossless_24bit')
     } else if (qualitys.flac) {
@@ -72,7 +81,26 @@ const useQualityTag = (musicInfo: LX.Music.MusicInfo) => {
   return info
 }
 
-export default memo(
+type ListItemProps = {
+  item: LX.Music.MusicInfo
+  index: number
+  activeIndex: number
+  onPress: (item: LX.Music.MusicInfo, index: number) => void
+  onLongPress: (item: LX.Music.MusicInfo, index: number) => void
+  onShowMenu: (
+    item: LX.Music.MusicInfo,
+    index: number,
+    position: { x: number, y: number, w: number, h: number }
+  ) => void
+  selectedList: LX.Music.MusicInfo[]
+  rowInfo: RowInfo
+  isShowAlbumName: boolean
+  isShowInterval: boolean
+  showCover: boolean
+  onScrollBeginDrag?: () => void
+}
+
+const ListItem = memo(
   ({
     item,
     index,
@@ -85,26 +113,12 @@ export default memo(
     isShowAlbumName,
     isShowInterval,
     showCover,
-  }: {
-    item: LX.Music.MusicInfo
-    index: number
-    activeIndex: number
-    onPress: (item: LX.Music.MusicInfo, index: number) => void
-    onLongPress: (item: LX.Music.MusicInfo, index: number) => void
-    onShowMenu: (
-      item: LX.Music.MusicInfo,
-      index: number,
-      position: { x: number, y: number, w: number, h: number }
-    ) => void
-    selectedList: LX.Music.MusicInfo[]
-    rowInfo: RowInfo
-    isShowAlbumName: boolean
-    isShowInterval: boolean
-    showCover: boolean
-    onScrollBeginDrag?: () => void
-  }) => {
+    qualityShowHighest,
+  }: ListItemProps & { qualityShowHighest: boolean }) => {
     const theme = useTheme()
     const buttonOpacity = useSettingValue('theme.buttonOpacity')
+    // 封面 54×54；点赞/更多图标按钮高度为行高 ITEM_HEIGHT=scaleSizeH(70) 的 80% ≈ 56
+    const buttonRadius = useButtonRadius()
     const coverUrl = useCoverUrl(item)
     // 汽水(qs) 等音源经 filterListDetail 构造的歌曲可能不带 meta 字段，这里兜底避免
     // 下方 item.meta.xxx 访问 undefined 时整行抛错、导致整列表空白（尤其播放态重渲染时）。
@@ -134,7 +148,7 @@ export default memo(
       }
     }
 
-    const tagInfo = useQualityTag(item)
+    const tagInfo = useQualityTag(item, qualityShowHighest)
 
     const handleShowMenu = () => {
       if (moreButtonRef.current?.measure) {
@@ -176,7 +190,14 @@ export default memo(
 
           <View style={showCover ? styles.sn : styles.snIndex}>
             {showCover ? (
-              <Image url={coverUrl} style={styles.albumArt} />
+              <Image
+                url={coverUrl}
+                style={[
+                  styles.albumArt,
+                  // 歌曲封面 54×54：按自身高度折算半高
+                  { borderRadius: buttonRadius(54) },
+                ]}
+              />
             ) : active ? (
               <PlayingIcon />
             ) : (
@@ -216,11 +237,26 @@ export default memo(
           ) : null}
         </TouchableOpacity>
         {showLikeButton ? (
-          <TouchableOpacity onPress={handleLike} style={styles.likeButton}>
+          <TouchableOpacity
+            onPress={handleLike}
+            style={[
+              styles.likeButton,
+              // 图标按钮：行高 ITEM_HEIGHT=scaleSizeH(70) 的 80% ≈ 56
+              { borderRadius: buttonRadius(56) },
+            ]}
+          >
             <Icon name={isLiked ? 'love-filled' : 'love'} size={16} color={isLiked ? theme['c-liked'] : theme['c-350']} />
           </TouchableOpacity>
         ) : null}
-        <TouchableOpacity onPress={handleShowMenu} ref={moreButtonRef} style={styles.moreButton}>
+        <TouchableOpacity
+          onPress={handleShowMenu}
+          ref={moreButtonRef}
+          style={[
+            styles.moreButton,
+            // 图标按钮：行高 ITEM_HEIGHT=scaleSizeH(70) 的 80% ≈ 56
+            { borderRadius: buttonRadius(56) },
+          ]}
+        >
           <Icon name="dots-vertical" style={{ color: theme['c-350'] }} size={12} />
         </TouchableOpacity>
       </View>
@@ -236,10 +272,19 @@ export default memo(
       nextProps.activeIndex != nextProps.index &&
       nextProps.selectedList.includes(nextProps.item) ==
       prevProps.selectedList.includes(nextProps.item) &&
-      prevProps.showCover === nextProps.showCover
+      prevProps.showCover === nextProps.showCover &&
+      prevProps.qualityShowHighest === nextProps.qualityShowHighest
     )
   },
 )
+
+// 「显示最高音质」开关改为订阅式：列表已挂载时切开关也要重渲染（此前在 useQualityTag 里
+// 同步读 settingState，切开关列表不更新）。订阅值必须从组件顶层经 prop 传进加了 memo 的
+// 行组件、纳入其比较器，否则这次仅因开关变化的重渲染会被 memo 挡掉（hook 值进不了比较器）。
+export default (props: ListItemProps) => {
+  const qualityShowHighest = useSettingValue('common.quality_show_highest')
+  return <ListItem {...props} qualityShowHighest={qualityShowHighest} />
+}
 
 const styles = createStyle({
   listItem: {

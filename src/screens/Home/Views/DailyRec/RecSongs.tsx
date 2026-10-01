@@ -10,6 +10,7 @@ import { useI18n } from '@/lang'
 import { autoSaveDailyPlaylist, handlePlay } from './listAction'
 import { usePlayerMusicInfo } from '@/store/player/hook'
 import { useTheme } from '@/store/theme/hook'
+import { useButtonRadius } from '@/utils/buttonRadius'
 import { navigations } from '@/navigation'
 import commonState from '@/store/common/state'
 import {
@@ -46,6 +47,7 @@ export default memo(({ header, isStylized, stylizedSelection }: RecSongsProps) =
   const cookie = useSettingValue('common.wy_cookie')
   const playerMusicInfo = usePlayerMusicInfo()
   const theme = useTheme()
+  const buttonRadius = useButtonRadius()
   const [isAllSimilarSongsFetched, setIsAllSimilarSongsFetched] = useState(false)
   // 记录最近一次发起的加载签名（cookie + 风格化选择）与失败时间：
   // effect 依赖里的 isLoading 会让加载中的 setIsLoading(true/false) 额外触发 effect
@@ -315,7 +317,13 @@ export default memo(({ header, isStylized, stylizedSelection }: RecSongsProps) =
     if (isStylized || isLoading || !isAllSimilarSongsFetched) return null
     return (
       <View style={{ alignItems: 'center', padding: 20 }}>
-        <TouchableOpacity onPress={handleFindMore}>
+        <TouchableOpacity
+          onPress={handleFindMore}
+          style={{
+            // 「更多相似歌曲」文字按钮圆角随「按钮圆角」设置行内覆盖；可见高度 ≈ 16 = 单行 14 号文字行高 16（无纵向 padding）
+            borderRadius: buttonRadius(16),
+          }}
+        >
           <Text color={theme['c-font']} size={14}>更多相似歌曲</Text>
         </TouchableOpacity>
       </View>

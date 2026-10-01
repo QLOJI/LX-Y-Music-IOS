@@ -9,6 +9,7 @@ import { useI18n } from '@/lang'
 import { createStyle } from '@/utils/tools'
 import { BorderWidths } from '@/theme'
 import { designMotion } from '@/theme/DesignTokens'
+import { useButtonRadius } from '@/utils/buttonRadius'
 
 interface SearchInputProps {
   onSearch: (keywork: string) => void
@@ -17,6 +18,8 @@ type SearchInputType = InputType
 
 const SearchInput = forwardRef<SearchInputType, SearchInputProps>(({ onSearch }, ref) => {
   const [text, setText] = useState('')
+  // 搜索框无静态高度，高度 100% 铺满 44 槽位（同返回栏 ActiveList 行高）：按 44 折算半高
+  const buttonRadius = useButtonRadius()
 
   const handleChangeText = (text: string) => {
     setText(text)
@@ -28,7 +31,11 @@ const SearchInput = forwardRef<SearchInputType, SearchInputProps>(({ onSearch },
       onChangeText={handleChangeText}
       placeholder="Search for something..."
       value={text}
-      style={styles.input}
+      style={[
+        styles.input,
+        // 搜索框铺满 44 槽位（同返回栏行高）：按 44 折算半高
+        { borderRadius: buttonRadius(44) },
+      ]}
       // onFocus={showTipList}
       clearBtn
       ref={ref}
@@ -55,6 +62,14 @@ export default forwardRef<ListSearchBarType, ListSearchBarProps>(
     const searchInputRef = useRef<SearchInputType>(null)
 
     const theme = useTheme()
+    // 取消按钮（下面 component 里的 styles.btn 行内覆盖）要用它，必须声明在**本组件**作用域。
+    // 早前只有内层 SearchInput 声明过 buttonRadius，这里却直接在第 131 行把它列进了 useMemo
+    // 依赖数组 —— useMemo 的依赖数组在渲染时就会求值，跟第 126 行的 JSX 是否真的渲染无关，
+    // 于是本组件一挂载就抛 ReferenceError: buttonRadius is not defined。而它是常驻挂载的
+    // （MusicList/index.tsx 的 barSlot），等于打开「我的」歌曲列表必崩。
+    // 注意这类「运行时未定义」既不是语法错，也没有类型检查兜底（本工程无 tsc 链路），
+    // 全仓语法扫描与 scripts/ 下的契约脚本都抓不到，只能靠人读作用域。
+    const buttonRadius = useButtonRadius()
 
     useImperativeHandle(ref, () => ({
       show() {
@@ -115,12 +130,13 @@ export default forwardRef<ListSearchBarType, ListSearchBarProps>(
           <View style={styles.content}>
             <SearchInput ref={searchInputRef} onSearch={onSearch} />
           </View>
-          <TouchableOpacity onPress={onExitSearch} style={styles.btn}>
+          {/* 取消按钮同上：无自身高度，按槽位行高 44 折算半高 */}
+          <TouchableOpacity onPress={onExitSearch} style={[styles.btn, { borderRadius: buttonRadius(44) }]}>
             <Text color={theme['c-button-font']}>{t('list_select_cancel')}</Text>
           </TouchableOpacity>
         </Animated.View>
       )
-    }, [animaStyle, onSearch, onExitSearch, theme, t])
+    }, [animaStyle, onSearch, onExitSearch, theme, t, buttonRadius])
 
     return !visible && animatePlayed ? null : component
   },

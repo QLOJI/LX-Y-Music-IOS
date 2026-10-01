@@ -4,6 +4,7 @@ import Image from '@/components/common/Image'
 import Text from '@/components/common/Text'
 import { useTheme } from '@/store/theme/hook'
 import { createStyle, toast } from '@/utils/tools'
+import { useButtonRadius } from '@/utils/buttonRadius'
 import { navigations } from '@/navigation'
 import commonState from '@/store/common/state'
 import { Icon } from '@/components/common/Icon'
@@ -15,6 +16,7 @@ import { log } from '@/utils/log'
 
 export default memo(({ artist, showFollowButton = false }: { artist: any, showFollowButton?: boolean }) => {
   const theme = useTheme()
+  const buttonRadius = useButtonRadius()
   const isFollowed = useIsWyArtistFollowed(artist.id)
 
   const handleFollow = (event: any) => {
@@ -88,7 +90,7 @@ export default memo(({ artist, showFollowButton = false }: { artist: any, showFo
         </Text>
       </View>
       {showFollowButton && artist.source !== 'tx' && artist.source !== 'kg' && (
-        <TouchableOpacity style={styles.followButton} onPress={handleFollow}>
+        <TouchableOpacity style={[styles.followButton, { borderRadius: buttonRadius(32) /* 图标 20 + 上下 padding 6×2 = 32 */ }]} onPress={handleFollow}>
           <Icon name={isFollowed ? 'love-filled' : 'love'} color={isFollowed ? theme['c-liked'] : theme['c-font-label']} size={20} />
         </TouchableOpacity>
       )}

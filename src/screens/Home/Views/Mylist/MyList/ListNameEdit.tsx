@@ -6,6 +6,7 @@ import Input, { type InputType } from '@/components/common/Input'
 import { createUserList, updateUserList } from '@/core/list'
 import { confirmDialog, createStyle } from '@/utils/tools'
 import { useTheme } from '@/store/theme/hook'
+import { useButtonRadius } from '@/utils/buttonRadius'
 import listState from '@/store/list/state'
 
 interface NameInputType {
@@ -15,6 +16,8 @@ interface NameInputType {
 }
 const NameInput = forwardRef<NameInputType, {}>((props, ref) => {
   const theme = useTheme()
+  // 输入框无高度覆写，按 common/Input 的默认高度 32 折算半高
+  const buttonRadius = useButtonRadius()
   const [text, setText] = useState('')
   const [placeholder, setPlaceholder] = useState('')
   const inputRef = useRef<InputType>(null)
@@ -38,7 +41,12 @@ const NameInput = forwardRef<NameInputType, {}>((props, ref) => {
       placeholder={placeholder}
       value={text}
       onChangeText={setText}
-      style={{ ...styles.input, backgroundColor: theme['c-primary-input-background'] }}
+      style={{
+        ...styles.input,
+        // 输入框按 common/Input 的默认高度 32（本处未覆写高度）折算半高
+        borderRadius: buttonRadius(32),
+        backgroundColor: theme['c-primary-input-background'],
+      }}
     />
   )
 })

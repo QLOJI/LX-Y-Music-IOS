@@ -17,6 +17,7 @@ import Menu, { type MenuType, type Position } from '@/components/common/Menu'
 import ConfirmAlert, { type ConfirmAlertType } from '@/components/common/ConfirmAlert'
 import Input from '@/components/common/Input'
 import { useHorizontalMode } from '@/utils/hooks'
+import { useButtonRadius } from '@/utils/buttonRadius'
 import { designSpacing } from '@/theme/DesignTokens'
 import PageTopInset from '@/components/common/PageTopInset'
 import { useBottomOverlayInset } from '@/store/common/hook'
@@ -39,6 +40,7 @@ export default memo(() => {
   // 底部悬浮层（迷你播放器 + 底部 Tab + 安全区）统一避让高度
   const bottomInset = useBottomOverlayInset()
   const theme = useTheme()
+  const buttonRadius = useButtonRadius()
   const kgCookie = useSettingValue('common.kg_cookie')
   const [activeTab, setActiveTab] = useState<TabType>('created')
   const [createdPlaylists, setCreatedPlaylists] = useState<PlaylistInfo[]>([])
@@ -231,7 +233,11 @@ export default memo(() => {
     return (
       <TouchableOpacity
         key={tab}
-        style={styles.tabItem}
+        style={[
+          styles.tabItem,
+          // 分段 tab 圆角随「按钮圆角」设置行内覆盖；可见高度 ≈ 26 = 15 号文字行高 17 + 下划线留白 3 + 上下 padding 3×2
+          { borderRadius: buttonRadius(26) },
+        ]}
         onPress={() => { setActiveTab(tab) }}
       >
         <Text
@@ -242,7 +248,7 @@ export default memo(() => {
         </Text>
       </TouchableOpacity>
     )
-  }, [activeTab, theme])
+  }, [activeTab, theme, buttonRadius])
 
   return (
     <View style={{ flex: 1 }}>

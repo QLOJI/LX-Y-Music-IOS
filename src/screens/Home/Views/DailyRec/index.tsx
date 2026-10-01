@@ -3,6 +3,7 @@ import { TouchableOpacity, View, BackHandler, StyleSheet } from 'react-native'
 import Text from '@/components/common/Text'
 import { createStyle } from '@/utils/tools'
 import { applyOpacity } from '@/utils/colorOpacity'
+import { useButtonRadius } from '@/utils/buttonRadius'
 import { useTheme } from '@/store/theme/hook'
 import { useSettingValue } from '@/store/setting/hook'
 import { useI18n } from '@/lang'
@@ -35,13 +36,21 @@ const Tabs = ({
   const theme = useTheme()
   // 子模式 chip 的描边随「按钮透明度」淡出，文字色不动。只改颜色 alpha，不能用容器 style.opacity。
   const buttonOpacity = useSettingValue('theme.buttonOpacity')
+  const buttonRadius = useButtonRadius()
   return (
     // 标题移到大标题下方独占一行（见 pageHeader 的 titleBlock），四个按钮并到同一行：
     // 推荐歌曲 / 推荐歌单 是主 tab（下划线选区），默认推荐 / 风格化推荐 是「推荐歌曲」下的子模式
     // （切到「推荐歌单」时没有风格化概念，故只在 songs 下显示）。
     // flexWrap：字号被调大或窄屏（375pt）放不下时自动换行，不至于把最后一个按钮裁掉。
     <View style={styles.tabsRow}>
-      <TouchableOpacity style={styles.tab} onPress={() => { onTabChange('songs') }}>
+      <TouchableOpacity
+        style={[
+          styles.tab,
+          // 主 tab 圆角随「按钮圆角」设置行内覆盖；可见高度 ≈ 32 = 15 号文字行高 17 + 下划线留白 5 + 上下 padding 5×2
+          { borderRadius: buttonRadius(32) },
+        ]}
+        onPress={() => { onTabChange('songs') }}
+      >
         <Text
           style={[styles.tabText, { borderBottomColor: activeTab === 'songs' ? theme['c-primary-font-active'] : 'transparent' }]}
           color={theme['c-font']}
@@ -49,7 +58,14 @@ const Tabs = ({
           推荐歌曲
         </Text>
       </TouchableOpacity>
-      <TouchableOpacity style={styles.tab} onPress={() => { onTabChange('playlists') }}>
+      <TouchableOpacity
+        style={[
+          styles.tab,
+          // 主 tab 圆角随「按钮圆角」设置行内覆盖；可见高度 ≈ 32 = 15 号文字行高 17 + 下划线留白 5 + 上下 padding 5×2
+          { borderRadius: buttonRadius(32) },
+        ]}
+        onPress={() => { onTabChange('playlists') }}
+      >
         <Text
           style={[styles.tabText, { borderBottomColor: activeTab === 'playlists' ? theme['c-primary-font-active'] : 'transparent' }]}
           color={theme['c-font']}
@@ -64,6 +80,8 @@ const Tabs = ({
             style={[
               styles.subTab,
               !isStylized ? { borderColor: applyOpacity(theme['c-primary-font'], buttonOpacity) } : { borderColor: 'transparent' },
+              // 子模式 chip 圆角随「按钮圆角」设置行内覆盖；可见高度 ≈ 22 = 13 号文字行高 15 + 上下 padding 3×2 + 边框 0.4×2
+              { borderRadius: buttonRadius(22) },
             ]}
           >
             <Text color={!isStylized ? theme['c-primary-font'] : theme['c-font']} size={13}>默认推荐</Text>
@@ -76,6 +94,8 @@ const Tabs = ({
             style={[
               styles.subTab,
               isStylized ? { borderColor: applyOpacity(theme['c-primary-font'], buttonOpacity) } : { borderColor: 'transparent' },
+              // 子模式 chip 圆角随「按钮圆角」设置行内覆盖；可见高度 ≈ 22 = 13 号文字行高 15 + 上下 padding 3×2 + 边框 0.4×2
+              { borderRadius: buttonRadius(22) },
             ]}
           >
             <Text color={isStylized ? theme['c-primary-font'] : theme['c-font']} size={13}>

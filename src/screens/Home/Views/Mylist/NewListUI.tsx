@@ -13,6 +13,7 @@ import { Icon } from '@/components/common/Icon'
 import { createStyle } from '@/utils/tools'
 import { applyOpacity } from '@/utils/colorOpacity'
 import commonState from '@/store/common/state'
+import playerState from '@/store/player/state'
 import MusicList from './MusicList'
 import { useHorizontalMode } from '@/utils/hooks'
 import ListMenu, { type ListMenuType, type Position } from './MyList/ListMenu'
@@ -24,6 +25,7 @@ import { handleRemove, handleSync } from './MyList/listAction'
 import { LIST_IDS, COMPONENT_IDS } from '@/config/constant'
 import { scaleSizeH } from '@/utils/pixelRatio'
 import { designRadius, designSpacing } from '@/theme/DesignTokens'
+import { useButtonRadius } from '@/utils/buttonRadius'
 import { useBottomOverlayInset } from '@/store/common/hook'
 import PageTopInset from '@/components/common/PageTopInset'
 import Loading from '@/components/common/Loading'
@@ -72,6 +74,8 @@ const FixedPlaylistCard = memo(({
   const activeId = useActiveListId()
   const fetching = useListFetching(item.id)
   const moreButtonRef = useRef<TouchableOpacity>(null)
+  // 封面 40×40、更多按钮 40×40：均按自身高度折算半高
+  const buttonRadius = useButtonRadius()
 
   // 歌单卡片底色（含「当前播放列表」高亮态）随「按钮透明度」淡出，文字色不动。
   // 只改颜色 alpha，不用容器 style.opacity——后者会把卡片里的歌单名一起变淡。
@@ -109,7 +113,14 @@ const FixedPlaylistCard = memo(({
       style={cardStyle}
     >
       <TouchableOpacity onPress={onPress} style={styles.cardContent}>
-        <Image url={item.cover} style={styles.artwork} />
+        <Image
+          url={item.cover}
+          style={[
+            styles.artwork,
+            // 歌单封面 40×40：按自身高度折算半高
+            { borderRadius: buttonRadius(40) },
+          ]}
+        />
         <View style={styles.info}>
           <Text size={16} numberOfLines={2} style={styles.listName} color={theme['c-font']}>{item.name}</Text>
           {item.total > 0 ? (
@@ -120,7 +131,15 @@ const FixedPlaylistCard = memo(({
           <Loading color={theme['c-font']} style={styles.loading} />
         ) : null}
       </TouchableOpacity>
-      <TouchableOpacity onPress={handleShowMenu} ref={moreButtonRef} style={styles.moreBtn}>
+      <TouchableOpacity
+        onPress={handleShowMenu}
+        ref={moreButtonRef}
+        style={[
+          styles.moreBtn,
+          // 图标按钮 40×40：按自身高度折算半高
+          { borderRadius: buttonRadius(40) },
+        ]}
+      >
         <Icon name="dots-vertical" color={theme['c-350']} size={17} />
       </TouchableOpacity>
     </Animated.View>
@@ -169,6 +188,8 @@ const PlaylistCard = memo(({
   const activeId = useActiveListId()
   const fetching = useListFetching(item.id)
   const moreButtonRef = useRef<TouchableOpacity>(null)
+  // 封面 40×40、更多按钮 40×40：均按自身高度折算半高
+  const buttonRadius = useButtonRadius()
   const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const isActivatedRef = useRef(false)
   const currentDyRef = useRef(0)
@@ -288,7 +309,11 @@ const PlaylistCard = memo(({
       <TouchableOpacity onPress={onPress} style={styles.cardContent}>
         <Image
           url={item.cover}
-          style={styles.artwork}
+          style={[
+            styles.artwork,
+            // 歌单封面 40×40：按自身高度折算半高
+            { borderRadius: buttonRadius(40) },
+          ]}
         />
         <View style={styles.info}>
           <Text size={16} numberOfLines={2} style={styles.listName} color={theme['c-font']}>
@@ -309,7 +334,15 @@ const PlaylistCard = memo(({
           <Icon name="menu" color={theme['c-font-label']} size={14} />
         </View>
       )}
-      <TouchableOpacity onPress={handleShowMenu} ref={moreButtonRef} style={styles.moreBtn}>
+      <TouchableOpacity
+        onPress={handleShowMenu}
+        ref={moreButtonRef}
+        style={[
+          styles.moreBtn,
+          // 图标按钮 40×40：按自身高度折算半高
+          { borderRadius: buttonRadius(40) },
+        ]}
+      >
         <Icon name="dots-vertical" color={theme['c-350']} size={17} />
       </TouchableOpacity>
     </Animated.View>
@@ -319,6 +352,8 @@ const PlaylistCard = memo(({
 export default memo(() => {
   const theme = useTheme()
   const buttonOpacity = useSettingValue('theme.buttonOpacity')
+  // 「点击重试」按钮无静态高度：paddingVertical 10×2 + 14 号字行高 ≈ 40
+  const buttonRadius = useButtonRadius()
   // 底部悬浮层（迷你播放器 + 底部 Tab + 安全区）统一避让高度
   const bottomInset = useBottomOverlayInset()
   const t = useI18n()
@@ -542,6 +577,37 @@ export default memo(() => {
     }
   }, [activeListId, handleBackToList, isHorizontal, listVisibility, showMusicList])
 
+  // 长按迷你播放器左侧封面 → 跳到「我的」页、打开正在播放的那条列表并定位到那一首
+  // （对齐参考工程的 app_event.jumpListPosition）。
+  // 这里只负责「把覆盖层打开到目标列表」；真正的滚动由 MusicList/List 内部完成：
+  //  · 覆盖层本次才挂载 → List 挂载时按 listId 属性 == 播放列表 id 判定，直接滚到播放位置；
+  //  · 覆盖层已经开着（横屏分栏常驻 / 竖屏正停在歌单里）→ List 自己监听 jumpListPosition
+  //    事件去换列表并定位。两条路都幂等，重复触发最多只是多滚一次。
+  const openPlayingList = useCallback(() => {
+    const listId = playerState.playMusicInfo.listId
+    if (!listId) return
+    // 与 handleItemPress 同一套前置：先盖时间戳与目标 id，再写全局状态。
+    // 时间戳同时挡住「刚跳过来就被上一个手势的余波/迟到关闭请求把覆盖层关掉」。
+    openedAtRef.current = Date.now()
+    openListIdRef.current = listId
+    setActiveList(listId)
+    setShowMusicList(true)
+  }, [])
+
+  useEffect(() => {
+    global.app_event.on('jumpListPosition', openPlayingList)
+    // 冷启动 / 本页还没挂载时的那一路：jumpListPosition() 在切到「我的」前就把
+    // global.lx.jumpMyListPosition 置了位（见 appEvent.jumpListPosition），本页挂载时
+    // 补读一次。读到即复位，避免之后任何一次重挂载把它当成一次新的跳转。
+    if (global.lx.jumpMyListPosition) {
+      global.lx.jumpMyListPosition = false
+      openPlayingList()
+    }
+    return () => {
+      global.app_event.off('jumpListPosition', openPlayingList)
+    }
+  }, [openPlayingList])
+
   const handleItemPress = useCallback((item: ListItemInfo) => {
     // 先记录打开时刻与目标列表，再写全局状态：
     // 若先 setShowMusicList(true) 再记录，覆盖层挂载后紧跟的 effect 里
@@ -754,7 +820,10 @@ export default memo(() => {
       {hasError ? (
         <View style={styles.errorContainer}>
           <Text size={16} color={theme['c-font']} style={styles.errorText}>加载失败</Text>
-          <TouchableOpacity onPress={() => { void refreshListInfo() }} style={retryButtonStyle}>
+          <TouchableOpacity
+            onPress={() => { void refreshListInfo() }}
+            style={[retryButtonStyle, { borderRadius: buttonRadius(40) }]}
+          >
             <Text size={14} color={theme['c-primary-font']}>点击尝试重新加载</Text>
           </TouchableOpacity>
         </View>
@@ -823,7 +892,10 @@ export default memo(() => {
           </View>
           <View style={{ flex: 1, overflow: 'hidden' }}>
             {hasActiveList ? (
-              <MusicList />
+              // 与竖屏覆盖层同源：把「本次打开的目标列表」按 listId 属性显式交给列表，
+              // 不让它去读持久化的「上次选中列表」——长按封面跳转时后者往往还没写进来，
+              // 分栏里就会载入错的列表。
+              <MusicList listId={openListIdRef.current ?? undefined} />
             ) : (
               <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
                 <Text size={13} color={theme['c-500']}>点击左侧列表查看歌曲</Text>

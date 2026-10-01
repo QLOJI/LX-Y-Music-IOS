@@ -2,6 +2,7 @@ import { memo, useRef, useState, useCallback, useEffect } from 'react'
 import { TouchableOpacity, View, BackHandler, StyleSheet, ScrollView } from 'react-native'
 import Text from '@/components/common/Text'
 import { createStyle } from '@/utils/tools'
+import { useButtonRadius } from '@/utils/buttonRadius'
 import { useTheme } from '@/store/theme/hook'
 import { useI18n } from '@/lang'
 import { designSpacing } from '@/theme/DesignTokens'
@@ -33,6 +34,7 @@ const Tabs = ({
   onTabChange: (tab: TabType) => void
 }) => {
   const theme = useTheme()
+  const buttonRadius = useButtonRadius()
   return (
     <ScrollView
       style={styles.tabsScroll}
@@ -43,7 +45,11 @@ const Tabs = ({
       {TABS.map((tab) => (
         <TouchableOpacity
           key={tab.id}
-          style={styles.tab}
+          style={[
+            styles.tab,
+            // 顶部分段 tab 圆角随「按钮圆角」设置行内覆盖；可见高度 ≈ 32 = 15 号文字行高 17 + 下划线留白 5 + 上下 padding 5×2
+            { borderRadius: buttonRadius(32) },
+          ]}
           onPress={() => { onTabChange(tab.id) }}
         >
           <Text

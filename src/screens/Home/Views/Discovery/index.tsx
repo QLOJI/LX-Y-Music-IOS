@@ -9,6 +9,7 @@ import { forceSyncNavActiveId, setNavActiveId } from '@/core/common'
 import { createStyle, toast } from '@/utils/tools'
 import { retryAsync } from '@/utils/retry'
 import { applyOpacity } from '@/utils/colorOpacity'
+import { useButtonRadius } from '@/utils/buttonRadius'
 import { designRadius, designSpacing, designTypography } from '@/theme/DesignTokens'
 import songlistState, { type ListInfoItem, type Source } from '@/store/songlist/state'
 import settingState from '@/store/setting/state'
@@ -152,6 +153,7 @@ export default memo(() => {
   const isWide = winWidth >= 700
   const t = useI18n()
   const buttonOpacity = useSettingValue('theme.buttonOpacity')
+  const buttonRadius = useButtonRadius()
   const sourceNameType = useSettingValue('common.sourceNameType')
   // 平台文案走全局语言包别名（source_${sourceNameType}_${source}），与歌单页等处的显示一致
   const sourceLabel = useCallback(
@@ -379,8 +381,10 @@ export default memo(() => {
   const historyButtonStyle = useMemo(
     () => StyleSheet.compose(styles.historyButton, {
       backgroundColor: applyOpacity(theme['c-primary-background'], buttonOpacity),
+      // 播放历史圆钮 42×42：按自身高度 42 折算半高，行内覆盖「按钮圆角」
+      borderRadius: buttonRadius(42),
     }),
-    [theme, buttonOpacity],
+    [theme, buttonOpacity, buttonRadius],
   )
 
   // 推荐歌单区的状态行：只有这里能区分「加载中 / 加载失败 / 真的没有歌单」。
@@ -428,7 +432,7 @@ export default memo(() => {
   const renderBoardCard = useCallback((board: BoardItem, wide: boolean) => (
     <TouchableOpacity
       key={board.id}
-      style={[styles.boardCard, wide ? styles.boardCardWide : null, boardCardStyle]}
+      style={[styles.boardCard, wide ? styles.boardCardWide : null, boardCardStyle, { borderRadius: buttonRadius(wide ? 72 : 64) /* 榜单卡高度两态不同：窄屏横向滑轨用 boardCard.minHeight=64，宽屏两行网格变体用 boardCardWide.minHeight=72。恒传 64 会让宽屏下中间百分比按偏矮的分母折算、略欠圆；wide 布尔在本组件里已经传入（由 isWide = winWidth>=700 分流），直接按它取对应设计高度 */ }]}
       onPress={() => { handleOpenBoard(board) }}
     >
       <Icon name="leaderboard" size={18} color={theme['c-primary']} />
@@ -441,7 +445,7 @@ export default memo(() => {
         {board.name}
       </Text>
     </TouchableOpacity>
-  ), [boardCardStyle, handleOpenBoard])
+  ), [boardCardStyle, handleOpenBoard, buttonRadius])
 
   return (
     <View style={styles.container}>

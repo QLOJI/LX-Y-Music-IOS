@@ -7,6 +7,7 @@ import Input, { type InputType } from '@/components/common/Input'
 import { useTheme } from '@/store/theme/hook'
 import { useI18n } from '@/lang'
 import { createStyle } from '@/utils/tools'
+import { useButtonRadius } from '@/utils/buttonRadius'
 
 interface TitleType {
   updateTitle: (
@@ -37,6 +38,8 @@ interface PositionInputType {
 }
 const PositionInput = forwardRef<PositionInputType, {}>((props, ref) => {
   const theme = useTheme()
+  // 输入框无高度覆写，按 common/Input 的默认高度 32 折算半高
+  const buttonRadius = useButtonRadius()
   const t = useI18n()
   const [text, setText] = useState('')
   const inputRef = useRef<InputType>(null)
@@ -59,7 +62,12 @@ const PositionInput = forwardRef<PositionInputType, {}>((props, ref) => {
       value={text}
       onChangeText={setText}
       ref={inputRef}
-      style={{ ...styles.input, backgroundColor: theme['c-primary-input-background'] }}
+      style={{
+        ...styles.input,
+        // 输入框按 common/Input 的默认高度 32（本处未覆写高度）折算半高
+        borderRadius: buttonRadius(32),
+        backgroundColor: theme['c-primary-input-background'],
+      }}
     />
   )
 })

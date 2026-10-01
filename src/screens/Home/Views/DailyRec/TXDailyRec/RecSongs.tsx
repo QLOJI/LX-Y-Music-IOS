@@ -5,6 +5,7 @@ import Text from '@/components/common/Text'
 import { useTheme } from '@/store/theme/hook'
 import { useHorizontalMode } from '@/utils/hooks'
 import { createStyle, toast } from '@/utils/tools'
+import { useButtonRadius } from '@/utils/buttonRadius'
 import { retryAsync } from '@/utils/retry'
 import { useI18n } from '@/lang'
 import txApi from '@/utils/musicSdk/tx'
@@ -33,9 +34,17 @@ const handlePlay = async(list: LX.Music.MusicInfoOnline[], listId: string, index
 
 const PlaylistItem = ({ item, onPress }: { item: { id: string, name: string, cover: string, playCount: number }, onPress: () => void }) => {
   const theme = useTheme()
+  const buttonRadius = useButtonRadius()
   return (
     <TouchableOpacity style={styles.item} onPress={onPress}>
-      <Image source={{ uri: item.cover || 'https://y.gtimg.cn/mediastyle/y/img/cover_qzone_130.jpg' }} style={styles.cover} />
+      <Image
+        source={{ uri: item.cover || 'https://y.gtimg.cn/mediastyle/y/img/cover_qzone_130.jpg' }}
+        style={[
+          styles.cover,
+          // 歌单封面圆角随「按钮圆角」设置行内覆盖；高度取 styles.cover.height 源值 60
+          { borderRadius: buttonRadius(60) },
+        ]}
+      />
       <View style={styles.info}>
         <Text style={styles.title} color={theme['c-font']} numberOfLines={1}>
           {item.name}
@@ -62,6 +71,7 @@ export default memo(({ header, type, onOpenDetail }: Props) => {
   const t = useI18n()
   // 底部悬浮层（迷你播放器 + 底部 Tab + 安全区）统一避让高度
   const bottomInset = useBottomOverlayInset()
+  const buttonRadius = useButtonRadius()
   // 只认最后一次发起的加载：连续重试 / 下拉刷新重叠时丢弃过期响应
   const loadIdRef = useRef(0)
   // 「已经拿到过数据」的闸门。原判据读 playlists.length 且写在依赖里，加载成功会重建
@@ -185,7 +195,14 @@ export default memo(({ header, type, onOpenDetail }: Props) => {
         {loadError ? (
           <Text style={styles.emptyDetail} color={theme['c-font-label']} size={12}>{loadError}</Text>
         ) : null}
-        <TouchableOpacity style={styles.retry} onPress={handleRefresh}>
+        <TouchableOpacity
+          style={[
+            styles.retry,
+            // 「重新加载」文字按钮圆角随「按钮圆角」设置行内覆盖；可见高度 ≈ 17 = 单行 15 号文字行高 17（无纵向 padding）
+            { borderRadius: buttonRadius(17) },
+          ]}
+          onPress={handleRefresh}
+        >
           <Text color={theme['c-primary']}>{t('list_reload')}</Text>
         </TouchableOpacity>
       </View>

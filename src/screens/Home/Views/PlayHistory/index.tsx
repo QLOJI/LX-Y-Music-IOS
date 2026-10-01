@@ -13,6 +13,7 @@ import { usePlayerMusicInfo } from '@/store/player/hook'
 import { useTheme } from '@/store/theme/hook'
 import { useSettingValue } from '@/store/setting/hook'
 import { applyOpacity } from '@/utils/colorOpacity'
+import { useButtonRadius } from '@/utils/buttonRadius'
 import { createStyle, toast } from '@/utils/tools'
 import { designRadius, designSpacing, designTypography } from '@/theme/DesignTokens'
 import PageTopInset from '@/components/common/PageTopInset'
@@ -102,6 +103,7 @@ export default memo(() => {
   const playerMusicInfo = usePlayerMusicInfo()
   const theme = useTheme()
   const buttonOpacity = useSettingValue('theme.buttonOpacity')
+  const buttonRadius = useButtonRadius()
 
   const isRange = !!endDate && endDate !== startDate
   const title = isRange ? `${startDate} ~ ${endDate}` : startDate
@@ -225,6 +227,8 @@ export default memo(() => {
             ...styles.iconBtn,
             // 圆钮底面随「按钮透明度」淡出；只改颜色 alpha
             backgroundColor: applyOpacity(theme['c-primary-background'], buttonOpacity),
+            // 图标圆钮 38×38：按自身高度 38 折算半高，行内覆盖「按钮圆角」
+            borderRadius: buttonRadius(38),
           }}
           disabled={isRange}
           onPress={() => { changeDay(-1) }}
@@ -240,6 +244,8 @@ export default memo(() => {
             ...styles.titleBtn,
             // 日期标题按钮底面随「按钮透明度」淡出
             backgroundColor: applyOpacity(theme['c-primary-background'], buttonOpacity),
+            // 日期标题按钮高 38：按自身高度 38 折算半高，行内覆盖「按钮圆角」
+            borderRadius: buttonRadius(38),
           }}
           onPress={openDateSelector}
         >
@@ -257,6 +263,8 @@ export default memo(() => {
             ...styles.iconBtn,
             // 圆钮底面随「按钮透明度」淡出；只改颜色 alpha
             backgroundColor: applyOpacity(theme['c-primary-background'], buttonOpacity),
+            // 图标圆钮 38×38：按自身高度 38 折算半高，行内覆盖「按钮圆角」
+            borderRadius: buttonRadius(38),
           }}
           disabled={isRange || startDate >= getTodayText()}
           onPress={() => { changeDay(1) }}
@@ -302,6 +310,8 @@ export default memo(() => {
                 ...styles.modeBtn,
                 // 选中态底面随「按钮透明度」淡出；transparent 分支保持原样
                 backgroundColor: pickerMode === 'single' ? applyOpacity(theme['c-primary'], buttonOpacity) : 'transparent',
+                // 弹层模式按钮高 34：按自身高度 34 折算半高，行内覆盖「按钮圆角」
+                borderRadius: buttonRadius(34),
               }}
               onPress={() => {
                 setPickerMode('single')
@@ -320,6 +330,8 @@ export default memo(() => {
                 ...styles.modeBtn,
                 // 选中态底面随「按钮透明度」淡出；transparent 分支保持原样
                 backgroundColor: pickerMode === 'range' ? applyOpacity(theme['c-primary'], buttonOpacity) : 'transparent',
+                // 弹层模式按钮高 34：按自身高度 34 折算半高，行内覆盖「按钮圆角」
+                borderRadius: buttonRadius(34),
               }}
               onPress={() => { setPickerMode('range') }}
             >
@@ -333,11 +345,11 @@ export default memo(() => {
           </View>
 
           <View style={styles.calendarHeader}>
-            <TouchableOpacity style={styles.monthBtn} onPress={() => { setPickerMonth(month => changeMonth(month, -1)) }}>
+            <TouchableOpacity style={[styles.monthBtn, { borderRadius: buttonRadius(42) /* 月切换按钮 42×42：按自身高度 42 折算半高 */ }]} onPress={() => { setPickerMonth(month => changeMonth(month, -1)) }}>
               <Icon name="chevron-left" size={16} color={theme['c-font']} />
             </TouchableOpacity>
             <Text style={styles.monthTitle}>{getMonthText(pickerMonth)}</Text>
-            <TouchableOpacity style={styles.monthBtn} onPress={() => { setPickerMonth(month => changeMonth(month, 1)) }}>
+            <TouchableOpacity style={[styles.monthBtn, { borderRadius: buttonRadius(42) /* 月切换按钮 42×42：按自身高度 42 折算半高 */ }]} onPress={() => { setPickerMonth(month => changeMonth(month, 1)) }}>
               <Icon name="chevron-right" size={16} color={theme['c-font']} />
             </TouchableOpacity>
           </View>
@@ -365,6 +377,8 @@ export default memo(() => {
                       : isInRange
                         ? applyOpacity(theme['c-primary-light-100-alpha-300'], buttonOpacity)
                         : 'transparent',
+                    // 日期格 38×38：按自身高度 38 折算半高，行内覆盖「按钮圆角」
+                    borderRadius: buttonRadius(38),
                   }}
                   onPress={() => { handlePickDate(dateText) }}
                 >
@@ -394,6 +408,8 @@ export default memo(() => {
                 ...styles.actionBtn,
                 // 「今天」按钮底面随「按钮透明度」淡出
                 backgroundColor: applyOpacity(theme['c-primary-background'], buttonOpacity),
+                // 「今天」按钮高 36：按自身高度 36 折算半高，行内覆盖「按钮圆角」
+                borderRadius: buttonRadius(36),
               }}
               onPress={() => { applyDate(getTodayText()) }}
             >
@@ -404,6 +420,8 @@ export default memo(() => {
                 ...styles.actionBtn,
                 // 「确定」按钮底面随「按钮透明度」淡出
                 backgroundColor: applyOpacity(theme['c-primary'], buttonOpacity),
+                // 「确定」按钮高 36：按自身高度 36 折算半高，行内覆盖「按钮圆角」
+                borderRadius: buttonRadius(36),
               }}
               onPress={handleApplyPicker}
             >

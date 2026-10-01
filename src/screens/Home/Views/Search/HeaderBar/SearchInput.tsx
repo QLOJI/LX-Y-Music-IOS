@@ -2,6 +2,7 @@ import { useCallback, useRef, forwardRef, useImperativeHandle, useState } from '
 import { StyleSheet } from 'react-native'
 import Input, { type InputType, type InputProps } from '@/components/common/Input'
 import { designTypography } from '@/theme/DesignTokens'
+import { useButtonRadius } from '@/utils/buttonRadius'
 
 export interface SearchInputProps {
   onChangeText: (text: string) => void
@@ -23,6 +24,7 @@ export default forwardRef<SearchInputType, SearchInputProps>(
     // const theme = useTheme()
     const [text, setText] = useState('')
     const inputRef = useRef<InputType>(null)
+    const buttonRadius = useButtonRadius()
 
     useImperativeHandle(ref, () => ({
       // getText() {
@@ -63,7 +65,11 @@ export default forwardRef<SearchInputType, SearchInputProps>(
         placeholder="搜索歌曲、歌手、专辑或歌单"
         value={text}
         onChangeText={handleChangeText}
-        style={styles.input}
+        style={[
+          styles.input,
+          // 搜索输入框圆角随「按钮圆角」设置行内覆盖；高度取 styles.input.height 的源值 40
+          { borderRadius: buttonRadius(40) },
+        ]}
         onBlur={onBlur}
         onFocus={onFocus}
         onSubmitEditing={handleSubmit}

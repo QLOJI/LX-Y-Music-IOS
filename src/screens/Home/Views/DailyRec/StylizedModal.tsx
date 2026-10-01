@@ -5,6 +5,7 @@ import { useTheme } from '@/store/theme/hook'
 import { useSettingValue } from '@/store/setting/hook'
 import { applyOpacity } from '@/utils/colorOpacity'
 import { createStyle, toast } from '@/utils/tools'
+import { useButtonRadius } from '@/utils/buttonRadius'
 import { shadow } from '@/utils/shadow'
 import { getData, saveData } from '@/plugins/storage'
 
@@ -104,6 +105,7 @@ export default memo(({ visible, onClose, onConfirm }: StylizedModalProps) => {
   const theme = useTheme()
   // 弹层按钮的底面/边框随「按钮透明度」只改颜色 alpha（applyOpacity），不用容器 style.opacity——后者会把按钮文字一起淡掉
   const buttonOpacity = useSettingValue('theme.buttonOpacity')
+  const buttonRadius = useButtonRadius()
   const [selectedCategoryName, setSelectedCategoryName] = useState<keyof typeof CATEGORIES>('曲风')
   const [selectedTags, setSelectedTags] = useState<number[]>([])
   // ✅ 关键规避（2026-10-01，P0「所有界面滑动/点击都没反应」）：本组件是**唯一**
@@ -194,7 +196,14 @@ export default memo(({ visible, onClose, onConfirm }: StylizedModalProps) => {
         <TouchableOpacity activeOpacity={1} style={[styles.container, { backgroundColor: theme['c-content-background'] }]}>
           <View style={[styles.header, { borderBottomColor: theme['c-border-background'] }]}>
             <Text size={18} style={{ fontWeight: 'bold', color: theme['c-font'] }}>选择风格标签</Text>
-            <TouchableOpacity onPress={onClose} style={styles.closeBtn}>
+            <TouchableOpacity
+              onPress={onClose}
+              style={[
+                styles.closeBtn,
+                // 关闭图标按钮圆角随「按钮圆角」设置行内覆盖；可见高度 ≈ 28 = 16 号文字行高 18 + 上下 padding 5×2
+                { borderRadius: buttonRadius(28) },
+              ]}
+            >
               <Text size={16} color={theme['c-font-label']}>✕</Text>
             </TouchableOpacity>
           </View>
@@ -216,6 +225,8 @@ export default memo(({ visible, onClose, onConfirm }: StylizedModalProps) => {
                       style={[
                         styles.categoryItem,
                         isSelected && { backgroundColor: isThemeSupported ? applyOpacity(theme['c-button-background'], buttonOpacity) : 'rgba(0,0,0,0.1)' },
+                        // 分类选择项圆角随「按钮圆角」设置行内覆盖；可见高度 ≈ 46 = 14 号文字行高 16 + 上下 padding 15×2
+                        { borderRadius: buttonRadius(46) },
                       ]}
                       onPress={() => { handleSelectCategory(name as keyof typeof CATEGORIES) }}
                     >
@@ -248,6 +259,8 @@ export default memo(({ visible, onClose, onConfirm }: StylizedModalProps) => {
                         styles.tagItem,
                         { borderColor: Object.keys(theme).includes('c-border-background') ? theme['c-border-background'] : '#ddd' },
                         isSelected && { borderColor: applyOpacity(theme['c-button-background'], buttonOpacity), backgroundColor: isThemeSupported ? applyOpacity(theme['c-button-background'], buttonOpacity) : 'rgba(0,0,0,0.1)' },
+                        // 标签 chip 圆角随「按钮圆角」设置行内覆盖；可见高度 ≈ 30 = 14 号文字行高 16 + 上下 padding 6×2 + 边框 1×2
+                        { borderRadius: buttonRadius(30) },
                       ]}
                       onPress={() => { handleSelectTag(tagId) }}
                     >
@@ -265,13 +278,22 @@ export default memo(({ visible, onClose, onConfirm }: StylizedModalProps) => {
           </View>
 
           <View style={[styles.footer, { borderTopColor: theme['c-border-background'] }]}>
-            <TouchableOpacity style={styles.btn} onPress={onClose}>
+            <TouchableOpacity
+              style={[
+                styles.btn,
+                // 弹层按钮圆角随「按钮圆角」设置行内覆盖；可见高度 ≈ 33 = 15 号文字行高 17 + 上下 padding 8×2
+                { borderRadius: buttonRadius(33) },
+              ]}
+              onPress={onClose}
+            >
               <Text color={theme['c-font-label']}>取消</Text>
             </TouchableOpacity>
             <TouchableOpacity
               style={[
                 styles.btn,
                 { backgroundColor: Object.keys(theme).includes('c-button-background') ? applyOpacity(theme['c-button-background'], buttonOpacity) : '#f0f0f0' },
+                // 弹层按钮圆角随「按钮圆角」设置行内覆盖；可见高度 ≈ 33 = 15 号文字行高 17 + 上下 padding 8×2
+                { borderRadius: buttonRadius(33) },
               ]}
               onPress={handleConfirm}
             >

@@ -9,6 +9,7 @@ import { applyOpacity } from '@/utils/colorOpacity'
 import { createStyle } from '@/utils/tools'
 import { BorderWidths } from '@/theme'
 import { designMotion } from '@/theme/DesignTokens'
+import { useButtonRadius } from '@/utils/buttonRadius'
 
 export type SelectMode = 'single' | 'range'
 
@@ -36,6 +37,8 @@ export default forwardRef<MultipleModeBarType, MultipleModeBarProps>(
     const [visibleBar, setVisibleBar] = useState(true)
     const theme = useTheme()
     const buttonOpacity = useSettingValue('theme.buttonOpacity')
+    // 条内按钮无自身高度，按槽位/返回栏行高 44 折算半高（与 ActiveList 行高 44 同源）
+    const buttonRadius = useButtonRadius()
 
     useImperativeHandle(ref, () => ({
       show() {
@@ -112,6 +115,8 @@ export default forwardRef<MultipleModeBarType, MultipleModeBarProps>(
               }}
               style={{
                 ...styles.btn,
+                // 条内按钮无自身高度，按槽位/返回栏行高 44 折算半高（与 ActiveList 行高 44 同源）
+                borderRadius: buttonRadius(44),
                 // 选中态底色随「按钮透明度」淡出；只改颜色 alpha，不用容器 style.opacity
                 backgroundColor:
                   selectMode == 'single'
@@ -127,6 +132,8 @@ export default forwardRef<MultipleModeBarType, MultipleModeBarProps>(
               }}
               style={{
                 ...styles.btn,
+                // 条内按钮无自身高度，按槽位/返回栏行高 44 折算半高（与 ActiveList 行高 44 同源）
+                borderRadius: buttonRadius(44),
                 // 同上：只改颜色 alpha，文字色不动
                 backgroundColor:
                   selectMode == 'range'
@@ -137,12 +144,13 @@ export default forwardRef<MultipleModeBarType, MultipleModeBarProps>(
               <Text color={theme['c-button-font']}>{global.i18n.t('list_select_range')}</Text>
             </Button>
           </View>
-          <TouchableOpacity onPress={handleSelectAll} style={styles.btn}>
+          {/* 条内按钮同上：无自身高度，按槽位/返回栏行高 44 折算半高 */}
+          <TouchableOpacity onPress={handleSelectAll} style={[styles.btn, { borderRadius: buttonRadius(44) }]}>
             <Text color={theme['c-button-font']}>
               {global.i18n.t(isSelectAll ? 'list_select_unall' : 'list_select_all')}
             </Text>
           </TouchableOpacity>
-          <TouchableOpacity onPress={onExitSelectMode} style={styles.btn}>
+          <TouchableOpacity onPress={onExitSelectMode} style={[styles.btn, { borderRadius: buttonRadius(44) }]}>
             <Text color={theme['c-button-font']}>{global.i18n.t('list_select_cancel')}</Text>
           </TouchableOpacity>
         </Animated.View>
@@ -152,6 +160,7 @@ export default forwardRef<MultipleModeBarType, MultipleModeBarProps>(
       selectMode,
       theme,
       buttonOpacity,
+      buttonRadius,
       handleSelectAll,
       isSelectAll,
       onExitSelectMode,

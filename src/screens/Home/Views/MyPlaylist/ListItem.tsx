@@ -13,10 +13,13 @@ import type { Position } from '@/components/common/Menu'
 import { useWyUid } from '@/store/user/hook.ts'
 import { scaleSizeH } from '@/utils/pixelRatio'
 import { designRadius, designSpacing } from '@/theme/DesignTokens'
+import { useButtonRadius } from '@/utils/buttonRadius'
 
 export default memo(({ item, onPress, onHeartbeatPress, onMenuPress }: { item: any, onPress: (info: ListInfoItem) => void, onHeartbeatPress?: (info: ListInfoItem) => void, onMenuPress?: (item: any, position: Position) => void }) => {
   const theme = useTheme()
   const buttonOpacity = useSettingValue('theme.buttonOpacity')
+  // 歌单封面 40、心跳图标按钮 44（24 图标 + 10×2 padding）、菜单图标按钮 30（20 图标 + 5×2 padding）
+  const buttonRadius = useButtonRadius()
   const uid = useWyUid()
   const menuBtnRef = useRef<TouchableOpacity>(null)
 
@@ -65,7 +68,14 @@ export default memo(({ item, onPress, onHeartbeatPress, onMenuPress }: { item: a
       style={[styles.container, { backgroundColor: applyOpacity(theme['c-primary-light-900-alpha-300'], buttonOpacity) }]}
       onPress={handlePress}
     >
-      <Image url={item.coverImgUrl} style={styles.artwork} />
+      <Image
+        url={item.coverImgUrl}
+        style={[
+          styles.artwork,
+          // 歌单封面 40×40：按自身高度折算半高
+          { borderRadius: buttonRadius(40) },
+        ]}
+      />
       <View style={styles.info}>
         <Text size={16} numberOfLines={2} color={theme['c-font']} style={{ fontWeight: '700' }}>{item.name}</Text>
         {item.trackCount > 0 ? (
@@ -73,7 +83,13 @@ export default memo(({ item, onPress, onHeartbeatPress, onMenuPress }: { item: a
         ) : null}
       </View>
       {item.name.endsWith('喜欢的音乐') && onHeartbeatPress && (
-        <TouchableOpacity style={styles.heartbeatBtn} onPress={(e) => {
+        <TouchableOpacity
+          style={[
+            styles.heartbeatBtn,
+            // 图标按钮：可见高度 = 图标 24 + 上下 padding 10×2 = 44
+            { borderRadius: buttonRadius(44) },
+          ]}
+          onPress={(e) => {
           e.stopPropagation()
           handleHeartbeatPress()
         }}>
@@ -83,7 +99,11 @@ export default memo(({ item, onPress, onHeartbeatPress, onMenuPress }: { item: a
       {isCreator && onMenuPress && !item.name.endsWith('喜欢的音乐') && (
         <TouchableOpacity
           ref={menuBtnRef}
-          style={styles.menuButton}
+          style={[
+            styles.menuButton,
+            // 图标按钮：可见高度 = 图标 20 + 上下 paddingVertical 5×2 = 30
+            { borderRadius: buttonRadius(30) },
+          ]}
           onPress={(e) => {
             e.stopPropagation()
             handleMenuPress()

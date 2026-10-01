@@ -20,6 +20,7 @@ import playerState from '@/store/player/state'
 import { LIST_IDS } from '@/config/constant'
 import { addTempPlayList } from '@/core/player/tempPlayList'
 import { playNext } from '@/core/player/player'
+import { useButtonRadius } from '@/utils/buttonRadius'
 
 type FlatListProps = _FlatListProps<LX.Music.MusicInfoOnline>
 const ITEM_HEIGHT = scaleSizeH(56)
@@ -33,6 +34,8 @@ const Tabs = <T extends LX.OnlineSource>({ list, source, onChangeSource }: {
   const list_t = useSourceListI18n(list)
   const theme = useTheme()
   const buttonOpacity = useSettingValue('theme.buttonOpacity')
+  // 文本 tab：可见高度 = 15 号字行高 ≈17 + 上下 paddingVertical 5×2 ≈ 28
+  const buttonRadius = useButtonRadius()
   const scrollViewRef = useRef<ScrollView>(null)
 
   return (
@@ -42,6 +45,8 @@ const Tabs = <T extends LX.OnlineSource>({ list, source, onChangeSource }: {
           <TouchableOpacity
             style={{
               ...styles.tabButton,
+              // 文本 tab 无静态高度：15 号字行高 ≈17 + 上下 paddingVertical 5×2 ≈ 28
+              borderRadius: buttonRadius(28),
               // 选中下划线是该按钮唯一可见表面：随「按钮透明度」淡出
               borderBottomColor: source == s.action ? applyOpacity(theme['c-primary-background-active'], buttonOpacity) : 'transparent',
             }}
@@ -85,6 +90,8 @@ const ListItem = memo(({ info, onPlay, onOpenDetail }: {
   onOpenDetail: (info: LX.Music.MusicInfoOnline) => void
 }) => {
   const theme = useTheme()
+  // 图标按钮：可见高度 = 图标 18 + 上下 padding 8×2 = 34
+  const buttonRadius = useButtonRadius()
 
   return (
     <View style={{ ...styles.listItem, height: ITEM_HEIGHT }} onStartShouldSetResponder={() => true}>
@@ -105,10 +112,24 @@ const ListItem = memo(({ info, onPlay, onOpenDetail }: {
         <Text style={styles.listItemLabelText} size={13} color={theme['c-300']}>{info.interval}</Text>
       </View>
       <View style={styles.listItemBtns}>
-        <Button style={styles.listItemBtn} onPress={() => { onOpenDetail(info) }}>
+        <Button
+          style={[
+            styles.listItemBtn,
+            // 图标按钮：可见高度 = 图标 18 + 上下 padding 8×2 = 34
+            { borderRadius: buttonRadius(34) },
+          ]}
+          onPress={() => { onOpenDetail(info) }}
+        >
           <Icon name="share" style={{ color: theme['c-button-font'] }} size={18} />
         </Button>
-        <Button style={styles.listItemBtn} onPress={() => { onPlay(info) }}>
+        <Button
+          style={[
+            styles.listItemBtn,
+            // 图标按钮：可见高度 = 图标 18 + 上下 padding 8×2 = 34
+            { borderRadius: buttonRadius(34) },
+          ]}
+          onPress={() => { onPlay(info) }}
+        >
           <Icon name="play" style={{ color: theme['c-button-font'] }} size={18} />
         </Button>
       </View>
@@ -166,6 +187,8 @@ const List = ({ source, lists, onPlay }: {
 const SourceDetail = ({ info, onConfirm, toggleSource }: { info: LX.Music.MusicInfo, onConfirm: (info: LX.Music.MusicInfoOnline) => void, toggleSource: LX.Music.MusicInfoOnline | null }) => {
   const theme = useTheme()
   const buttonOpacity = useSettingValue('theme.buttonOpacity')
+  // 确认按钮无静态高度：paddingVertical 6×2 + 14 号字行高 ≈ 32
+  const buttonRadius = useButtonRadius()
   const isHorizontalMode = useHorizontalMode()
 
   return isHorizontalMode ? (
@@ -223,6 +246,8 @@ const SourceDetail = ({ info, onConfirm, toggleSource }: { info: LX.Music.MusicI
         }}
         style={{
           ...styles.button,
+          // 确认按钮无静态高度：paddingVertical 6×2 + 14 号字行高 ≈ 32
+          borderRadius: buttonRadius(32),
           // 确认按钮底色随「按钮透明度」淡出；只改颜色 alpha，不用容器 style.opacity
           backgroundColor: applyOpacity(theme['c-button-background'], buttonOpacity),
         }}
@@ -286,6 +311,8 @@ const SourceDetail = ({ info, onConfirm, toggleSource }: { info: LX.Music.MusicI
         }}
         style={{
           ...styles.button,
+          // 确认按钮无静态高度：paddingVertical 6×2 + 14 号字行高 ≈ 32
+          borderRadius: buttonRadius(32),
           // 同上：只改颜色 alpha，不用容器 style.opacity
           backgroundColor: applyOpacity(theme['c-button-background'], buttonOpacity),
         }}
