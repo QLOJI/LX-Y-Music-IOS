@@ -36,9 +36,15 @@ export const designTypography = {
   body: 15,
   caption: 13,
   // 全局默认行高比例（A-6 收敛约定）：Text 组件在调用方未显式传 lineHeight 时的兜底
-  // 基线，页面级显式 lineHeight 仍优先覆盖。1.2 ≈ iOS 字体自然行高；不建议低于 1.15
-  // —— 34pt 大标题会被裁掉顶部笔画（Discovery 大标题注释有同款警示）。
-  lineHeightRatio: 1.2,
+  // 基线，页面级显式 lineHeight 仍优先覆盖。
+  // A-8（2026-10-01）：「所有界面的文字间距缩小点」—— 1.2 → 1.15。
+  // 这是**全局唯一旋钮**：本工程的 Text/AnimatedText/AnimatedColorText 三个组件都用
+  // 它算默认行高（未显式传 lineHeight 的调用点全部随之收紧），歌词两条路径显式传了
+  // lineHeight，不受影响（歌词行距另有需求，见 A-6a）。
+  // 1.15 是下限：再低 CJK 字形（满 em 框）相邻两行会视觉相接，34pt 大标题还会被裁掉
+  // 顶部笔画（Discovery 大标题注释有同款警示）。若后续还要更紧，只能按页面逐个调，
+  // 不要动这个值。
+  lineHeightRatio: 1.15,
 } as const
 
 /** 交互动效时长的单一来源。
@@ -83,8 +89,12 @@ export const collapsedFloatBottom = (safeAreaBottom: number): number => safeArea
 
 /** 收起态圆钮与迷你播放器之间的横向间距（pt）。
  *  裸值：它只与 scaleSizeW 后的左让位相加；这里若再乘一次 fontSize，
- *  字体一变间距就会和缩放端分叉（三套缩放口径混用的老毛病）。 */
-export const collapsedPillGap = designSpacing.sm
+ *  字体一变间距就会和缩放端分叉（三套缩放口径混用的老毛病）。
+ *
+ *  2026-10-01 定案：sm(12) → **4**。需求原文是「迷你播放器位置应该和圆钮**靠在一起**
+ *  且在同一直线上」，12pt 的缝在视觉上已经是两块分开的玻璃、不成立「同排一行」；
+ *  4 与收起行的底缝（bottomFloatGap）同值，整行读起来是一个整体。 */
+export const collapsedPillGap = bottomFloatGap
 
 /** 「Tab栏距离」滑块值（0~100）换算成实际 pt（裸值，不乘 fontSize）。
  *  它只与 scaleSizeH(tabBarBaseHeight) 相加，两端同口径；
