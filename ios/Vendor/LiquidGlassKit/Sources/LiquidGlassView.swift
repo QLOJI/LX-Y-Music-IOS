@@ -320,6 +320,34 @@ final class LiquidGlassView: MTKView {
     // Background texture for the shader
     private var backgroundTexture: MTLTexture?
 
+    /// 采景几何的参考尺寸（点）。nil（默认）→ 用自身 bounds，其它玻璃实例行为不变。
+    ///
+    /// 透镜抬起后按加速度做挤压/拉伸，bounds 逐帧变化（±30%，见 LiquidLensView.
+    /// maxScaleDeviation）。采景矩形若跟着 bounds 走，CABackdropLayer 每帧都在变尺寸
+    /// ——尺寸一变就必须整幅重新向 window server 要 backdrop，高速度拖动下合成跟不上，
+    /// drawHierarchy 读到半张没合成的黑条，被 shader 折射进胶囊，就是用户报的
+    /// 「滑动速度快后看见黑色线条」。锁定成静止尺寸后，拖动期间采景层只平移不缩放；
+    /// 挤压/拉伸的观感全部由 shader 形状（updateUniforms 仍用 bounds）承担。
+    var captureReferenceSize: CGSize?
+
+    /// 连续均匀帧最多沿用上一帧纹理的帧数，见 commitCapturedTexture。
+    private static let maxUniformHoldFrames = 4
+    private var consecutiveUniformFrames = 0
+
+    // MARK: - 自适应刷新率
+
+    /// 静止态 30fps（见 init 注释：省电）；背景一变化就提到高刷。
+    private static let idleFramesPerSecond = 30
+    private static let liveFramesPerSecond = 120
+    /// 最后一次检测到背景变化后的高刷保持时长：页面切换/惯性滚动都是一阵一阵的，
+    /// 变化停止后仍保持一拍，避免在动画尾巴上反复升降档。
+    private static let motionHoldDuration: TimeInterval = 0.4
+    /// 上一帧的稀疏采样（约 16x16 个最大通道值），用于帧间变化检测
+    private var lastCaptureGrid: [UInt8]?
+    private var lastCaptureChangeAt: TimeInterval = 0
+    /// 显式高刷（透镜抬起/跟手期间由 LiquidLensView 打开）：期间不做自适应降档
+    private var liveCaptureRequested = false
+
     /// Whether to automatically capture superview on each frame.
     /// Set to false for manual control via `captureBackground()`.
     var autoCapture: Bool = true
@@ -365,6 +393,8 @@ final class LiquidGlassView: MTKView {
         // 玻璃内容是静止的——输入不变则每帧输出逐帧相同，高刷下纯属白烧 GPU/CPU。
         // 30fps 对静止态足够；morph/拖拽等玻璃自身形变由原生层驱动，观感是否变差需真机对照。
         // 注意：这里只降本视图的渲染帧率，不改 Info.plist 的全局高刷开关。
+        // 注意：这只是「静止态」的档位。背景一旦在变化（页面切换/列表滚动/透镜拖动），
+        // analyzeCapture 会把帧率提到 liveFramesPerSecond，静默 0.4s 后降回来。
         preferredFramesPerSecond = 30
 //        layer.shouldRasterize = true
 //        clipsToBounds = true
@@ -409,6 +439,36 @@ final class LiquidGlassView: MTKView {
         }
     }
 
+    /// 采景矩形与背景像素缓冲共用的基准尺寸（点）。两者必须同源，否则缓冲边缘会留下
+    /// 没画到的黑带、被折射进胶囊（见 captureBackdrop 的尺寸注释）。
+    private var captureBaseSize: CGSize {
+        if let reference = captureReferenceSize, reference.width > 1, reference.height > 1 {
+            return reference
+        }
+        return bounds.size
+    }
+
+    /// 透镜抬起/跟手期间由 LiquidLensView 调用：
+    /// ① 丢掉上一次抬起留下的背景纹理——那是上一次会话（上一次点击的 tab 位置的页面）
+    ///    内容，重新抬起后的最初几帧会把它画出来，就是用户说的「点歌单再点搜索，
+    ///    椭圆背景里短暂留着歌单的背景」；
+    /// ② 把刷新率拉到屏幕上限：抬起期间背景每帧都在变，30fps 的采景滞后（最多 ~33ms
+    ///    外加合成队列）在跟手拖动和切页动画里肉眼可见。
+    func beginLiveCapture() {
+        liveCaptureRequested = true
+        lastCaptureGrid = nil
+        consecutiveUniformFrames = 0
+        backgroundTexture = nil
+        preferredFramesPerSecond = Self.liveFramesPerSecond
+    }
+
+    /// 透镜落下后调用：交回自适应帧率（内容仍在变化时 analyzeCapture 会自己再提上去）。
+    func endLiveCapture() {
+        liveCaptureRequested = false
+        lastCaptureGrid = nil
+        preferredFramesPerSecond = Self.idleFramesPerSecond
+    }
+
     /// Captures the background content via root View using layer render.
     ///
     /// iOS 26.2+ 无 CABackdropLayer 可用（系统重构 backdrop 私有机制），退化为公开 API
@@ -440,16 +500,16 @@ final class LiquidGlassView: MTKView {
         let frameInRoot = currentLayer.convert(currentLayer.bounds, to: rootView.layer)
 
         // Expand capture area around the MTKView center (in root view coordinates).
-        // 【尺寸】必须与背景像素缓冲同源（model bounds，见 layoutSubviews 的
-        // setupBuffer），【中心】跟随 presentation 保持动画位置跟踪：逐帧变形动画
-        // （迷你播放器收窄/放出、透镜 span 拉伸）期间 presentation 尺寸比 model
-        // 慢一拍，若用 presentation 尺寸，变宽瞬间缓冲右/下侧会留下一条
-        // 没画到的黑带，被 shader 折射进胶囊边缘。
+        // 【尺寸】与背景像素缓冲同源（captureBaseSize，见 layoutSubviews 的 setupBuffer），
+        // 【中心】跟随 presentation 保持动画位置跟踪：逐帧变形动画（迷你播放器收窄/放出、
+        // 透镜挤压/拉伸）期间 presentation 尺寸比 model 慢一拍，若用 presentation 尺寸，
+        // 变宽瞬间缓冲右/下侧会留下一条没画到的黑带，被 shader 折射进胶囊边缘。
         // 再外扩 1 缓冲像素盖住 Int 取整缝隙，保证缓冲无未绘制纹理，
         // clamp_to_edge 边缘采样不会读到黑边。
+        let baseSize = captureBaseSize
         let devicePixel = 1.0 / scaleCoefficient
-        let captureSize = CGSize(width: bounds.width * sizeCoefficient + devicePixel * 2,
-                                 height: bounds.height * sizeCoefficient + devicePixel * 2)
+        let captureSize = CGSize(width: baseSize.width * sizeCoefficient + devicePixel * 2,
+                                 height: baseSize.height * sizeCoefficient + devicePixel * 2)
         let captureRectInRoot = CGRect(x: frameInRoot.midX - captureSize.width / 2,
                                        y: frameInRoot.midY - captureSize.height / 2,
                                        width: captureSize.width,
@@ -472,10 +532,12 @@ final class LiquidGlassView: MTKView {
         }
 
         let previousTexture = backgroundTexture
+        let captureStartedAt = CACurrentMediaTime()
         var capturedIsUniform = false
+        var capturedTexture: MTLTexture?
         let captureWork = { [weak self] in
             guard let self, let win = self.window else { return }
-            self.backgroundTexture = self.zeroCopyBridge.render { context in
+            capturedTexture = self.zeroCopyBridge.render { context in
                 // Hide every glass widget root in this window (self included)：覆盖各玻璃的
                 // MTK 输出与其上方前景内容，截到纯净背景。主线程上 hide → render →
                 // restore → commit：restore 先于 commit，render server 永远看不到隐藏态
@@ -507,8 +569,8 @@ final class LiquidGlassView: MTKView {
                     UIGraphicsPopContext()
                 }
 
-                if let buffer = self.zeroCopyBridge.pixelBuffer, Self.isUniformCapture(buffer) {
-                    capturedIsUniform = true
+                if let buffer = self.zeroCopyBridge.pixelBuffer {
+                    capturedIsUniform = self.analyzeCapture(buffer, now: captureStartedAt)
                 }
 
                 for root in hiddenRoots { root.layer.isHidden = false }
@@ -520,9 +582,7 @@ final class LiquidGlassView: MTKView {
         } else {
             DispatchQueue.main.sync(execute: captureWork)
         }
-        if capturedIsUniform {
-            backgroundTexture = previousTexture
-        }
+        commitCapturedTexture(capturedTexture, previous: previousTexture, isUniform: capturedIsUniform)
 
         blurTexture()
     }
@@ -538,13 +598,16 @@ final class LiquidGlassView: MTKView {
         let scaleCoefficient = layer.contentsScale * liquidGlass.backgroundTextureScaleCoefficient
 
         // Calculate frame using presentation layer for smooth animation tracking.
-        // 尺寸与缓冲同源（model bounds）+ 1 缓冲像素外扩，理由同 captureRootView：
+        // 尺寸与缓冲同源（captureBaseSize）+ 1 缓冲像素外扩，理由同 captureRootView：
         // 逐帧变形动画期间 presentation 尺寸滞后一拍，会在缓冲边缘留下黑带。
+        // 透镜的 captureReferenceSize 锁成静止尺寸，挤压/拉伸期间这里只变中心不变尺寸
+        // ——尺寸一变 CABackdropLayer 就得整幅重合成，高速度拖动下就是那些黑线条。
+        let baseSize = captureBaseSize
         let currentLayer = layer.presentation() ?? layer
         let frameInSuperview = currentLayer.convert(currentLayer.bounds, to: superview.layer)
         let devicePixel = 1.0 / scaleCoefficient
-        let captureSize = CGSize(width: bounds.width * sizeCoefficient + devicePixel * 2,
-                                 height: bounds.height * sizeCoefficient + devicePixel * 2)
+        let captureSize = CGSize(width: baseSize.width * sizeCoefficient + devicePixel * 2,
+                                 height: baseSize.height * sizeCoefficient + devicePixel * 2)
         let captureOrigin = CGPoint(x: frameInSuperview.midX - captureSize.width / 2,
                                     y: frameInSuperview.midY - captureSize.height / 2)
 
@@ -560,43 +623,39 @@ final class LiquidGlassView: MTKView {
         // 冷启动黑闪修复（iOS 14~18 真机录屏实锤：应用冷启动时玻璃整条闪黑数帧）：
         // CABackdropLayer 进入层级后的最初若干帧，render server 尚未合成 backdrop
         // 源内容，drawHierarchy 捕获到的是整幅均匀黑 → shader 当背景折射 = 闪黑。
-        // 捕获后做稀疏均匀性校验（~16x16 网格亮度极差 ≤ 3 = 均匀帧）：均匀帧视为
-        // backdrop 未就绪，丢弃并保留上一帧纹理（冷启动时为 nil → 玻璃透明，内容
-        // 直接可见），直到捕获到非均匀内容。暗色模式不受影响：背景含内容=非均匀；
-        // 纯均匀背景帧被丢弃也无视觉差（均匀输入的模糊/折射输出≈均匀）。
+        // 捕获后做稀疏采样判定（见 analyzeCapture/commitCapturedTexture）：
+        // 均匀帧视为 backdrop 未就绪，沿用上一帧纹理（上限 maxUniformHoldFrames 帧）。
         let previousTexture = backgroundTexture
+        let captureStartedAt = CACurrentMediaTime()
         var capturedIsUniform = false
-        backgroundTexture = zeroCopyBridge.render { context in
+        let capturedTexture = zeroCopyBridge.render { context in
             context.scaleBy(x: scaleCoefficient, y: scaleCoefficient)
 
             UIGraphicsPushContext(context)
             backdropView.drawHierarchy(in: backdropView.bounds, afterScreenUpdates: false)
             UIGraphicsPopContext()
 
-            if let buffer = zeroCopyBridge.pixelBuffer, Self.isUniformCapture(buffer) {
-                capturedIsUniform = true
+            if let buffer = zeroCopyBridge.pixelBuffer {
+                capturedIsUniform = self.analyzeCapture(buffer, now: captureStartedAt)
             }
         }
-        if capturedIsUniform {
-            backgroundTexture = previousTexture
-        }
+        commitCapturedTexture(capturedTexture, previous: previousTexture, isUniform: capturedIsUniform)
 
         blurTexture()
     }
 
-    /// 稀疏采样（约 16x16 网格）判断捕获帧是否「均匀」（全幅亮度极差 ≤ 3）：
-    /// CABackdropLayer 未就绪时的捕获是整幅均匀黑；真实背景（含内容）必然非均匀。
+    /// 稀疏采样（约 16x16 网格）取每点最大通道值：均匀判定与帧间变化检测共用一次扫描。
     /// 需在 CVPixelBuffer 锁定期内调用（zeroCopyBridge.render 的闭包内）。
-    private static func isUniformCapture(_ buffer: CVPixelBuffer) -> Bool {
+    private static func sampleCapture(_ buffer: CVPixelBuffer) -> [UInt8] {
         let w = CVPixelBufferGetWidth(buffer)
         let h = CVPixelBufferGetHeight(buffer)
         let bpr = CVPixelBufferGetBytesPerRow(buffer)
-        guard let base = CVPixelBufferGetBaseAddress(buffer) else { return true }
+        guard let base = CVPixelBufferGetBaseAddress(buffer) else { return [] }
         let ptr = base.assumingMemoryBound(to: UInt8.self)
-        var minV = 255
-        var maxV = 0
         let stepX = max(w / 16, 1)
         let stepY = max(h / 16, 1)
+        var grid: [UInt8] = []
+        grid.reserveCapacity(17 * 17)
         var y = 0
         while y < h {
             let row = y * bpr
@@ -606,14 +665,71 @@ final class LiquidGlassView: MTKView {
                 let r = Int(ptr[o + 2])
                 let g = Int(ptr[o + 1])
                 let b = Int(ptr[o])
-                let v = max(r, max(g, b))
-                if v < minV { minV = v }
-                if v > maxV { maxV = v }
+                grid.append(UInt8(max(r, max(g, b))))
                 x += stepX
             }
             y += stepY
         }
-        return maxV - minV <= 3
+        return grid
+    }
+
+    /// 捕获统计（在 render 闭包内、缓冲锁定期调用）：
+    /// ① 均匀帧判定——CABackdropLayer 未就绪时的捕获是整幅均匀黑，真实背景（含内容）
+    ///    必然非均匀；
+    /// ② 帧间变化检测——与上一帧采样比较，背景在变就把帧率提到高刷、停一会儿再降回
+    ///    30fps。「背景实时显示」和「静止省电」本来互斥，只有按内容变化自适应才能两者
+    ///    兼得；只靠透镜抬起时的显式高刷不够——tab 栏玻璃被透镜采进背景纹理（18.4
+    ///    路径没有排除机制），它慢一拍同样会表现为「椭圆里还是上一页的背景」。
+    /// 返回 isUniform。
+    private func analyzeCapture(_ buffer: CVPixelBuffer, now: TimeInterval) -> Bool {
+        let grid = Self.sampleCapture(buffer)
+
+        if let last = lastCaptureGrid, !grid.isEmpty, last.count == grid.count {
+            var total = 0
+            for index in 0..<grid.count {
+                total += abs(Int(grid[index]) - Int(last[index]))
+            }
+            // 均值差 ≥ 2/255 视为背景在动：静止画面的逐帧采样完全一致（差 0）
+            if total >= 2 * grid.count {
+                lastCaptureChangeAt = now
+                if preferredFramesPerSecond != Self.liveFramesPerSecond {
+                    preferredFramesPerSecond = Self.liveFramesPerSecond
+                }
+            }
+        }
+        lastCaptureGrid = grid
+
+        if !liveCaptureRequested,
+           preferredFramesPerSecond != Self.idleFramesPerSecond,
+           now - lastCaptureChangeAt > Self.motionHoldDuration {
+            preferredFramesPerSecond = Self.idleFramesPerSecond
+        }
+
+        guard !grid.isEmpty else { return true }
+        var minV: UInt8 = 255
+        var maxV: UInt8 = 0
+        for value in grid {
+            if value < minV { minV = value }
+            if value > maxV { maxV = value }
+        }
+        return Int(maxV) - Int(minV) <= 3
+    }
+
+    /// 捕获结果落地。均匀帧（backdrop 未就绪的整幅黑）沿用上一帧纹理——但必须有上限：
+    /// 真实背景也可能恰好均匀（纯色底/暗色主题），无上限地沿用就等于把上一个页面的
+    /// 内容永久留在透镜里（真机「点歌单再点搜索，椭圆背景里还是歌单的背景」）。
+    /// 多缓冲（ZeroCopyBridge）保证「上一帧纹理」的内容真的还是上一帧的。
+    private func commitCapturedTexture(_ texture: MTLTexture?, previous: MTLTexture?, isUniform: Bool) {
+        if isUniform {
+            consecutiveUniformFrames += 1
+            if consecutiveUniformFrames <= Self.maxUniformHoldFrames, let previous {
+                backgroundTexture = previous
+                return
+            }
+        } else {
+            consecutiveUniformFrames = 0
+        }
+        backgroundTexture = texture
     }
 
     func blurTexture() {
@@ -710,9 +826,12 @@ final class LiquidGlassView: MTKView {
 
         updateUniforms()
 
+        // 形状用 bounds（挤压/拉伸要真的变形），采景矩形与像素缓冲用 captureBaseSize
+        // （透镜锁静止尺寸：拖动期间缓冲不再逐帧重建，采景层不再逐帧改尺寸）
+        let baseSize = captureBaseSize
         let scale = layer.contentsScale * liquidGlass.backgroundTextureSizeCoefficient * liquidGlass.backgroundTextureScaleCoefficient
-        let width = Int(bounds.width * scale)
-        let height = Int(bounds.height * scale)
+        let width = Int(baseSize.width * scale)
+        let height = Int(baseSize.height * scale)
         zeroCopyBridge.setupBuffer(width: width, height: height)
     }
 

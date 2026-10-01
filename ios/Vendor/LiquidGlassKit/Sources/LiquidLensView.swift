@@ -184,6 +184,10 @@ public final class LiquidLensView: UIView, AnyLiquidLensView {
                 ? min(cornerRadiusOverride, halfShortSide)
                 : halfShortSide
             liquidGlassView.layer.cornerCurve = .circular
+
+            // 采景基准 = 药丸的静止尺寸（见 LiquidGlassView.captureReferenceSize）：
+            // 挤压/拉伸只改 shader 形状，采景矩形与像素缓冲始终保持这个尺寸不动。
+            liquidGlassView.captureReferenceSize = bounds.size
         }
     }
 
@@ -244,6 +248,12 @@ public final class LiquidLensView: UIView, AnyLiquidLensView {
         liquidGlassView.alpha = 0
         addSubview(liquidGlassView)
 
+        // 采景几何：基准锁成静止药丸尺寸（挤压/拉伸不再逐帧改采景矩形尺寸）
+        liquidGlassView.captureReferenceSize = bounds.size
+        // 抬起/跟手期间背景每帧都在变：丢掉上一次抬起留下的背景纹理（那是上次点击
+        // 位置的页面内容），并把刷新率拉满；落下后由 endLiveCapture 交回自适应帧率。
+        liquidGlassView.beginLiveCapture()
+
         // Start position tracking for acceleration-based squash/stretch
         startPositionTracking()
 
@@ -296,6 +306,8 @@ public final class LiquidLensView: UIView, AnyLiquidLensView {
         }
 
         let animationCompletion: (Bool) -> Void = { finished in
+            // 交回自适应帧率（回落动画期间背景仍在变，LiquidGlassView 会自己再提上去）
+            self.liquidGlassView.endLiveCapture()
             guard finished else {
                 completion?(finished)
                 return
