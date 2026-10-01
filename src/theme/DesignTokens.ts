@@ -62,6 +62,32 @@ export const designMotion = {
 
 export type DesignSpacingToken = keyof typeof designSpacing
 
+/** 主页大标题（34pt）所在「标题行」的统一行高（pt）。
+ *
+ *  为什么需要它：推荐 / 歌单 / 我的 / 搜索四个主页的标题原本各写各的 ——
+ *  推荐页标题不写 lineHeight（交给 Text 兜底 = round(34 × 1.15) ≈ 39），
+ *  歌单页与我的页写死 `lineHeight: 36`，于是「标题行」高度在三页里分别是
+ *  42（被右上角 42pt 圆钮撑高）/ 36 / 36，标题下方的第一行内容（酷我/酷狗平台
+ *  胶囊）因此上上下下差出 10pt 以上 —— 左右滑动切页时那一行会明显跳一下。
+ *
+ *  42 是「推荐页本来就已经是的高度」：推荐页标题行里有一个 42×42 的播放历史
+ *  圆钮，行高恒为 42（alignItems: center），把它定为四页共用的基准即可让
+ *  推荐页零位移，另外三页对齐过来。42 > 34 × 1.15 = 39.1，不会裁掉大标题顶部
+ *  笔画（DesignTokens 里 lineHeightRatio 的 1.15 下限警示同源）。
+ *
+ *  经 createStyle/scaleSizeH 会乘 global.lx.fontSize，与 fontSize 同口径缩放，
+ *  字号调大后标题行与胶囊行的相对关系不变。 */
+export const pageTitleLineHeight = 42
+
+/** 页面大标题行 → 其下方第一行内容（平台胶囊 / 歌单卡片）的统一间距（pt）。
+ *  四个主页共用；歌单页原本 12、我的页原本 8、推荐页 16，正是「有些太近有些太远」。 */
+export const pageTitleGap = designSpacing.md
+
+/** 同一页面内相邻两行控件、以及同一行内相邻两个按钮之间的统一间距（pt）。
+ *  取代此前散落的 8 / 12 两套值（最典型的是歌单页标签胶囊用 8、同页排序胶囊用 12，
+ *  且标签分组行与行之间完全没有间距）。 */
+export const controlGap = designSpacing.sm
+
 /** 沉底悬浮组件（底部 tab 栏 / 迷你播放条）在安全区之上的额外留缝（pt）。
  *  安全区本身（iPhone 34 / 全面屏 iPad 20 / Home 键 iPad 0）由 useSafeAreaBottom 提供。 */
 export const bottomFloatGap = 4
