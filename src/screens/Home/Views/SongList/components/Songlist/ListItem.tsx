@@ -4,6 +4,7 @@ import { createStyle } from '@/utils/tools'
 import { type ListInfoItem } from '@/store/songlist/state'
 import Text from '@/components/common/Text'
 import { scaleSizeW } from '@/utils/pixelRatio'
+import { useButtonRadius } from '@/utils/buttonRadius'
 import { NAV_SHEAR_NATIVE_IDS } from '@/config/constant'
 import { useTheme } from '@/store/theme/hook'
 import Image from '@/components/common/Image'
@@ -28,6 +29,8 @@ export default memo(({
   onPress,
 }: ListItemProps) => {
   const theme = useTheme()
+  // 「按钮圆角」：歌单封面的行内覆盖（静态 designRadius.md 原样保留作兜底）
+  const buttonRadius = useButtonRadius()
   const itemWidth = width - gap
   const playCount = formatPlayCountText(item.play_count)
 
@@ -57,7 +60,11 @@ export default memo(({
         <Image
           url={item.img}
           nativeID={`${NAV_SHEAR_NATIVE_IDS.songlistDetail_pic}_from_${item.id}`}
-          style={coverStyle}
+          style={[
+            coverStyle,
+            // 歌单封面：正方形（aspectRatio: 1），自身高度 = itemWidth（卡片实际宽度 = 传入 width − gap），行内覆盖「按钮圆角」
+            { borderRadius: buttonRadius(itemWidth) },
+          ]}
         />
         {showSource ? (
           <Text style={styles.sourceLabel} size={11} color="#FFFFFF">

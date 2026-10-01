@@ -18,6 +18,7 @@ import { SvgIcon } from '@/components/common/SvgIcon'
 import { useTheme } from '@/store/theme/hook'
 import { useSettingValue } from '@/store/setting/hook'
 import { applyOpacity } from '@/utils/colorOpacity'
+import { useButtonRadius } from '@/utils/buttonRadius'
 import { confirmDialog, createStyle, toast, getRowInfo } from '@/utils/tools'
 import { LIST_IDS, LIST_ITEM_HEIGHT } from '@/config/constant'
 import { scaleSizeH } from '@/utils/pixelRatio'
@@ -62,6 +63,8 @@ const TabButton = ({ label, tab, activeTab, onPress }: {
 }) => {
   const theme = useTheme()
   const buttonOpacity = useSettingValue('theme.buttonOpacity')
+  // 「按钮圆角」：三段标签胶囊的行内覆盖（静态 borderRadius 原样保留作兜底）
+  const buttonRadius = useButtonRadius()
   return (
     <TouchableOpacity
       style={{
@@ -69,6 +72,8 @@ const TabButton = ({ label, tab, activeTab, onPress }: {
         // 胶囊底色与边框随「按钮透明度」淡出；只改颜色 alpha，不用容器 style.opacity
         backgroundColor: applyOpacity(activeTab === tab ? theme['c-primary'] : theme['c-primary-light-900-alpha-300'], buttonOpacity),
         borderColor: applyOpacity(activeTab === tab ? theme['c-primary'] : theme['c-border-background'], buttonOpacity),
+        // 标签胶囊圆角随「按钮圆角」设置行内覆盖；高度取 styles.tab 的源值 32（胶囊自身高度）
+        borderRadius: buttonRadius(32),
       }}
       onPress={onPress}
     >
@@ -128,6 +133,8 @@ const SongItem = memo(
   }) => {
     const theme = useTheme()
     const buttonOpacity = useSettingValue('theme.buttonOpacity')
+    // 「按钮圆角」：封面与图标按钮的行内覆盖（静态 borderRadius 原样保留作兜底）
+    const buttonRadius = useButtonRadius()
     const moreButtonRef = useRef<TouchableOpacity>(null)
     const subText = item.singer || item.meta.filePath
     const sizeText = formatSize(item.meta.size)
@@ -164,9 +171,23 @@ const SongItem = memo(
         <TouchableOpacity style={styles.songItemLeft} onPress={() => { onPress(item) }}>
           <View style={styles.sn}>
             {item.meta.picUrl ? (
-              <Image url={item.meta.picUrl} style={styles.albumArt} cache={false} />
+              <Image
+                url={item.meta.picUrl}
+                style={[
+                  styles.albumArt,
+                  // 歌曲封面 54×54：按自身高度折算半高，行内覆盖「按钮圆角」
+                  { borderRadius: buttonRadius(54) },
+                ]}
+                cache={false}
+              />
             ) : (
-              <View style={styles.albumArtPlaceholder} />
+              <View
+                style={[
+                  styles.albumArtPlaceholder,
+                  // 无封面占位与封面同尺寸 54×54，同口径行内覆盖「按钮圆角」
+                  { borderRadius: buttonRadius(54) },
+                ]}
+              />
             )}
           </View>
           <View style={styles.itemInfo}>
@@ -199,7 +220,15 @@ const SongItem = memo(
             ) : null}
           </View>
         </TouchableOpacity>
-        <TouchableOpacity onPress={handleShowMenu} ref={moreButtonRef} style={styles.moreButton}>
+        <TouchableOpacity
+          onPress={handleShowMenu}
+          ref={moreButtonRef}
+          style={[
+            styles.moreButton,
+            // 更多图标按钮无固定高度（height: '80%'）且无纵向 padding：以图标本体 17（Icon size=17）作可见高度
+            { borderRadius: buttonRadius(17) },
+          ]}
+        >
           <Icon name="dots-vertical" style={{ color: theme['c-350'] }} size={17} />
         </TouchableOpacity>
       </View>
@@ -210,6 +239,8 @@ const SongItem = memo(
 export default memo(() => {
   const theme = useTheme()
   const buttonOpacity = useSettingValue('theme.buttonOpacity')
+  // 「按钮圆角」：配置页按钮、搜索输入框与图标按钮的行内覆盖（静态 borderRadius 原样保留作兜底）
+  const buttonRadius = useButtonRadius()
   const playMusicInfo = usePlayMusicInfo()
   const [activeTab, setActiveTab] = useState<ActiveTab>('list')
   const [loading, setLoading] = useState(false)
@@ -758,14 +789,22 @@ export default memo(() => {
         <View style={styles.buttonRow}>
           <Button
             // 按钮底色随「按钮透明度」淡出；只改颜色 alpha，不用容器 style.opacity
-            style={{ ...styles.button, backgroundColor: applyOpacity(theme['c-button-background'], buttonOpacity) }}
+            style={[
+              { ...styles.button, backgroundColor: applyOpacity(theme['c-button-background'], buttonOpacity) },
+              // 按钮无固定高度：可见高度 ≈ 29 = 单行文字行高 17（默认 15×1.15）+ 上下 padding 6×2，行内覆盖「按钮圆角」
+              { borderRadius: buttonRadius(29) },
+            ]}
             disabled={!hasConfig || folderLoading || !folderStack.length}
             onPress={() => { setFolderStack(prev => prev.slice(0, -1)) }}
           >
             <Text color={theme['c-button-font']}>返回上级</Text>
           </Button>
           <Button
-            style={{ ...styles.button, backgroundColor: applyOpacity(theme['c-button-background'], buttonOpacity) }}
+            style={[
+              { ...styles.button, backgroundColor: applyOpacity(theme['c-button-background'], buttonOpacity) },
+              // 按钮无固定高度：可见高度 ≈ 29 = 单行文字行高 17（默认 15×1.15）+ 上下 padding 6×2，行内覆盖「按钮圆角」
+              { borderRadius: buttonRadius(29) },
+            ]}
             disabled={!hasConfig || loading}
             onPress={handleSelectCurrentFolder}
           >
@@ -874,6 +913,8 @@ export default memo(() => {
                 ...styles.searchInput,
                 color: theme['c-font'],
                 borderColor: theme['c-border-background'],
+                // 搜索输入框静态高 34（styles.searchInput.height），行内覆盖「按钮圆角」
+                borderRadius: buttonRadius(34),
               }}
             />
           ) : (
@@ -883,7 +924,14 @@ export default memo(() => {
                   {filterPath ? `文件夹：${filterPath.split('/').pop() || '根目录'}` : `已选择：${getFolderName(selectedFolder)}`}
                 </Text>
                 {filterPath ? (
-                  <TouchableOpacity onPress={() => { handleSetFilterPath(null) }} style={{ marginLeft: 8 }}>
+                  <TouchableOpacity
+                    onPress={() => { handleSetFilterPath(null) }}
+                    style={[
+                      { marginLeft: 8 },
+                      // 清除筛选图标按钮无固定高度：以图标本体 12（Icon size=12）作可见高度
+                      { borderRadius: buttonRadius(12) },
+                    ]}
+                  >
                     <Icon name="close" size={12} color={theme['c-primary-font']} />
                   </TouchableOpacity>
                 ) : null}
@@ -894,24 +942,46 @@ export default memo(() => {
             </View>
           )}
               </View>
-              <TouchableOpacity style={styles.headerIconButton} onPress={handleToggleSearch}>
+              <TouchableOpacity
+                style={[
+                  styles.headerIconButton,
+                  // 图标按钮 34×34：按自身高度折算半高，行内覆盖「按钮圆角」
+                  { borderRadius: buttonRadius(34) },
+                ]}
+                onPress={handleToggleSearch}
+              >
                 <Icon name="search-2" size={16} color={searchVisible ? theme['c-primary-font'] : theme['c-font-label']} />
               </TouchableOpacity>
               {searchVisible ? (
-                <TouchableOpacity style={styles.headerIconButton} onPress={handleClearSearch}>
+                <TouchableOpacity
+                  style={[
+                    styles.headerIconButton,
+                    // 图标按钮 34×34：按自身高度折算半高，行内覆盖「按钮圆角」
+                    { borderRadius: buttonRadius(34) },
+                  ]}
+                  onPress={handleClearSearch}
+                >
                   <Icon name="close" size={13} color={theme['c-font-label']} />
                 </TouchableOpacity>
               ) : null}
               <Button
                 // 按钮底色随「按钮透明度」淡出；只改颜色 alpha，不用容器 style.opacity
-                style={{ ...styles.scanButton, backgroundColor: applyOpacity(theme['c-button-background'], buttonOpacity) }}
+                style={[
+                  { ...styles.scanButton, backgroundColor: applyOpacity(theme['c-button-background'], buttonOpacity) },
+                  // 按钮无固定高度：可见高度 ≈ 29 = 单行文字行高 17（默认 15×1.15）+ 上下 padding 6×2，行内覆盖「按钮圆角」
+                  { borderRadius: buttonRadius(29) },
+                ]}
                 disabled={!hasConfig || loading || !!batchLoadingText}
                 onPress={handleScan}
               >
                 <Text color={theme['c-button-font']}>扫描</Text>
               </Button>
               <Button
-                style={{ ...styles.scanButton, backgroundColor: applyOpacity(theme['c-primary-background-hover'], buttonOpacity), marginLeft: 8 }}
+                style={[
+                  { ...styles.scanButton, backgroundColor: applyOpacity(theme['c-primary-background-hover'], buttonOpacity), marginLeft: 8 },
+                  // 按钮无固定高度：可见高度 ≈ 29 = 单行文字行高 17（默认 15×1.15）+ 上下 padding 6×2，行内覆盖「按钮圆角」
+                  { borderRadius: buttonRadius(29) },
+                ]}
                 disabled={!hasConfig || loading || !!batchLoadingText}
                 onPress={handleBatchDownload}
               >

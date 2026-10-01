@@ -4,6 +4,7 @@ import Image from '@/components/common/Image'
 import Text from '@/components/common/Text'
 import { useTheme } from '@/store/theme/hook'
 import { createStyle, toast } from '@/utils/tools'
+import { useButtonRadius } from '@/utils/buttonRadius'
 import { navigations } from '@/navigation'
 import commonState from '@/store/common/state'
 import { Icon } from '@/components/common/Icon'
@@ -17,6 +18,7 @@ import { log } from '@/utils/log'
 
 export default memo(({ item, showSubscribeButton = false }: { item: any, showSubscribeButton?: boolean }) => {
   const theme = useTheme()
+  const buttonRadius = useButtonRadius()
   const isSubscribed = useIsWyAlbumSubscribed(item.id)
 
   const extractMidFromPicUrl = (picUrl: string) => {
@@ -83,7 +85,7 @@ export default memo(({ item, showSubscribeButton = false }: { item: any, showSub
 
   return (
     <TouchableOpacity style={styles.container} onPress={handlePress}>
-      <Image url={item.picUrl} style={styles.artwork} />
+      <Image url={item.picUrl} style={[styles.artwork, { borderRadius: buttonRadius(80) /* 专辑封面 80×80：按封面自身高度 80 折算半高 */ }]} />
       <View style={styles.info}>
         <Text size={16} numberOfLines={1}>{item.name}</Text>
         <Text size={12} color={theme['c-font-label']}>{formatSingerName(item.artists ?? [{ name: item.artistName }])}</Text>
@@ -91,7 +93,7 @@ export default memo(({ item, showSubscribeButton = false }: { item: any, showSub
           {item.size} 首</Text>
       </View>
       {showSubscribeButton && item.source !== 'tx' && item.source !== 'kg' && (
-        <TouchableOpacity style={styles.subscribeButton} onPress={toggleSubscribe}>
+        <TouchableOpacity style={[styles.subscribeButton, { borderRadius: buttonRadius(40) /* 图标 20 + 上下 padding 10×2 = 40 */ }]} onPress={toggleSubscribe}>
           <Icon name={isSubscribed ? 'love-filled' : 'love'} color={isSubscribed ? theme['c-liked'] : theme['c-font-label']} size={20} />
         </TouchableOpacity>
       )}

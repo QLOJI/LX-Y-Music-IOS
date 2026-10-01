@@ -3,6 +3,7 @@ import Button from '@/components/common/Button'
 import { useTheme } from '@/store/theme/hook'
 import { useSettingValue } from '@/store/setting/hook'
 import { applyOpacity } from '@/utils/colorOpacity'
+import { useButtonRadius } from '@/utils/buttonRadius'
 import Modal, { type ModalType } from './Modal'
 import { type ListInfoItem, type Source } from '@/store/songlist/state'
 import { createStyle } from '@/utils/tools'
@@ -24,6 +25,8 @@ export interface OpenListType {
 export default forwardRef<OpenListType, OpenListProps>(({ onOpenDetail }, ref) => {
   const theme = useTheme()
   const buttonOpacity = useSettingValue('theme.buttonOpacity')
+  // 「按钮圆角」：圆钮的行内覆盖（静态 borderRadius 原样保留作兜底）
+  const buttonRadius = useButtonRadius()
   const modalRef = useRef<ModalType>(null)
   const songlistInfoRef = useRef<{ source: Source }>({ source: 'kw' })
 
@@ -73,11 +76,15 @@ export default forwardRef<OpenListType, OpenListProps>(({ onOpenDetail }, ref) =
   return (
     <>
       <Button
-        style={{
-          ...styles.button,
-          // 「通过 ID 打开歌单」圆钮的底色随按钮透明度淡出，只改颜色 alpha，不用容器 opacity。
-          backgroundColor: applyOpacity(theme['c-button-background'], buttonOpacity),
-        }}
+        style={[
+          {
+            ...styles.button,
+            // 「通过 ID 打开歌单」圆钮的底色随按钮透明度淡出，只改颜色 alpha，不用容器 opacity。
+            backgroundColor: applyOpacity(theme['c-button-background'], buttonOpacity),
+          },
+          // 圆钮圆角随「按钮圆角」设置行内覆盖；高度取 styles.button 的源值 32（圆钮自身高度）
+          { borderRadius: buttonRadius(32) },
+        ]}
         onPress={() => modalRef.current?.show(songlistInfoRef.current.source)}
       >
         <SvgIcon name="plus" size={20} color={theme['c-primary']} />

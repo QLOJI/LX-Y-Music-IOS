@@ -3,6 +3,7 @@ import { Pressable, ScrollView, View } from 'react-native'
 
 import { createStyle } from '@/utils/tools'
 import { applyOpacity } from '@/utils/colorOpacity'
+import { useButtonRadius } from '@/utils/buttonRadius'
 import { useI18n } from '@/lang'
 import { useTheme } from '@/store/theme/hook'
 import { useSettingValue } from '@/store/setting/hook'
@@ -25,6 +26,8 @@ export default forwardRef<TagRowsType, TagRowsProps>(({ onTagChange }, ref) => {
   const theme = useTheme()
   const t = useI18n()
   const buttonOpacity = useSettingValue('theme.buttonOpacity')
+  // 「按钮圆角」：标签胶囊的行内覆盖（静态 borderRadius 原样保留作兜底）
+  const buttonRadius = useButtonRadius()
   const [groups, setGroups] = useState<TagInfo['tags']>([])
   const [activeId, setActiveId] = useState('')
   // 「默认」已选中时再次点击 → 收起/展开下方各分组行（再次点击「默认」展开）
@@ -135,7 +138,12 @@ export default forwardRef<TagRowsType, TagRowsProps>(({ onTagChange }, ref) => {
             return (
               <Pressable
                 key={tag.id || `default-${index}`}
-                style={[styles.tagButton, isActive ? activeTagStyle : inactiveTagStyle]}
+                style={[
+                  styles.tagButton,
+                  isActive ? activeTagStyle : inactiveTagStyle,
+                  // 标签胶囊圆角随「按钮圆角」设置行内覆盖；高度取 styles.tagButton 的源值 32（胶囊自身高度）
+                  { borderRadius: buttonRadius(32) },
+                ]}
                 onPress={() => { handlePress(tag.name, tag.id) }}
               >
                 <Text

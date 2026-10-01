@@ -4,6 +4,7 @@ import songlistState, { type SortInfo, type Source } from '@/store/songlist/stat
 import { useTheme } from '@/store/theme/hook'
 import { useSettingValue } from '@/store/setting/hook'
 import { applyOpacity } from '@/utils/colorOpacity'
+import { useButtonRadius } from '@/utils/buttonRadius'
 import Text from '@/components/common/Text'
 import { createStyle } from '@/utils/tools'
 import { designSpacing } from '@/theme/DesignTokens'
@@ -21,6 +22,8 @@ export default forwardRef<SortTabType, SortTabProps>(({ onSortChange }, ref) => 
   const [activeId, setActiveId] = useState<SortInfo['id']>('')
   const theme = useTheme()
   const buttonOpacity = useSettingValue('theme.buttonOpacity')
+  // 「按钮圆角」：排序胶囊的行内覆盖（静态 borderRadius 原样保留作兜底）
+  const buttonRadius = useButtonRadius()
   const scrollViewRef = useRef<ScrollView>(null)
 
   useImperativeHandle(ref, () => ({
@@ -73,7 +76,12 @@ export default forwardRef<SortTabType, SortTabProps>(({ onSortChange }, ref) => 
         const isActive = activeId == s.id
         return (
           <TouchableOpacity
-            style={[styles.button, isActive ? activeButtonStyle : inactiveButtonStyle]}
+            style={[
+              styles.button,
+              isActive ? activeButtonStyle : inactiveButtonStyle,
+              // 排序胶囊圆角随「按钮圆角」设置行内覆盖；高度取 styles.button 的源值 36（胶囊自身高度）
+              { borderRadius: buttonRadius(36) },
+            ]}
             onPress={() => {
               handleSortChange(s.id)
             }}

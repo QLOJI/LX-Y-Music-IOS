@@ -12,6 +12,7 @@ import { Icon } from '@/components/common/Icon'
 import type { Position } from '@/components/common/Menu'
 import { scaleSizeH } from '@/utils/pixelRatio'
 import { applyOpacity } from '@/utils/colorOpacity'
+import { useButtonRadius } from '@/utils/buttonRadius'
 import { designRadius, designSpacing } from '@/theme/DesignTokens'
 
 interface PlaylistItem {
@@ -34,6 +35,7 @@ interface ListItemProps {
 export default memo(({ item, onPress, onMenuPress }: ListItemProps) => {
   const theme = useTheme()
   const buttonOpacity = useSettingValue('theme.buttonOpacity')
+  const buttonRadius = useButtonRadius()
   const menuBtnRef = useRef<TouchableOpacity>(null)
 
   const handleMenuPress = () => {
@@ -52,9 +54,22 @@ export default memo(({ item, onPress, onMenuPress }: ListItemProps) => {
       onPress={() => { onPress(item) }}
     >
       <View style={styles.coverContainer}>
-        <Image url={item.cover} style={styles.cover} />
+        <Image
+          url={item.cover}
+          style={[
+            styles.cover,
+            // 歌单封面圆角随「按钮圆角」设置行内覆盖；高度取 styles.cover.height 源值 40
+            { borderRadius: buttonRadius(40) },
+          ]}
+        />
         {item.isFavorites && (
-          <View style={styles.favoritesOverlay}>
+          <View
+            style={[
+              styles.favoritesOverlay,
+              // 收藏遮罩必须与它覆盖的封面同源：同一高度 40 一起变，避免设置后遮罩直角切掉封面圆角
+              { borderRadius: buttonRadius(40) },
+            ]}
+          >
             <Icon name="love-filled" color="white" size={20} />
           </View>
         )}
@@ -72,7 +87,11 @@ export default memo(({ item, onPress, onMenuPress }: ListItemProps) => {
       {showMenu && (
         <TouchableOpacity
           ref={menuBtnRef}
-          style={styles.menuButton}
+          style={[
+            styles.menuButton,
+            // 图标按钮圆角随「按钮圆角」设置行内覆盖；可见高度 ≈ 30 = 图标 20 + 上下 padding 5×2
+            { borderRadius: buttonRadius(30) },
+          ]}
           onPress={(e) => {
             e.stopPropagation()
             handleMenuPress()

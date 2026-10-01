@@ -7,6 +7,7 @@ import { useI18n } from '@/lang'
 import { useSettingValue } from '@/store/setting/hook'
 import { useTheme } from '@/store/theme/hook'
 import { applyOpacity } from '@/utils/colorOpacity'
+import { useButtonRadius } from '@/utils/buttonRadius'
 import { updateSetting } from '@/core/common'
 import FileSelect, { type FileSelectType } from '@/components/common/FileSelect'
 
@@ -16,6 +17,8 @@ export default memo(() => {
   const t = useI18n()
   const theme = useTheme()
   const buttonOpacity = useSettingValue('theme.buttonOpacity')
+  // 「按钮圆角」：两个路径按钮的行内覆盖（静态 borderRadius 原样保留作兜底）
+  const buttonRadius = useButtonRadius()
   const webdavPath = useSettingValue('webdav.downloadPath')
   const fileSelectRef = useRef<FileSelectType>(null)
 
@@ -64,13 +67,21 @@ export default memo(() => {
       <View style={styles.buttonRow}>
         <Button
           // 按钮底色随「按钮透明度」淡出；只改颜色 alpha，不用容器 style.opacity
-          style={{ ...styles.button, backgroundColor: applyOpacity(theme['c-button-background'], buttonOpacity) }}
+          style={[
+            { ...styles.button, backgroundColor: applyOpacity(theme['c-button-background'], buttonOpacity) },
+            // 按钮无固定高度：可见高度 ≈ 29 = 单行文字行高 17（默认 15×1.15）+ 上下 padding 6×2，行内覆盖「按钮圆角」
+            { borderRadius: buttonRadius(29) },
+          ]}
           onPress={handleSelectPath}
         >
           <Text color={theme['c-button-font']}>{t('webdav_download_path_select')}</Text>
         </Button>
         <Button
-          style={{ ...styles.button, backgroundColor: applyOpacity(theme['c-button-background'], buttonOpacity) }}
+          style={[
+            { ...styles.button, backgroundColor: applyOpacity(theme['c-button-background'], buttonOpacity) },
+            // 按钮无固定高度：可见高度 ≈ 29 = 单行文字行高 17（默认 15×1.15）+ 上下 padding 6×2，行内覆盖「按钮圆角」
+            { borderRadius: buttonRadius(29) },
+          ]}
           onPress={handleResetPath}
         >
           <Text color={theme['c-button-font']}>{t('webdav_download_path_default')}</Text>
