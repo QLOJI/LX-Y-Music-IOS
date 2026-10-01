@@ -5,8 +5,11 @@ import Text from '@/components/common/Text'
 import { Icon } from '@/components/common/Icon'
 import { createStyle } from '@/utils/tools'
 import { useTheme } from '@/store/theme/hook'
+import { useSettingValue } from '@/store/setting/hook'
+import { applyOpacity } from '@/utils/colorOpacity'
 import { useI18n } from '@/lang'
 import { designRadius, designSpacing } from '@/theme/DesignTokens'
+import { scaleSizeW } from '@/utils/pixelRatio'
 
 /**
  * 详情类页面（歌手详情 / 专辑详情等）通用操作栏：播放全部 + 返回。
@@ -16,6 +19,7 @@ import { designRadius, designSpacing } from '@/theme/DesignTokens'
  */
 export default memo(({ onPlayAll, onBack }: { onPlayAll: () => void, onBack: () => void }) => {
   const theme = useTheme()
+  const buttonOpacity = useSettingValue('theme.buttonOpacity')
   const t = useI18n()
 
   return (
@@ -24,20 +28,27 @@ export default memo(({ onPlayAll, onBack }: { onPlayAll: () => void, onBack: () 
         onPress={onPlayAll}
         style={StyleSheet.compose(styles.controlBtn, {
           flexGrow: 1.45,
-          backgroundColor: theme['c-primary'],
+          // 按钮底色随「按钮透明度」设置淡出；图标/文字色不动（不用容器 style.opacity，否则内容会一起变淡）
+          backgroundColor: applyOpacity(theme['c-primary'], buttonOpacity),
         })}
       >
         <View style={styles.primaryContent}>
           <Icon name="play" size={15} color={theme['c-primary-light-1000']} />
-          <Text style={{ ...styles.controlBtnText, color: theme['c-primary-light-1000'] }}>
+          {/* 图标与文字之间的 6pt 间距只属于这一颗（唯一带图标的按钮），从共用样式下沉到这里，
+              避免「返回」的文字被一起右推、看起来不居中 */}
+          <Text style={{ ...styles.controlBtnText, marginLeft: 6, color: theme['c-primary-light-1000'] }}>
             {t('play_all')}
           </Text>
+          {/* 右侧补一块与「图标宽 + 6pt 间距」等宽的对称留白，见 SonglistDetail/ActionBar 的说明：
+              否则 flex 居中的是「图标+文字」整组，文字自身会右偏约 10pt，和「返回」的文字对不齐。 */}
+          <View style={{ width: scaleSizeW(15) + 6 }} />
         </View>
       </Button>
       <Button
         onPress={onBack}
         style={StyleSheet.compose(styles.controlBtn, {
-          backgroundColor: theme['c-primary-background'],
+          // 同上：只淡按钮自身底色，文字色不动
+          backgroundColor: applyOpacity(theme['c-primary-background'], buttonOpacity),
         })}
       >
         <Text style={{ ...styles.controlBtnText, color: theme['c-primary-font'] }}>
@@ -72,7 +83,8 @@ const styles = createStyle({
     alignItems: 'center',
   },
   controlBtnText: {
-    marginLeft: 6,
+    // 本样式两钮共用，这里**不能**再写 marginLeft：只有第一颗（播放全部）带图标需要 6pt 间距，
+    // 写在共用样式里会把「返回」的文字整体右移（居中项 +6 左边距 = 视觉中心右偏 3pt），间距已下沉到第一颗按钮的 Text 上。
     fontSize: 14,
     fontWeight: '600',
     textAlign: 'center',

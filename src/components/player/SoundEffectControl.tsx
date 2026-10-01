@@ -7,9 +7,10 @@ import Slider from '@/components/common/Slider'
 import { updateSetting } from '@/core/common'
 import { useI18n } from '@/lang'
 import SoundEffectPresetSaveModal, { type SoundEffectPresetSaveModalType } from './SoundEffectPresetSaveModal'
+import { applyOpacity } from '@/utils/colorOpacity'
 import { createStyle, confirmDialog, toast } from '@/utils/tools'
 import { useTheme } from '@/store/theme/hook'
-import { useSetting } from '@/store/setting/hook'
+import { useSetting, useSettingValue } from '@/store/setting/hook'
 import {
   createConvolutionSettingPatch,
   createCustomBandSettingPatch,
@@ -119,6 +120,7 @@ const PresetAddButton = memo(({
   disabled?: boolean
 }) => {
   const theme = useTheme()
+  const buttonOpacity = useSettingValue('theme.buttonOpacity')
 
   return (
     <TouchableOpacity
@@ -129,7 +131,8 @@ const PresetAddButton = memo(({
       }}
       style={{
         ...styles.presetAddButton,
-        borderColor: theme['c-primary-font-active'],
+        // 按钮虚线边框随「按钮透明度」淡出；只改颜色 alpha，不用容器 style.opacity
+        borderColor: applyOpacity(theme['c-primary-font-active'], buttonOpacity),
         opacity: disabled ? 0.35 : 0.7,
       }}>
       <Text size={15} color={theme['c-primary-font-active']} style={styles.presetAddText}>+</Text>
@@ -168,6 +171,7 @@ const EqualizerSection = memo(({
 }) => {
   const t = useI18n() as TranslateFn
   const theme = useTheme()
+  const buttonOpacity = useSettingValue('theme.buttonOpacity')
   const dividerColor = theme['c-primary-alpha-500']
 
   const equalizerRows = useMemo(() => {
@@ -183,7 +187,11 @@ const EqualizerSection = memo(({
       <View style={styles.sectionHeader}>
         <Text style={styles.sectionTitle}>{t('setting_play_sound_effect_equalizer')}</Text>
         <View style={styles.headerActions}>
-          <TouchableOpacity activeOpacity={0.7} onPress={onReset} style={{ ...styles.resetButton, backgroundColor: theme['c-button-background'] }}>
+          <TouchableOpacity
+            activeOpacity={0.7}
+            onPress={onReset}
+            // 按钮底色随「按钮透明度」淡出；只改颜色 alpha，不用容器 style.opacity
+            style={{ ...styles.resetButton, backgroundColor: applyOpacity(theme['c-button-background'], buttonOpacity) }}>
             <Text size={12} color={theme['c-button-font']}>{t('setting_play_sound_effect_reset')}</Text>
           </TouchableOpacity>
         </View>
@@ -256,7 +264,10 @@ const EqualizerSection = memo(({
               activeOpacity={0.7}
               style={{
                 ...styles.presetButton,
-                backgroundColor: isActive ? theme['c-button-background-selected'] : theme['c-button-background'],
+                // 预设按钮底色随「按钮透明度」淡出；只改颜色 alpha，选中/未选中两态都淡
+                backgroundColor: isActive
+                  ? applyOpacity(theme['c-button-background-selected'], buttonOpacity)
+                  : applyOpacity(theme['c-button-background'], buttonOpacity),
               }}
               onPress={() => { onPresetPress(preset.id) }}>
               <Text size={13} color={isActive ? theme['c-button-font-selected'] : theme['c-button-font']}>
@@ -273,7 +284,10 @@ const EqualizerSection = memo(({
               activeOpacity={0.7}
               style={{
                 ...styles.presetButton,
-                backgroundColor: isActive ? theme['c-button-background-selected'] : theme['c-button-background'],
+                // 预设按钮底色随「按钮透明度」淡出；只改颜色 alpha，选中/未选中两态都淡
+                backgroundColor: isActive
+                  ? applyOpacity(theme['c-button-background-selected'], buttonOpacity)
+                  : applyOpacity(theme['c-button-background'], buttonOpacity),
               }}
               onPress={() => { onUserPresetPress(preset) }}
               onLongPress={() => { onUserPresetLongPress(preset) }}>
@@ -318,6 +332,7 @@ const EnvironmentSection = memo(({
 }) => {
   const t = useI18n() as TranslateFn
   const theme = useTheme()
+  const buttonOpacity = useSettingValue('theme.buttonOpacity')
   const disabledConvolution = !selectedSource
 
   return (
@@ -372,7 +387,10 @@ const EnvironmentSection = memo(({
               activeOpacity={0.7}
               style={{
                 ...styles.presetButton,
-                backgroundColor: isActive ? theme['c-button-background-selected'] : theme['c-button-background'],
+                // 预设按钮底色随「按钮透明度」淡出；只改颜色 alpha，选中/未选中两态都淡
+                backgroundColor: isActive
+                  ? applyOpacity(theme['c-button-background-selected'], buttonOpacity)
+                  : applyOpacity(theme['c-button-background'], buttonOpacity),
               }}
               onPress={() => { onUserPresetPress(preset) }}
               onLongPress={() => { onUserPresetLongPress(preset) }}>

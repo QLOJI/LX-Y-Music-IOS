@@ -11,6 +11,7 @@ import { useI18n } from '@/lang'
 import { addListMusics, moveListMusics } from '@/core/list'
 import settingState from '@/store/setting/state'
 import { useTheme } from '@/store/theme/hook'
+import { applyOpacity } from '@/utils/colorOpacity'
 import { getPlaylistType, savePlaylistType } from '@/utils/data'
 import { View } from 'react-native'
 import Text from '@/components/common/Text'
@@ -44,6 +45,8 @@ export default forwardRef<MusicAddModalType, MusicAddModalProps>(({ onAdded }, r
   const theme = useTheme()
   const subscribedPlaylists = useWySubscribedPlaylists()
   const kgCookie = useSettingValue('common.kg_cookie')
+  // 「按钮透明度」：下面四颗歌单类型切换按钮的底面随之淡出（只改颜色 alpha，不动文字）
+  const buttonOpacity = useSettingValue('theme.buttonOpacity')
 
   useEffect(() => {
     getPlaylistType().then((type) => { setPlaylistType(type as 'local' | 'wy' | 'tx') })
@@ -394,16 +397,16 @@ export default forwardRef<MusicAddModalType, MusicAddModalProps>(({ onAdded }, r
         <>
           <Title musicInfo={selectInfo.musicInfo} isMove={selectInfo.isMove} />
           <View style={{ flexDirection: 'row', justifyContent: 'center', paddingVertical: 10, flexWrap: 'wrap', gap: 8 }}>
-            <Button onPress={() => { handlePlaylistTypeChange('local') }} style={{ paddingHorizontal: 10, paddingVertical: 5, borderRadius: 4, backgroundColor: playlistType === 'local' ? theme['c-button-background-active'] : theme['c-button-background'] }}>
+            <Button onPress={() => { handlePlaylistTypeChange('local') }} style={{ paddingHorizontal: 10, paddingVertical: 5, borderRadius: 4, backgroundColor: playlistType === 'local' ? applyOpacity(theme['c-button-background-active'], buttonOpacity) : applyOpacity(theme['c-button-background'], buttonOpacity) }}>
               <Text color={theme['c-button-font']}>本地歌单</Text>
             </Button>
-            <Button onPress={() => { handlePlaylistTypeChange('wy') }} style={{ paddingHorizontal: 10, paddingVertical: 5, borderRadius: 4, backgroundColor: playlistType === 'wy' ? theme['c-button-background-active'] : theme['c-button-background'] }}>
+            <Button onPress={() => { handlePlaylistTypeChange('wy') }} style={{ paddingHorizontal: 10, paddingVertical: 5, borderRadius: 4, backgroundColor: playlistType === 'wy' ? applyOpacity(theme['c-button-background-active'], buttonOpacity) : applyOpacity(theme['c-button-background'], buttonOpacity) }}>
               <Text color={theme['c-button-font']}>网易歌单</Text>
             </Button>
-            <Button onPress={() => { handlePlaylistTypeChange('tx') }} style={{ paddingHorizontal: 10, paddingVertical: 5, borderRadius: 4, backgroundColor: playlistType === 'tx' ? theme['c-button-background-active'] : theme['c-button-background'] }}>
+            <Button onPress={() => { handlePlaylistTypeChange('tx') }} style={{ paddingHorizontal: 10, paddingVertical: 5, borderRadius: 4, backgroundColor: playlistType === 'tx' ? applyOpacity(theme['c-button-background-active'], buttonOpacity) : applyOpacity(theme['c-button-background'], buttonOpacity) }}>
               <Text color={theme['c-button-font']}>QQ歌单</Text>
             </Button>
-            <Button onPress={() => { handlePlaylistTypeChange('kg') }} style={{ paddingHorizontal: 10, paddingVertical: 5, borderRadius: 4, backgroundColor: playlistType === 'kg' ? theme['c-button-background-active'] : theme['c-button-background'] }}>
+            <Button onPress={() => { handlePlaylistTypeChange('kg') }} style={{ paddingHorizontal: 10, paddingVertical: 5, borderRadius: 4, backgroundColor: playlistType === 'kg' ? applyOpacity(theme['c-button-background-active'], buttonOpacity) : applyOpacity(theme['c-button-background'], buttonOpacity) }}>
               <Text color={theme['c-button-font']}>酷狗歌单</Text>
             </Button>
           </View>

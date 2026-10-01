@@ -3,10 +3,12 @@ import { View, StyleSheet, TouchableOpacity } from 'react-native'
 import Modal, { type ModalType } from '@/components/common/Modal'
 import WebView, { type WebViewNavigation } from 'react-native-webview'
 import { useTheme } from '@/store/theme/hook'
+import { useSettingValue } from '@/store/setting/hook'
 import { useStatusbarHeight } from '@/store/common/hook'
 import { Icon } from '@/components/common/Icon'
 import Text from '@/components/common/Text'
 import { toast } from '@/utils/tools'
+import { applyOpacity } from '@/utils/colorOpacity'
 import wyApi from '@/utils/musicSdk/wy/user'
 import CookieManager from '@react-native-cookies/cookies'
 import { designRadius, designSpacing, designTypography } from '@/theme/DesignTokens'
@@ -50,6 +52,7 @@ export default forwardRef<WebLoginModalType, {}>((props, ref) => {
   const isCheckingRef = useRef(false)
   const pollingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const theme = useTheme()
+  const buttonOpacity = useSettingValue('theme.buttonOpacity')
 
   const stopPolling = useCallback(() => {
     if (pollingIntervalRef.current) {
@@ -249,7 +252,10 @@ export default forwardRef<WebLoginModalType, {}>((props, ref) => {
           <Text size={13} color={theme['c-font-label']}>若登录完成后未自动获取 Cookie，请点击下方按钮</Text>
           <TouchableOpacity
             onPress={handleManualGetCookie}
-            style={[styles.getCookieBtn, { backgroundColor: theme['c-primary'] }]}
+            style={[styles.getCookieBtn, {
+              // 按钮底面随「按钮透明度」淡出；只改颜色 alpha，不用容器 opacity
+              backgroundColor: applyOpacity(theme['c-primary'], buttonOpacity),
+            }]}
             activeOpacity={0.8}
           >
             <Text size={designTypography.body} color={theme['c-000']}>获取Cookie</Text>

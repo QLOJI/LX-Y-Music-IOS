@@ -7,6 +7,8 @@ import ListItem, { styles as listStyles } from './ListItem'
 import CreateUserList from './CreateUserList'
 import { useWindowSize, useHorizontalMode } from '@/utils/hooks'
 import { useTheme } from '@/store/theme/hook'
+import { useSettingValue } from '@/store/setting/hook'
+import { applyOpacity } from '@/utils/colorOpacity'
 import { useI18n } from '@/lang'
 import { createStyle } from '@/utils/tools'
 import { scaleSizeW, scaleSizeH } from '@/utils/pixelRatio'
@@ -35,6 +37,7 @@ const PADDING = styles.list.paddingLeft + styles.list.paddingRight
 const EditListItem = ({ itemWidth, playlistType }: { itemWidth: number, playlistType: 'local' | 'online' }) => {
   const [isEdit, setEdit] = useState(false)
   const theme = useTheme()
+  const buttonOpacity = useSettingValue('theme.buttonOpacity')
   const t = useI18n()
 
   return (
@@ -42,7 +45,9 @@ const EditListItem = ({ itemWidth, playlistType }: { itemWidth: number, playlist
       <TouchableOpacity
         style={{
           ...listStyles.button,
-          borderColor: theme['c-primary-light-200-alpha-700'],
+          // 「新建歌单」虚线边框是该按钮唯一可见表面：随「按钮透明度」淡出，
+          // 0 时只剩文字（与 SoundEffectControl 的虚线「+」按钮口径一致）。
+          borderColor: applyOpacity(theme['c-primary-light-200-alpha-700'], buttonOpacity),
           borderStyle: 'dashed',
         }}
         onPress={() => {

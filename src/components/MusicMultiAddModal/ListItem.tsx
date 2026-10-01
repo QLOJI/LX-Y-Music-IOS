@@ -4,6 +4,8 @@ import Text from '@/components/common/Text'
 import { BorderWidths } from '@/theme'
 import { createStyle } from '@/utils/tools'
 import { useTheme } from '@/store/theme/hook'
+import { useSettingValue } from '@/store/setting/hook'
+import { applyOpacity } from '@/utils/colorOpacity'
 
 export default ({
   listInfo,
@@ -15,6 +17,7 @@ export default ({
   width: number
 }) => {
   const theme = useTheme()
+  const buttonOpacity = useSettingValue('theme.buttonOpacity')
 
   const handlePress = () => {
     onPress(listInfo)
@@ -25,8 +28,9 @@ export default ({
       <Button
         style={{
           ...styles.button,
-          backgroundColor: theme['c-button-background'],
-          borderColor: theme['c-primary-light-200-alpha-700'],
+          // 按钮底色/边框随「按钮透明度」淡出，文字色不动；只改颜色 alpha，不用容器 style.opacity
+          backgroundColor: applyOpacity(theme['c-button-background'], buttonOpacity),
+          borderColor: applyOpacity(theme['c-primary-light-200-alpha-700'], buttonOpacity),
         }}
         onPress={handlePress}
       >

@@ -51,12 +51,23 @@ export default memo(
     // iPhone 系统层面仅支持竖屏（Info.plist 只声明 Portrait），iPad 支持竖屏 + 左右横屏，
     // 因此旋转会改变窗口尺寸。这里在每次尺寸变化时重新向原生侧取一次，
     // 避免旋转后底部弹层沿用旧值。
+    // 安全区兜底放行（2026-10-01）：底部悬浮层会等 safeAreaReady 才下发（见
+    // useSafeAreaReady）。原生 getSafeAreaInsets 万一不回调，这里 250ms 后按当前值
+    // 放行一次——绝不允许「原生卡住 → 底部 tab 栏永远不出现」这种致命降级。
+    const safeAreaFallbackRef = useRef<ReturnType<typeof setTimeout> | null>(null)
     const syncSafeAreaBottom = useCallback(() => {
       void getSafeAreaInsets().then(({ bottom }) => {
+        if (safeAreaFallbackRef.current) {
+          clearTimeout(safeAreaFallbackRef.current)
+          safeAreaFallbackRef.current = null
+        }
         if (currentSafeAreaBottomRef.current != bottom) {
           currentSafeAreaBottomRef.current = bottom
           setSafeAreaBottom(bottom)
         }
+        // 同值也要过 setSafeAreaBottom：首帧同步命中的就是兜底值 0 的机型
+        // （带 Home 键的 iPad / iPhone SE），需要它把「已知安全区」标记打上
+        else setSafeAreaBottom(bottom)
       })
     }, [])
 
@@ -91,6 +102,10 @@ export default memo(
       if (Platform.OS === 'ios') syncIosStatusbarHeight()
       // 首帧同步一次底部安全区，供底部弹层 / 列表避让 Home 指示器
       syncSafeAreaBottom()
+      safeAreaFallbackRef.current = setTimeout(() => {
+        safeAreaFallbackRef.current = null
+        setSafeAreaBottom(commonState.safeAreaBottom)
+      }, 250)
 
       // 兜底：Modal/Dialog 覆盖期间设备旋转或分屏时，底层 SizeView 的 onLayout 可能不触发，
       // 导致 windowSizeTools.size 停留在旧尺寸、横屏被卡成竖屏 sidebar。用 Dimensions 事件再同步一次。
@@ -100,7 +115,13 @@ export default memo(
           windowSizeTools.setWindowSize(size.width, size.height)
         })
       })
-      return () => { sub?.remove() }
+      return () => {
+        sub?.remove()
+        if (safeAreaFallbackRef.current) {
+          clearTimeout(safeAreaFallbackRef.current)
+          safeAreaFallbackRef.current = null
+        }
+      }
     }, [syncSafeAreaBottom])
     return <View style={StyleSheet.absoluteFill} onLayout={handleLayout} />
   },

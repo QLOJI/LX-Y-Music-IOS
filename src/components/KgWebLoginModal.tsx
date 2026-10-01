@@ -3,10 +3,12 @@ import { View, StyleSheet, TouchableOpacity, TextInput, ScrollView, Modal as RNM
 import WebView from 'react-native-webview'
 import Modal, { type ModalType } from '@/components/common/Modal'
 import { useTheme } from '@/store/theme/hook'
+import { useSettingValue } from '@/store/setting/hook'
 import { useStatusbarHeight } from '@/store/common/hook'
 import { Icon } from '@/components/common/Icon'
 import Text from '@/components/common/Text'
 import { toast } from '@/utils/tools'
+import { applyOpacity } from '@/utils/colorOpacity'
 import { sendCaptcha, loginByPhone, buildCookieString, getVerifyInfo, verifyUserInfo } from '@/utils/musicSdk/kg/utils/api'
 
 export interface KgWebLoginModalType { show: () => void }
@@ -26,6 +28,7 @@ document.head.appendChild(s);</script></body></html>`
 const KgWebLoginModal = forwardRef<KgWebLoginModalType, object>((_, ref) => {
   const modalRef = useRef<ModalType>(null)
   const theme = useTheme()
+  const buttonOpacity = useSettingValue('theme.buttonOpacity')
   const [phone, setPhone] = useState('')
   const [code, setCode] = useState('')
   const [sending, setSending] = useState(false)
@@ -153,7 +156,10 @@ const KgWebLoginModal = forwardRef<KgWebLoginModalType, object>((_, ref) => {
               <Text size={14} color={countdown > 0 || cooldown > 0 ? theme['c-font-label'] : '#1677ff'}>{countdown > 0 ? `${countdown}s` : sending ? '发送中...' : cooldown > 0 ? '请稍候' : '获取验证码'}</Text>
             </TouchableOpacity>
           </View>
-          <TouchableOpacity style={[styles.loginBtn, { backgroundColor: logging ? (theme as any)['c-border'] : '#1677ff' }]} onPress={handleLogin} disabled={logging}>
+          <TouchableOpacity style={[styles.loginBtn, {
+            // 登录按钮底色随「按钮透明度」淡出；文字色不动（logging 态用的 c-border 主题里无此键、运行时为 undefined，保持原样）
+            backgroundColor: logging ? (theme as any)['c-border'] : applyOpacity('#1677ff', buttonOpacity),
+          }]} onPress={handleLogin} disabled={logging}>
             <Text size={16} color="#fff">{logging ? '登录中...' : '登录'}</Text>
           </TouchableOpacity>
           <Text size={12} color={theme['c-font-label']} style={styles.smsTip}>手机号仅用于酷狗音乐官方发送验证码与登录接口，不予保存；{'\n'}本地仅存储登录凭证。</Text>
@@ -179,7 +185,11 @@ const KgWebLoginModal = forwardRef<KgWebLoginModalType, object>((_, ref) => {
                 <View style={[styles.idInput, { borderBottomColor: (theme as any)['c-border'] }]}>
                   <TextInput style={[styles.idInputText, { color: theme['c-font'] }]} placeholder="请输入您要登录的酷狗ID" placeholderTextColor={theme['c-font-label']} value={selectedId} onChangeText={setSelectedId} keyboardType="number-pad" autoFocus />
                 </View>
-                <TouchableOpacity style={[styles.modalBtn, { backgroundColor: '#1677ff', marginTop: 20 }]} onPress={async() => handleMultiLogin(selectedId)} disabled={!selectedId.trim()} activeOpacity={0.8}>
+                <TouchableOpacity style={[styles.modalBtn, {
+                  // 按钮底色随「按钮透明度」淡出；文字色不动
+                  backgroundColor: applyOpacity('#1677ff', buttonOpacity),
+                  marginTop: 20,
+                }]} onPress={async() => handleMultiLogin(selectedId)} disabled={!selectedId.trim()} activeOpacity={0.8}>
                   <Text size={16} color="#fff">确定登录</Text>
                 </TouchableOpacity>
                 <TouchableOpacity style={[styles.modalBtn, { backgroundColor: (theme as any)['c-border'], marginTop: 10 }]} onPress={() => { setShowMultiAccount(false); setPendingData(null); setSelectedId('') }} activeOpacity={0.8}>

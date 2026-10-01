@@ -13,7 +13,7 @@ import { useSettingValue } from '@/store/setting/hook'
 import { navigations } from '@/navigation'
 import { PLAY_DETAIL_SCREEN } from '@/navigation/screenNames'
 import commonState from '@/store/common/state'
-import { useSafeAreaBottom, useScreenCovered } from '@/store/common/hook'
+import { useSafeAreaBottom, useScreenCovered, useSafeAreaReady, useNavTransitioning } from '@/store/common/hook'
 import { usePlayerMusicInfo } from '@/store/player/hook'
 import {
   designRadius,
@@ -29,6 +29,14 @@ export default memo(({ componentId, isHome = false }: { componentId?: string, is
   // PlayerBar 多屏复用（Home / 专辑页 / 歌手页…），按各自 componentId 判定；
   // 调用方未传 componentId 时恒不门控（行为同旧版）。
   const screenCovered = useScreenCovered(componentId)
+  // 转场门（2026-10-01）：整段 push/pop 转场期间也暂停玻璃——省电门只看账本，
+  // 盖不住转场本身（转场中间态被采进胶囊 = 每次切换画面闪一下），见
+  // navigation.beginNavTransitionWindow。
+  const navTransitioning = useNavTransitioning()
+  // 安全区就绪门（仅首页实例用得上，见下方 return）：首页播放器的底边 =
+  // 安全区 + 底缝 + Tab 栏高 + 滑块距离，安全区没回来之前不下发，
+  // 否则先用 0 画出来、再跳到 34pt = 「启动时抽动」。
+  const safeAreaReady = useSafeAreaReady()
   const { keyboardShown } = useKeyboard()
   const isHorizontalMode = useHorizontalMode()
   const theme = useTheme()
@@ -154,7 +162,7 @@ export default memo(({ componentId, isHome = false }: { componentId?: string, is
               setMiniPlayerHeight(e.nativeEvent.layout.height)
             }}
           >
-            <LiquidGlass glassOpacity={glassOpacity} dark={theme.isDark} liquid={liquidGlassOn} paused={screenCovered} style={{ borderRadius: designRadius.glass }} />
+            <LiquidGlass glassOpacity={glassOpacity} dark={theme.isDark} liquid={liquidGlassOn} paused={screenCovered || navTransitioning} style={{ borderRadius: designRadius.glass }} />
             <TouchableOpacity style={styles.left} onPress={handleNavigate} activeOpacity={0.8}>
               <Pic />
               <View style={styles.center}>
@@ -169,8 +177,13 @@ export default memo(({ componentId, isHome = false }: { componentId?: string, is
         </Animated.View>
       )
     },
-    [glassOpacity, liquidGlassOn, screenCovered, theme.isDark, isHome, handleNavigate, safeAreaBottom, isHorizontalMode, collapseAnim, pillSize, collapsedRow, tabBarDistance, tabBarCollapsed],
+    [glassOpacity, liquidGlassOn, screenCovered, navTransitioning, theme.isDark, isHome, handleNavigate, safeAreaBottom, isHorizontalMode, collapseAnim, pillSize, collapsedRow, tabBarDistance, tabBarCollapsed],
   )
+
+  // 首页实例在安全区就绪前不下发（见 useSafeAreaReady）：它的 bottom 含 safeAreaBottom，
+  // 先用 0 画、再跳到 34pt 就是「启动时迷你播放器抽动」。专辑页/歌手页等实例的 bottom
+  // 不含安全区（bottomFloatGap 裸值），不受影响、也不需要等。
+  if (isHome && !safeAreaReady) return null
 
   return keyboardShown ? null : playerComponent
 })

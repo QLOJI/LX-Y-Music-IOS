@@ -2,7 +2,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Animated, Easing, PanResponder, Pressable, StyleSheet, View, type LayoutChangeEvent } from 'react-native'
 import { useTheme } from '@/store/theme/hook'
 import { useI18n } from '@/lang'
-import { useNavActiveId, useHomeCovered } from '@/store/common/hook'
+import { useNavActiveId, useHomeCovered, useSafeAreaReady, useNavTransitioning } from '@/store/common/hook'
 import { setNavActiveId } from '@/core/common'
 import { useSettingValue } from '@/store/setting/hook'
 import { createStyle, isIOS26_2OrAbove } from '@/utils/tools'
@@ -180,6 +180,13 @@ export default memo(() => {
   // 省电门：Home 被压栈页（播放详情等）完全覆盖时暂停玻璃的 Metal 渲染循环
   // （不可见期间零逐帧 draw；返回 Home 即恢复，原生重捕获背景无残帧）
   const homeCovered = useHomeCovered()
+  // 转场门（2026-10-01）：整段 push/pop 转场期间同样暂停——账本驱动的省电门盖不住
+  // 转场本身（push 时新页 setComponentId 晚于转场开始、pop 事件早于转场结束），
+  // 转场中间态被采进玻璃就是「每次切换画面闪一下」。见 navigation.beginNavTransitionWindow。
+  const navTransitioning = useNavTransitioning()
+  // 安全区就绪门：底部安全区（bottom 的唯一来源）拿到真实值之前不下发，
+  // 否则先用 0 画、再跳到 34pt = 「启动时底部抽动」。见 useSafeAreaReady。
+  const safeAreaReady = useSafeAreaReady()
 
   // 收起形态（iOS 26 风格）：歌曲列表滚动离开顶部 → 整条 tab 栏收成左下角
   // 圆形玻璃按钮（宫格图标）；点击按钮弹出，保持展开直到下一次滚动离开顶部。
@@ -247,6 +254,13 @@ export default memo(() => {
   const draggingRef = useRef(false)
   const dragStartLensXRef = useRef(0)
   const lastDragCenterXRef = useRef(0)
+  // B-7 跟手会话的收尾重锚（2026-10-01，修「松手后药丸停在半路」）：横滑跟手期间
+  // 药丸位置**只**由 setFollowX 命令式驱动，React 侧的激活 tab 若没变，重渲染时
+  // x prop 与上一次完全相同 → React 不会重新下发原生 prop → 透镜的静止位就停在手指
+  // 离开的那一帧（用户看到「椭圆没和推荐/歌单/搜索/我的/设置对齐」）。手指松开
+  //（pager 'idle'）时用最后写入的 follow 值判定「本次会话是否驱动过药丸」，
+  // 驱动过就在收尾前补一次 setFollowX 锚回当前槽心。值 < 0 = 本次会话没驱动过。
+  const lastFollowXRef = useRef(-1)
   // A-5 会话看门狗（P0 加固，2026-10-01）：拖动锁 emitTabBarDragActive(true) 只在
   // release / terminate / 卸载三处解除。一旦某次会话收不到收尾事件（系统手势抢占、
   // 原生子视图被回收、页面在拖动中被压栈覆盖…），Main 的 pagerScrollEnabled 会被
@@ -267,6 +281,22 @@ export default memo(() => {
     resolvedActiveIdRef.current = resolvedActiveId
   })
 
+  // B-7 会话收尾重锚：把药丸锚回「当前归属 tab 的槽心」。
+  // 目标取 lensXRef.current（由 resolvedActiveId 推导的静止槽心，唯一真源）而不是
+  // 「按最后跟手位置四舍五入」——后者在「拖动中途松手、pager 自己弹回原页」与
+  // 「松手后惯性翻页、状态提交晚于 idle」两种时序下都会算错槽。取静止槽心则：
+  //   正常跟手 → 最后一帧本来就在槽心（pager 的 scroll 事件一路发到落点），值相同，
+  //              LiquidLens 内部 0.1pt 去重直接吞掉，零原生写入；
+  //   中途松手 → 锚回原槽，正好是「弹回原页」的正确落点；
+  //   惯性翻页 → 先锚回旧槽（不显示错误中间态），随即 x prop 变化触发弹簧走到新槽。
+  // 只在本次会话真的驱动过药丸（lastFollowXRef ≥ 0）时执行：点击切页路径没有 follow
+  // 写入，此时补写会走 setFollowX 的 removeAllAnimations 分支，把弹簧动画打断成瞬移。
+  const snapLensToRestingSlot = useCallback(() => {
+    if (lastFollowXRef.current < 0) return
+    lastFollowXRef.current = -1
+    lensRef.current?.setFollowX(lensXRef.current)
+  }, [])
+
   // Main → TabBar：PagerView 手势进度（仅真实手势会话内发出，见 Main 的
   // pagerDragSessionRef）。position/offset 的约定取「position + offset」这个两种
   // 原生约定（floor+unsigned / round+signed）下都成立的连续进度，再夹到 [0, 4]。
@@ -280,7 +310,9 @@ export default memo(() => {
     if (width <= 0) return
     const slot = width / TAB_IDS.length
     const progress = Math.min(Math.max(position + offset, 0), TAB_IDS.length - 1)
-    lensRef.current?.setFollowX((progress + 0.5) * slot)
+    const followX = (progress + 0.5) * slot
+    lastFollowXRef.current = followX
+    lensRef.current?.setFollowX(followX)
   }), [])
 
   // Main → TabBar：手势会话开始/结束（抬起/放下透镜；结束时会话收尾）
@@ -290,8 +322,14 @@ export default memo(() => {
     // finishTabDrag 里落），不会因此卡在抬起态。
     if (dragArmedRef.current || draggingRef.current) return
     lensRef.current?.setLifted(dragging)
-    if (!dragging) lensRef.current?.endFollow()
-  }), [])
+    if (!dragging) {
+      // 收尾重锚必须在 endFollow() 之前：endFollow 会把 LiquidLens 的跟手去重值复位，
+      // 之后任何 setFollowX 都必定写一次原生（含 removeAllAnimations）。先锚则正常
+      // 情况下被去重吞掉，只有真的停在半路（值不同）才写。
+      snapLensToRestingSlot()
+      lensRef.current?.endFollow()
+    }
+  }), [snapLensToRestingSlot])
 
   // A-5：长按某个 tab → arm 拖动（透镜抬起，等待手指移动接管）。
   // 边界：收起态 / 液态玻璃关闭 / iOS 26.2+（透镜不渲染）→ 不 arm，长按无效果。
@@ -300,6 +338,9 @@ export default memo(() => {
     pressedTabIdRef.current = id
     if (!lensReadyRef.current) return
     dragArmedRef.current = true
+    // A-5 接管跟手通道：作废 B-7 留下的「会话驱动过药丸」标记，避免它被下一次
+    // pager 收尾误消费（A-5 的落点由 finishTabDrag 自己显式锚定）。
+    lastFollowXRef.current = -1
     lensRef.current?.setLifted(true)
     // arm 看门狗：只 arm 不接管（抬手被系统手势吃掉 / 抬手事件丢失）时自动解除，
     // 否则下一次触摸在栏体上滑动会被 PanResponder 当成拖动接管，连点击都受影响
@@ -447,6 +488,11 @@ export default memo(() => {
     if (pressOutTimerRef.current) { clearTimeout(pressOutTimerRef.current); pressOutTimerRef.current = null }
   }, [])
 
+  // 安全区未就绪前整条栏不下发（见 useSafeAreaReady）：本栏（含收起圆钮）的底边
+  // 完全由 safeAreaBottom 决定，先用 0 画出来再跳到 34pt 就是「启动时抽动」。
+  // 放在所有 hook 之后（前面的订阅/看门狗必须照常挂上，否则栏一出现就少一层兜底）。
+  if (!safeAreaReady) return null
+
   return (
     <>
       {/* 展开态整条 tab 栏与收起态圆钮分属两个**同级的绝对容器**，两者 left/right/
@@ -484,7 +530,7 @@ export default memo(() => {
           {/* 省电门扩展（C9 发热）：本栏在收起态是**完全不可见**的（opacity 0 + 下移 28），
               却仍在跑 Metal 逐帧渲染 —— 收起态是长时间驻留状态（只要列表不停在顶部），
               这是纯白烧的电。可见性一并纳入门控。 */}
-          <LiquidGlass glassOpacity={glassOpacity} dark={theme.isDark} liquid={liquidGlassOn} paused={homeCovered || collapsed} style={{ borderRadius: designRadius.glass }} />
+          <LiquidGlass glassOpacity={glassOpacity} dark={theme.isDark} liquid={liquidGlassOn} paused={homeCovered || collapsed || navTransitioning} style={{ borderRadius: designRadius.glass }} />
           {/* 液态透镜药丸（tab 切换动画）：玻璃之上、tab 内容之下；快速点击走
               Pressable 切页（x prop 弹簧），横滑跟手 / 长按拖动走 ref 命令式
               followX（同一套通道，见组件上部注释） */}
@@ -564,7 +610,7 @@ export default memo(() => {
           pointerEvents={collapsed ? 'auto' : 'none'}
         >
           {/* 同上：圆钮在展开态完全不可见（opacity 0 + scale 0.5），可见性纳入省电门 */}
-          <LiquidGlass glassOpacity={glassOpacity} dark={theme.isDark} liquid={liquidGlassOn} paused={homeCovered || !collapsed} style={{ borderRadius: designRadius.pill }} />
+          <LiquidGlass glassOpacity={glassOpacity} dark={theme.isDark} liquid={liquidGlassOn} paused={homeCovered || !collapsed || navTransitioning} style={{ borderRadius: designRadius.pill }} />
           <Pressable style={styles.pillInner} onPress={handlePillPress}>
             <View style={styles.pillIcon} pointerEvents="none">
               <Icon name="menu" size={20} color={theme['c-primary']} />

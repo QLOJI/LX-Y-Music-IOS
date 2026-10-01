@@ -2,6 +2,8 @@ import { memo } from 'react'
 
 import { StyleSheet, View } from 'react-native'
 import { useTheme } from '@/store/theme/hook'
+import { useSettingValue } from '@/store/setting/hook'
+import { applyOpacity } from '@/utils/colorOpacity'
 import Text from '@/components/common/Text'
 import ButtonPrimary from '@/components/common/ButtonPrimary'
 import { useI18n } from '@/lang'
@@ -21,6 +23,8 @@ const parsePath = (fileName: string) => {
 
 export default memo(({ fileName, onNameChanged, onSingerChanged }: ParseNameProps) => {
   const theme = useTheme()
+  // 按钮底面随「按钮透明度」设置淡出；只改颜色 alpha，不用容器 style.opacity，否则按钮文字会一起变淡
+  const buttonOpacity = useSettingValue('theme.buttonOpacity')
   const t = useI18n()
   const handleParseNameSinger = () => {
     const [name, singer] = parsePath(fileName)
@@ -39,7 +43,8 @@ export default memo(({ fileName, onNameChanged, onSingerChanged }: ParseNameProp
       </Text>
       <View style={styles.btns}>
         <ButtonPrimary
-          style={{ backgroundColor: theme['c-button-background'] }}
+          // 按钮底色随「按钮透明度」设置淡出；只改颜色 alpha，文字色不动
+          style={{ backgroundColor: applyOpacity(theme['c-button-background'], buttonOpacity) }}
           onPress={handleParseNameSinger}
         >
           <Text color={theme['c-button-font']} size={13}>
@@ -47,7 +52,8 @@ export default memo(({ fileName, onNameChanged, onSingerChanged }: ParseNameProp
           </Text>
         </ButtonPrimary>
         <ButtonPrimary
-          style={{ backgroundColor: theme['c-button-background'] }}
+          // 按钮底色随「按钮透明度」设置淡出；只改颜色 alpha，文字色不动
+          style={{ backgroundColor: applyOpacity(theme['c-button-background'], buttonOpacity) }}
           onPress={handleParseSingerName}
         >
           <Text color={theme['c-button-font']} size={13}>

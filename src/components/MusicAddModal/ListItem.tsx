@@ -4,7 +4,9 @@ import Text from '@/components/common/Text'
 import { BorderWidths } from '@/theme'
 import { createStyle, toast } from '@/utils/tools'
 import { useTheme } from '@/store/theme/hook'
+import { useSettingValue } from '@/store/setting/hook'
 import { useMusicExistsList } from '@/store/list/hook'
+import { applyOpacity } from '@/utils/colorOpacity'
 
 export default ({
   listInfo,
@@ -18,6 +20,7 @@ export default ({
   width: number
 }) => {
   const theme = useTheme()
+  const buttonOpacity = useSettingValue('theme.buttonOpacity')
   const isExists = useMusicExistsList(listInfo, musicInfo)
 
   const handlePress = () => {
@@ -33,8 +36,9 @@ export default ({
       <Button
         style={{
           ...styles.button,
-          backgroundColor: theme['c-button-background'],
-          borderColor: theme['c-primary-light-400-alpha-300'],
+          // 按钮底面/边框随「按钮透明度」淡出（只改颜色 alpha，不用容器 opacity，否则文字会一起变淡）
+          backgroundColor: applyOpacity(theme['c-button-background'], buttonOpacity),
+          borderColor: applyOpacity(theme['c-primary-light-400-alpha-300'], buttonOpacity),
           opacity: isExists ? 0.4 : 1,
         }}
         onPress={handlePress}

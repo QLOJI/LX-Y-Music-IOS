@@ -1,8 +1,10 @@
 import { TouchableOpacity } from 'react-native'
 import { Icon } from '@/components/common/Icon'
 import { useIsPlay } from '@/store/player/hook'
+import { useSettingValue } from '@/store/setting/hook'
 import { useTheme } from '@/store/theme/hook'
 import { playNext, playPrev, togglePlay } from '@/core/player/player'
+import { applyOpacity } from '@/utils/colorOpacity'
 import { createStyle } from '@/utils/tools'
 import { useHorizontalMode } from '@/utils/hooks'
 
@@ -37,10 +39,12 @@ const PlayNextBtn = () => {
 const TogglePlayBtn = () => {
   const isPlay = useIsPlay()
   const theme = useTheme()
+  const buttonOpacity = useSettingValue('theme.buttonOpacity')
 
   return (
     <TouchableOpacity
-      style={{ ...styles.cotrolBtn, ...styles.playButton, backgroundColor: theme['c-primary'] }}
+      // 按钮底色随「按钮透明度」淡出
+      style={{ ...styles.cotrolBtn, ...styles.playButton, backgroundColor: applyOpacity(theme['c-primary'], buttonOpacity) }}
       activeOpacity={0.5}
       onPress={togglePlay}
     >

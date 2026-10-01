@@ -5,8 +5,10 @@ import Badge, { type BadgeType } from '@/components/common/Badge'
 import { Icon } from '@/components/common/Icon'
 import { useI18n } from '@/lang'
 import { useTheme } from '@/store/theme/hook'
+import { useSettingValue } from '@/store/setting/hook'
 import settingState from '@/store/setting/state'
 import { scaleSizeH } from '@/utils/pixelRatio'
+import { applyOpacity } from '@/utils/colorOpacity'
 import { LIST_ITEM_HEIGHT } from '@/config/constant'
 import { createStyle, type RowInfo } from '@/utils/tools'
 import { designRadius, designSpacing, designTypography } from '@/theme/DesignTokens'
@@ -102,6 +104,7 @@ export default memo(
     hideMenu?: boolean
   }) => {
     const theme = useTheme()
+    const buttonOpacity = useSettingValue('theme.buttonOpacity')
     const isPlaying = playingId === item.id
     const isSelected = selectedList.includes(item)
     const coverUrl = useCoverUrl(item)
@@ -151,7 +154,8 @@ export default memo(
           ...styles.listItem,
           width: rowInfo.rowWidth,
           height: ITEM_HEIGHT,
-          backgroundColor: isPlaying || isSelected ? theme['c-primary-background-hover'] : 'rgba(0,0,0,0)',
+          // 播放中/选中的行高亮底色：只改颜色 alpha 随「按钮透明度」淡出，不用容器 opacity——否则文字图标会一起变淡
+          backgroundColor: isPlaying || isSelected ? applyOpacity(theme['c-primary-background-hover'], buttonOpacity) : 'rgba(0,0,0,0)',
         }}
       >
         <TouchableOpacity

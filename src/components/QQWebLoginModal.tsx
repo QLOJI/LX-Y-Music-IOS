@@ -3,6 +3,8 @@ import { View, StyleSheet, TouchableOpacity, Animated } from 'react-native'
 import Modal, { type ModalType } from '@/components/common/Modal'
 import WebView, { type WebViewNavigation } from 'react-native-webview'
 import { useTheme } from '@/store/theme/hook'
+import { useSettingValue } from '@/store/setting/hook'
+import { applyOpacity } from '@/utils/colorOpacity'
 import { useStatusbarHeight } from '@/store/common/hook'
 import { Icon } from '@/components/common/Icon'
 import Text from '@/components/common/Text'
@@ -19,6 +21,7 @@ export interface QQWebLoginModalType {
 const Header = ({ onClose, onLogout }: { onClose: () => void, onLogout: () => void }) => {
   const theme = useTheme()
   const statusBarHeight = useStatusbarHeight()
+  const buttonOpacity = useSettingValue('theme.buttonOpacity')
 
   return (
     <View
@@ -36,7 +39,15 @@ const Header = ({ onClose, onLogout }: { onClose: () => void, onLogout: () => vo
         <Icon name="chevron-left" size={26} color={theme['c-font']} />
       </TouchableOpacity>
       <Text size={designTypography.title}>QQ音乐登录</Text>
-      <TouchableOpacity onPress={onLogout} style={styles.logoutButton} activeOpacity={0.8}>
+      <TouchableOpacity
+        onPress={onLogout}
+        style={[
+          styles.logoutButton,
+          // 按钮底面随「按钮透明度」淡出，只改颜色 alpha，文字/图标色不动
+          { backgroundColor: applyOpacity('#ff6b6b', buttonOpacity) },
+        ]}
+        activeOpacity={0.8}
+      >
         <Icon name="exit" size={14} color="#ffffff" />
         <Text size={14} color="#ffffff">退出登录</Text>
       </TouchableOpacity>
@@ -81,6 +92,7 @@ const QQWebLoginModal = forwardRef<QQWebLoginModalType, object>((props, ref) => 
   const modalRef = useRef<ModalType>(null)
   const webViewRef = useRef<any>(null)
   const theme = useTheme()
+  const buttonOpacity = useSettingValue('theme.buttonOpacity')
   const [isLoading, setIsLoading] = useState(true)
 
   useImperativeHandle(ref, () => ({
@@ -175,7 +187,11 @@ const QQWebLoginModal = forwardRef<QQWebLoginModalType, object>((props, ref) => 
           </View>
           <TouchableOpacity
             onPress={handleGetCookie}
-            style={[styles.getCookieBtn, { backgroundColor: theme['c-primary'] }]}
+            style={[
+              styles.getCookieBtn,
+              // 按钮底面随「按钮透明度」淡出，只改颜色 alpha，文字色不动
+              { backgroundColor: applyOpacity(theme['c-primary'], buttonOpacity) },
+            ]}
             activeOpacity={0.8}
           >
             <Text size={designTypography.body} color={theme['c-000']}>获取Cookie</Text>
@@ -214,7 +230,6 @@ const styles = StyleSheet.create({
     gap: 4,
     height: 32,
     paddingHorizontal: designSpacing.sm,
-    backgroundColor: '#ff6b6b',
     borderRadius: designRadius.pill,
   },
   webViewContainer: {
