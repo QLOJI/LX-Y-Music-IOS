@@ -183,27 +183,36 @@ const KgDailyRecPage = () => (
   useHomeLazyPage('nav_kg_daily_rec', () => <KgDailyRec />)
 )
 
-const SettingPage = () => {
-  const [visible, setVisible] = useState(commonState.navActiveId == 'nav_setting')
-  const component = useMemo(() => <Setting />, [])
-  useEffect(() => {
-    const handleNavIdUpdate = (id: CommonState['navActiveId']) => {
-      if (id == 'nav_setting') {
-        requestAnimationFrame(() => {
-          setVisible(true)
-        })
-      } else {
-        setVisible(false)
-      }
-    }
-    global.state_event.on('navActiveIdUpdated', handleNavIdUpdate)
+// 设置页的预挂载触发页：设置是 TAB_PAGE_IDS 固定序里的最后一页（它右边没有别的页），
+// 唯一能横滑进它的就是左邻「我的」（nav_love），所以停在「我的」页时就把设置页挂上。
+// 必须模块级常量：useHomeLazyPage 的订阅依赖它保持引用稳定。
+const SETTING_PRELOAD_NAV_IDS = ['nav_love'] as const
 
-    return () => {
-      global.state_event.off('navActiveIdUpdated', handleNavIdUpdate)
-    }
-  }, [])
-  return visible ? component : null
-}
+/**
+ * 设置页（tab pager 最后一页）。
+ *
+ * 2026-10-01 修复「从我的页右滑到设置页时出现短暂空白页，与其他页滑动效果不同」：
+ * 旧实现是「离开即卸载」（id != nav_setting 就 setVisible(false)），而挂载又要等到
+ * navActiveId 变成 nav_setting + 一帧 rAF。但横滑过程中 navActiveId 要等 pager 落定
+ * （onPageSelected）才更新，此时设置页早就被拖进视野了 —— 于是拖动全程是一片空白，
+ * 松手后才刷出内容；而相邻的其他 tab 页（搜索/我的）都是「访问过即常驻」，拖动时内容
+ * 一直都在，这就是「与其他页滑动效果不同」的来源。
+ *
+ * 修法与 useHomeLazyPage 的既定取舍一致（惰性挂载 + 访问过即常驻），只把挂载时机提前到
+ * **邻居页激活时**（见 SETTING_PRELOAD_NAV_IDS）。顺带解决「我的 → 设置 → 我的 → 设置」
+ * 每次都要重来一遍挂载窗口的问题：常驻后不会再卸载。
+ * 设置页本体只有 10 个分类按钮 + 一个 ScrollView，常驻开销可忽略；它内部的
+ * useBackHandler 自带 `navActiveId == 'nav_setting'` 判定，常驻时不会抢返回键。
+ */
+const SettingPage = () => (
+  useHomeLazyPage('nav_setting', () => <Setting />, {
+    preloadNavIds: SETTING_PRELOAD_NAV_IDS,
+    // 设置页自己不能参与「被设置页盖住就隐藏」那条规则：否则用户在设置页里改主题、
+    // 改语言、切「显示专辑名 / 显示间隔」，themeUpdated / configUpdated 一响，
+    // 用户正在看的设置页会把自己隐藏掉（整页变空）。其他页保持默认 true。
+    hideWhenSettingActive: false,
+  })
+)
 
 /**
  * detail 宿主中的单页层。为什么不是 PagerView 的页面、也不用条件渲染：
