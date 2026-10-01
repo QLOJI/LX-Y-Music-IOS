@@ -793,7 +793,16 @@ export default {
           return info
         }),
     )
-    if (!tagId && page === 1 && sortId === this.sortList[0].id) { tasks.push(this.getSongListRecommend()) }
+    if (!tagId && page === 1 && sortId === this.sortList[0].id) {
+      // 推荐歌单是**可选装饰**，不是列表数据本身（2026-10-01，②-5「首次启动推荐歌单没有加载」）。
+      // 该接口走 everydayrec.service.kugou.com，凭据（userid/token/mid）是写死在源码里的，
+      // 平台侧一改校验、或它与 getSongList 并发时头部那句 cancelHttp 干掉了自己上一个
+      // in-flight 请求，它就会 reject。而 Promise.all 的语义是「任一 reject ⇒ 整体 reject」，
+      // 一个装饰请求的失败会把**整个歌单列表**判死：首屏空白，且刷新也没用——同一分支
+      // 每次都会再挂上这个请求。故这里兜底成 undefined：拿不到推荐就只显示普通列表。
+      // （REF 是同一个写法，属上游缺陷；本工程主动偏离，由 scripts/sim-shelf-load-retry.js 钉住。）
+      tasks.push(this.getSongListRecommend().catch(() => undefined))
+    }
     return Promise.all(tasks).then(([list, info, recommendList]) => {
       if (recommendList) list.unshift(...recommendList)
       return {
