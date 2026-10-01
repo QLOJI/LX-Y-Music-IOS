@@ -58,6 +58,14 @@ const isTabPageId = (id: NAV_ID_Type): boolean => TAB_PAGE_ID_SET.has(id)
 const MAX_PAGER_REBUILDS = 3
 const PAGER_REBUILD_DEBOUNCE_MS = 3000
 
+/**
+ * 拖动状态被判为「已结束」前允许的最长静默。
+ * 任何真实拖动都会持续产生 onPageScroll 帧（每一帧都会重新布防），所以长时间收不到帧
+ * 就只能是手势被取消/事件丢失——用于兜底复位跟手会话与 PagerView 的私有 isScrolling
+ * （详见组件内 clearNativePagerScrolling 的注释）。
+ */
+const PAGER_DRAG_SILENCE_MS = 3000
+
 const SearchPage = () => (
   useHomeLazyPage('nav_search', () => <Search />)
 )
@@ -456,15 +464,40 @@ const Main = () => {
   // 每收到一帧进度就续期；3s 没有任何进度帧即判定手势已结束、主动收尾（现有
   // homePagerIdle 的 800ms 兜底只管它自己那个标志，不管这条会话）。
   const pagerDragFallbackRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // PagerView 私有字段 isScrolling 的兜底清理（2026-10-01，P0：五页「滑不动、只能点 tab 栏」）
+  // react-native-pager-view 6.7.1 的 JS 侧（node_modules/react-native-pager-view/src/PagerView.tsx
+  // 的 private isScrolling / _onPageScrollStateChanged / _onMoveShouldSetResponderCapture）
+  // 只用 pageScrollState 维护一个私有布尔：'dragging' → true，其余状态 → false，并把它
+  // 当作 onMoveShouldSetResponderCapture 的返回值。iOS 侧 RN 0.73.11
+  // （React/Views/ScrollView/RCTScrollView.m 的 _shouldDisableScrollInteraction +
+  // touchesShouldCancelInContentView）规定：当 JS 响应者是某个 ScrollView 的祖先时，
+  // 该 ScrollView 的拖动必须失败（源码原话「Returning NO, will cause the drag
+  // operation to fail」）。两者相加 ⇒ isScrolling 一旦停在 true，五个 tab 页里所有
+  // ScrollView（推荐/歌单/搜索/我的/设置）全部再也拖不动；而点击不经过「移动」判定，
+  // 完全正常，tab 栏在 pager 之外也不受影响——与用户报的现象逐字吻合。
+  // 卡住的成因：原生只在 scrollViewWillBeginDragging('dragging') /
+  // scrollViewWillEndDragging('settling') / scrollViewDidEndDecelerating('idle')
+  // 三个回调里发状态（ios/RNCPagerView.m），而手势被取消（中途 scrollEnabled 翻 false、
+  // 被返回手势抢、切页/重建打断）时 willEndDragging 不会来，最后一个状态就永久停在
+  // 'dragging'；这是库自身的设计缺口，所以「上个版本也有」。
+  // 修法：在「原生已经确定不在拖动」的时机（会话收尾 / 看门狗到期）把这个纯 JS 字段
+  // 抹平。它不经过原生，也不改库文件，且正常路径下库自己已经写成 false（此时是空操作）。
+  const clearNativePagerScrolling = useCallback(() => {
+    const pager = pagerViewRef.current as unknown as { isScrolling?: boolean } | null
+    if (pager?.isScrolling) pager.isScrolling = false
+  }, [])
   const endPagerDragSession = useCallback(() => {
     if (pagerDragFallbackRef.current) {
       clearTimeout(pagerDragFallbackRef.current)
       pagerDragFallbackRef.current = null
     }
+    // 无条件清理（不放在下面的会话标志判定之后）：会话标志与原生 isScrolling 是两条
+    // 独立的生命周期，native 丢事件时可能只有后者卡住（会话标志已被别的路径复位）。
+    clearNativePagerScrolling()
     if (!pagerDragSessionRef.current) return
     pagerDragSessionRef.current = false
     emitPagerDrag(false)
-  }, [])
+  }, [clearNativePagerScrolling])
   const onPageScroll = useCallback((e: { nativeEvent: { position: number, offset: number } }) => {
     // 只用 ref 判定、绝不 setState（先例 VerticalNew.tsx:60-68）：本回调是滚动
     // 帧级频率，setState 会让整条 tab 栏在 120Hz 下逐帧重渲染。
@@ -474,7 +507,7 @@ const Main = () => {
     pagerDragFallbackRef.current = setTimeout(() => {
       pagerDragFallbackRef.current = null
       endPagerDragSession()
-    }, 3000)
+    }, PAGER_DRAG_SILENCE_MS)
     emitPagerProgress(e.nativeEvent.position, e.nativeEvent.offset)
   }, [endPagerDragSession])
 
@@ -485,6 +518,16 @@ const Main = () => {
         // 真实手势开始：开跟手会话（tab 栏据此抬起透镜并开始跟随手指）
         pagerDragSessionRef.current = true
         emitPagerDrag(true)
+        // 在此刻就布防，而不是等第一帧 onPageScroll：'dragging' 之后如果原生再没有
+        // 任何状态回调（手势被取消，willEndDragging 不来）也没有任何进度帧，
+        // onPageScroll 永远不会到达，那条守望链路根本不会被激活——会话与
+        // PagerView 的私有 isScrolling 就会双双永久停在「拖动中」。真实拖动每帧都会
+        // 重新布防（onPageScroll 里的续期），所以这里的初值只对「没有后续回调」生效。
+        if (pagerDragFallbackRef.current) clearTimeout(pagerDragFallbackRef.current)
+        pagerDragFallbackRef.current = setTimeout(() => {
+          pagerDragFallbackRef.current = null
+          endPagerDragSession()
+        }, PAGER_DRAG_SILENCE_MS)
       }
       if (nativeEvent.pageScrollState == 'idle') {
         // 手势结束：通知 tab 栏结束跟手、放下透镜。最后一次跟手进度即目标槽心
