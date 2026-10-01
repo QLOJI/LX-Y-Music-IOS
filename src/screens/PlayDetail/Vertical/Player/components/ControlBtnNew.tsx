@@ -9,9 +9,11 @@ import { useMemo } from 'react'
 import { SvgIcon } from '@/components/common/SvgIcon'
 import { scaleSizeW } from '@/utils/pixelRatio'
 import { usePlayModeToggle } from '@/screens/PlayDetail/components/usePlayModeToggle'
+import { useButtonRadius } from '@/utils/buttonRadius'
 
 const ControlBtnNew = () => {
   const theme = useTheme()
+  const buttonRadius = useButtonRadius()
   const winSize = useWindowSize()
   const isPlay = useIsPlay()
   const iconColor = theme.isDark ? theme['c-font'] : theme['c-primary']
@@ -38,7 +40,7 @@ const ControlBtnNew = () => {
   return (
     <View style={[styles.newContainer, { paddingVertical: paddingV }]}>
       <TouchableOpacity
-        style={[styles.controlBtn, { width: extraBtnSize, height: extraBtnSize }]}
+        style={[styles.controlBtn, { width: extraBtnSize, height: extraBtnSize }, { borderRadius: buttonRadius(extraBtnSize) /* 「按钮圆角」：按钮自身边长 = extraBtnSize（主按钮 0.6 倍的侧键） */ }]}
         activeOpacity={0.5}
         onPress={toggleNextPlayMode}
       >
@@ -50,7 +52,7 @@ const ControlBtnNew = () => {
       </TouchableOpacity>
 
       <TouchableOpacity
-        style={[styles.controlBtn, { width: size, height: size }]}
+        style={[styles.controlBtn, { width: size, height: size }, { borderRadius: buttonRadius(size) /* 「按钮圆角」：按钮自身边长 = size（按屏宽动态计算的正方形主控键） */ }]}
         activeOpacity={0.5}
         onPress={() => { void playPrev() }}
       >
@@ -58,7 +60,7 @@ const ControlBtnNew = () => {
       </TouchableOpacity>
 
       <TouchableOpacity
-        style={[styles.controlBtn, { width: size, height: size }]}
+        style={[styles.controlBtn, { width: size, height: size }, { borderRadius: buttonRadius(size) /* 「按钮圆角」：按钮自身边长 = size（按屏宽动态计算的正方形主控键） */ }]}
         activeOpacity={0.5}
         onPress={togglePlay}
       >
@@ -66,7 +68,7 @@ const ControlBtnNew = () => {
       </TouchableOpacity>
 
       <TouchableOpacity
-        style={[styles.controlBtn, { width: size, height: size }]}
+        style={[styles.controlBtn, { width: size, height: size }, { borderRadius: buttonRadius(size) /* 「按钮圆角」：按钮自身边长 = size（按屏宽动态计算的正方形主控键） */ }]}
         activeOpacity={0.5}
         onPress={() => { void playNext() }}
       >
@@ -74,7 +76,7 @@ const ControlBtnNew = () => {
       </TouchableOpacity>
 
       <TouchableOpacity
-        style={[styles.controlBtn, { width: extraBtnSize, height: extraBtnSize }]}
+        style={[styles.controlBtn, { width: extraBtnSize, height: extraBtnSize }, { borderRadius: buttonRadius(extraBtnSize) /* 「按钮圆角」：按钮自身边长 = extraBtnSize（主按钮 0.6 倍的侧键） */ }]}
         activeOpacity={0.5}
         onPress={handleShowPlaylist}
       >

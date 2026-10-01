@@ -1,7 +1,6 @@
-import { createList, setTempList } from '@/core/list'
-import { playList } from '@/core/player/player'
+import { createList } from '@/core/list'
 import { getListDetail, getListDetailAll } from '@/core/songlist'
-import { LIST_IDS } from '@/config/constant'
+import { refreshDefaultList, stageOnlineListToDefault } from '@/core/playListToDefault'
 import listState from '@/store/list/state'
 import syncSourceList from '@/core/syncSourceList'
 import { confirmDialog, toMD5, toast } from '@/utils/tools'
@@ -27,21 +26,29 @@ export const handlePlay = async(
     }
   }
   if (list?.length) {
-    await setTempList(listId, [...list])
-    void playList(LIST_IDS.TEMP, index)
-    isPlayingList = true
+    try {
+      // 点歌把歌单整份写入试听列表(DEFAULT)；是否清空旧内容由 player.isAutoCleanPlayedList 决定
+      await stageOnlineListToDefault(listId, [...list], index)
+      isPlayingList = true
+    } catch (err) {
+      // 原先 setTempList 抛错会变成未捕获拒绝（静默），表现为「点了没反应」
+      console.error('[handlePlay] 播放失败:', err)
+      toast('播放失败，请重试')
+      return
+    }
   }
   try {
     const fullList = await getListDetailAll(source, id)
     if (!fullList.length) return
     if (isPlayingList) {
-      if (listState.tempListMeta.id == listId && fullList.length > (list?.length ?? 0)) {
-        console.log(`[handlePlay] 完整歌单已加载：${fullList.length} 首，更新临时列表`)
-        await setTempList(listId, [...fullList])
+      if (fullList.length > (list?.length ?? 0)) {
+        console.log(`[handlePlay] 完整歌单已加载：${fullList.length} 首，更新试听列表顶部`)
+        // 仅当试听列表顶部仍是这份歌单时才会生效（playListToDefault 内部校验），
+        // 取代原先的 listState.tempListMeta.id == listId 守卫
+        await refreshDefaultList(listId, [...fullList])
       }
     } else {
-      await setTempList(listId, [...fullList])
-      void playList(LIST_IDS.TEMP, index)
+      await stageOnlineListToDefault(listId, [...fullList], index)
     }
   } catch (err) {
     console.error('[handlePlay] 获取完整歌单失败:', err)

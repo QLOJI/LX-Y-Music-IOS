@@ -8,6 +8,7 @@ import { scaleSizeW } from '@/utils/pixelRatio'
 import { useTheme } from '@/store/theme/hook'
 import Text, { AnimatedText } from '@/components/common/Text'
 import { createStyle } from '@/utils/tools'
+import { useButtonRadius } from '@/utils/buttonRadius'
 import Image from '@/components/common/Image'
 import { Icon } from '@/components/common/Icon'
 import { useListInfo } from './state'
@@ -52,6 +53,7 @@ const Pic = ({
   const [pic, setPic] = useState(imgUrl)
   const [animated, setAnimated] = useState(false)
   const info = useListInfo()
+  const buttonRadius = useButtonRadius()
   useEffect(() => {
     if (animated) setPic(imgUrl)
   }, [imgUrl, animated])
@@ -63,14 +65,24 @@ const Pic = ({
   return (
     <View style={{ ...styles.listItemImg, width: IMAGE_WIDTH, height: IMAGE_WIDTH }}>
       {isFavorites ? (
-        <View style={styles.favoritesPlaceholder}>
+        <View
+          style={[
+            styles.favoritesPlaceholder,
+            // 收藏占位与封面同尺寸：设计边长 70（IMAGE_WIDTH）
+            { borderRadius: buttonRadius(70) },
+          ]}
+        >
           <Icon name="love-filled" color="#FF4D6A" size={36} />
         </View>
       ) : (
         <Image
           nativeID={`${NAV_SHEAR_NATIVE_IDS.songlistDetail_pic}_to_${info.id}`}
           url={pic}
-          style={{ flex: 1, borderRadius: 4 }}
+          style={[
+            { flex: 1, borderRadius: 4 },
+            // 歌单封面：设计边长 70（IMAGE_WIDTH = scaleSizeW(70)，传未缩放设计值），行内覆盖「按钮圆角」
+            { borderRadius: buttonRadius(70) },
+          ]}
         />
       )}
       {playCount && animated ? <CountText count={playCount} /> : null}

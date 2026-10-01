@@ -16,6 +16,7 @@ import { createStyle } from '@/utils/tools'
 import { formatPlayTime2 } from '@/utils'
 import { scaleSizeW } from '@/utils/pixelRatio'
 import { OVERLAY_FADE_MS } from '@/screens/PlayDetail/lyricAnimation'
+import { useButtonRadius } from '@/utils/buttonRadius'
 
 // 歌词手动定位浮层：一条横向虚线 + 该行时间 + 播放三角。
 // 移植自 REF（lx-music-mobile-ios-adaptation）的 PlayLine，行为一比一：
@@ -24,12 +25,14 @@ import { OVERLAY_FADE_MS } from '@/screens/PlayDetail/lyricAnimation'
 //     命中的累计行高（与调用方把该行居中到 topPercent 处保持一致）；
 //   • 点播放三角回调 onPlayLine(该行时间，单位秒)，由调用方 seek。
 //
-// 与 REF 的差异只有两处：
+// 与 REF 的差异有三处：
 //   1) 新增 topPercent（默认 0.4，与 REF 的 top:'40%' 等价）：小歌词是 3 行定高窗口、
 //      定位行钉在容器正中，故传 0.5。虚线、时间、按钮三者共用同一个纵向基准，
 //      所以「虚线必须压住行垂直中心」由「调用方把该行对齐到 topPercent」唯一决定，
 //      不再是两套常量各算各的（这是用户点名过的问题点）。
 //   2) 淡入淡出时长改用 lyricAnimation 的 OVERLAY_FADE_MS（全局动效单一来源），不再内联 300。
+//   3) 新增「左起 1/3 段完全透明、其后渐显」的虚线画法（用户要求「从左端三分之一位置从淡开始显示」），
+//      线段铺满与位置不变，见 DASH_FADE_START_RATIO / getDashColor。
 //
 // 浮层状态（滚动信息 / 行高 / 歌词行）走命令式 handle 更新，不经过父组件 setState：
 // 拖动的每一帧只会重渲染浮层自身，歌词列表与歌名块完全不动（滚动期抖动隔离的关键）。
@@ -62,6 +65,9 @@ const LABEL_RIGHT_FALLBACK = 45
 // 由左(浅)→右(深)渐变的不透明度区间；最深也不超过右侧播放三角(c-button-font≈0.9)
 const DASH_ALPHA_MIN = 0.15
 const DASH_ALPHA_MAX = 0.5
+// 用户要求「虚线从左端三分之一位置从淡开始显示」：左起这 1/3 段完全不可见(alpha=0)，
+// 1/3 之后再从 0 平滑渐显（与上面的渐变相乘，1/3 处不会出现硬跳变）
+const DASH_FADE_START_RATIO = 1 / 3
 // REF 的定位线在容器 40% 处
 const DEFAULT_TOP_PERCENT = 0.4
 
@@ -80,6 +86,7 @@ const parseRgb = (color: string): { r: number, g: number, b: number } | null => 
 
 export default forwardRef<PlayLineType, PlayLineProps>(({ onPlayLine, topPercent = DEFAULT_TOP_PERCENT }, ref) => {
   const theme = useTheme()
+  const buttonRadius = useButtonRadius()
   const [scrollInfo, setScrollInfo] = useState<NativeSyntheticEvent<NativeScrollEvent>['nativeEvent'] | null>(null)
   const [listLayoutInfo, setListLayoutInfo] = useState<{ spaceHeight: number, lineHeights: number[] }>({ spaceHeight: 0, lineHeights: [] })
   const [lyricLines, setLyricLines] = useState<Lines>([])
@@ -153,7 +160,7 @@ export default forwardRef<PlayLineType, PlayLineProps>(({ onPlayLine, topPercent
     onPlayLine(time / 1000)
   }
 
-  // 渐变颜色：左侧浅 → 右侧深，均由主题主色派生
+  // 渐变颜色：左侧浅 → 右侧深（左 1/3 段不可见，见 DASH_FADE_START_RATIO），均由主题主色派生
   const rgb = parseRgb(theme['c-primary'] || theme['c-primary-alpha-300']) ?? { r: 255, g: 255, b: 255 }
   // 小色块/间距由 createStyle 按全局字体缩放，dashWidth 是缩放后的实际布局宽度；
   // 这里用缩放后的真实段宽算数量，保证任意字体大小下虚线都铺满整段、不留下右侧空白
@@ -161,7 +168,9 @@ export default forwardRef<PlayLineType, PlayLineProps>(({ onPlayLine, topPercent
   const dashCount = dashWidth > 0 && dashStep > 0 ? Math.floor((dashWidth + scaleSizeW(DASH_GAP)) / dashStep) : 0
   const getDashColor = (index: number) => {
     const ratio = dashCount > 1 ? index / (dashCount - 1) : 1
-    const alpha = (DASH_ALPHA_MIN + (DASH_ALPHA_MAX - DASH_ALPHA_MIN) * ratio).toFixed(2)
+    // 左端 1/3 段 alpha 归零；其后由归一化系数 0→1 渐显，乘到原渐变上保证过渡平滑
+    const fadeIn = ratio <= DASH_FADE_START_RATIO ? 0 : (ratio - DASH_FADE_START_RATIO) / (1 - DASH_FADE_START_RATIO)
+    const alpha = ((DASH_ALPHA_MIN + (DASH_ALPHA_MAX - DASH_ALPHA_MIN) * ratio) * fadeIn).toFixed(2)
     return `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${alpha})`
   }
   // 时间文本右对齐虚线的右端：虚线右端距容器右缘 = 缩放后的行间距 + 播放按钮宽度
@@ -186,7 +195,7 @@ export default forwardRef<PlayLineType, PlayLineProps>(({ onPlayLine, topPercent
         <View pointerEvents="none" style={{ ...styles.label, right: labelRight }}>
           <Text color={theme['c-primary-font']} size={13}>{timeLabel}</Text>
         </View>
-        <TouchableOpacity style={styles.button} onLayout={handleButtonLayout} onPress={handlePlayLine}>
+        <TouchableOpacity style={[styles.button, { borderRadius: buttonRadius(18) /* 「按钮圆角」：播放三角图标按钮，无固定高，可见高度 ≈ 图标 18（Icon size=18） */ }]} onLayout={handleButtonLayout} onPress={handlePlayLine}>
           <Icon name="play" color={theme['c-button-font']} size={18} />
         </TouchableOpacity>
       </View>

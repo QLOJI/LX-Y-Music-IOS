@@ -12,8 +12,8 @@ import { designMotion } from '@/theme/DesignTokens'
 /** 歌词换行时，当前行滑到居中位置的时长（大歌词与小歌词同值）。 */
 export const LINE_CHANGE_GLIDE_MS = designMotion.quick
 
-/** 手动拖动歌词结束、停手多久后自动回位并隐藏定位浮层。 */
-export const IDLE_RETURN_MS = 3000
+/** 手动拖动歌词结束、停手多久后自动回位并隐藏定位浮层。用户要求「未滑动响应时间缩短一半」，故由 3000 改为 1500。 */
+export const IDLE_RETURN_MS = 1500
 
 /** 定位浮层（虚线 + 时间 + 播放三角）显隐的淡入淡出时长。 */
 export const OVERLAY_FADE_MS = designMotion.quick

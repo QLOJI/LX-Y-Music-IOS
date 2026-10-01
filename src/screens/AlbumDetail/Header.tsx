@@ -7,6 +7,7 @@ import { useTheme } from '@/store/theme/hook'
 import { useSettingValue } from '@/store/setting/hook'
 import { createStyle, toast } from '@/utils/tools'
 import { applyOpacity } from '@/utils/colorOpacity'
+import { useButtonRadius } from '@/utils/buttonRadius'
 import { dateFormat } from '@/utils/common'
 import { useStatusbarHeight } from '@/store/common/hook'
 import { Icon } from '@/components/common/Icon'
@@ -26,6 +27,7 @@ interface Props {
 export default memo(({ albumInfo, componentId }: Props) => {
   const theme = useTheme()
   const buttonOpacity = useSettingValue('theme.buttonOpacity')
+  const buttonRadius = useButtonRadius()
   const statusBarHeight = useStatusbarHeight()
   const isSubscribed = useIsWyAlbumSubscribed(albumInfo.id)
   const [isPreviewVisible, setPreviewVisible] = useState(false)
@@ -87,7 +89,12 @@ export default memo(({ albumInfo, componentId }: Props) => {
         <TouchableOpacity activeOpacity={0.85} disabled={!albumPic} onPress={() => { setPreviewVisible(true) }}>
           <Image
             url={albumPic}
-            style={{ ...styles.albumArt, backgroundColor: theme['c-primary-light-900-alpha-200'] }}
+            style={{
+              ...styles.albumArt,
+              backgroundColor: theme['c-primary-light-900-alpha-200'],
+              // 专辑封面 104×104：按封面自身高度 104 折算半高，行内覆盖「按钮圆角」
+              borderRadius: buttonRadius(104),
+            }}
           />
         </TouchableOpacity>
         <View style={styles.infoContainer}>
@@ -103,6 +110,8 @@ export default memo(({ albumInfo, componentId }: Props) => {
               ...styles.followButton,
               // 按钮底色随「按钮透明度」设置淡出；只改颜色 alpha，不用容器 opacity，图标不受影响
               backgroundColor: applyOpacity(theme['c-primary-background'], buttonOpacity),
+              // 收藏按钮 44×44：按自身高度 44 折算半高，行内覆盖「按钮圆角」
+              borderRadius: buttonRadius(44),
             }}
             onPress={toggleSubscribe}
           >

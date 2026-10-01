@@ -9,6 +9,7 @@ import playerState from '@/store/player/state'
 import { LIST_IDS } from '@/config/constant'
 import listState from '@/store/list/state'
 import { getListMusics } from '@/core/list'
+import { getTopSourceInfo } from '@/core/playListToDefault'
 import txUserApi from '@/utils/musicSdk/tx/user'
 import { log } from '@/utils/log'
 import { decodeName } from '@/utils/index'
@@ -157,11 +158,28 @@ export default forwardRef<MusicListType, MusicListProps>(({ componentId, isCreat
 
         const currentListId = `${songlistState.listDetailInfo.source}__${songlistState.listDetailInfo.id}`
         let playingListId = playerState.playMusicInfo.listId
-        if (playingListId === LIST_IDS.TEMP) playingListId = listState.tempListMeta.id
+        let fromDefaultTop = false
+        let defaultTopLen = 0
+        if (playingListId === LIST_IDS.TEMP) {
+          playingListId = listState.tempListMeta.id
+        } else if (playingListId === LIST_IDS.DEFAULT) {
+          // 歌单点歌整份写入试听列表(DEFAULT)后，源列表 id 与「完整列表」都记录在
+          // playListToDefault 的顶部这一段里：完整列表 = 试听列表顶部 top.len 首。
+          // 若顶部这一段已不是任何源列表（如手动整理过试听列表）就维持原样，下面的
+          // 匹配不成立、直接跳过——还有 currentList.some(targetInfo) 的存在性校验兜底。
+          const top = getTopSourceInfo()
+          if (top.id) {
+            playingListId = top.id
+            fromDefaultTop = true
+            defaultTopLen = top.len
+          }
+        }
 
         if (playingListId === currentListId) {
-          void getListMusics(LIST_IDS.TEMP).then(fullList => {
-            const castedList = fullList as LX.Music.MusicInfoOnline[]
+          const promise = fromDefaultTop
+            ? getListMusics(LIST_IDS.DEFAULT).then(fullList => (fullList as LX.Music.MusicInfoOnline[]).slice(0, defaultTopLen))
+            : getListMusics(LIST_IDS.TEMP).then(fullList => fullList as LX.Music.MusicInfoOnline[])
+          void promise.then(castedList => {
             if (castedList.some(s => s.id === targetInfo.id)) {
               songlistState.listDetailInfo.list = castedList
               fullListRef.current = castedList

@@ -4,6 +4,7 @@ import { createStyle } from '@/utils/tools'
 import { useTheme } from '@/store/theme/hook'
 import { useSettingValue } from '@/store/setting/hook'
 import { applyOpacity } from '@/utils/colorOpacity'
+import { useButtonRadius } from '@/utils/buttonRadius'
 import Text from '@/components/common/Text'
 import { Icon } from '@/components/common/Icon'
 import { useI18n } from '@/lang'
@@ -29,6 +30,7 @@ const INPUT_HEIGHT = scaleSizeH(48)
 const CommentInput = forwardRef<CommentInputType, CommentInputProps>(({ onSend, disabled }, ref) => {
   const theme = useTheme()
   const buttonOpacity = useSettingValue('theme.buttonOpacity')
+  const buttonRadius = useButtonRadius()
   const t = useI18n()
   const [text, setText] = useState('')
   const [replyInfo, setReplyInfo] = useState<ReplyInfo | null>(null)
@@ -65,7 +67,7 @@ const CommentInput = forwardRef<CommentInputType, CommentInputProps>(({ onSend, 
                     <Text size={12} color={theme['c-450']} numberOfLines={1} style={styles.replyText}>
                         {t('comment_reply_to' as any, { name: replyInfo.userName })}
                     </Text>
-                    <TouchableOpacity onPress={handleCancelReply} style={styles.cancelReply}>
+                    <TouchableOpacity onPress={handleCancelReply} style={[styles.cancelReply, { borderRadius: buttonRadius(22) /* 小图标按钮可见高 ≈ 图标 14 + 上下 padding 4×2 = 22 */ }]}>
                         <Icon name="close" size={14} color={theme['c-450']} />
                     </TouchableOpacity>
                 </View>
@@ -78,6 +80,8 @@ const CommentInput = forwardRef<CommentInputType, CommentInputProps>(({ onSend, 
                       color: theme['c-font'],
                       backgroundColor: theme['c-primary-background-hover'],
                       borderColor: theme['c-border-background'],
+                      // 输入框高度 = INPUT_HEIGHT 设计值 48：按自身高度 48 折算半高，行内覆盖「按钮圆角」
+                      borderRadius: buttonRadius(48),
                     }}
                     value={text}
                     onChangeText={setText}
@@ -95,6 +99,8 @@ const CommentInput = forwardRef<CommentInputType, CommentInputProps>(({ onSend, 
                       ...styles.sendBtn,
                       // 底色随「按钮透明度」淡出
                       backgroundColor: applyOpacity(theme['c-primary-background-hover'], buttonOpacity),
+                      // 发送按钮 36×36：按自身高度 36 折算半高，行内覆盖「按钮圆角」
+                      borderRadius: buttonRadius(36),
                     }}
                 >
                     <Icon

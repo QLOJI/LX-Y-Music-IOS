@@ -4,6 +4,7 @@ import { SvgIcon } from '@/components/common/SvgIcon'
 import { createStyle } from '@/utils/tools'
 import { scaleSizeH } from '@/utils/pixelRatio'
 import { HEADER_HEIGHT as _HEADER_HEIGHT } from '@/config/constant'
+import { useButtonRadius } from '@/utils/buttonRadius'
 
 export const HEADER_HEIGHT = scaleSizeH(_HEADER_HEIGHT)
 
@@ -16,8 +17,9 @@ export default ({
   color?: string
   onPress: () => void
 }) => {
+  const buttonRadius = useButtonRadius()
   return (
-    <TouchableOpacity onPress={onPress} style={{ ...styles.button, width: HEADER_HEIGHT }}>
+    <TouchableOpacity onPress={onPress} style={[{ ...styles.button, width: HEADER_HEIGHT }, { borderRadius: buttonRadius(HEADER_HEIGHT) /* 「按钮圆角」：按钮自身高度 = HEADER_HEIGHT（设计 42pt，宽度同值） */ }]}>
       {icon.startsWith('svg:') ? (
         <SvgIcon name={icon.replace('svg:', '')} color={color} size={18} />
       ) : (

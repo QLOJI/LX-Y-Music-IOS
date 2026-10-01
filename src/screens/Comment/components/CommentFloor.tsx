@@ -3,6 +3,7 @@ import { StyleSheet, View, TouchableOpacity } from 'react-native'
 import { BorderWidths } from '@/theme'
 import { Icon } from '@/components/common/Icon'
 import { createStyle } from '@/utils/tools'
+import { useButtonRadius } from '@/utils/buttonRadius'
 import { useTheme } from '@/store/theme/hook'
 import { type Comment } from '../utils'
 import Text from '@/components/common/Text'
@@ -36,6 +37,7 @@ const CommentFloor = memo(({
   isLast?: boolean
 } & CommentFloorActions) => {
   const theme = useTheme()
+  const buttonRadius = useButtonRadius()
   const [isAvatarError, setIsAvatarError] = useState(false)
   const { onLayout, width } = useLayout()
   const t = useI18n()
@@ -132,14 +134,14 @@ const CommentFloor = memo(({
           ) : null}
           {showActions ? (
             <View style={styles.actionBar}>
-              <TouchableOpacity onPress={handleReply} style={styles.actionBtn}>
+              <TouchableOpacity onPress={handleReply} style={[styles.actionBtn, { borderRadius: buttonRadius(18) /* 小图标按钮可见高 ≈ 图标 14 + 上下 padding 2×2 = 18 */ }]}>
                 <Icon name="comment" size={14} color={theme['c-450']} />
                 <Text size={12} color={theme['c-450']} style={styles.actionText}>
                   {t('comment_reply' as any)}
                 </Text>
               </TouchableOpacity>
               {showDeleteBtn ? (
-                <TouchableOpacity onPress={handleDelete} style={styles.actionBtn}>
+                <TouchableOpacity onPress={handleDelete} style={[styles.actionBtn, { borderRadius: buttonRadius(18) /* 同回复按钮：图标按钮可见高 ≈ 18 */ }]}>
                   <Icon name="close" size={14} color={theme['c-450']} />
                   <Text size={12} color={theme['c-450']} style={styles.actionText}>
                     {t('comment_delete' as any)}

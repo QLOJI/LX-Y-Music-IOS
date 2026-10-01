@@ -8,17 +8,19 @@ import { useIsPlay } from '@/store/player/hook'
 import { useLayout } from '@/utils/hooks'
 import { marginLeft } from '../constant'
 import { BTN_WIDTH } from '../MoreBtn/Btn'
+import { useButtonRadius } from '@/utils/buttonRadius'
 
 // const WIDTH = scaleSizeW(48)
 
 const PrevBtn = ({ size }: { size: number }) => {
   const theme = useTheme()
+  const buttonRadius = useButtonRadius()
   const handlePlayPrev = () => {
     void playPrev()
   }
   return (
     <TouchableOpacity
-      style={{ ...styles.cotrolBtn, width: size, height: size }}
+      style={[{ ...styles.cotrolBtn, width: size, height: size }, { borderRadius: buttonRadius(size) /* 「按钮圆角」：按钮自身边长 = size（按容器高/宽动态计算的正方形控制键） */ }]}
       activeOpacity={0.5}
       onPress={handlePlayPrev}
     >
@@ -28,12 +30,13 @@ const PrevBtn = ({ size }: { size: number }) => {
 }
 const NextBtn = ({ size }: { size: number }) => {
   const theme = useTheme()
+  const buttonRadius = useButtonRadius()
   const handlePlayNext = () => {
     void playNext()
   }
   return (
     <TouchableOpacity
-      style={{ ...styles.cotrolBtn, width: size, height: size }}
+      style={[{ ...styles.cotrolBtn, width: size, height: size }, { borderRadius: buttonRadius(size) /* 「按钮圆角」：按钮自身边长 = size（按容器高/宽动态计算的正方形控制键） */ }]}
       activeOpacity={0.5}
       onPress={handlePlayNext}
     >
@@ -45,9 +48,10 @@ const NextBtn = ({ size }: { size: number }) => {
 const TogglePlayBtn = ({ size }: { size: number }) => {
   const theme = useTheme()
   const isPlay = useIsPlay()
+  const buttonRadius = useButtonRadius()
   return (
     <TouchableOpacity
-      style={{ ...styles.cotrolBtn, width: size, height: size }}
+      style={[{ ...styles.cotrolBtn, width: size, height: size }, { borderRadius: buttonRadius(size) /* 「按钮圆角」：按钮自身边长 = size（按容器高/宽动态计算的正方形控制键） */ }]}
       activeOpacity={0.5}
       onPress={togglePlay}
     >

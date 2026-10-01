@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useRef, useState, type ComponentType } from 'react'
+import { memo, useEffect, useMemo, useState, type ComponentType } from 'react'
 import { ScrollView, TouchableOpacity, View } from 'react-native'
 
 import PageContent from '@/components/PageContent'
@@ -9,8 +9,9 @@ import { pop } from '@/navigation'
 import { createStyle } from '@/utils/tools'
 import { useTheme } from '@/store/theme/hook'
 import { useI18n } from '@/lang'
-import { useSafeAreaBottom, useStatusbarHeight } from '@/store/common/hook'
+import { useSafeAreaBottom, useNavTransitioning, useStatusbarHeight } from '@/store/common/hook'
 import { designSpacing } from '@/theme/DesignTokens'
+import { useButtonRadius } from '@/utils/buttonRadius'
 import { setComponentId } from '@/core/common'
 import { COMPONENT_IDS } from '@/config/constant'
 import { type SettingScreenIds } from '@/screens/Home/Views/Setting/Main'
@@ -50,9 +51,14 @@ export default memo(({ settingId, componentId }: {
 }) => {
   const theme = useTheme()
   const t = useI18n()
+  // 「按钮圆角」需订阅后行内覆盖（createStyle 的样式模块加载时已固化）。
+  // 传参口径见下方 styles.backButton 的注释：本返回钮声明了 44 的固定热区，故用 44 当分母。
+  const buttonRadius = useButtonRadius()
   const safeAreaBottom = useSafeAreaBottom()
   const statusBarHeight = useStatusbarHeight()
-  const appearedAtRef = useRef(0)
+  // 全局页面转场标志（navigation 在发起 push 时置位、系统默认转场时长后自动复位），
+  // 返回按钮据此门控，替代原来的「mount 起算 400ms」墙钟。
+  const navTransitioning = useNavTransitioning()
   // 深层列表项（如自定义源拖拽排序）在拖拽期间通过 scrollLock 请求锁定祖先滚动容器，
   // 避免iOS 原生 UIScrollView 抢手势导致整页随拖动滚动（与 Setting/Horizontal 的处理一致）。
   const [scrollLocked, setScrollLocked] = useState(false)
@@ -60,13 +66,14 @@ export default memo(({ settingId, componentId }: {
 
   useEffect(() => {
     setComponentId(COMPONENT_IDS.SETTING_DETAIL, componentId)
-    appearedAtRef.current = Date.now()
   }, [componentId])
 
-  // push 转场进行中忽略返回，避免 pop 打断 push；返回走无自定义动画的 popPlain，
+  // push 转场进行中忽略返回，避免 pop 打断 push；返回走无自定义动画的 pop，
   // 与 push 侧（系统默认转场）配套，彻底规避 RNN iOS 自定义转场取消不回调导致的整栈卡死。
+  // 门控改为复用全局转场标志：转场中吞掉、转场一结束立即放行。原实现按「mount 起算 400ms」
+  // 墙钟判断，页面挂载偏晚时返回按钮会被额外锁死一段时间（用户反馈首次进入点返回没反应）。
   const handleBack = () => {
-    if (Date.now() - appearedAtRef.current < 400) return
+    if (navTransitioning) return
     void pop(componentId)
   }
 
@@ -85,7 +92,18 @@ export default memo(({ settingId, componentId }: {
     <PageContent>
       <LandscapeCentered>
         <View style={{ ...styles.header, paddingTop: statusBarHeight + designSpacing.sm }}>
-          <TouchableOpacity style={styles.backButton} onPress={handleBack}>
+          <TouchableOpacity
+            style={[
+              styles.backButton,
+              // 返回钮 styles.backButton 写死 44×44 热区，按 radiusFor 口径传该控件自己的设计高度 44：
+              // 100% 时 RN 把 9999 夹到 min(44,44)/2=22，侧面闭合成整圆；中间档以真实半高为分母。
+              // 不照抄 Comment/Header 与 DownloadManager/Header 返回钮的 18 —— 那两处 button 样式没有固定
+              // height（只有 width + 居中，靠 18 号图标撑高），只能拿图标高当可见高度；本控件显式声明了
+              // 44×44 热区，分母就该用它自己的 44，故两处不同值是有依据的（样式结构不同），不是疏漏。
+              { borderRadius: buttonRadius(44) },
+            ]}
+            onPress={handleBack}
+          >
             <Icon name="chevron-left" size={20} color={theme['c-font']} />
           </TouchableOpacity>
           <Text size={18} style={styles.title} color={theme['c-font']} numberOfLines={1}>

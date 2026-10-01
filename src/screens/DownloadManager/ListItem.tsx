@@ -6,11 +6,13 @@ import { Icon } from '@/components/common/Icon'
 import LineProgress from '@/components/common/LineProgress'
 import { useTheme } from '@/store/theme/hook'
 import { createStyle } from '@/utils/tools'
+import { useButtonRadius } from '@/utils/buttonRadius'
 import { dateFormat, sizeFormate } from '@/utils/common'
 import { resumeTask, retryTask } from '@/core/download'
 
 export default memo(({ task: initialTask, rowWidth = '100%', onRemove }: { task: LX.Download.DownloadTask, rowWidth?: `${number}%`, onRemove: (id: string) => void }) => {
   const theme = useTheme()
+  const buttonRadius = useButtonRadius()
   const [task, setTask] = useState(initialTask)
   const errorColor = theme['c-600']
 
@@ -108,7 +110,7 @@ export default memo(({ task: initialTask, rowWidth = '100%', onRemove }: { task:
         <Text size={10} color={theme['c-font-label']}>歌词</Text>
       </View>
       {hasMetaError && task.status === 'completed' && (
-        <TouchableOpacity style={styles.retryButton} onPress={handleRetry}>
+        <TouchableOpacity style={[styles.retryButton, { borderRadius: buttonRadius(22) /* 小图标按钮可见高 ≈ 图标 14 + 上下 padding 4×2 = 22 */ }]} onPress={handleRetry}>
           <Icon name="available_updates" size={14} color={theme['c-primary-font-active']} />
         </TouchableOpacity>
       )}
@@ -117,7 +119,7 @@ export default memo(({ task: initialTask, rowWidth = '100%', onRemove }: { task:
 
   return (
     <View style={{ ...styles.container, width: rowWidth }}>
-      <Image url={task.musicInfo.meta.picUrl} style={styles.artwork} />
+      <Image url={task.musicInfo.meta.picUrl} style={[styles.artwork, { borderRadius: buttonRadius(60) /* 歌曲封面 60×60：按封面自身高度 60 折算半高 */ }]} />
       <View style={styles.info}>
         <Text numberOfLines={1}>
           {task.musicInfo.name}
@@ -135,16 +137,16 @@ export default memo(({ task: initialTask, rowWidth = '100%', onRemove }: { task:
       </View>
       <View style={styles.actionsContainer}>
         { !task.isRemoteSynced && task.status === 'paused' && (
-          <TouchableOpacity onPress={handleResume} style={styles.actionButton}>
+          <TouchableOpacity onPress={handleResume} style={[styles.actionButton, { borderRadius: buttonRadius(38) /* 图标按钮可见高 ≈ 图标 18 + 上下 padding 10×2 = 38 */ }]}>
             <Icon name="play-outline" size={18} color={theme['c-primary']} />
           </TouchableOpacity>
         ) }
         { !task.isRemoteSynced && (task.status === 'error' || (task.status === 'completed' && hasMetaError)) && (
-          <TouchableOpacity onPress={handleRetry} style={styles.actionButton}>
+          <TouchableOpacity onPress={handleRetry} style={[styles.actionButton, { borderRadius: buttonRadius(38) /* 同左：图标按钮可见高 ≈ 38 */ }]}>
             <Icon name="available_updates" size={18} color={theme['c-primary']} />
           </TouchableOpacity>
         ) }
-        <TouchableOpacity onPress={() => { onRemove(task.id) }} style={styles.actionButton}>
+        <TouchableOpacity onPress={() => { onRemove(task.id) }} style={[styles.actionButton, { borderRadius: buttonRadius(38) /* 同左：关闭图标 16，可见高仍按 ≈ 38 折算 */ }]}>
           <Icon name="close" size={16} color={theme['c-font-label']} />
         </TouchableOpacity>
       </View>

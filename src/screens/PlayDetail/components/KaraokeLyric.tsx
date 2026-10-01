@@ -4,7 +4,7 @@ import { Animated, type LayoutChangeEvent, type StyleProp, type TextStyle, View 
 import Text from '@/components/common/Text'
 import KaraokeLine from './KaraokeLine'
 import { audioClock } from '@/core/player/audioClock'
-import { getWordState } from '@/plugins/lyric'
+import { findLineIndexByTime, getWordState, useLrcSet } from '@/plugins/lyric'
 import { useTheme } from '@/store/theme/hook'
 import { useIsPlay } from '@/store/player/hook'
 import { createStyle } from '@/utils/tools'
@@ -14,7 +14,8 @@ import type { LxLyricWord } from '@/plugins/lxLyricPlayer'
 //
 //  1) words：lxlyric 的逐字时间轴（useLrcWordsMap 提供，与歌词行同序，纯 LRC 行为 null）。
 //     按每个字的真实起止时间高亮，时间取自 audioClock 外推时钟 —— 快进/快退/拖动进度条后
-//     高亮立即跟随音频真实位置。大歌词（Vertical/Horizontal Lyric）走这条，行为不变。
+//     高亮立即跟随音频真实位置。大歌词（Vertical/Horizontal Lyric）走这条；行级 ticker 短暂失步
+//     （seek/缓冲恢复的重锚窗口）时由跨行钳制兜底（见 KaraokeWords 内注释）。
 //
 //  2) text + startTime/endTime：没有逐字时间戳时按「字符数均分该行时长」做线性高亮。
 //     进度用 **单个 Animated.Value + interpolate** 驱动：rAF 每帧只写一次这个值，
@@ -47,6 +48,10 @@ export interface KaraokeLyricProps {
   numberOfLines?: number
 }
 
+// 跨行钳制的容差（ms）：行级 ticker 的换行由歌词引擎内部定时器驱动，正常换行可能比
+// audioClock 外推晚一拍；「音频时间扣掉本容差后仍落在本行之后的行」才判定为明显跨行。
+const OUT_OF_LINE_MS = 500
+
 // 时间轴逐字渲染：自带 rAF 循环，根据 audioClock 外推时钟实时计算当前字索引与进度，
 // 仅重渲染本组件（不触发整张歌词列表重渲染）。务必与音频绝对同步：时间来自 audioClock，
 // 因此快进/快退/拖动进度条后，当前字的高亮会立即跟随音频真实位置。
@@ -73,6 +78,9 @@ const KaraokeWords = memo(({
   const stateRef = useRef(state)
   // 播放态：暂停/停止时停掉逐字 rAF（见下）。
   const isPlay = useIsPlay()
+  // 歌词行表（与调用方同一份 currentLines）：跨行钳制要判断「音频时间应该在哪一行」，
+  // 复用现成的 findLineIndexByTime 二分查找，不另造行查找逻辑。
+  const lines = useLrcSet()
 
   useEffect(() => {
     // 非激活行静态渲染：停掉 rAF、进度归零（全部字用未播放颜色）。
@@ -89,11 +97,27 @@ const KaraokeWords = memo(({
     // 恢复播放时再跳回来）。恢复播放后 effect 重跑，第一帧按冻结的时钟算出的仍是当前状态，
     // 天然无缝。
     if (!isPlay) return
+    // 本行在行表中的位置（按起点时间精确匹配：调用方传入的 lineTime 就是本行 time）。
+    // 匹配不到（行表未就绪/非当前歌词表）时不启用钳制，保守跳过。
+    const myLineIndex = lines.findIndex((l) => l.time === lineTime)
     let raf = 0
     const tick = () => {
       // audioClock 返回秒，歌词时间为毫秒
       const t = audioClock.getTime() * 1000
-      const s = getWordState(words, t - lineTime)
+      let s = getWordState(words, t - lineTime)
+      // 【跨行钳制】行级 ticker 尚未重锚时（seek/缓冲恢复的重锚被状态抖动丢弃的窗口），
+      // 激活行会停在旧行，而 audioClock 已推进到新位置：继续用 t - lineTime 相减得到的
+      // 巨值会把旧行渲染成「整行已唱完」（进度越界成 1），表现为整行颜色错位。用现成的
+      // 行二分查找判断：「音频时间扣掉容差后仍落在本行之后的行」= 本行明显已不是当前行，
+      // 本帧钳为未播放（index=-1/progress=0），绝不基于错误行的起点硬算。保守边界：本行
+      // 不在行表（myLineIndex<0，如空表/时间不匹配）或已是末行时不钳制；容差内的正常
+      // 换行（ticker 落后 audioClock 一拍）不受影响。
+      if (
+        s.index >= 0 && myLineIndex >= 0 &&
+        findLineIndexByTime(lines, t - OUT_OF_LINE_MS) > myLineIndex
+      ) {
+        s = { index: -1, progress: 0 }
+      }
       const prev = stateRef.current
       // 量化到 2% 步长 + 跨字才更新，过滤掉无视觉差异的逐帧重渲染，降低 Bridge 开销。
       if (prev.index !== s.index || Math.abs(prev.progress - s.progress) >= 0.02) {
@@ -104,7 +128,7 @@ const KaraokeWords = memo(({
     }
     raf = requestAnimationFrame(tick)
     return () => { cancelAnimationFrame(raf) }
-  }, [words, lineTime, isActive, isPlay])
+  }, [words, lineTime, isActive, isPlay, lines])
 
   return (
     <Text style={style} numberOfLines={numberOfLines}>

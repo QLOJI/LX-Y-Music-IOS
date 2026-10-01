@@ -4,6 +4,7 @@ import Image from '@/components/common/Image'
 import Text from '@/components/common/Text'
 import { useTheme } from '@/store/theme/hook'
 import { createStyle, toast } from '@/utils/tools'
+import { useButtonRadius } from '@/utils/buttonRadius'
 import { navigations } from '@/navigation'
 import { Icon } from '@/components/common/Icon'
 import { useIsWyAlbumSubscribed } from '@/store/user/hook'
@@ -13,6 +14,7 @@ import { type SubscribedAlbumInfo } from '@/store/user/state'
 
 export default memo(({ componentId, item, width, viewMode }: { componentId: string, item: any, width: number, viewMode: 'grid' | 'list' }) => {
   const theme = useTheme()
+  const buttonRadius = useButtonRadius()
   const isSubscribed = useIsWyAlbumSubscribed(item.id)
 
   const handlePress = () => {
@@ -64,7 +66,7 @@ export default memo(({ componentId, item, width, viewMode }: { componentId: stri
   if (viewMode === 'list') {
     return (
       <TouchableOpacity style={[listStyles.container, { width }]} onPress={handlePress}>
-        <Image url={item.picUrl} style={listStyles.artwork} />
+        <Image url={item.picUrl} style={[listStyles.artwork, { borderRadius: buttonRadius(60) /* 专辑封面 60×60：按封面自身高度 60 折算半高 */ }]} />
         <View style={listStyles.info}>
           <Text style={listStyles.name} numberOfLines={1}>{item.name}</Text>
           <Text style={listStyles.time} size={12} color={theme['c-font-label']}>
@@ -72,7 +74,7 @@ export default memo(({ componentId, item, width, viewMode }: { componentId: stri
           </Text>
         </View>
         {item.source === 'wy' && (
-          <TouchableOpacity style={listStyles.likeButton} onPress={toggleSubscribe}>
+          <TouchableOpacity style={[listStyles.likeButton, { borderRadius: buttonRadius(18) /* 列表态图标按钮：listStyles.likeButton 只有 paddingHorizontal:25、没有纵向 padding，可见高就是图标本身 18。旧值 28 抄的是 gridStyles.likeButton（padding:5，上下各 5）那一份，多算了 10（≈55%），中间档位半径会明显偏大 */ }]} onPress={toggleSubscribe}>
             <Icon name={isSubscribed ? 'love-filled' : 'love'} color={isSubscribed ? theme['c-liked'] : theme['c-font-label']} size={18} />
           </TouchableOpacity>
         )}
@@ -82,7 +84,16 @@ export default memo(({ componentId, item, width, viewMode }: { componentId: stri
 
   return (
     <TouchableOpacity style={{ ...gridStyles.container, width }} onPress={handlePress}>
-      <Image url={item.picUrl} style={{ ...gridStyles.artwork, width, height: width }} />
+      <Image
+        url={item.picUrl}
+        style={{
+          ...gridStyles.artwork,
+          width,
+          height: width,
+          // 专辑封面高度 = 网格算出的 width：按封面自身高度折算半高，行内覆盖「按钮圆角」
+          borderRadius: buttonRadius(width),
+        }}
+      />
       <Text style={gridStyles.name} numberOfLines={1}>{item.name}</Text>
       <View style={gridStyles.metaContainer}>
         <View style={gridStyles.metaTextContainer}>
@@ -91,7 +102,7 @@ export default memo(({ componentId, item, width, viewMode }: { componentId: stri
           </Text>
         </View>
         {item.source === 'wy' && (
-          <TouchableOpacity style={gridStyles.likeButton} onPress={toggleSubscribe}>
+          <TouchableOpacity style={[gridStyles.likeButton, { borderRadius: buttonRadius(28) /* 同列表态：图标 18 + 上下 padding 5×2 = 28 */ }]} onPress={toggleSubscribe}>
             <Icon name={isSubscribed ? 'love-filled' : 'love'} color={isSubscribed ? theme['c-liked'] : theme['c-font-label']} size={18} />
           </TouchableOpacity>
         )}

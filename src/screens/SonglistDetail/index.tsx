@@ -12,6 +12,7 @@ import { scaleSizeW } from '@/utils/pixelRatio'
 import { useTheme } from '@/store/theme/hook'
 import { useSettingValue } from '@/store/setting/hook'
 import { applyOpacity } from '@/utils/colorOpacity'
+import { useButtonRadius } from '@/utils/buttonRadius'
 import { formatPlayCountText } from '@/utils'
 import { designRadius, designSpacing, designTypography } from '@/theme/DesignTokens'
 
@@ -37,6 +38,7 @@ const IMAGE_WIDTH = scaleSizeW(104)
 const ListHeader = ({ detailInfo, info, onBack, showSearchBar, searchText, isFuzzySearch, onToggleSearch, onSearchTextChanged, onToggleSearchMode }: { detailInfo: DetailInfo, info: ListInfoItem, onBack?: () => void, showSearchBar: boolean, searchText: string, isFuzzySearch: boolean, onToggleSearch: () => void, onSearchTextChanged: (text: string) => void, onToggleSearchMode: () => void }) => {
   const theme = useTheme()
   const buttonOpacity = useSettingValue('theme.buttonOpacity')
+  const buttonRadius = useButtonRadius()
   const statusBarHeight = useStatusbarHeight()
   const playCountText = formatPlayCountText(detailInfo.playCount)
   const loggedInUserId = useWyUid()
@@ -80,14 +82,25 @@ const ListHeader = ({ detailInfo, info, onBack, showSearchBar, searchText, isFuz
         <View style={styles.headerContent}>
           <View style={{ ...styles.listItemImg, width: IMAGE_WIDTH, height: IMAGE_WIDTH }}>
             {info.isFavorites ? (
-              <View style={{ ...styles.favoritesPlaceholder, backgroundColor: theme['c-primary-background'] }}>
+              <View
+                style={{
+                  ...styles.favoritesPlaceholder,
+                  // 收藏歌单占位封面与封面同尺寸：设计边长 104（IMAGE_WIDTH）
+                  borderRadius: buttonRadius(104),
+                  backgroundColor: theme['c-primary-background'],
+                }}
+              >
                 <Icon name="love-filled" color="#FF4D6A" size={36} />
               </View>
             ) : (
               <Image
                 nativeID={`${NAV_SHEAR_NATIVE_IDS.songlistDetail_pic}_to_${info.id}`}
                 url={detailInfo.imgUrl}
-                style={styles.cover}
+                style={[
+                  styles.cover,
+                  // 歌单封面：设计边长 104（IMAGE_WIDTH = scaleSizeW(104)，传未缩放设计值），行内覆盖「按钮圆角」
+                  { borderRadius: buttonRadius(104) },
+                ]}
               />
             )}
             {playCountText ? (
@@ -112,7 +125,14 @@ const ListHeader = ({ detailInfo, info, onBack, showSearchBar, searchText, isFuz
                 </Text>
               </View>
               {showSubscribeButton && (
-                <TouchableOpacity style={styles.subscribeButton} onPress={toggleSubscribe}>
+                <TouchableOpacity
+                  style={[
+                    styles.subscribeButton,
+                    // 无固定高度：以图标本体 20（Icon size=20）作可见高度
+                    { borderRadius: buttonRadius(20) },
+                  ]}
+                  onPress={toggleSubscribe}
+                >
                   <Icon name={isSubscribed ? 'love-filled' : 'love'} color={isSubscribed ? theme['c-liked'] : theme['c-font-label']} size={20} />
                 </TouchableOpacity>
               )}
@@ -123,6 +143,8 @@ const ListHeader = ({ detailInfo, info, onBack, showSearchBar, searchText, isFuz
               ...styles.searchIcon,
               // 按钮按「按钮透明度」消费：只对底色 alpha 做乘算，图标不受影响
               backgroundColor: applyOpacity(theme['c-primary-background'], buttonOpacity),
+              // 图标按钮静态高 40（styles.searchIcon.height），行内覆盖「按钮圆角」
+              borderRadius: buttonRadius(40),
             }}
             onPress={onToggleSearch}
           >
@@ -136,9 +158,21 @@ const ListHeader = ({ detailInfo, info, onBack, showSearchBar, searchText, isFuz
               value={searchText}
               onChangeText={onSearchTextChanged}
               autoFocus
-              style={{ ...styles.searchInput, backgroundColor: theme['c-primary-input-background'] }}
+              style={{
+                ...styles.searchInput,
+                backgroundColor: theme['c-primary-input-background'],
+                // 输入框静态高 32（styles.searchInput.height），行内覆盖「按钮圆角」
+                borderRadius: buttonRadius(32),
+              }}
             />
-            <TouchableOpacity style={styles.searchModeButton} onPress={onToggleSearchMode}>
+            <TouchableOpacity
+              style={[
+                styles.searchModeButton,
+                // 无固定高度：以内容最大高度 24（SvgIcon size=24）作可见高度
+                { borderRadius: buttonRadius(24) },
+              ]}
+              onPress={onToggleSearchMode}
+            >
               {isFuzzySearch ? (
                 <Icon name="search-2" size={20} color={theme['c-font-label']} />
               ) : (

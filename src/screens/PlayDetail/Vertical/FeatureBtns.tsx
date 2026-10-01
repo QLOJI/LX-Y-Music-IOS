@@ -15,11 +15,13 @@ import { downloadMusic } from '@/core/download'
 import { handleLikeMusic, handleTxLikeMusic, handleKgLikeMusic, handleShowAlbumDetail, handleShowArtistDetail } from '@/components/OnlineList/listAction'
 import { type Position } from '@/screens/Home/Views/Mylist/MusicList/ListMenu'
 import { useWindowSize } from '@/utils/hooks'
+import { useButtonRadius } from '@/utils/buttonRadius'
 
 const BTN_SIZE = scaleSizeW(42)
 
 export default memo(({ componentId }: { componentId: string }) => {
   const theme = useTheme()
+  const buttonRadius = useButtonRadius()
   const iconOpacity = 0.7
   const { height: winHeight } = useWindowSize()
   const isSmallWindow = winHeight < 700
@@ -117,16 +119,16 @@ export default memo(({ componentId }: { componentId: string }) => {
 
   return (
     <View style={[styles.container, isSmallWindow && { paddingVertical: 6 }]}>
-      <TouchableOpacity style={styles.btnItem} onPress={handleAddPress} activeOpacity={0.6}>
+      <TouchableOpacity style={[styles.btnItem, { borderRadius: buttonRadius(42) /* 「按钮圆角」：按钮自身 42×42（BTN_SIZE，设计 42pt）；42 = 设计原值，不要传 styles.btnItem.height（已被 createStyle 预缩放） */ }]} onPress={handleAddPress} activeOpacity={0.6}>
         <View style={{ opacity: iconOpacity }}><Icon name="add-music" color={theme['c-font']} rawSize={BTN_SIZE * 0.6} /></View>
       </TouchableOpacity>
-      <TouchableOpacity style={styles.btnItem} onPress={handleDownloadPress} activeOpacity={0.6}>
+      <TouchableOpacity style={[styles.btnItem, { borderRadius: buttonRadius(42) /* 「按钮圆角」：按钮自身 42×42（BTN_SIZE，设计 42pt）；42 = 设计原值，不要传 styles.btnItem.height（已被 createStyle 预缩放） */ }]} onPress={handleDownloadPress} activeOpacity={0.6}>
         <View style={{ opacity: iconOpacity }}><Icon name="download-2" color={theme['c-font']} rawSize={BTN_SIZE * 0.55} /></View>
       </TouchableOpacity>
-      <TouchableOpacity style={styles.btnItem} onPress={handleCommentPress} activeOpacity={0.6}>
+      <TouchableOpacity style={[styles.btnItem, { borderRadius: buttonRadius(42) /* 「按钮圆角」：按钮自身 42×42（BTN_SIZE，设计 42pt）；42 = 设计原值，不要传 styles.btnItem.height（已被 createStyle 预缩放） */ }]} onPress={handleCommentPress} activeOpacity={0.6}>
         <View style={{ opacity: iconOpacity }}><Icon name="comment" color={theme['c-font']} rawSize={BTN_SIZE * 0.6} /></View>
       </TouchableOpacity>
-      <TouchableOpacity ref={moreBtnRef} style={styles.btnItem} onPress={handleShowMenu} activeOpacity={0.6}>
+      <TouchableOpacity ref={moreBtnRef} style={[styles.btnItem, { borderRadius: buttonRadius(42) /* 「按钮圆角」：按钮自身 42×42（BTN_SIZE，设计 42pt）；42 = 设计原值，不要传 styles.btnItem.height（已被 createStyle 预缩放） */ }]} onPress={handleShowMenu} activeOpacity={0.6}>
         <View style={{ opacity: iconOpacity }}><Icon name="dots-vertical" color={theme['c-font']} rawSize={BTN_SIZE * 0.6} /></View>
       </TouchableOpacity>
       <PlayDetailMenu

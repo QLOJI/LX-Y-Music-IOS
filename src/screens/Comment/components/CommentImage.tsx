@@ -8,6 +8,7 @@ import { BorderWidths } from '@/theme'
 import { useTheme } from '@/store/theme/hook'
 import { useSettingValue } from '@/store/setting/hook'
 import { applyOpacity } from '@/utils/colorOpacity'
+import { useButtonRadius } from '@/utils/buttonRadius'
 
 const MAX_IMAGE_HEIGHT = scaleSizeH(260)
 
@@ -16,6 +17,7 @@ export default ({ url, maxWidth }: { url: string, maxWidth: number }) => {
   const [wh, setWH] = useState({ width: 0, height: 0 })
   const theme = useTheme()
   const buttonOpacity = useSettingValue('theme.buttonOpacity')
+  const buttonRadius = useButtonRadius()
 
   useEffect(() => {
     getSize(url, (realWidth, realHeight) => {
@@ -63,6 +65,8 @@ export default ({ url, maxWidth }: { url: string, maxWidth: number }) => {
             // 「显示图片」虚线按钮自身的底色与描边随「按钮透明度」淡出，只改颜色 alpha
             borderColor: applyOpacity(theme['c-border-background'], buttonOpacity),
             backgroundColor: applyOpacity(theme['c-primary-light-200-alpha-900'], buttonOpacity),
+            // 「显示图片」虚线按钮高度随图片占位框动态变化，无固定设计高度，按默认参考高度折算半高
+            borderRadius: buttonRadius(),
           }}
           onPress={() => {
             setShow(true)

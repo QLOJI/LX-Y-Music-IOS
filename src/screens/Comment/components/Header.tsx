@@ -12,12 +12,14 @@ import { HEADER_HEIGHT as _HEADER_HEIGHT, COMPONENT_IDS } from '@/config/constan
 import { scaleSizeH } from '@/utils/pixelRatio'
 import commonState from '@/store/common/state'
 import { useStatusbarHeight } from '@/store/common/hook'
+import { useButtonRadius } from '@/utils/buttonRadius'
 
 const HEADER_HEIGHT = scaleSizeH(_HEADER_HEIGHT)
 
 export default memo(({ musicInfo }: { musicInfo: LX.Music.MusicInfo }) => {
   const t = useI18n()
   const statusBarHeight = useStatusbarHeight()
+  const buttonRadius = useButtonRadius()
 
   const back = useCallback(() => {
     const commentComponent = commonState.componentIds.find(item => item.name === COMPONENT_IDS.comment)
@@ -30,7 +32,7 @@ export default memo(({ musicInfo }: { musicInfo: LX.Music.MusicInfo }) => {
     <View style={{ height: HEADER_HEIGHT + statusBarHeight, paddingTop: statusBarHeight }}>
       <StatusBar />
       <View style={{ ...styles.container }}>
-        <TouchableOpacity onPress={back} style={{ ...styles.button, width: HEADER_HEIGHT }}>
+        <TouchableOpacity onPress={back} style={{ ...styles.button, width: HEADER_HEIGHT, borderRadius: buttonRadius(18) /* 无底色图标按钮：可见高度 = 图标 18，行内覆盖「按钮圆角」 */ }}>
           <Icon name="chevron-left" size={18} />
         </TouchableOpacity>
         <Text numberOfLines={1} size={16} style={styles.title}>

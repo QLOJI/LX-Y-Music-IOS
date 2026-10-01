@@ -11,6 +11,7 @@ import playerState from '@/store/player/state'
 import { useIsWyLiked, useIsTxLiked, useIsKgLiked } from '@/store/user/hook'
 import { useWindowSize } from '@/utils/hooks'
 import SourceQualityBadge from '../../components/SourceQualityBadge'
+import { useButtonRadius } from '@/utils/buttonRadius'
 
 export default memo(({ componentId, onLayout }: {
   componentId: string
@@ -27,6 +28,7 @@ export default memo(({ componentId, onLayout }: {
 }) => {
   const playMusicInfo = usePlayMusicInfo()
   const theme = useTheme()
+  const buttonRadius = useButtonRadius()
   const { height: winHeight } = useWindowSize()
   const isSmallWindow = winHeight < 700
   const musicInfo = playMusicInfo.musicInfo ? ('progress' in playMusicInfo.musicInfo ? playMusicInfo.musicInfo.metadata.musicInfo : playMusicInfo.musicInfo) : null
@@ -115,7 +117,7 @@ export default memo(({ componentId, onLayout }: {
           </Text>
         </TouchableOpacity>
         {showLikeBtn && (
-          <TouchableOpacity onPress={handleLikePress} activeOpacity={0.6} style={styles.heartBtn}>
+          <TouchableOpacity onPress={handleLikePress} activeOpacity={0.6} style={[styles.heartBtn, { borderRadius: buttonRadius(28) /* 「按钮圆角」：点赞图标按钮，可见高度 ≈ 图标 28（styles.heartBtn 无固定高） */ }]}>
             <Icon name={isLiked ? 'love-filled' : 'love'} color={isLiked ? '#ff4d4f' : theme['c-font']} size={28} />
           </TouchableOpacity>
         )}

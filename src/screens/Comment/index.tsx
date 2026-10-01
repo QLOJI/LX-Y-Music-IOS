@@ -6,6 +6,7 @@ import { Icon } from '@/components/common/Icon'
 import CommentHot from './CommentHot'
 import CommentNew from './CommentNew'
 import { createStyle, toast } from '@/utils/tools'
+import { useButtonRadius } from '@/utils/buttonRadius'
 import { useTheme } from '@/store/theme/hook'
 import Text from '@/components/common/Text'
 import { useI18n } from '@/lang'
@@ -38,11 +39,12 @@ const HeaderItem = ({
   onPress: (id: ActiveId) => void
 }) => {
   const theme = useTheme()
+  const buttonRadius = useButtonRadius()
   // console.log(theme)
   const components = useMemo(
     () => (
       <TouchableOpacity
-        style={styles.tabBtn}
+        style={[styles.tabBtn, { borderRadius: buttonRadius(34) /* 顶部 Tab 按钮高 = BAR_HEIGHT 设计值 34：按自身高度折算半高 */ }]}
         onPress={() => {
           !isActive && onPress(id)
         }}
@@ -50,7 +52,7 @@ const HeaderItem = ({
         <Text color={isActive ? theme['c-primary-font-active'] : theme['c-font']}>{label}</Text>
       </TouchableOpacity>
     ),
-    [isActive, theme, label, onPress, id],
+    [isActive, theme, label, onPress, id, buttonRadius],
   )
 
   return components
@@ -135,6 +137,7 @@ export default memo(({ componentId }: { componentId: string }) => {
   )
   const t = useI18n()
   const theme = useTheme()
+  const buttonRadius = useButtonRadius()
   const [total, setTotal] = useState({ hot: 0, new: 0 })
   const commentInputRef = useRef<CommentInputType>(null)
   const [isSending, setIsSending] = useState(false)
@@ -302,7 +305,7 @@ export default memo(({ componentId }: { componentId: string }) => {
               ))}
           </View>
           <View>
-            <TouchableOpacity onPress={refreshComment} style={{ ...styles.btn, width: BAR_HEIGHT }}>
+            <TouchableOpacity onPress={refreshComment} style={{ ...styles.btn, width: BAR_HEIGHT, borderRadius: buttonRadius(34) /* 刷新按钮高 = BAR_HEIGHT 设计值 34：按自身高度折算半高，行内覆盖「按钮圆角」 */ }}>
               <Icon name="available_updates" size={20} color={theme['c-600']} />
             </TouchableOpacity>
           </View>
@@ -386,6 +389,7 @@ export default memo(({ componentId }: { componentId: string }) => {
     isSending,
     commentActions,
     isHorizontal,
+    buttonRadius,
   ])
 
   return (

@@ -39,7 +39,8 @@ const TRANSLATION_FONT_SIZE = 14
 // 定高定位要求行盒高度是一个确定值，不能交给字体度量。
 const LINE_HEIGHT_RATIO = 1.3
 // 行与行之间的净间距（定高布局下它就是行间距本身，三行恒等）
-const LINE_GAP_NORMAL = 8
+// 2026-10-01 用户要求「减少一半小歌词每行间距」：8 → 4
+const LINE_GAP_NORMAL = 4
 // 小屏（与 SongInfo / FeatureBtns 的判定阈值一致）空间不足：只保留当前行，
 // 避免三行定高窗口把歌名块顶出容器、压到下方控制条
 const SMALL_WINDOW_HEIGHT = 700
@@ -66,6 +67,28 @@ const SCROLL_NUDGE = 0.5
 // 拖动超过这么多 pt 才显示定位浮层：横向翻页会被外层 PagerView 抢走手势，
 // 那时列表只收到 beginDrag / endDrag（位移为 0），不该为此闪一个空浮层出来
 const OVERLAY_SHOW_MOVE = 2
+
+// 三个尺寸常量：字号 → 文字行高 → 行高（含行间距）。用 setSpText/scaleSizeH 与 Text 组件
+// 的缩放同源，全局字体调大时行高同步变大，不会出现「字被行高裁掉」。
+const calcMetrics = () => ({
+  lineHeight: Math.round(setSpText(BASE_FONT_SIZE) * LINE_HEIGHT_RATIO),
+  translationHeight: Math.round(setSpText(TRANSLATION_FONT_SIZE) * LINE_HEIGHT_RATIO),
+  gap: Math.max(scaleSizeH(LINE_GAP_NORMAL), 1),
+})
+
+/**
+ * 一行小歌词的整行高度（行盒 + 行间距；hasTranslation 时再叠加翻译行高度与它自己的间距）。
+ * 与组件内部的 rowHeight **同源**（同一个 calcMetrics）。独立出来的唯一原因：
+ * 竖屏布局（VerticalNew）必须知道「一行小歌词至少多高」，
+ * 才能把封面的尺寸上限压到「放得下这一行」——封面是 flexShrink:0 的居中块，
+ * 小歌词被强制渲染 ≥1 行时多出来的高度会直接把封面顶到歌名上（用户报的越界）。
+ * 调用方传 hasTranslation=true 取**最坏情况**，这样就不必订阅歌词内容：
+ * 常态机型上这条上限根本不生效，多算一点只是保守。
+ */
+export const getMiniLyricRowHeight = (hasTranslation: boolean) => {
+  const m = calcMetrics()
+  return m.lineHeight + m.gap + (hasTranslation ? m.translationHeight + m.gap : 0)
+}
 // 空占位必须用不换行空格：RN 里空字符串的 <Text> 高度为 0
 const BLANK = ' '
 
@@ -75,9 +98,11 @@ export interface MiniLyricProps {
   /** 外层样式（由竖屏封面页传入，含水平对齐）。 */
   style?: StyleProp<ViewStyle>
   /**
-   * 竖屏布局**实测**传入的「小歌词区域当前真实可用高度」（pt）。
-   * 语义是「返回栏底边 → 信息栏顶边」的实测像素高（布局系统的真实输出，
-   * 与字号 / 机型 / 封面尺寸同步），不是解析推导值。
+   * 竖屏布局推导传入的「小歌词区域可用高度」上限（pt）。
+   * 竖屏侧只用「与 MiniLyric 自身高度无关」的量算出（页面容器实测高 R − 容器留白 −
+   * SongInfo 实测高）：小歌词撑高自己不会反过来改这个上限，这是断开「行数 ⇄ 自身高度」
+   * 闪烁反馈环的结构条件；旧口径（用「返回栏底边 → 信息栏顶边」那段区域，把小歌词自身
+   * 高度也算了进去）会在阈值两侧 2 循环，观感就是持续闪烁。
    * 未传（首帧还没量到 / 老调用点）时用不依赖外部测量的保守上限兜底，
    * 保持旧行为（小屏只显示当前行）；**绝不能当成 0**，否则首帧塌陷。
    */
@@ -125,13 +150,8 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0 }: MiniLyricProps) =>
   const activeLineRef = useRef(activeLine)
   activeLineRef.current = activeLine
 
-  // 三个尺寸常量：字号 → 文字行高 → 行高（含行间距）。用 setSpText/scaleSizeH 与 Text 组件
-  // 的缩放同源，全局字体调大时行高同步变大，不会出现「字被行高裁掉」。
-  const metrics = useMemo(() => ({
-    lineHeight: Math.round(setSpText(BASE_FONT_SIZE) * LINE_HEIGHT_RATIO),
-    translationHeight: Math.round(setSpText(TRANSLATION_FONT_SIZE) * LINE_HEIGHT_RATIO),
-    gap: Math.max(scaleSizeH(LINE_GAP_NORMAL), 1),
-  }), [])
+  // 三个尺寸常量（模块级 calcMetrics，与 getMiniLyricRowHeight 共享同一份算式）
+  const metrics = useMemo(() => calcMetrics(), [])
 
   // 翻译/罗马音：旧实现只给当前行挂一行翻译。定高窗口里「某些行比别人高」会直接破坏
   // 等距与居中，所以只要整首歌存在翻译，就为每一行预留同一高度（没有的行渲染不可见占位）。
@@ -142,14 +162,17 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0 }: MiniLyricProps) =>
 
   const rowHeight = metrics.lineHeight + metrics.gap + (hasTranslation ? metrics.translationHeight + metrics.gap : 0)
 
-  // 可用高度上限：优先用竖屏布局实测传入的 maxHeight（该区域当前真实可用的高度）；
-  // 未传时退回到不依赖外部测量的保守上限 —— 小屏只留当前行，大屏按三行窗口给满。
+  // 可用高度上限：优先用竖屏布局传入的 maxHeight（竖屏侧由页面容器实测高推导，
+  // 表达式中不含小歌词自身高度）；未传时退回到不依赖外部测量的保守上限 ——
+  // 小屏只留当前行，大屏按三行窗口给满。
   // 注意这里不是 `?? 0`：首帧实测还没回来时若当成 0，整块会先塌陷再弹开。
   const limit = maxHeight ?? (winHeight < SMALL_WINDOW_HEIGHT ? rowHeight : rowHeight * FALLBACK_WINDOW_ROWS)
 
   // 档位（能放几行）必须断开「行数 → 自身高度 → 实测可用高度 → 行数」的自反馈环：
-  // maxHeight 是布局实测值，小歌词自己撑高后它可能变小，若在阈值上做硬判断，
-  // 阈值附近就会 3 行 ↔ 4 行来回抖。这里用滞回（Schmitt 触发器）：
+  // 旧口径的 maxHeight 把小歌词自身高度也算了进去（自己撑高后它反而变小），若在阈值上
+  // 做硬判断，阈值附近就会 3 行 ↔ 4 行来回抖。竖屏侧现已改用与 MiniLyric 高度无关的量
+  // 推导（见 VerticalNew 的 miniLyricMaxHeight），环从结构上断开；这里保留滞回
+  //（Schmitt 触发器）作第二道保险：
   //   升档：新的一行真的放得下、还多出 hysteresis 才升；
   //   降档：连当前行数都放不下、且超出 hysteresis 才降。
   // 两个方向都要多走一个余量才切档 ⇒ 环路增益 < 1，不自激。

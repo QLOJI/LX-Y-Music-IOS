@@ -6,6 +6,7 @@ import { useTheme } from '@/store/theme/hook'
 import { scaleSizeW } from '@/utils/pixelRatio'
 import type React from 'react'
 import { forwardRef } from 'react'
+import { useButtonRadius } from '@/utils/buttonRadius'
 
 export const BTN_WIDTH = scaleSizeW(36)
 export const BTN_ICON_SIZE = 24
@@ -22,10 +23,11 @@ const Btn = forwardRef(({
   onLongPress?: () => void
 }, ref: React.Ref<TouchableOpacity>) => {
   const theme = useTheme()
+  const buttonRadius = useButtonRadius()
   return (
     <TouchableOpacity
       ref={ref}
-      style={{ ...styles.cotrolBtn, width: BTN_WIDTH, height: BTN_WIDTH }}
+      style={[{ ...styles.cotrolBtn, width: BTN_WIDTH, height: BTN_WIDTH }, { borderRadius: buttonRadius(BTN_WIDTH) /* 「按钮圆角」：按钮自身 36×36（BTN_WIDTH，设计 36pt） */ }]}
       activeOpacity={0.5}
       onPress={onPress}
       onLongPress={onLongPress}
