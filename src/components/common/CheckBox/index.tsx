@@ -10,6 +10,7 @@ import { applyOpacity } from '@/utils/colorOpacity'
 import Text from '../Text'
 import { Icon } from '../Icon'
 import { designRadius, designSpacing } from '@/theme/DesignTokens'
+import { useButtonRadius } from '@/utils/buttonRadius'
 
 export interface CheckBoxProps {
   check: boolean
@@ -54,6 +55,8 @@ export default ({
 }: CheckBoxProps) => {
   const theme = useTheme()
   const buttonOpacity = useSettingValue('theme.buttonOpacity')
+  // 「按钮圆角」：卡片式行（设置页按钮式选项）行内覆盖，高度取 contentStyle.minHeight（block 52，否则 40）
+  const buttonRadius = useButtonRadius()
   const [isDisabled, setDisabled] = useState(false)
   const tintColors = {
     true: theme['c-primary'],
@@ -90,11 +93,14 @@ export default ({
       })
     }
     return (helpTitle ?? helpDesc) ? (
-      <TouchableOpacity style={styles.helpBtn} onPress={handleShowHelp}>
+      <TouchableOpacity
+        style={[styles.helpBtn, { borderRadius: buttonRadius(32) /* 「按钮圆角」：静态 32×32 图标按钮；32 = 设计原值，不要传 styles.helpBtn.height（已被 createStyle 预缩放） */ }]}
+        onPress={handleShowHelp}
+      >
         <Icon size={15 * size} name="help" />
       </TouchableOpacity>
     ) : null
-  }, [helpTitle, helpDesc, size])
+  }, [helpTitle, helpDesc, size, buttonRadius])
 
   // 统一行样式（对齐推荐页「排行榜」按钮）：圆角 designRadius.md + 1px 边框 +
   // 半透明主题色底。整行（block）时卡片铺满可用宽度、不预留右外边距；
@@ -133,7 +139,7 @@ export default ({
   )
 
   return disabled ? (
-    <View style={contentStyle}>
+    <View style={[contentStyle, { borderRadius: buttonRadius(block ? 52 : 40) /* 「按钮圆角」：卡片 minHeight block 52 / 否则 40 */ }]}>
       <CheckBox
         status={check ? 'checked' : 'unchecked'}
         disabled={true}
@@ -152,7 +158,7 @@ export default ({
       {helpComponent}
     </View>
   ) : (
-    <View style={contentStyle}>
+    <View style={[contentStyle, { borderRadius: buttonRadius(block ? 52 : 40) /* 「按钮圆角」：卡片 minHeight block 52 / 否则 40 */ }]}>
       <CheckBox
         status={check ? 'checked' : 'unchecked'}
         disabled={isDisabled}

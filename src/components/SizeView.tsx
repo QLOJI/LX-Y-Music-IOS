@@ -123,7 +123,9 @@ export default memo(
         }
       }
     }, [syncSafeAreaBottom])
-    return <View style={StyleSheet.absoluteFill} onLayout={handleLayout} />
+    // 该视图只用于 onLayout 量取窗口尺寸、不接收任何触摸：显式声明 pointerEvents="none"，
+    // 避免这个铺满全屏的透明视图参与命中测试（onLayout 与命中测试无关，不受影响）。
+    return <View style={StyleSheet.absoluteFill} onLayout={handleLayout} pointerEvents="none" />
   },
   () => true,
 )

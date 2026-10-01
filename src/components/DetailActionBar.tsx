@@ -7,6 +7,7 @@ import { createStyle } from '@/utils/tools'
 import { useTheme } from '@/store/theme/hook'
 import { useSettingValue } from '@/store/setting/hook'
 import { applyOpacity } from '@/utils/colorOpacity'
+import { useButtonRadius } from '@/utils/buttonRadius'
 import { useI18n } from '@/lang'
 import { designRadius, designSpacing } from '@/theme/DesignTokens'
 import { scaleSizeW } from '@/utils/pixelRatio'
@@ -20,6 +21,7 @@ import { scaleSizeW } from '@/utils/pixelRatio'
 export default memo(({ onPlayAll, onBack }: { onPlayAll: () => void, onBack: () => void }) => {
   const theme = useTheme()
   const buttonOpacity = useSettingValue('theme.buttonOpacity')
+  const buttonRadius = useButtonRadius()
   const t = useI18n()
 
   return (
@@ -30,6 +32,8 @@ export default memo(({ onPlayAll, onBack }: { onPlayAll: () => void, onBack: () 
           flexGrow: 1.45,
           // 按钮底色随「按钮透明度」设置淡出；图标/文字色不动（不用容器 style.opacity，否则内容会一起变淡）
           backgroundColor: applyOpacity(theme['c-primary'], buttonOpacity),
+          // 静态高 44（styles.controlBtn.height），行内覆盖「按钮圆角」
+          borderRadius: buttonRadius(44),
         })}
       >
         <View style={styles.primaryContent}>
@@ -49,6 +53,8 @@ export default memo(({ onPlayAll, onBack }: { onPlayAll: () => void, onBack: () 
         style={StyleSheet.compose(styles.controlBtn, {
           // 同上：只淡按钮自身底色，文字色不动
           backgroundColor: applyOpacity(theme['c-primary-background'], buttonOpacity),
+          // 静态高 44（styles.controlBtn.height），行内覆盖「按钮圆角」
+          borderRadius: buttonRadius(44),
         })}
       >
         <Text style={{ ...styles.controlBtnText, color: theme['c-primary-font'] }}>

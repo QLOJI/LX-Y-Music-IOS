@@ -353,7 +353,12 @@ export const handleKgLikeMusic = async(musicInfo: LX.Music.MusicInfoOnline) => {
 }
 
 /**
- * 列表里点一首歌：加入默认列表并从该位置开始播放。
+ * 单首歌加入默认列表（试听列表）并从该位置开始播放。
+ *
+ * 与 `onPlayList`（整份列表写入试听列表，见 core/playListToDefault）的分工：
+ * 在线列表**点行**时，凡调用方传了 onPlayList 的一律走「整份写入」，本函数不再是
+ * 行点击的入口；它现在服务于「只播这一首、不动其它歌」的场景——行菜单里的「播放」，
+ * 以及未传 onPlayList 的列表，语义都是「追加上去 + 播这一首」。
  *
  * 必须保证「点了一定有反馈」：原先的实现是
  *   加入默认列表 → 在列表里按 id 找回下标 → 找不到就 return（静默）

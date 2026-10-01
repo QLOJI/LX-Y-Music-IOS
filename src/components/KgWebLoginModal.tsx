@@ -9,6 +9,7 @@ import { Icon } from '@/components/common/Icon'
 import Text from '@/components/common/Text'
 import { toast } from '@/utils/tools'
 import { applyOpacity } from '@/utils/colorOpacity'
+import { useButtonRadius } from '@/utils/buttonRadius'
 import { sendCaptcha, loginByPhone, buildCookieString, getVerifyInfo, verifyUserInfo } from '@/utils/musicSdk/kg/utils/api'
 
 export interface KgWebLoginModalType { show: () => void }
@@ -29,6 +30,7 @@ const KgWebLoginModal = forwardRef<KgWebLoginModalType, object>((_, ref) => {
   const modalRef = useRef<ModalType>(null)
   const theme = useTheme()
   const buttonOpacity = useSettingValue('theme.buttonOpacity')
+  const buttonRadius = useButtonRadius()
   const [phone, setPhone] = useState('')
   const [code, setCode] = useState('')
   const [sending, setSending] = useState(false)
@@ -139,7 +141,14 @@ const KgWebLoginModal = forwardRef<KgWebLoginModalType, object>((_, ref) => {
     <Modal ref={modalRef} statusBarPadding={false} bgHide={false} bgColor="rgba(0,0,0,0.5)">
       <View style={styles.container}>
         <View style={[styles.header, { height: 56 + useStatusbarHeight(), paddingTop: useStatusbarHeight(), backgroundColor: theme['c-content-background'] }]}>
-          <TouchableOpacity onPress={handleClose} style={styles.backBtn}><Icon name="chevron-left" size={26} color={theme['c-font']} /></TouchableOpacity>
+          <TouchableOpacity
+            onPress={handleClose}
+            style={[
+              styles.backBtn,
+              // 无固定高度：以可见高度 42（图标 26 + 上下 padding 各 8）作依据
+              { borderRadius: buttonRadius(42) },
+            ]}
+          ><Icon name="chevron-left" size={26} color={theme['c-font']} /></TouchableOpacity>
           <Text size={18}>登录</Text>
           <View style={{ width: 44 }} />
         </View>
@@ -148,17 +157,29 @@ const KgWebLoginModal = forwardRef<KgWebLoginModalType, object>((_, ref) => {
           <View style={[styles.inputRow, { borderBottomColor: (theme as any)['c-border'] }]}>
             <Text size={15} color={theme['c-font']}>+86  |  </Text>
             <TextInput style={[styles.input, { color: theme['c-font'] }]} placeholder="手机号" placeholderTextColor={theme['c-font-label']} keyboardType="phone-pad" value={phone} onChangeText={setPhone} maxLength={11} editable={!logging} />
-            {phone.length > 0 && <TouchableOpacity onPress={() => { setPhone('') }}><Icon name="close" size={18} color={theme['c-font-label']} /></TouchableOpacity>}
+            {phone.length > 0 && <TouchableOpacity onPress={() => { setPhone('') }} style={{
+              // 无固定高度：以图标本体 18（Icon size=18）作可见高度
+              borderRadius: buttonRadius(18),
+            }}><Icon name="close" size={18} color={theme['c-font-label']} /></TouchableOpacity>}
           </View>
           <View style={[styles.inputRow, { borderBottomColor: (theme as any)['c-border'] }]}>
             <TextInput style={[styles.input, { color: theme['c-font'] }]} placeholder="验证码" placeholderTextColor={theme['c-font-label']} keyboardType="number-pad" value={code} onChangeText={setCode} maxLength={6} editable={!logging} />
-            <TouchableOpacity onPress={handleSendCode} disabled={countdown > 0 || sending || cooldown > 0 || logging}>
+            <TouchableOpacity
+              onPress={handleSendCode}
+              disabled={countdown > 0 || sending || cooldown > 0 || logging}
+              style={{
+                // 无固定高度：以 14 号字默认行高 ≈ 16（14 × 1.15，Text 全局行高基线）作可见高度
+                borderRadius: buttonRadius(16),
+              }}
+            >
               <Text size={14} color={countdown > 0 || cooldown > 0 ? theme['c-font-label'] : '#1677ff'}>{countdown > 0 ? `${countdown}s` : sending ? '发送中...' : cooldown > 0 ? '请稍候' : '获取验证码'}</Text>
             </TouchableOpacity>
           </View>
           <TouchableOpacity style={[styles.loginBtn, {
             // 登录按钮底色随「按钮透明度」淡出；文字色不动（logging 态用的 c-border 主题里无此键、运行时为 undefined，保持原样）
             backgroundColor: logging ? (theme as any)['c-border'] : applyOpacity('#1677ff', buttonOpacity),
+            // 可见高度 ≈ 46 = 16 号字默认行高 18（16 × 1.15）+ 上下 padding 14×2，行内覆盖「按钮圆角」
+            borderRadius: buttonRadius(46),
           }]} onPress={handleLogin} disabled={logging}>
             <Text size={16} color="#fff">{logging ? '登录中...' : '登录'}</Text>
           </TouchableOpacity>
@@ -189,10 +210,17 @@ const KgWebLoginModal = forwardRef<KgWebLoginModalType, object>((_, ref) => {
                   // 按钮底色随「按钮透明度」淡出；文字色不动
                   backgroundColor: applyOpacity('#1677ff', buttonOpacity),
                   marginTop: 20,
+                  // 可见高度 ≈ 46（依据同登录按钮：16 号字默认行高 18 + 上下 padding 14×2）
+                  borderRadius: buttonRadius(46),
                 }]} onPress={async() => handleMultiLogin(selectedId)} disabled={!selectedId.trim()} activeOpacity={0.8}>
                   <Text size={16} color="#fff">确定登录</Text>
                 </TouchableOpacity>
-                <TouchableOpacity style={[styles.modalBtn, { backgroundColor: (theme as any)['c-border'], marginTop: 10 }]} onPress={() => { setShowMultiAccount(false); setPendingData(null); setSelectedId('') }} activeOpacity={0.8}>
+                <TouchableOpacity style={[styles.modalBtn, {
+                  backgroundColor: (theme as any)['c-border'],
+                  marginTop: 10,
+                  // 可见高度 ≈ 46（依据同登录按钮：16 号字默认行高 18 + 上下 padding 14×2）
+                  borderRadius: buttonRadius(46),
+                }]} onPress={() => { setShowMultiAccount(false); setPendingData(null); setSelectedId('') }} activeOpacity={0.8}>
                   <Text size={16} color="#fff">取消</Text>
                 </TouchableOpacity>
               </View>

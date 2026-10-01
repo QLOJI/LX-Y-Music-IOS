@@ -85,10 +85,19 @@ const LiquidGlass = memo(({ tint, glassOpacity = 0.4, dark = false, liquid = fal
   // theme.liquidGlass=true）时，液态 prop 也到不了原生。契约守卫：
   // scripts/sim-glass-dark-contract.js 不变量8（comp-fallback）。
   const effectiveLiquid = liquid && !isIOS26_2OrAbove
-  // 深色模式可读性保底：用户值与保底取大（仅磨砂形态的覆层；液态形态 glassOpacity
-  // 本就无作用，不受影响）。浅色模式 floor=0，行为不变。
+  // 深色模式可读性保底（仅磨砂形态的覆层；液态形态 glassOpacity 本就无作用，不受影响）。
+  // **不能**用 max(用户值, 保底)：那样 0~保底 一整段会被钳成同一个最终 alpha，滑条前三分之一
+  // 物理零响应 —— 而 LGGlassViewFactory.swift 里 maxTintAlpha 的注释明写着
+  // 「不会让滑块出现『拖到某一段没反应』的假区间」，即 JS 侧原先违反了原生侧声明的口径。
+  // 改为把用户全域**仿射映射**到 [保底, 1]：两端点与旧实现逐点相同（0 → 保底 0.2 最终 alpha、
+  // 1 → 原生上限 0.6），中间严格递增、全域可调；且每一取值都落在
+  // scripts/sim-glass-contrast.js 断言7 认证过的深色 [0.2, 0.6] alpha 带内，AA 论证不变。
+  // 口径代价：深色默认 40 的最终 alpha 由 0.24 变为 0.36（可读性只增不减）。
+  // 浅色模式 floor=0，行为与旧实现逐字相同。
   const effectiveGlassOpacity = useMemo(
-    () => (dark ? Math.max(glassOpacity, DARK_OVERLAY_FLOOR_USER) : glassOpacity),
+    () => (dark
+      ? DARK_OVERLAY_FLOOR_USER + (1 - DARK_OVERLAY_FLOOR_USER) * Math.min(Math.max(glassOpacity, 0), 1)
+      : glassOpacity),
     [dark, glassOpacity],
   )
   // 原生 RCTConvert UIColor: 只认 processColor 预处理后的数值（rgb()/rgba() 字符串

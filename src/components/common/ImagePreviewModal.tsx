@@ -7,6 +7,7 @@ import { createStyle, toast } from '@/utils/tools'
 import { saveImageToPictures } from '@/utils/image'
 import Text from './Text'
 import { useTheme } from '@/store/theme/hook'
+import { useButtonRadius } from '@/utils/buttonRadius'
 
 interface Props {
   visible: boolean
@@ -18,6 +19,8 @@ interface Props {
 export default memo(({ visible, url, name = 'image', onClose }: Props) => {
   const windowSize = useWindowSize()
   const theme = useTheme()
+  // 「按钮圆角」：保存按钮行内覆盖（高度取静态 styles.saveButton.height，设计值 44）
+  const buttonRadius = useButtonRadius()
   const [isActionVisible, setActionVisible] = useState(false)
   const imageUrl = typeof url == 'string' && url.startsWith('/') ? `file://${url}` : url
   const maxImageSize = useMemo(() => ({
@@ -105,7 +108,11 @@ export default memo(({ visible, url, name = 'image', onClose }: Props) => {
                       backgroundColor: theme['c-content-background'],
                     }}
                   >
-                    <TouchableOpacity style={styles.saveButton} activeOpacity={0.75} onPress={handleSave}>
+                    <TouchableOpacity
+                      style={[styles.saveButton, { borderRadius: buttonRadius(44) /* 44 = 设计原值；不要传 styles.saveButton.height，它已被 createStyle 预缩放 */ }]}
+                      activeOpacity={0.75}
+                      onPress={handleSave}
+                    >
                       <Text size={15}>保存图片</Text>
                     </TouchableOpacity>
                   </View>

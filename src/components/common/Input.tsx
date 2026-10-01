@@ -4,6 +4,7 @@ import { Icon } from '@/components/common/Icon'
 import { createStyle } from '@/utils/tools'
 import { useTheme } from '@/store/theme/hook'
 import { setSpText } from '@/utils/pixelRatio'
+import { useButtonRadius } from '@/utils/buttonRadius'
 
 const styles = createStyle({
   content: {
@@ -61,6 +62,8 @@ export default forwardRef<InputType, InputProps>(
   ({ onChangeText, onClearText, clearBtn, style, size = 14, ...props }, ref) => {
     const inputRef = useRef<TextInput>(null)
     const theme = useTheme()
+    // 「按钮圆角」：输入框与行内清除按钮的行内覆盖（静态 styles.input.borderRadius 原样保留作兜底）
+    const buttonRadius = useButtonRadius()
     // const scaleClearBtn = useRef(new Animated.Value(0)).current
 
     useImperativeHandle(ref, () => ({
@@ -119,7 +122,13 @@ export default forwardRef<InputType, InputProps>(
           onChangeText={changeText}
           autoComplete="off"
           style={StyleSheet.compose(
-            { ...styles.input, color: theme['c-font'], fontSize: setSpText(size) },
+            {
+              ...styles.input,
+              color: theme['c-font'],
+              fontSize: setSpText(size),
+              // 单行输入框静态高 32（styles.input.height），行内覆盖圆角；调用方 style 仍优先
+              borderRadius: buttonRadius(32) /* 32 = 设计原值；不要传 styles.input.height，它已被 createStyle 预缩放，传它会二次缩放 */,
+            },
             style,
           )}
           placeholderTextColor={theme['c-primary-dark-100-alpha-600']}
@@ -131,7 +140,10 @@ export default forwardRef<InputType, InputProps>(
       <Animated.View style={{ ...styles.clearBtnContent, transform: [{ scale: scaleClearBtn }] }}> */}
         {clearBtn ? (
           <View style={styles.clearBtnContent}>
-            <TouchableOpacity style={styles.clearBtn} onPress={clearText}>
+            <TouchableOpacity
+              style={[styles.clearBtn, { borderRadius: buttonRadius(11) /* 「按钮圆角」：无纵向 padding，以图标本体 11（Icon size=11）作可见高度 */ }]}
+              onPress={clearText}
+            >
               <Icon name="remove" color={theme['c-primary-dark-100-alpha-500']} size={11} />
             </TouchableOpacity>
           </View>

@@ -8,6 +8,7 @@ import { getExternalStoragePaths, stat } from '@/utils/fs'
 import { useTheme } from '@/store/theme/hook'
 import { scaleSizeH } from '@/utils/pixelRatio'
 import { useStatusbarHeight } from '@/store/common/hook'
+import { useButtonRadius } from '@/utils/buttonRadius'
 import NewFolderModal, { type NewFolderType } from './NewFolderModal'
 import OpenStorageModal, { type OpenDirModalType } from './OpenStorageModal'
 import type { PathItem } from './ListItem'
@@ -25,6 +26,7 @@ export default memo(
     onOpenDir: (dir: string) => Promise<PathItem[]>
   }) => {
     const theme = useTheme()
+    const buttonRadius = useButtonRadius()
     const newFolderTypeRef = useRef<NewFolderType>(null)
     const openDirModalTypeRef = useRef<OpenDirModalType>(null)
     const storagePathsRef = useRef<string[]>([])
@@ -85,13 +87,22 @@ export default memo(
             </Text>
           </View>
           <View style={styles.actions}>
-            <TouchableOpacity style={styles.actionBtn} onPress={openStorage}>
+            <TouchableOpacity
+              style={[styles.actionBtn, { borderRadius: buttonRadius(38) /* 图标按钮可见高度 ≈ 图标 22 + 上下 padding 8×2 = 38 */ }]}
+              onPress={openStorage}
+            >
               <Icon name="sd-card" color={theme['c-primary-font']} size={22} />
             </TouchableOpacity>
-            <TouchableOpacity style={styles.actionBtn} onPress={handleShowNewFolderModal}>
+            <TouchableOpacity
+              style={[styles.actionBtn, { borderRadius: buttonRadius(38) /* 同左：38 */ }]}
+              onPress={handleShowNewFolderModal}
+            >
               <Icon name="add_folder" color={theme['c-primary-font']} size={22} />
             </TouchableOpacity>
-            <TouchableOpacity style={styles.actionBtn} onPress={refresh}>
+            <TouchableOpacity
+              style={[styles.actionBtn, { borderRadius: buttonRadius(38) /* 同左：38 */ }]}
+              onPress={refresh}
+            >
               <Icon name="available_updates" color={theme['c-primary-font']} size={22} />
             </TouchableOpacity>
           </View>

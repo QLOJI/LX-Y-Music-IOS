@@ -9,6 +9,7 @@ import { Icon } from '@/components/common/Icon'
 import Text from '@/components/common/Text'
 import { toast } from '@/utils/tools'
 import { applyOpacity } from '@/utils/colorOpacity'
+import { useButtonRadius } from '@/utils/buttonRadius'
 import wyApi from '@/utils/musicSdk/wy/user'
 import CookieManager from '@react-native-cookies/cookies'
 import { designRadius, designSpacing, designTypography } from '@/theme/DesignTokens'
@@ -23,6 +24,7 @@ export interface WebLoginModalType {
 
 const Header = ({ onClose }: { onClose: () => void }) => {
   const theme = useTheme()
+  const buttonRadius = useButtonRadius()
   const statusBarHeight = useStatusbarHeight()
 
   return (
@@ -37,7 +39,14 @@ const Header = ({ onClose }: { onClose: () => void }) => {
         },
       ]}
     >
-      <TouchableOpacity onPress={onClose} style={styles.backButton}>
+      <TouchableOpacity
+        onPress={onClose}
+        style={[
+          styles.backButton,
+          // 无固定高度：以可见高度 40（图标 24 + 上下 padding 各 designSpacing.xs(8)）作依据
+          { borderRadius: buttonRadius(40) },
+        ]}
+      >
         <Icon name="chevron-left" size={24} color={theme['c-font']} />
       </TouchableOpacity>
       <Text size={designTypography.title}>网易云音乐登录</Text>
@@ -53,6 +62,7 @@ export default forwardRef<WebLoginModalType, {}>((props, ref) => {
   const pollingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const theme = useTheme()
   const buttonOpacity = useSettingValue('theme.buttonOpacity')
+  const buttonRadius = useButtonRadius()
 
   const stopPolling = useCallback(() => {
     if (pollingIntervalRef.current) {
@@ -255,6 +265,8 @@ export default forwardRef<WebLoginModalType, {}>((props, ref) => {
             style={[styles.getCookieBtn, {
               // 按钮底面随「按钮透明度」淡出；只改颜色 alpha，不用容器 opacity
               backgroundColor: applyOpacity(theme['c-primary'], buttonOpacity),
+              // 静态高 44（styles.getCookieBtn.height），行内覆盖「按钮圆角」
+              borderRadius: buttonRadius(44),
             }]}
             activeOpacity={0.8}
           >

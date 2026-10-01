@@ -5,8 +5,11 @@ import Button from './Button'
 import { createStyle } from '@/utils/tools'
 import { useI18n } from '@/lang/index'
 import { useTheme } from '@/store/theme/hook'
+import { useSettingValue } from '@/store/setting/hook'
+import { applyOpacity } from '@/utils/colorOpacity'
 import Text from './Text'
 import { designRadius, designSpacing } from '@/theme/DesignTokens'
+import { useButtonRadius } from '@/utils/buttonRadius'
 
 const styles = createStyle({
   main: {
@@ -99,6 +102,9 @@ export default forwardRef<LogConfirmAlertType, LogConfirmAlertProps>(
     ref,
   ) => {
     const theme = useTheme()
+    const buttonOpacity = useSettingValue('theme.buttonOpacity')
+    // 「按钮圆角」：三颗弹窗按钮同高，行内覆盖（高度取静态 styles.btn.height，设计值 36）
+    const buttonRadius = useButtonRadius()
     const t = useI18n()
 
     const dialogRef = useRef<DialogType>(null)
@@ -141,7 +147,9 @@ export default forwardRef<LogConfirmAlertType, LogConfirmAlertProps>(
             style={{
               ...styles.btn,
               ...(reverseBtn ? styles.btnReversedDirection : styles.btnDirection),
-              backgroundColor: theme['c-button-background'],
+              // 取消按钮底色随「按钮透明度」淡出；只改颜色 alpha，不用容器 style.opacity
+              backgroundColor: applyOpacity(theme['c-button-background'], buttonOpacity),
+              borderRadius: buttonRadius(36) /* 36 = 设计原值；不要传 styles.btn.height，它已被 createStyle 预缩放，传它会二次缩放 */,
             }}
             onPress={handleCancel}
           >
@@ -152,7 +160,9 @@ export default forwardRef<LogConfirmAlertType, LogConfirmAlertProps>(
               style={{
                 ...styles.btn,
                 ...(reverseBtn ? styles.btnReversedDirection : styles.btnDirection),
-                backgroundColor: theme['c-button-background'],
+                // 中间按钮底色随「按钮透明度」淡出；只改颜色 alpha，不用容器 style.opacity
+                backgroundColor: applyOpacity(theme['c-button-background'], buttonOpacity),
+                borderRadius: buttonRadius(36) /* 36 = 设计原值；不要传 styles.btn.height，它已被 createStyle 预缩放，传它会二次缩放 */,
               }}
               onPress={onMiddle}
             >
@@ -164,7 +174,9 @@ export default forwardRef<LogConfirmAlertType, LogConfirmAlertProps>(
               style={{
                 ...styles.btn,
                 ...(reverseBtn ? styles.btnReversedDirection : styles.btnDirection),
-                backgroundColor: theme['c-button-background'],
+                // 确认按钮底色随「按钮透明度」淡出；只改颜色 alpha，不用容器 style.opacity
+                backgroundColor: applyOpacity(theme['c-button-background'], buttonOpacity),
+                borderRadius: buttonRadius(36) /* 36 = 设计原值；不要传 styles.btn.height，它已被 createStyle 预缩放，传它会二次缩放 */,
               }}
               onPress={onConfirm}
               disabled={disabledConfirm}

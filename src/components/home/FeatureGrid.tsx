@@ -6,6 +6,7 @@ import { confirmDialog, createStyle, exitApp as backHome } from '@/utils/tools'
 import { useTheme } from '@/store/theme/hook'
 import { useSettingValue } from '@/store/setting/hook'
 import { applyOpacity } from '@/utils/colorOpacity'
+import { useButtonRadius } from '@/utils/buttonRadius'
 import { useI18n } from '@/lang'
 import { exitApp, setNavActiveId } from '@/core/common'
 import { designRadius, designSpacing } from '@/theme/DesignTokens'
@@ -94,6 +95,9 @@ const FeatureGrid = memo(() => {
   )
 
   const buttonOpacity = useSettingValue('theme.buttonOpacity')
+  // 「按钮圆角」必须订阅后行内覆盖（createStyle 的样式在模块加载时已固化）；
+  // 行高在 styles.row 里写的是 scaleSizeH(64)，故传它的设计高度 64 而非 styles.row.height。
+  const buttonRadius = useButtonRadius()
 
   // 入口行的底色、按下态高亮与图标底框都随「按钮透明度」淡出；文字色与图标色不动。
   // 只作用于颜色 alpha，不用容器 style.opacity——后者会把整行文字一起变淡。
@@ -127,7 +131,15 @@ const FeatureGrid = memo(() => {
       {features.map(item => (
         <Pressable
           key={item.id}
-          style={({ pressed }) => [styles.row, rowStyle, pressed ? rowPressedStyle : null]}
+          style={({ pressed }) => [
+            styles.row,
+            rowStyle,
+            pressed ? rowPressedStyle : null,
+            // 行高在 createStyle 里写死 scaleSizeH(64)，所以这里的参数是该行的**设计高度 64**
+            // （与相邻歌单卡片 PlaylistCard 一致，两段列表同时变圆）；radiusFor 内部对 64 走同一个
+            // scaleSizeH，得出来的正是这块行高的真实半高，不能把 styles.row.height（已缩放值）再喂进去。
+            { borderRadius: buttonRadius(64) },
+          ]}
           onPress={() => {
             if (item.id === 'back_home') {
               backHome()

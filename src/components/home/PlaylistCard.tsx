@@ -3,6 +3,7 @@ import { Pressable, StyleSheet, View } from 'react-native'
 import { useTheme } from '@/store/theme/hook'
 import { createStyle } from '@/utils/tools'
 import { formatPlayCountText } from '@/utils'
+import { useButtonRadius } from '@/utils/buttonRadius'
 import { designRadius, designSpacing, designTypography } from '@/theme/DesignTokens'
 import { NAV_SHEAR_NATIVE_IDS } from '@/config/constant'
 import type { ListInfoItem } from '@/store/songlist/state'
@@ -50,6 +51,7 @@ const styles = createStyle({
 
 const PlaylistCard = memo(({ item, width, onPress }: PlaylistCardProps) => {
   const theme = useTheme()
+  const buttonRadius = useButtonRadius()
   const playCount = formatPlayCountText(item.play_count)
 
   const coverStyle = useMemo(
@@ -72,7 +74,11 @@ const PlaylistCard = memo(({ item, width, onPress }: PlaylistCardProps) => {
     <Pressable style={{ width }} onPress={() => { onPress(item) }}>
       <View>
         <Image
-          style={coverStyle}
+          style={[
+            coverStyle,
+            // 封面圆角随「按钮圆角」设置行内覆盖；封面为正方形（aspectRatio: 1），自身高度 = 传入的 width（布局值）
+            { borderRadius: buttonRadius(width) },
+          ]}
           url={item.img}
           nativeID={`${NAV_SHEAR_NATIVE_IDS.songlistDetail_pic}_from_${item.id}`}
         />

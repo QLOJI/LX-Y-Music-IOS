@@ -3,6 +3,7 @@ import { Pressable, StyleSheet, View } from 'react-native'
 import { useTheme } from '@/store/theme/hook'
 import { useSettingValue } from '@/store/setting/hook'
 import { applyOpacity } from '@/utils/colorOpacity'
+import { useButtonRadius } from '@/utils/buttonRadius'
 import { createStyle } from '@/utils/tools'
 import { designRadius, designSpacing, designTypography } from '@/theme/DesignTokens'
 import { SvgIcon } from '@/components/common/Icon'
@@ -44,6 +45,7 @@ const styles = createStyle({
 const DailyRecommendCard = memo(({ title, subtitle, onPress }: DailyRecommendCardProps) => {
   const theme = useTheme()
   const buttonOpacity = useSettingValue('theme.buttonOpacity')
+  const buttonRadius = useButtonRadius()
 
   // 整卡是一颗按钮（点击进入每日推荐）：底色与图标底框随「按钮透明度」淡出。
   // 只改颜色 alpha，不用容器 style.opacity——否则标题/副标题会一起变淡。
@@ -62,7 +64,14 @@ const DailyRecommendCard = memo(({ title, subtitle, onPress }: DailyRecommendCar
   )
 
   return (
-    <Pressable style={cardStyle} onPress={onPress}>
+    <Pressable
+      style={[
+        cardStyle,
+        // 整卡是一颗按钮（与「按钮透明度」的覆盖口径一致）；高度取 styles.card 的源值 72
+        { borderRadius: buttonRadius(72) },
+      ]}
+      onPress={onPress}
+    >
       <View style={iconContentStyle}>
         <SvgIcon name="calendar" size={22} color={theme['c-primary-light-1000']} />
       </View>

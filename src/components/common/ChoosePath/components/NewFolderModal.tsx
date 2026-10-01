@@ -6,6 +6,7 @@ import ConfirmAlert, { type ConfirmAlertType } from '@/components/common/Confirm
 import { createStyle, toast } from '@/utils/tools'
 import { mkdir } from '@/utils/fs'
 import { useTheme } from '@/store/theme/hook'
+import { useButtonRadius } from '@/utils/buttonRadius'
 import type { PathItem } from './ListItem'
 const filterFileName = /[\\/:*?#"<>|]/
 
@@ -16,6 +17,7 @@ interface NameInputType {
 }
 const NameInput = forwardRef<NameInputType, {}>((props, ref) => {
   const theme = useTheme()
+  const buttonRadius = useButtonRadius()
   const [text, setText] = useState('')
   const inputRef = useRef<InputType>(null)
 
@@ -37,7 +39,12 @@ const NameInput = forwardRef<NameInputType, {}>((props, ref) => {
       placeholder={global.i18n.t('create_new_folder_tip')}
       value={text}
       onChangeText={setText}
-      style={{ ...styles.input, backgroundColor: theme['c-primary-input-background'] }}
+      style={{
+        ...styles.input,
+        backgroundColor: theme['c-primary-input-background'],
+        // 单行输入框：高度 32 取自 common/Input 的 styles.input.height（调用点未覆盖）
+        borderRadius: buttonRadius(32),
+      }}
     />
   )
 })

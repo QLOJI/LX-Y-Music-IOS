@@ -5,6 +5,7 @@ import WebView, { type WebViewNavigation } from 'react-native-webview'
 import { useTheme } from '@/store/theme/hook'
 import { useSettingValue } from '@/store/setting/hook'
 import { applyOpacity } from '@/utils/colorOpacity'
+import { useButtonRadius } from '@/utils/buttonRadius'
 import { useStatusbarHeight } from '@/store/common/hook'
 import { Icon } from '@/components/common/Icon'
 import Text from '@/components/common/Text'
@@ -22,6 +23,7 @@ const Header = ({ onClose, onLogout }: { onClose: () => void, onLogout: () => vo
   const theme = useTheme()
   const statusBarHeight = useStatusbarHeight()
   const buttonOpacity = useSettingValue('theme.buttonOpacity')
+  const buttonRadius = useButtonRadius()
 
   return (
     <View
@@ -35,7 +37,16 @@ const Header = ({ onClose, onLogout }: { onClose: () => void, onLogout: () => vo
         },
       ]}
     >
-      <TouchableOpacity onPress={onClose} style={styles.backButton} activeOpacity={0.7}>
+      <TouchableOpacity
+        onPress={onClose}
+        style={[
+          styles.backButton,
+          // 无固定高度：以可见高度 42（图标 26 + 上下 padding 各 designSpacing.xs(8)）作依据；
+          // 静态 borderRadius: designRadius.sm 原样保留，本行内值才是生效值
+          { borderRadius: buttonRadius(42) },
+        ]}
+        activeOpacity={0.7}
+      >
         <Icon name="chevron-left" size={26} color={theme['c-font']} />
       </TouchableOpacity>
       <Text size={designTypography.title}>QQ音乐登录</Text>
@@ -45,6 +56,8 @@ const Header = ({ onClose, onLogout }: { onClose: () => void, onLogout: () => vo
           styles.logoutButton,
           // 按钮底面随「按钮透明度」淡出，只改颜色 alpha，文字/图标色不动
           { backgroundColor: applyOpacity('#ff6b6b', buttonOpacity) },
+          // 静态高 32（styles.logoutButton.height），行内覆盖「按钮圆角」
+          { borderRadius: buttonRadius(32) },
         ]}
         activeOpacity={0.8}
       >
@@ -93,6 +106,7 @@ const QQWebLoginModal = forwardRef<QQWebLoginModalType, object>((props, ref) => 
   const webViewRef = useRef<any>(null)
   const theme = useTheme()
   const buttonOpacity = useSettingValue('theme.buttonOpacity')
+  const buttonRadius = useButtonRadius()
   const [isLoading, setIsLoading] = useState(true)
 
   useImperativeHandle(ref, () => ({
@@ -191,6 +205,8 @@ const QQWebLoginModal = forwardRef<QQWebLoginModalType, object>((props, ref) => 
               styles.getCookieBtn,
               // 按钮底面随「按钮透明度」淡出，只改颜色 alpha，文字色不动
               { backgroundColor: applyOpacity(theme['c-primary'], buttonOpacity) },
+              // 静态高 44（styles.getCookieBtn.height），行内覆盖「按钮圆角」
+              { borderRadius: buttonRadius(44) },
             ]}
             activeOpacity={0.8}
           >

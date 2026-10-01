@@ -10,6 +10,7 @@ import { useStatusbarHeight } from '@/store/common/hook'
 import { Icon } from '@/components/common/Icon'
 import Text from '@/components/common/Text'
 import { getVerifyInfo, verifyUserInfo } from '@/utils/musicSdk/kg/utils/api'
+import { useButtonRadius } from '@/utils/buttonRadius'
 
 export interface KgVerifyModalType {
   show: (ssaCode: string, onComplete?: (success: boolean) => void) => void
@@ -17,10 +18,19 @@ export interface KgVerifyModalType {
 
 const Header = ({ onClose }: { onClose: () => void }) => {
   const statusBarHeight = useStatusbarHeight()
+  const buttonRadius = useButtonRadius()
 
   return (
     <View style={[styles.header, { height: 56 + statusBarHeight, paddingTop: statusBarHeight, backgroundColor: '#fff' }]}>
-      <TouchableOpacity onPress={onClose} style={styles.backButton} activeOpacity={0.7}>
+      <TouchableOpacity
+        onPress={onClose}
+        style={[
+          styles.backButton,
+          // 无固定高度：以可见高度 42（图标 26 + 上下 padding 各 8）作依据
+          { borderRadius: buttonRadius(42) },
+        ]}
+        activeOpacity={0.7}
+      >
         <Icon name="chevron-left" size={26} color="#333" />
       </TouchableOpacity>
       <Text size={18} color="#333">验证</Text>

@@ -7,6 +7,7 @@ import { useStatusbarHeight } from '@/store/common/hook'
 import { Icon } from '@/components/common/Icon'
 import Text from '@/components/common/Text'
 import { toast } from '@/utils/tools'
+import { useButtonRadius } from '@/utils/buttonRadius'
 
 const LOGIN_URL = 'https://music.youtube.com/'
 const SUCCESS_URL_FLAG = 'music.youtube.com'
@@ -18,9 +19,17 @@ export interface YouTubeLoginModalType {
 const Header = ({ onClose }: { onClose: () => void }) => {
   const theme = useTheme()
   const statusBarHeight = useStatusbarHeight()
+  const buttonRadius = useButtonRadius()
   return (
     <View style={[styles.header, { height: 50 + statusBarHeight, paddingTop: statusBarHeight, backgroundColor: theme['c-content-background'] }]}>
-      <TouchableOpacity onPress={onClose} style={styles.backButton}>
+      <TouchableOpacity
+        onPress={onClose}
+        style={[
+          styles.backButton,
+          // 无固定高度：以可见高度 34（图标 24 + 上下 padding 各 5）作依据
+          { borderRadius: buttonRadius(34) },
+        ]}
+      >
         <Icon name="chevron-left" size={24} color={theme['c-font']} />
       </TouchableOpacity>
       <Text size={18}>YouTube 登录</Text>

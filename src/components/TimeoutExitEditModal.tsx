@@ -18,6 +18,7 @@ import CheckBox from './common/CheckBox'
 import { useSettingValue } from '@/store/setting/hook'
 import { updateSetting } from '@/core/common'
 import settingState from '@/store/setting/state'
+import { useButtonRadius } from '@/utils/buttonRadius'
 
 const MAX_MIN = 1440
 const rxp = /([1-9]\d*)/
@@ -66,6 +67,7 @@ const TimeInput = forwardRef<TimeInputType, {}>((props, ref) => {
   const [text, setText] = useState('')
   const inputRef = useRef<InputType>(null)
   const t = useI18n()
+  const buttonRadius = useButtonRadius()
 
   useImperativeHandle(ref, () => ({
     getText() {
@@ -85,7 +87,12 @@ const TimeInput = forwardRef<TimeInputType, {}>((props, ref) => {
       placeholder={t('timeout_exit_input_tip')}
       value={text}
       onChangeText={setText}
-      style={{ ...styles.input, backgroundColor: theme['c-primary-input-background'] }}
+      style={{
+        ...styles.input,
+        backgroundColor: theme['c-primary-input-background'],
+        // 输入框静态高 32（common/Input 的 styles.input.height），行内覆盖「按钮圆角」
+        borderRadius: buttonRadius(32),
+      }}
     />
   )
 })

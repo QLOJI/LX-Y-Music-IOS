@@ -10,6 +10,7 @@ import { getOpenStoragePath, saveOpenStoragePath } from '@/utils/data'
 import Button from '@/components/common/Button'
 import ButtonPrimary from '@/components/common/ButtonPrimary'
 import { useUnmounted } from '@/utils/hooks'
+import { useButtonRadius } from '@/utils/buttonRadius'
 import { Icon } from '@/components/common/Icon'
 import { designRadius, designSpacing } from '@/theme/DesignTokens'
 import type { PathItem } from './ListItem'
@@ -22,6 +23,7 @@ interface PathInputType {
 }
 const PathInput = forwardRef<PathInputType, {}>((props, ref) => {
   const theme = useTheme()
+  const buttonRadius = useButtonRadius()
   const [text, setText] = useState('')
   const inputRef = useRef<InputType>(null)
 
@@ -45,7 +47,12 @@ const PathInput = forwardRef<PathInputType, {}>((props, ref) => {
       onChangeText={setText}
       multiline
       numberOfLines={3}
-      style={{ ...styles.input, backgroundColor: theme['c-primary-input-background'] }}
+      style={{
+        ...styles.input,
+        backgroundColor: theme['c-primary-input-background'],
+        // 多行输入框（3 行）高度随内容变化、推不出固定值：省略高度参数，走默认 56 参考值
+        borderRadius: buttonRadius(),
+      }}
     />
   )
 })
@@ -61,6 +68,7 @@ export default forwardRef<OpenDirModalType, { onOpenDir: (dir: string) => Promis
     const [contentPaths, setContentPaths] = useState<string[]>([])
     const isUnmounted = useUnmounted()
     const theme = useTheme()
+    const buttonRadius = useButtonRadius()
 
     useImperativeHandle(ref, () => ({
       show(paths) {
@@ -138,7 +146,7 @@ export default forwardRef<OpenDirModalType, { onOpenDir: (dir: string) => Promis
             {paths.map((path) => {
               return (
                 <Button
-                  style={styles.pathBtn}
+                  style={[styles.pathBtn, { borderRadius: buttonRadius(30) /* 路径按钮可见高度 ≈ 30 = 单行文字行高 14（12×1.15）+ 上下 padding 8×2 */ }]}
                   key={path}
                   onPress={() => inputRef.current?.setPath(path)}
                 >
@@ -149,11 +157,14 @@ export default forwardRef<OpenDirModalType, { onOpenDir: (dir: string) => Promis
             {contentPaths.map((path) => {
               return (
                 <View style={styles.listContentItem} key={path}>
-                  <Button style={styles.pathBtn} onPress={() => inputRef.current?.setPath(path)}>
+                  <Button
+                    style={[styles.pathBtn, { borderRadius: buttonRadius(30) /* 高度依据同上：30 */ }]}
+                    onPress={() => inputRef.current?.setPath(path)}
+                  >
                     <Text size={12}>{path}</Text>
                   </Button>
                   <Button
-                    style={styles.removeBtn}
+                    style={[styles.removeBtn, { borderRadius: buttonRadius(28) /* 关闭图标按钮可见高度 ≈ 28 = 图标 12 + 上下 padding 8×2 */ }]}
                     onPress={() => {
                       removeSelectStoragePath(path)
                     }}

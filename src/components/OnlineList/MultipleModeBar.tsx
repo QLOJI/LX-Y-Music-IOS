@@ -7,6 +7,7 @@ import { useTheme } from '@/store/theme/hook'
 import { useSettingValue } from '@/store/setting/hook'
 import { useSafeAreaBottom } from '@/store/common/hook'
 import { applyOpacity } from '@/utils/colorOpacity'
+import { useButtonRadius } from '@/utils/buttonRadius'
 import { createStyle } from '@/utils/tools'
 import { shadow } from '@/utils/shadow'
 import { scaleSizeH } from '@/utils/pixelRatio'
@@ -40,6 +41,8 @@ export default forwardRef<MultipleModeBarType, MultipleModeBarProps>(
     const [isSelectAll, setIsSelectAll] = useState(false)
     const theme = useTheme()
     const buttonOpacity = useSettingValue('theme.buttonOpacity')
+    // 条内按钮没有写死高度，统一按多选浮动条的高度 40（MULTI_SELECT_BAR_HEIGHT 的设计值）折算半高
+    const buttonRadius = useButtonRadius()
     const safeAreaBottom = useSafeAreaBottom()
 
     useImperativeHandle(ref, () => ({
@@ -131,6 +134,8 @@ export default forwardRef<MultipleModeBarType, MultipleModeBarProps>(
               }}
               style={{
                 ...styles.btn,
+                // 条内按钮无自身高度，按多选条高 40 折算半高（同 MULTI_SELECT_BAR_HEIGHT 的设计值）
+                borderRadius: buttonRadius(40),
                 // 选中态底色随「按钮透明度」淡出；只改颜色 alpha，不用容器 style.opacity
                 backgroundColor:
                   selectMode == 'single'
@@ -146,6 +151,8 @@ export default forwardRef<MultipleModeBarType, MultipleModeBarProps>(
               }}
               style={{
                 ...styles.btn,
+                // 条内按钮无自身高度，按多选条高 40 折算半高（同 MULTI_SELECT_BAR_HEIGHT 的设计值）
+                borderRadius: buttonRadius(40),
                 // 同上：只改颜色 alpha，文字色不动
                 backgroundColor:
                   selectMode == 'range'
@@ -157,16 +164,17 @@ export default forwardRef<MultipleModeBarType, MultipleModeBarProps>(
             </Button>
           </View>
 
-          <TouchableOpacity onPress={onDownload} style={styles.btn}>
+          {/* 条内按钮同上：无自身高度，按多选条高 40 折算半高 */}
+          <TouchableOpacity onPress={onDownload} style={[styles.btn, { borderRadius: buttonRadius(40) }]}>
             <Text color={theme['c-button-font']}>{global.i18n.t('download')}</Text>
           </TouchableOpacity>
 
-          <TouchableOpacity onPress={handleSelectAll} style={styles.btn}>
+          <TouchableOpacity onPress={handleSelectAll} style={[styles.btn, { borderRadius: buttonRadius(40) }]}>
             <Text color={theme['c-button-font']}>
               {global.i18n.t(isSelectAll ? 'list_select_unall' : 'list_select_all')}
             </Text>
           </TouchableOpacity>
-          <TouchableOpacity onPress={onExitSelectMode} style={styles.btn}>
+          <TouchableOpacity onPress={onExitSelectMode} style={[styles.btn, { borderRadius: buttonRadius(40) }]}>
             <Text color={theme['c-button-font']}>{global.i18n.t('list_select_cancel')}</Text>
           </TouchableOpacity>
         </Animated.View>
@@ -176,6 +184,7 @@ export default forwardRef<MultipleModeBarType, MultipleModeBarProps>(
       selectMode,
       theme,
       buttonOpacity,
+      buttonRadius,
       handleSelectAll,
       isSelectAll,
       onExitSelectMode,

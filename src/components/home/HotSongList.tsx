@@ -3,6 +3,7 @@ import { Pressable, StyleSheet, View } from 'react-native'
 import { useTheme } from '@/store/theme/hook'
 import { useSettingValue } from '@/store/setting/hook'
 import { applyOpacity } from '@/utils/colorOpacity'
+import { useButtonRadius } from '@/utils/buttonRadius'
 import { createStyle } from '@/utils/tools'
 import { designRadius, designSpacing, designTypography } from '@/theme/DesignTokens'
 import Image from '@/components/common/Image'
@@ -69,6 +70,7 @@ const HotSongList = memo(({
 }: HotSongListProps) => {
   const theme = useTheme()
   const buttonOpacity = useSettingValue('theme.buttonOpacity')
+  const buttonRadius = useButtonRadius()
 
   const cardStyle = useMemo(
     () => StyleSheet.compose(styles.card, {
@@ -127,7 +129,14 @@ const HotSongList = memo(({
             onPress={() => { onSongPress(song, index) }}
           >
             <Text style={rankStyle} size={15}>{index + 1}</Text>
-            <Image style={coverStyle} url={song.meta.picUrl ?? song.pic} />
+            <Image
+              style={[
+                coverStyle,
+                // 歌曲封面圆角随「按钮圆角」设置行内覆盖；高度取 styles.cover 的源值 46
+                { borderRadius: buttonRadius(46) },
+              ]}
+              url={song.meta.picUrl ?? song.pic}
+            />
             <View style={styles.content}>
               <Text style={nameStyle} size={designTypography.body} numberOfLines={1}>
                 {song.name}
@@ -136,7 +145,13 @@ const HotSongList = memo(({
                 {song.singer}
               </Text>
             </View>
-            <View style={playButtonStyle}>
+            <View
+              style={[
+                playButtonStyle,
+                // 行末播放圆钮（图标按钮）圆角随「按钮圆角」设置行内覆盖；高度取 styles.playButton 的源值 34
+                { borderRadius: buttonRadius(34) },
+              ]}
+            >
               <Icon name="play" size={15} color={theme['c-primary']} />
             </View>
           </Pressable>

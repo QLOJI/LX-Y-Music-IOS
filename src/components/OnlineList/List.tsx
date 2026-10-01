@@ -6,7 +6,6 @@ import { useHorizontalMode } from '@/utils/hooks'
 import type { Position } from './ListMenu'
 import type { SelectMode } from './MultipleModeBar'
 import { useTheme } from '@/store/theme/hook'
-import settingState from '@/store/setting/state'
 import { MULTI_SELECT_BAR_HEIGHT } from './MultipleModeBar'
 import { useI18n } from '@/lang'
 import Text from '@/components/common/Text'
@@ -29,6 +28,11 @@ export interface ListProps {
   ListFooterComponent?: FlatListType['ListFooterComponent']
   checkHomePagerIdle: boolean
   rowType?: RowInfoType
+  /**
+   * @deprecated 行点击是否「整份写入列表」已改由**是否传了 onPlayList** 决定
+   * （与参考工程一致）。本参数不再参与判断，仅为兼容现有调用方保留。
+   * 随之失效的还有设置项 list.isClickPlayList —— 全仓已无代码读它。
+   */
   forcePlayList?: boolean
   playingId?: string | null
   listId?: string
@@ -62,7 +66,6 @@ const List = forwardRef<ListType, ListProps>(
       ListHeaderComponent,
       ListFooterComponent,
       rowType,
-      forcePlayList,
       playingId,
       onListUpdate,
     },
@@ -245,7 +248,10 @@ const List = forwardRef<ListType, ListProps>(
       // 这里直接同步调用，按压反馈仍由 TouchableOpacity 原生处理。
       if (isMultiSelectModeRef.current) {
         handleSelect(item, index)
-      } else if ((forcePlayList || settingState.setting['list.isClickPlayList']) && onPlayList != null) {
+      } else if (onPlayList != null) {
+        // 传了 onPlayList 的列表（专辑/歌手/相似/每日推荐/播放历史/歌单/榜单/搜索）
+        // 一律「整份写入试听列表」；不再受 forcePlayList 与 list.isClickPlayList 影响
+        // （前者全仓已恒为 true，后者随之变成死设置）。
         onPlayList(index)
       } else {
         // 用行数据本身（item）而不是 currentList[index]：列表在点击瞬间发生变化时，

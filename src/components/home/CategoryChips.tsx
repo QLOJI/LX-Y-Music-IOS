@@ -3,6 +3,7 @@ import { Pressable, ScrollView } from 'react-native'
 import { useTheme } from '@/store/theme/hook'
 import { useSettingValue } from '@/store/setting/hook'
 import { applyOpacity } from '@/utils/colorOpacity'
+import { useButtonRadius } from '@/utils/buttonRadius'
 import { createStyle } from '@/utils/tools'
 import { designRadius, designSpacing, designTypography } from '@/theme/DesignTokens'
 import Text from '@/components/common/Text'
@@ -38,6 +39,7 @@ const styles = createStyle({
 const CategoryChips = memo(({ options, selectedId, onChange }: CategoryChipsProps) => {
   const theme = useTheme()
   const buttonOpacity = useSettingValue('theme.buttonOpacity')
+  const buttonRadius = useButtonRadius()
 
   // 底色/边框随「按钮透明度」淡出，文字色不动。不用容器 style.opacity：
   // 那会把胶囊里的文字一并变淡，0 时就「什么都不剩」而非「只剩文字」。
@@ -70,7 +72,12 @@ const CategoryChips = memo(({ options, selectedId, onChange }: CategoryChipsProp
         return (
           <Pressable
             key={option.id}
-            style={[styles.chip, isActive ? activeChipStyle : inactiveChipStyle]}
+            style={[
+              styles.chip,
+              isActive ? activeChipStyle : inactiveChipStyle,
+              // 胶囊圆角随「按钮圆角」设置行内覆盖；高度取 styles.chip 的源值 34（标签胶囊自身高度）
+              { borderRadius: buttonRadius(34) },
+            ]}
             onPress={() => { onChange(option.id) }}
             hitSlop={4}
           >
