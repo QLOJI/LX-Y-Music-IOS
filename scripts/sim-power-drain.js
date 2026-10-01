@@ -366,8 +366,12 @@ const pausedInvariants = (files) => {
   if (!/useHomeCovered\(\)/.test(files.tabbar) || !/paused=\{homeCovered\s*(\|\|[^}]*)?\}/.test(files.tabbar)) {
     reasons.push('ModernTabBar 未接 paused={homeCovered}(||…)（Tab 栏玻璃被覆盖时仍逐帧渲染）')
   }
-  if (!/useScreenCovered\(componentId\)/.test(files.playerbar) || !/paused=\{screenCovered\}/.test(files.playerbar)) {
-    reasons.push('PlayerBar 未接 paused={screenCovered}（迷你条玻璃被覆盖时仍逐帧渲染）')
+  // 同一口径（2026-10-01 转场门）：PlayerBar 也允许再或上「本块玻璃此刻不该渲染」的
+  // 条件（转场窗口 navTransitioning，见 navigation.beginNavTransitionWindow，
+  // 起因是「每次切换画面胶囊都会闪一下」），但 screenCovered 必须是**第一个析取项**
+  // —— 少了它才是真缺陷（被压栈页覆盖仍逐帧渲染）。
+  if (!/useScreenCovered\(componentId\)/.test(files.playerbar) || !/paused=\{screenCovered\s*(\|\|[^}]*)?\}/.test(files.playerbar)) {
+    reasons.push('PlayerBar 未接 paused={screenCovered}(||…)（迷你条玻璃被覆盖时仍逐帧渲染）')
   }
   // ⑤ 覆盖判定 hook 本体
   if (!/export const useHomeCovered/.test(files.hookCommon) || !/export const useScreenCovered/.test(files.hookCommon)) {
@@ -409,6 +413,10 @@ const runPausedCounterExamples = () => {
   check('P6 PlayingIcon 恢复无条件动画', readGlass({
     playingIcon: read(GLASS_FILES.playingIcon).replace('const active = isPlay && !homeCovered', 'const active = isPlay'),
   }), 'PlayingIcon 缺覆盖门控')
+  // P7：PlayerBar 消费点脱钩（与 P5 同款反例，覆盖 2026-10-01 新加的 ||… 分支）
+  check('P7 PlayerBar 抹掉 paused', readGlass({
+    playerbar: read(GLASS_FILES.playerbar).replace(/paused=\{screenCovered\s*(\|\|[^}]*)?\}/g, 'removedX={screenCovered}'),
+  }), 'PlayerBar 未接')
   return results
 }
 

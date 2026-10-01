@@ -16,6 +16,90 @@ const sharedIRBridgeSource = fs.readFileSync(path.join(rootPath, 'patches/ios/LX
 
 /** @type {PatchTarget[]} */
 const patchTargets = [
+  // react-native-pager-view 6.7.1 的两个原生横滑闩锁修复（2026-10-01，P0）。
+  // 症状：推荐/歌单/搜索/我的/设置五页滑不动（或整片页面区连点带滑都失效），
+  // 而底部 tab 栏正常、重启才好。根因都在库的 iOS 实现里，且 JS 侧无从感知/修复：
+  // ① goTo: 越界早退不恢复 userInteractionEnabled：goTo: 先 disableSwipe
+  //    （reactPageViewController.view.userInteractionEnabled = NO）再判断越界，
+  //    越界时直接 return —— 交互永久关闭；enableSwipe 只在
+  //    setReactViewControllers: 的两处回调里被调用，JS 侧没有任何 API 能改回来。
+  // ② scrollView 的横滑开关有两个互相独立的闩锁（scrollEnabled 与
+  //    panGestureRecognizer.enabled），shouldScroll: 只写前者，手势回调只写后者，
+  //    任一侧被改写/丢弃后 JS 的 scrollEnabled prop 因 prop diff 不再下发，
+  //    闩锁就永久停在 NO。
+  // 详见 src/screens/Home/Vertical/Main.tsx 中 resyncPagerScroll 与 pagerCell 的注释。
+  {
+    filePath: 'node_modules/react-native-pager-view/ios/RNCPagerView.m',
+    changes: [
+      {
+        from: `- (void)shouldScroll:(BOOL)scrollEnabled {
+    _scrollEnabled = scrollEnabled;
+    if (self.reactPageViewController.view) {
+        self.scrollView.scrollEnabled = scrollEnabled;
+    }
+}
+`,
+        to: `- (void)shouldScroll:(BOOL)scrollEnabled {
+    _scrollEnabled = scrollEnabled;
+    if (self.reactPageViewController.view) {
+        self.scrollView.scrollEnabled = scrollEnabled;
+        // LX patch(2026-10-01): panGestureRecognizer.enabled 与 scrollEnabled 是横滑
+        // 开关在原生侧的两个独立闩锁（本方法只写前者，手势回调只写后者），任何一侧
+        // 卡在 NO 都表现为「五页滑不动，点击与 tab 栏正常」。统一以 JS 下发的
+        // scrollEnabled 为准；比较后再写，避免给进行中的手势制造无谓的 enabled 抖动。
+        if (self.scrollView.panGestureRecognizer.enabled != scrollEnabled) {
+            self.scrollView.panGestureRecognizer.enabled = scrollEnabled;
+        }
+    }
+}
+`,
+      },
+      {
+        from: `    if (numberOfPages == 0 || index < 0 || index > numberOfPages - 1) {
+        return;
+    }
+`,
+        to: `    if (numberOfPages == 0 || index < 0 || index > numberOfPages - 1) {
+        // LX patch(2026-10-01): 上面的 disableSwipe 已经把
+        // reactPageViewController.view.userInteractionEnabled 置为 NO，越界时直接
+        // return 会让它永久停在 NO——整片页面区连点带滑全部失效，而 JS 侧没有任何
+        // API 能修回来（enableSwipe 只在 setReactViewControllers: 的回调里调用）。
+        // 越界本身不切页，但必须把交互恢复。
+        [self enableSwipe];
+        return;
+    }
+`,
+      },
+    ],
+  },
+  // react-native 0.73.11：RCTViewManager 的 pointerEvents 兜底分支缺 break（防复发根治）。
+  // 症状同上一条：一旦某个**不响应 setPointerEvents: 的自定义原生宿主**（PagerView 就是，
+  // 它的宿主是裸 UIView）收到 pointerEvents 的任意非 nil 值，"auto" / "box-none" /
+  // "box-only" 都会被 RCTConvert 映射成 RCTPointerEventsUnspecified，撞穿到
+  // RCTPointerEventsNone 分支 → view.userInteractionEnabled = NO → 整块区域连点带滑全死。
+  // （RCTView 子类走本方法开头的 early-return，不受影响；所以标准 <View> 上的 pointerEvents
+  // 语义一直是对的——这也是为什么本仓把 pointerEvents 挪到普通 View 上能绕过它。）
+  // 现在 App 里没有任何 PagerView 传 pointerEvents（六处用法逐一核对过），所以这条
+  // **不是当前故障的原因**，是防复发：以后谁手滑把 pointerEvents 挂回宿主也不会致命。
+  // 上游 0.84 就是这么修的（补 break）。
+  {
+    filePath: 'node_modules/react-native/React/Views/RCTViewManager.m',
+    changes: [
+      {
+        from: `      view.userInteractionEnabled = YES;
+    case RCTPointerEventsNone:
+`,
+        to: `      view.userInteractionEnabled = YES;
+      // LX patch(2026-10-01): 补上缺失的 break。原文注释说 "auto may override a
+      // parent's none"，但缺了 break 就变成 "auto 等于 none"——对自定义原生宿主
+      // （PagerView 这类不响应 setPointerEvents: 的视图）整块 UIE=NO，表现为
+      // 「页面连点带滑全死、只有 tab 栏能用」。与上游 0.84 的修法一致。
+      break;
+    case RCTPointerEventsNone:
+`,
+      },
+    ],
+  },
   {
     filePath: 'node_modules/react-native-track-player/ios/RNTrackPlayer/RNTrackPlayer.swift',
     changes: [
@@ -1140,6 +1224,42 @@ const patchTrackPlayerSoundEffectRefresh = async() => {
     })
   } catch (err) {
     console.error(`Ensure shared IR bridge failed: ${err.message}`)
+  }
+  // 横滑闩锁补丁的存在性自检（2026-10-01，P0）。
+  // patchFile 对「from 串不匹配」是**静默跳过**的（上游改了源码、或文件被别的工具动过），
+  // 而这个补丁失效的代价是「推荐/歌单/搜索/我的/设置五页滑不动」重现——
+  // 所以在收尾时显式验一次，让 npm install 的日志里直接能看见，而不是等人去 diff
+  // node_modules。只读不写，任何异常都不影响安装。
+  try {
+    const pagerViewPath = path.join(rootPath, 'node_modules/react-native-pager-view/ios/RNCPagerView.m')
+    if (fs.existsSync(pagerViewPath)) {
+      const pagerViewSource = (await fs.promises.readFile(pagerViewPath, 'utf8')).replace(/\r\n/g, '\n')
+      const missing = []
+      if (!pagerViewSource.includes('self.scrollView.panGestureRecognizer.enabled = scrollEnabled;')) {
+        missing.push('shouldScroll: 同步 panGestureRecognizer.enabled')
+      }
+      if (!pagerViewSource.includes('[self enableSwipe];\n        return;')) {
+        missing.push('goTo: 越界恢复 enableSwipe')
+      }
+      if (missing.length) {
+        console.error(`[pager-view] 横滑闩锁补丁未生效（${missing.join('；')}）——`
+          + '五页横滑可能再次失效，请检查 react-native-pager-view 的版本与源码是否变化。')
+      } else {
+        console.log('[pager-view] 横滑闩锁补丁已生效（shouldScroll 同步 pan + goTo 越界恢复交互）。')
+      }
+    }
+    const rnViewManagerPath = path.join(rootPath, 'node_modules/react-native/React/Views/RCTViewManager.m')
+    if (fs.existsSync(rnViewManagerPath)) {
+      const rnSource = (await fs.promises.readFile(rnViewManagerPath, 'utf8')).replace(/\r\n/g, '\n')
+      if (rnSource.includes('break;\n    case RCTPointerEventsNone:')) {
+        console.log('[react-native] pointerEvents 兜底分支 break 补丁已生效。')
+      } else {
+        console.error('[react-native] RCTViewManager 的 pointerEvents break 补丁未生效——'
+          + '若将来把 pointerEvents 挂到 PagerView 这类原生宿主上，页面会连点带滑全死。')
+      }
+    }
+  } catch (err) {
+    console.error(`Verify pager-view swipe patch failed: ${err.message}`)
   }
   console.log('\nDependencies patch finished.\n')
 })()
