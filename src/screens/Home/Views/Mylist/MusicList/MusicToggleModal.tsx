@@ -5,6 +5,8 @@ import Dialog, { type DialogType } from '@/components/common/Dialog'
 import { FlatList, ScrollView, TouchableOpacity, View, type FlatListProps as _FlatListProps } from 'react-native'
 import { scaleSizeH } from '@/utils/pixelRatio'
 import { useTheme } from '@/store/theme/hook'
+import { useSettingValue } from '@/store/setting/hook'
+import { applyOpacity } from '@/utils/colorOpacity'
 import { Icon } from '@/components/common/Icon'
 import { useHorizontalMode, useUnmounted } from '@/utils/hooks'
 import { useI18n } from '@/lang'
@@ -30,6 +32,7 @@ const Tabs = <T extends LX.OnlineSource>({ list, source, onChangeSource }: {
 }) => {
   const list_t = useSourceListI18n(list)
   const theme = useTheme()
+  const buttonOpacity = useSettingValue('theme.buttonOpacity')
   const scrollViewRef = useRef<ScrollView>(null)
 
   return (
@@ -37,7 +40,11 @@ const Tabs = <T extends LX.OnlineSource>({ list, source, onChangeSource }: {
       {
         list_t.map(s => (
           <TouchableOpacity
-            style={{ ...styles.tabButton, borderBottomColor: source == s.action ? theme['c-primary-background-active'] : 'transparent' }}
+            style={{
+              ...styles.tabButton,
+              // 选中下划线是该按钮唯一可见表面：随「按钮透明度」淡出
+              borderBottomColor: source == s.action ? applyOpacity(theme['c-primary-background-active'], buttonOpacity) : 'transparent',
+            }}
             onPress={() => {
               onChangeSource(s.action as T)
             }}
@@ -158,6 +165,7 @@ const List = ({ source, lists, onPlay }: {
 
 const SourceDetail = ({ info, onConfirm, toggleSource }: { info: LX.Music.MusicInfo, onConfirm: (info: LX.Music.MusicInfoOnline) => void, toggleSource: LX.Music.MusicInfoOnline | null }) => {
   const theme = useTheme()
+  const buttonOpacity = useSettingValue('theme.buttonOpacity')
   const isHorizontalMode = useHorizontalMode()
 
   return isHorizontalMode ? (
@@ -213,7 +221,11 @@ const SourceDetail = ({ info, onConfirm, toggleSource }: { info: LX.Music.MusicI
         onPress={() => {
           onConfirm(toggleSource!)
         }}
-        style={{ ...styles.button, backgroundColor: theme['c-button-background'] }}
+        style={{
+          ...styles.button,
+          // 确认按钮底色随「按钮透明度」淡出；只改颜色 alpha，不用容器 style.opacity
+          backgroundColor: applyOpacity(theme['c-button-background'], buttonOpacity),
+        }}
         disabled={!toggleSource}
       >
         <Text color="#333333" size={14}>确认</Text>
@@ -272,7 +284,11 @@ const SourceDetail = ({ info, onConfirm, toggleSource }: { info: LX.Music.MusicI
         onPress={() => {
           onConfirm(toggleSource!)
         }}
-        style={{ ...styles.button, backgroundColor: theme['c-button-background'] }}
+        style={{
+          ...styles.button,
+          // 同上：只改颜色 alpha，不用容器 style.opacity
+          backgroundColor: applyOpacity(theme['c-button-background'], buttonOpacity),
+        }}
         disabled={!toggleSource || toggleSource.id == info.id}
       >
         <Text color="#333333" size={14}>确认</Text>

@@ -7,6 +7,8 @@ import { View, TouchableOpacity, StyleSheet } from 'react-native'
 import Image from '@/components/common/Image'
 import Text from '@/components/common/Text'
 import { useTheme } from '@/store/theme/hook'
+import { useSettingValue } from '@/store/setting/hook'
+import { applyOpacity } from '@/utils/colorOpacity'
 import { Icon } from '@/components/common/Icon'
 import type { Position } from '@/components/common/Menu'
 import { scaleSizeH } from '@/utils/pixelRatio'
@@ -30,6 +32,7 @@ interface ListItemProps {
 
 export default memo(({ item, onPress, onMenuPress }: ListItemProps) => {
   const theme = useTheme()
+  const buttonOpacity = useSettingValue('theme.buttonOpacity')
   const menuBtnRef = useRef<TouchableOpacity>(null)
 
   const handleMenuPress = () => {
@@ -41,9 +44,11 @@ export default memo(({ item, onPress, onMenuPress }: ListItemProps) => {
 
   const showMenu = !item.isFavorites && !item.isCollected
 
+  // 歌单行整行是按钮表面：底色随「按钮透明度」淡出。只改颜色 alpha，
+  // 不用容器 style.opacity——否则行内歌单名与图标会一起变淡。
   return (
     <TouchableOpacity
-      style={[styles.container, { backgroundColor: theme['c-primary-light-900-alpha-300'] }]}
+      style={[styles.container, { backgroundColor: applyOpacity(theme['c-primary-light-900-alpha-300'], buttonOpacity) }]}
       onPress={() => { onPress(item) }}
     >
       <View style={styles.coverContainer}>

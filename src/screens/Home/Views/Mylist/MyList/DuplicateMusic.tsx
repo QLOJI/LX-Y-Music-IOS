@@ -9,6 +9,7 @@ import {
 } from 'react'
 import Text from '@/components/common/Text'
 import { createStyle } from '@/utils/tools'
+import { applyOpacity } from '@/utils/colorOpacity'
 import Dialog, { type DialogType } from '@/components/common/Dialog'
 import {
   FlatList,
@@ -18,6 +19,7 @@ import {
 } from 'react-native'
 import { scaleSizeH } from '@/utils/pixelRatio'
 import { useTheme } from '@/store/theme/hook'
+import { useSettingValue } from '@/store/setting/hook'
 import { type DuplicateMusicItem, filterDuplicateMusic } from './utils'
 import { getListMusics, removeListMusics } from '@/core/list'
 import { Icon } from '@/components/common/Icon'
@@ -66,6 +68,7 @@ const ListItem = memo(
     onPress: (info: DuplicateMusicItem) => void
   }) => {
     const theme = useTheme()
+    const buttonOpacity = useSettingValue('theme.buttonOpacity')
     const isSelected = selectedList.includes(info)
 
     return (
@@ -73,7 +76,10 @@ const ListItem = memo(
         style={{
           ...styles.listItem,
           height: ITEM_HEIGHT,
-          backgroundColor: isSelected ? theme['c-primary-background-hover'] : 'rgba(0,0,0,0)',
+          // 选中态底色随「按钮透明度」淡出：只改颜色 alpha，不用容器 opacity（会把文字一起淡掉）
+          backgroundColor: isSelected
+            ? applyOpacity(theme['c-primary-background-hover'], buttonOpacity)
+            : 'rgba(0,0,0,0)',
         }}
         onStartShouldSetResponder={() => true}
       >

@@ -4,9 +4,11 @@ import { LIST_ITEM_HEIGHT } from '@/config/constant'
 import { Icon } from '@/components/common/Icon'
 import { createStyle, type RowInfo } from '@/utils/tools'
 import { useTheme } from '@/store/theme/hook'
+import { useSettingValue } from '@/store/setting/hook'
 import settingState from '@/store/setting/state'
 import { useAssertApiSupport } from '@/store/common/hook'
 import { scaleSizeH } from '@/utils/pixelRatio'
+import { applyOpacity } from '@/utils/colorOpacity'
 import Text from '@/components/common/Text'
 import Badge, { type BadgeType } from '@/components/common/Badge'
 import Image from '@/components/common/Image'
@@ -102,6 +104,7 @@ export default memo(
     onScrollBeginDrag?: () => void
   }) => {
     const theme = useTheme()
+    const buttonOpacity = useSettingValue('theme.buttonOpacity')
     const coverUrl = useCoverUrl(item)
     // 汽水(qs) 等音源经 filterListDetail 构造的歌曲可能不带 meta 字段，这里兜底避免
     // 下方 item.meta.xxx 访问 undefined 时整行抛错、导致整列表空白（尤其播放态重渲染时）。
@@ -155,7 +158,8 @@ export default memo(
           ...styles.listItem,
           width: rowInfo.rowWidth,
           height: ITEM_HEIGHT,
-          backgroundColor: isSelected ? theme['c-primary-background-hover'] : 'rgba(0,0,0,0)',
+          // 选中行高亮底色：只改颜色 alpha 随「按钮透明度」淡出，不用容器 opacity——否则文字图标会一起变淡
+          backgroundColor: isSelected ? applyOpacity(theme['c-primary-background-hover'], buttonOpacity) : 'rgba(0,0,0,0)',
           opacity: isSupported ? 1 : 0.5,
         }}
       >

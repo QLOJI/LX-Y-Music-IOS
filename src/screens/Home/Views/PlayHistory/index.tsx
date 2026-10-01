@@ -11,6 +11,8 @@ import commonState from '@/store/common/state'
 import { useI18n } from '@/lang'
 import { usePlayerMusicInfo } from '@/store/player/hook'
 import { useTheme } from '@/store/theme/hook'
+import { useSettingValue } from '@/store/setting/hook'
+import { applyOpacity } from '@/utils/colorOpacity'
 import { createStyle, toast } from '@/utils/tools'
 import { designRadius, designSpacing, designTypography } from '@/theme/DesignTokens'
 import PageTopInset from '@/components/common/PageTopInset'
@@ -99,6 +101,7 @@ export default memo(() => {
   const [list, setList] = useState<HistoryMusicInfo[]>([])
   const playerMusicInfo = usePlayerMusicInfo()
   const theme = useTheme()
+  const buttonOpacity = useSettingValue('theme.buttonOpacity')
 
   const isRange = !!endDate && endDate !== startDate
   const title = isRange ? `${startDate} ~ ${endDate}` : startDate
@@ -218,7 +221,11 @@ export default memo(() => {
       </View>
       <View style={{ ...styles.header, borderBottomColor: theme['c-border-background'] }}>
         <TouchableOpacity
-          style={{ ...styles.iconBtn, backgroundColor: theme['c-primary-background'] }}
+          style={{
+            ...styles.iconBtn,
+            // 圆钮底面随「按钮透明度」淡出；只改颜色 alpha
+            backgroundColor: applyOpacity(theme['c-primary-background'], buttonOpacity),
+          }}
           disabled={isRange}
           onPress={() => { changeDay(-1) }}
         >
@@ -229,7 +236,11 @@ export default memo(() => {
           />
         </TouchableOpacity>
         <TouchableOpacity
-          style={{ ...styles.titleBtn, backgroundColor: theme['c-primary-background'] }}
+          style={{
+            ...styles.titleBtn,
+            // 日期标题按钮底面随「按钮透明度」淡出
+            backgroundColor: applyOpacity(theme['c-primary-background'], buttonOpacity),
+          }}
           onPress={openDateSelector}
         >
           <Text
@@ -242,7 +253,11 @@ export default memo(() => {
           </Text>
         </TouchableOpacity>
         <TouchableOpacity
-          style={{ ...styles.iconBtn, backgroundColor: theme['c-primary-background'] }}
+          style={{
+            ...styles.iconBtn,
+            // 圆钮底面随「按钮透明度」淡出；只改颜色 alpha
+            backgroundColor: applyOpacity(theme['c-primary-background'], buttonOpacity),
+          }}
           disabled={isRange || startDate >= getTodayText()}
           onPress={() => { changeDay(1) }}
         >
@@ -285,7 +300,8 @@ export default memo(() => {
             <TouchableOpacity
               style={{
                 ...styles.modeBtn,
-                backgroundColor: pickerMode === 'single' ? theme['c-primary'] : 'transparent',
+                // 选中态底面随「按钮透明度」淡出；transparent 分支保持原样
+                backgroundColor: pickerMode === 'single' ? applyOpacity(theme['c-primary'], buttonOpacity) : 'transparent',
               }}
               onPress={() => {
                 setPickerMode('single')
@@ -302,7 +318,8 @@ export default memo(() => {
             <TouchableOpacity
               style={{
                 ...styles.modeBtn,
-                backgroundColor: pickerMode === 'range' ? theme['c-primary'] : 'transparent',
+                // 选中态底面随「按钮透明度」淡出；transparent 分支保持原样
+                backgroundColor: pickerMode === 'range' ? applyOpacity(theme['c-primary'], buttonOpacity) : 'transparent',
               }}
               onPress={() => { setPickerMode('range') }}
             >
@@ -342,10 +359,11 @@ export default memo(() => {
                   key={dateText}
                   style={{
                     ...styles.dayCell,
+                    // 日期格选中/范围内底色随「按钮透明度」淡出；transparent 分支保持原样
                     backgroundColor: active
-                      ? theme['c-primary-background-hover']
+                      ? applyOpacity(theme['c-primary-background-hover'], buttonOpacity)
                       : isInRange
-                        ? theme['c-primary-light-100-alpha-300']
+                        ? applyOpacity(theme['c-primary-light-100-alpha-300'], buttonOpacity)
                         : 'transparent',
                   }}
                   onPress={() => { handlePickDate(dateText) }}
@@ -374,7 +392,8 @@ export default memo(() => {
             <TouchableOpacity
               style={{
                 ...styles.actionBtn,
-                backgroundColor: theme['c-primary-background'],
+                // 「今天」按钮底面随「按钮透明度」淡出
+                backgroundColor: applyOpacity(theme['c-primary-background'], buttonOpacity),
               }}
               onPress={() => { applyDate(getTodayText()) }}
             >
@@ -383,7 +402,8 @@ export default memo(() => {
             <TouchableOpacity
               style={{
                 ...styles.actionBtn,
-                backgroundColor: theme['c-primary'],
+                // 「确定」按钮底面随「按钮透明度」淡出
+                backgroundColor: applyOpacity(theme['c-primary'], buttonOpacity),
               }}
               onPress={handleApplyPicker}
             >

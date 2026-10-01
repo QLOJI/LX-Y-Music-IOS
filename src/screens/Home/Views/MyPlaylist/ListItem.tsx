@@ -3,7 +3,9 @@ import { View, TouchableOpacity } from 'react-native'
 import Image from '@/components/common/Image'
 import Text from '@/components/common/Text'
 import { useTheme } from '@/store/theme/hook'
+import { useSettingValue } from '@/store/setting/hook'
 import { createStyle } from '@/utils/tools'
+import { applyOpacity } from '@/utils/colorOpacity'
 import { type ListInfoItem } from '@/store/songlist/state'
 import { SvgIcon } from '@/components/common/SvgIcon'
 import { Icon } from '@/components/common/Icon'
@@ -14,6 +16,7 @@ import { designRadius, designSpacing } from '@/theme/DesignTokens'
 
 export default memo(({ item, onPress, onHeartbeatPress, onMenuPress }: { item: any, onPress: (info: ListInfoItem) => void, onHeartbeatPress?: (info: ListInfoItem) => void, onMenuPress?: (item: any, position: Position) => void }) => {
   const theme = useTheme()
+  const buttonOpacity = useSettingValue('theme.buttonOpacity')
   const uid = useWyUid()
   const menuBtnRef = useRef<TouchableOpacity>(null)
 
@@ -56,9 +59,10 @@ export default memo(({ item, onPress, onHeartbeatPress, onMenuPress }: { item: a
     })
   }
 
+  // 整行是可点列表行：底色随「按钮透明度」淡出。只改颜色 alpha，不用容器 style.opacity——否则文字图标会一起变淡。
   return (
     <TouchableOpacity
-      style={[styles.container, { backgroundColor: theme['c-primary-light-900-alpha-300'] }]}
+      style={[styles.container, { backgroundColor: applyOpacity(theme['c-primary-light-900-alpha-300'], buttonOpacity) }]}
       onPress={handlePress}
     >
       <Image url={item.coverImgUrl} style={styles.artwork} />

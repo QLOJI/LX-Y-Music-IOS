@@ -2,6 +2,8 @@ import { memo, useState, useEffect } from 'react'
 import { View, ScrollView, TouchableOpacity, Modal } from 'react-native'
 import Text from '@/components/common/Text'
 import { useTheme } from '@/store/theme/hook'
+import { useSettingValue } from '@/store/setting/hook'
+import { applyOpacity } from '@/utils/colorOpacity'
 import { createStyle, toast } from '@/utils/tools'
 import { shadow } from '@/utils/shadow'
 import { getData, saveData } from '@/plugins/storage'
@@ -100,6 +102,8 @@ interface StylizedModalProps {
 
 export default memo(({ visible, onClose, onConfirm }: StylizedModalProps) => {
   const theme = useTheme()
+  // 弹层按钮的底面/边框随「按钮透明度」只改颜色 alpha（applyOpacity），不用容器 style.opacity——后者会把按钮文字一起淡掉
+  const buttonOpacity = useSettingValue('theme.buttonOpacity')
   const [selectedCategoryName, setSelectedCategoryName] = useState<keyof typeof CATEGORIES>('曲风')
   const [selectedTags, setSelectedTags] = useState<number[]>([])
   // ✅ 关键规避（2026-10-01，P0「所有界面滑动/点击都没反应」）：本组件是**唯一**
@@ -211,7 +215,7 @@ export default memo(({ visible, onClose, onConfirm }: StylizedModalProps) => {
                       key={name}
                       style={[
                         styles.categoryItem,
-                        isSelected && { backgroundColor: isThemeSupported ? theme['c-button-background'] : 'rgba(0,0,0,0.1)' },
+                        isSelected && { backgroundColor: isThemeSupported ? applyOpacity(theme['c-button-background'], buttonOpacity) : 'rgba(0,0,0,0.1)' },
                       ]}
                       onPress={() => { handleSelectCategory(name as keyof typeof CATEGORIES) }}
                     >
@@ -243,7 +247,7 @@ export default memo(({ visible, onClose, onConfirm }: StylizedModalProps) => {
                       style={[
                         styles.tagItem,
                         { borderColor: Object.keys(theme).includes('c-border-background') ? theme['c-border-background'] : '#ddd' },
-                        isSelected && { borderColor: theme['c-button-background'], backgroundColor: isThemeSupported ? theme['c-button-background'] : 'rgba(0,0,0,0.1)' },
+                        isSelected && { borderColor: applyOpacity(theme['c-button-background'], buttonOpacity), backgroundColor: isThemeSupported ? applyOpacity(theme['c-button-background'], buttonOpacity) : 'rgba(0,0,0,0.1)' },
                       ]}
                       onPress={() => { handleSelectTag(tagId) }}
                     >
@@ -267,7 +271,7 @@ export default memo(({ visible, onClose, onConfirm }: StylizedModalProps) => {
             <TouchableOpacity
               style={[
                 styles.btn,
-                { backgroundColor: Object.keys(theme).includes('c-button-background') ? theme['c-button-background'] : '#f0f0f0' },
+                { backgroundColor: Object.keys(theme).includes('c-button-background') ? applyOpacity(theme['c-button-background'], buttonOpacity) : '#f0f0f0' },
               ]}
               onPress={handleConfirm}
             >

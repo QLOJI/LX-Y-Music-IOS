@@ -16,6 +16,8 @@ import Image from '@/components/common/Image'
 import { Icon } from '@/components/common/Icon'
 import { SvgIcon } from '@/components/common/SvgIcon'
 import { useTheme } from '@/store/theme/hook'
+import { useSettingValue } from '@/store/setting/hook'
+import { applyOpacity } from '@/utils/colorOpacity'
 import { confirmDialog, createStyle, toast, getRowInfo } from '@/utils/tools'
 import { LIST_IDS, LIST_ITEM_HEIGHT } from '@/config/constant'
 import { scaleSizeH } from '@/utils/pixelRatio'
@@ -59,12 +61,14 @@ const TabButton = ({ label, tab, activeTab, onPress }: {
   onPress: () => void
 }) => {
   const theme = useTheme()
+  const buttonOpacity = useSettingValue('theme.buttonOpacity')
   return (
     <TouchableOpacity
       style={{
         ...styles.tab,
-        backgroundColor: activeTab === tab ? theme['c-primary'] : theme['c-primary-light-900-alpha-300'],
-        borderColor: activeTab === tab ? theme['c-primary'] : theme['c-border-background'],
+        // 胶囊底色与边框随「按钮透明度」淡出；只改颜色 alpha，不用容器 style.opacity
+        backgroundColor: applyOpacity(activeTab === tab ? theme['c-primary'] : theme['c-primary-light-900-alpha-300'], buttonOpacity),
+        borderColor: applyOpacity(activeTab === tab ? theme['c-primary'] : theme['c-border-background'], buttonOpacity),
       }}
       onPress={onPress}
     >
@@ -123,6 +127,7 @@ const SongItem = memo(
     ) => void
   }) => {
     const theme = useTheme()
+    const buttonOpacity = useSettingValue('theme.buttonOpacity')
     const moreButtonRef = useRef<TouchableOpacity>(null)
     const subText = item.singer || item.meta.filePath
     const sizeText = formatSize(item.meta.size)
@@ -147,8 +152,9 @@ const SongItem = memo(
         style={{
           ...styles.songItem,
           width: rowWidth,
+          // 播放中行高亮底色随「按钮透明度」淡出；只改颜色 alpha，不用容器 style.opacity
           backgroundColor: isPlaying
-            ? theme['c-primary-background-hover']
+            ? applyOpacity(theme['c-primary-background-hover'], buttonOpacity)
             : theme['c-content-background'],
           borderColor: isPlaying
             ? theme['c-primary-background-active']
@@ -203,6 +209,7 @@ const SongItem = memo(
 
 export default memo(() => {
   const theme = useTheme()
+  const buttonOpacity = useSettingValue('theme.buttonOpacity')
   const playMusicInfo = usePlayMusicInfo()
   const [activeTab, setActiveTab] = useState<ActiveTab>('list')
   const [loading, setLoading] = useState(false)
@@ -750,14 +757,15 @@ export default memo(() => {
         </Text>
         <View style={styles.buttonRow}>
           <Button
-            style={{ ...styles.button, backgroundColor: theme['c-button-background'] }}
+            // 按钮底色随「按钮透明度」淡出；只改颜色 alpha，不用容器 style.opacity
+            style={{ ...styles.button, backgroundColor: applyOpacity(theme['c-button-background'], buttonOpacity) }}
             disabled={!hasConfig || folderLoading || !folderStack.length}
             onPress={() => { setFolderStack(prev => prev.slice(0, -1)) }}
           >
             <Text color={theme['c-button-font']}>返回上级</Text>
           </Button>
           <Button
-            style={{ ...styles.button, backgroundColor: theme['c-button-background'] }}
+            style={{ ...styles.button, backgroundColor: applyOpacity(theme['c-button-background'], buttonOpacity) }}
             disabled={!hasConfig || loading}
             onPress={handleSelectCurrentFolder}
           >
@@ -895,14 +903,15 @@ export default memo(() => {
                 </TouchableOpacity>
               ) : null}
               <Button
-                style={{ ...styles.scanButton, backgroundColor: theme['c-button-background'] }}
+                // 按钮底色随「按钮透明度」淡出；只改颜色 alpha，不用容器 style.opacity
+                style={{ ...styles.scanButton, backgroundColor: applyOpacity(theme['c-button-background'], buttonOpacity) }}
                 disabled={!hasConfig || loading || !!batchLoadingText}
                 onPress={handleScan}
               >
                 <Text color={theme['c-button-font']}>扫描</Text>
               </Button>
               <Button
-                style={{ ...styles.scanButton, backgroundColor: theme['c-primary-background-hover'], marginLeft: 8 }}
+                style={{ ...styles.scanButton, backgroundColor: applyOpacity(theme['c-primary-background-hover'], buttonOpacity), marginLeft: 8 }}
                 disabled={!hasConfig || loading || !!batchLoadingText}
                 onPress={handleBatchDownload}
               >

@@ -6,6 +6,7 @@ import Button from '@/components/common/Button'
 import { useI18n } from '@/lang'
 import { useSettingValue } from '@/store/setting/hook'
 import { useTheme } from '@/store/theme/hook'
+import { applyOpacity } from '@/utils/colorOpacity'
 import { updateSetting } from '@/core/common'
 import FileSelect, { type FileSelectType } from '@/components/common/FileSelect'
 
@@ -14,6 +15,7 @@ import { getWebDAVPrivateDirectory, selectFolder } from '@/utils/fs'
 export default memo(() => {
   const t = useI18n()
   const theme = useTheme()
+  const buttonOpacity = useSettingValue('theme.buttonOpacity')
   const webdavPath = useSettingValue('webdav.downloadPath')
   const fileSelectRef = useRef<FileSelectType>(null)
 
@@ -61,13 +63,14 @@ export default memo(() => {
       </Text>
       <View style={styles.buttonRow}>
         <Button
-          style={{ ...styles.button, backgroundColor: theme['c-button-background'] }}
+          // 按钮底色随「按钮透明度」淡出；只改颜色 alpha，不用容器 style.opacity
+          style={{ ...styles.button, backgroundColor: applyOpacity(theme['c-button-background'], buttonOpacity) }}
           onPress={handleSelectPath}
         >
           <Text color={theme['c-button-font']}>{t('webdav_download_path_select')}</Text>
         </Button>
         <Button
-          style={{ ...styles.button, backgroundColor: theme['c-button-background'] }}
+          style={{ ...styles.button, backgroundColor: applyOpacity(theme['c-button-background'], buttonOpacity) }}
           onPress={handleResetPath}
         >
           <Text color={theme['c-button-font']}>{t('webdav_download_path_default')}</Text>

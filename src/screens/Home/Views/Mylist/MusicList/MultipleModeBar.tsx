@@ -4,6 +4,8 @@ import { Animated, View, TouchableOpacity } from 'react-native'
 import Text from '@/components/common/Text'
 import Button from '@/components/common/Button'
 import { useTheme } from '@/store/theme/hook'
+import { useSettingValue } from '@/store/setting/hook'
+import { applyOpacity } from '@/utils/colorOpacity'
 import { createStyle } from '@/utils/tools'
 import { BorderWidths } from '@/theme'
 import { designMotion } from '@/theme/DesignTokens'
@@ -33,6 +35,7 @@ export default forwardRef<MultipleModeBarType, MultipleModeBarProps>(
     const [isSelectAll, setIsSelectAll] = useState(false)
     const [visibleBar, setVisibleBar] = useState(true)
     const theme = useTheme()
+    const buttonOpacity = useSettingValue('theme.buttonOpacity')
 
     useImperativeHandle(ref, () => ({
       show() {
@@ -109,8 +112,11 @@ export default forwardRef<MultipleModeBarType, MultipleModeBarProps>(
               }}
               style={{
                 ...styles.btn,
+                // 选中态底色随「按钮透明度」淡出；只改颜色 alpha，不用容器 style.opacity
                 backgroundColor:
-                  selectMode == 'single' ? theme['c-button-background'] : 'rgba(0,0,0,0)',
+                  selectMode == 'single'
+                    ? applyOpacity(theme['c-button-background'], buttonOpacity)
+                    : 'rgba(0,0,0,0)',
               }}
             >
               <Text color={theme['c-button-font']}>{global.i18n.t('list_select_single')}</Text>
@@ -121,8 +127,11 @@ export default forwardRef<MultipleModeBarType, MultipleModeBarProps>(
               }}
               style={{
                 ...styles.btn,
+                // 同上：只改颜色 alpha，文字色不动
                 backgroundColor:
-                  selectMode == 'range' ? theme['c-button-background'] : 'rgba(0,0,0,0)',
+                  selectMode == 'range'
+                    ? applyOpacity(theme['c-button-background'], buttonOpacity)
+                    : 'rgba(0,0,0,0)',
               }}
             >
               <Text color={theme['c-button-font']}>{global.i18n.t('list_select_range')}</Text>
@@ -142,6 +151,7 @@ export default forwardRef<MultipleModeBarType, MultipleModeBarProps>(
       animaStyle,
       selectMode,
       theme,
+      buttonOpacity,
       handleSelectAll,
       isSelectAll,
       onExitSelectMode,

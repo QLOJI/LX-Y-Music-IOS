@@ -2,7 +2,9 @@ import { memo, useRef, useState, useCallback, useEffect } from 'react'
 import { TouchableOpacity, View, BackHandler, StyleSheet } from 'react-native'
 import Text from '@/components/common/Text'
 import { createStyle } from '@/utils/tools'
+import { applyOpacity } from '@/utils/colorOpacity'
 import { useTheme } from '@/store/theme/hook'
+import { useSettingValue } from '@/store/setting/hook'
 import { useI18n } from '@/lang'
 import { designSpacing } from '@/theme/DesignTokens'
 import PagerView, { type PagerViewOnPageSelectedEvent } from 'react-native-pager-view'
@@ -31,6 +33,8 @@ const Tabs = ({
   onOpenModal: () => void
 }) => {
   const theme = useTheme()
+  // 子模式 chip 的描边随「按钮透明度」淡出，文字色不动。只改颜色 alpha，不能用容器 style.opacity。
+  const buttonOpacity = useSettingValue('theme.buttonOpacity')
   return (
     // 标题移到大标题下方独占一行（见 pageHeader 的 titleBlock），四个按钮并到同一行：
     // 推荐歌曲 / 推荐歌单 是主 tab（下划线选区），默认推荐 / 风格化推荐 是「推荐歌曲」下的子模式
@@ -59,7 +63,7 @@ const Tabs = ({
             onPress={() => { setIsStylized(false) }}
             style={[
               styles.subTab,
-              !isStylized ? { borderColor: theme['c-primary-font'] } : { borderColor: 'transparent' },
+              !isStylized ? { borderColor: applyOpacity(theme['c-primary-font'], buttonOpacity) } : { borderColor: 'transparent' },
             ]}
           >
             <Text color={!isStylized ? theme['c-primary-font'] : theme['c-font']} size={13}>默认推荐</Text>
@@ -71,7 +75,7 @@ const Tabs = ({
             }}
             style={[
               styles.subTab,
-              isStylized ? { borderColor: theme['c-primary-font'] } : { borderColor: 'transparent' },
+              isStylized ? { borderColor: applyOpacity(theme['c-primary-font'], buttonOpacity) } : { borderColor: 'transparent' },
             ]}
           >
             <Text color={isStylized ? theme['c-primary-font'] : theme['c-font']} size={13}>

@@ -1,6 +1,8 @@
 import { useRef, forwardRef, useImperativeHandle, useEffect } from 'react'
 import Button from '@/components/common/Button'
 import { useTheme } from '@/store/theme/hook'
+import { useSettingValue } from '@/store/setting/hook'
+import { applyOpacity } from '@/utils/colorOpacity'
 import Modal, { type ModalType } from './Modal'
 import { type ListInfoItem, type Source } from '@/store/songlist/state'
 import { createStyle } from '@/utils/tools'
@@ -21,6 +23,7 @@ export interface OpenListType {
 
 export default forwardRef<OpenListType, OpenListProps>(({ onOpenDetail }, ref) => {
   const theme = useTheme()
+  const buttonOpacity = useSettingValue('theme.buttonOpacity')
   const modalRef = useRef<ModalType>(null)
   const songlistInfoRef = useRef<{ source: Source }>({ source: 'kw' })
 
@@ -70,7 +73,11 @@ export default forwardRef<OpenListType, OpenListProps>(({ onOpenDetail }, ref) =
   return (
     <>
       <Button
-        style={{ ...styles.button, backgroundColor: theme['c-button-background'] }}
+        style={{
+          ...styles.button,
+          // 「通过 ID 打开歌单」圆钮的底色随按钮透明度淡出，只改颜色 alpha，不用容器 opacity。
+          backgroundColor: applyOpacity(theme['c-button-background'], buttonOpacity),
+        }}
         onPress={() => modalRef.current?.show(songlistInfoRef.current.source)}
       >
         <SvgIcon name="plus" size={20} color={theme['c-primary']} />
