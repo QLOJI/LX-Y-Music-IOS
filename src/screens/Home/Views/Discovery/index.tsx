@@ -7,6 +7,7 @@ import { useI18n } from '@/lang'
 import { useSettingValue } from '@/store/setting/hook'
 import { forceSyncNavActiveId, setNavActiveId } from '@/core/common'
 import { createStyle, toast } from '@/utils/tools'
+import { retryAsync } from '@/utils/retry'
 import { applyOpacity } from '@/utils/colorOpacity'
 import { designRadius, designSpacing, designTypography } from '@/theme/DesignTokens'
 import songlistState, { type ListInfoItem, type Source } from '@/store/songlist/state'
@@ -131,6 +132,12 @@ const styles = createStyle({
     textAlign: 'center',
     marginTop: designSpacing.lg,
   },
+  // 失败态的重试入口：整行可点（文案自带「点击尝试重新加载」），与 wy 每日推荐
+  // 失败态的「重新加载」按钮同一套语义，只是这里不额外放按钮、少一层视觉噪音
+  retryEntry: {
+    marginTop: designSpacing.lg,
+    alignItems: 'center',
+  },
 })
 
 export default memo(() => {
@@ -202,6 +209,10 @@ export default memo(() => {
   )
   const [playlists, setPlaylists] = useState<ListInfoItem[]>([])
   const [loading, setLoading] = useState(true)
+  // 失败原因（'' = 没失败）。空列表时用它区分「真的没有歌单」与「请求失败」，
+  // 并给出重试入口——失败只弹一次 toast 的话，用户离开这一屏再回来之前没有任何
+  // 恢复路径（②-5「首次启动推荐歌单没有加载」）。
+  const [loadError, setLoadError] = useState('')
   const [selectedPlaylist, setSelectedPlaylist] = useState<ListInfoItem | null>(
     () => restoredDiscoveryRef.current?.playlist ?? null,
   )
@@ -220,27 +231,49 @@ export default memo(() => {
   const loadPlaylists = useCallback(async(source: Source) => {
     const currentLoadId = ++loadIdRef.current
     setLoading(true)
+    setLoadError('')
     try {
-      const result = await getList(source, '', getSortId(source), 1)
+      // 有界重试（2 次，800/2000ms）：冷启动首个请求要跟「网络栈就绪 / 平台偶发 5xx」
+      // 抢时间，一次失败就定格成一屏空白。shouldRetry 兜住「等待期间用户切了平台」——
+      // 被更新的一次加载取代后不再补发请求，那次错误由下面的 catch 按 loadId 丢弃。
+      const result = await retryAsync(() => getList(source, '', getSortId(source), 1), {
+        shouldRetry: () => currentLoadId === loadIdRef.current,
+      })
       if (currentLoadId !== loadIdRef.current) return
       setPlaylists(result.list.map((item) => ({ ...item, source })))
     } catch (error: any) {
       if (currentLoadId !== loadIdRef.current) return
-      setPlaylists([])
+      // 失败不再无条件清空：只有「屏上这批数据属于别的平台」时才清，
+      // 同平台的刷新失败保留上一次成功的列表——用户看到的至少还是有效内容，
+      // 而不是被一次抖动清成空白（旧写法 setPlaylists([]) 正是「首次启动空白」的
+      // 其中一环：失败后连原本能显示的内容也没了）。
+      setPlaylists((prev) => (prev.length && prev[0]?.source === source ? prev : []))
+      setLoadError(String(error?.message || ''))
       toast(String(error?.message || t('load_failed')))
     } finally {
       if (currentLoadId === loadIdRef.current) setLoading(false)
     }
   }, [t])
 
+  const handleRetryPlaylists = useCallback(() => {
+    void loadPlaylists(selectedSource)
+  }, [loadPlaylists, selectedSource])
+
   const loadBoards = useCallback(async(source: Source) => {
     const currentLoadId = ++boardsLoadIdRef.current
     try {
-      const boardList = await getBoardsList(source)
+      // 与歌单同档重试：榜单区失败是「整块消失」（渲染条件 boards.length），
+      // 冷启动抖一下就没影了；同样是失败清空 + 无重试的老问题
+      const boardList = await retryAsync(() => getBoardsList(source), {
+        shouldRetry: () => currentLoadId === boardsLoadIdRef.current,
+      })
       if (currentLoadId !== boardsLoadIdRef.current) return
       setBoards(boardList)
     } catch {
       if (currentLoadId !== boardsLoadIdRef.current) return
+      // 榜单仍然失败即清空：BoardItem 不带 source，切换平台后若保留旧数据，
+      // 屏上会是**别的平台**的榜单（比空着更糟）。重试已在上面的 retryAsync 里兜住，
+      // 真正的冷启动抖动不会再走到这里。
       setBoards([])
     }
   }, [])
@@ -349,6 +382,34 @@ export default memo(() => {
     }),
     [theme, buttonOpacity],
   )
+
+  // 推荐歌单区的状态行：只有这里能区分「加载中 / 加载失败 / 真的没有歌单」。
+  // 失败必须与「暂无数据」分开显示、并给出重试入口 —— 旧写法把失败也显示成 list_empty
+  // （「暂无数据~」），等于把「请求挂了」谎报成「没有数据」，用户既不知道发生了什么、
+  // 也没有入口重来（②-5「首次启动推荐歌单没有加载」）。
+  const renderShelfStatus = () => {
+    if (loading) {
+      return (
+        <Text style={styles.status} size={designTypography.caption} color={theme['c-font-label']}>
+          {t('list_loading')}
+        </Text>
+      )
+    }
+    if (playlists.length) return null
+    if (loadError) {
+      // 文案自带「点击尝试重新加载」，整行可点
+      return (
+        <TouchableOpacity style={styles.retryEntry} onPress={handleRetryPlaylists}>
+          <Text size={designTypography.caption} color={theme['c-font-label']}>{t('list_error')}</Text>
+        </TouchableOpacity>
+      )
+    }
+    return (
+      <Text style={styles.status} size={designTypography.caption} color={theme['c-font-label']}>
+        {t('list_empty')}
+      </Text>
+    )
+  }
 
   // 推荐歌单网格数据：12 → 24（getList 第 1 页本身 ~30 条，不产生额外请求）。
   // 大屏网格一屏可见卡数更多（iPad 可显示 4~5 列 × 多行），12 张一屏见底显空。
@@ -483,16 +544,7 @@ export default memo(() => {
           />
         </View>
 
-        {loading ? (
-          <Text style={styles.status} size={designTypography.caption} color={theme['c-font-label']}>
-            {t('list_loading')}
-          </Text>
-        ) : null}
-        {!loading && !playlists.length ? (
-          <Text style={styles.status} size={designTypography.caption} color={theme['c-font-label']}>
-            {t('list_empty')}
-          </Text>
-        ) : null}
+        {renderShelfStatus()}
       </ScrollView>
       {selectedPlaylist ? (
         <View style={StyleSheet.absoluteFill}>

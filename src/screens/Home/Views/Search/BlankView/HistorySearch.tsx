@@ -148,8 +148,11 @@ export default forwardRef<HistorySearchType, HistorySearchProps>((props, ref) =>
 
 const styles = createStyle({
   titleContent: {
-    // A-2：标题到词条 12→8，对齐 REF 的 8pt 节奏（区块上方 16 / 标题到内容 8 / 词条行距 12）
-    marginBottom: designSpacing.xs,
+    // A-2：标题到词条 12→8（区块上方 16 / 标题到内容 8 / 词条行距 12）。
+    // A-4（2026-10-01）：再收到 4，与 HotSearch 同值 —— 历史词条是 36pt 高、字号 13 的胶囊，
+    // 胶囊顶边到文字顶边自带 ~10pt 留白，标题留 4 后视觉间距才与 HotSearch 一致
+    // （两个区块的「标题→内容」观感必须一样，否则左右两个区块自己就不齐）。
+    marginBottom: 4,
     flexDirection: 'row',
     alignItems: 'center',
   },

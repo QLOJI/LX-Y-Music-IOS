@@ -5,6 +5,8 @@ import Text from '@/components/common/Text'
 import { useTheme } from '@/store/theme/hook'
 import { useHorizontalMode } from '@/utils/hooks'
 import { createStyle, toast } from '@/utils/tools'
+import { retryAsync } from '@/utils/retry'
+import { useI18n } from '@/lang'
 import txApi from '@/utils/musicSdk/tx'
 import { usePlayerMusicInfo } from '@/store/player/hook'
 import { LIST_IDS } from '@/config/constant'
@@ -51,18 +53,35 @@ export default memo(({ header, type, onOpenDetail }: Props) => {
   const playerMusicInfo = usePlayerMusicInfo()
   const [playlists, setPlaylists] = useState<Array<{ id: string, name: string, cover: string, playCount: number }>>([])
   const [loading, setLoading] = useState(false)
+  // 失败原因（'' = 没失败）：空列表时用它区分「真的没推荐」与「请求失败」，并给重试入口。
+  // 与同目录 RecPlaylists / 网易 recPlaylists 同一套失败态（②-5：原先失败只有一次 toast，
+  // FlatList 没有 ListEmptyComponent，失败后没有任何恢复路径）
+  const [loadError, setLoadError] = useState('')
   const theme = useTheme()
   const isHorizontal = useHorizontalMode()
+  const t = useI18n()
   // 底部悬浮层（迷你播放器 + 底部 Tab + 安全区）统一避让高度
   const bottomInset = useBottomOverlayInset()
+  // 只认最后一次发起的加载：连续重试 / 下拉刷新重叠时丢弃过期响应
+  const loadIdRef = useRef(0)
+  // 「已经拿到过数据」的闸门。原判据读 playlists.length 且写在依赖里，加载成功会重建
+  // 函数、把 effect 再触发一次空跑；换成 ref 后语义不变（有数据就不自动重发）但不自激
+  const loadedRef = useRef(false)
 
   const loadPlaylists = useCallback(async(refresh = false) => {
     if (type !== 'home') return
-    if (!refresh && playlists.length > 0) return
+    if (!refresh && loadedRef.current) return
+    const loadId = ++loadIdRef.current
     setLoading(true)
+    setLoadError('')
     try {
-      const result = await txApi.dailyRec.getHomeFeed()
+      // 有界重试（2 次，800/2000ms）：冷启动首个请求容易输给「网络栈就绪 / 平台偶发 5xx」
+      const result = await retryAsync(() => txApi.dailyRec.getHomeFeed(), {
+        shouldRetry: () => loadId === loadIdRef.current,
+      })
+      if (loadId !== loadIdRef.current) return
       if (result?.list) {
+        if (result.list.length) loadedRef.current = true
         setPlaylists(result.list.map((item: any) => ({
           id: String(item.id),
           name: item.name,
@@ -70,13 +89,14 @@ export default memo(({ header, type, onOpenDetail }: Props) => {
           playCount: item.playCount,
         })))
       }
-    } catch (error) {
-      console.error('获取QQ主页推荐失败:', error)
+    } catch (error: any) {
+      if (loadId !== loadIdRef.current) return
+      setLoadError(error?.message || '')
       toast('加载失败', 'long')
     } finally {
-      setLoading(false)
+      if (loadId === loadIdRef.current) setLoading(false)
     }
-  }, [type, playlists.length])
+  }, [type])
 
   const fetchSongs = useCallback(async() => {
     try {
@@ -120,7 +140,7 @@ export default memo(({ header, type, onOpenDetail }: Props) => {
 
   const handleRefresh = useCallback(() => {
     if (type === 'home') {
-      loadPlaylists(true)
+      void loadPlaylists(true)
     } else {
       listRef.current?.setStatus('refreshing')
       fetchSongs()
@@ -149,6 +169,29 @@ export default memo(({ header, type, onOpenDetail }: Props) => {
     }
   }
 
+  // 空列表渲染：区分「加载中 / 加载失败 / 真的没推荐」，并给失败态一个重试入口
+  const renderEmpty = () => {
+    if (type !== 'home') return null
+    if (loading) {
+      return (
+        <View style={styles.empty}>
+          <Text color={theme['c-font-label']}>{t('list_loading')}</Text>
+        </View>
+      )
+    }
+    return (
+      <View style={styles.empty}>
+        <Text color={theme['c-font-label']}>{loadError ? t('list_error') : t('list_empty')}</Text>
+        {loadError ? (
+          <Text style={styles.emptyDetail} color={theme['c-font-label']} size={12}>{loadError}</Text>
+        ) : null}
+        <TouchableOpacity style={styles.retry} onPress={handleRefresh}>
+          <Text color={theme['c-primary']}>{t('list_reload')}</Text>
+        </TouchableOpacity>
+      </View>
+    )
+  }
+
   if (type === 'home') {
     return (
       <View style={{ flex: 1 }}>
@@ -166,6 +209,7 @@ export default memo(({ header, type, onOpenDetail }: Props) => {
             </View>
           )}
           keyExtractor={(item) => item.id}
+          ListEmptyComponent={renderEmpty()}
           refreshControl={
             <RefreshControl colors={[theme['c-primary']]} refreshing={loading} onRefresh={handleRefresh} />
           }
@@ -223,5 +267,16 @@ const styles = createStyle({
   },
   subtitle: {
     marginTop: 4,
+  },
+  empty: {
+    paddingTop: 60,
+    alignItems: 'center',
+  },
+  emptyDetail: {
+    marginTop: 6,
+    opacity: 0.7,
+  },
+  retry: {
+    marginTop: 12,
   },
 })

@@ -110,11 +110,12 @@ const styles = createStyle({
   },
   playCount: {
     position: 'absolute',
-    // 角标统一约定（临时，与 PlaylistCard.tsx、SonglistDetail/index.tsx 逐字一致）：
-    // 贴角 top/right 4（createStyle 会随全局字号缩放）、固定高 20、水平内边距 10 ≥ 半高，
+    // 角标统一约定（与 PlaylistCard.tsx、SonglistDetail/index.tsx 逐字一致）：
+    // 贴角 top/right 2（createStyle 会随全局字号缩放；2026-10-01 需求「数字位置再往
+    // 右上角靠近一点」，4 → 2）、固定高 20、水平内边距 10 ≥ 半高，
     // 圆弧不会削到首尾字形；居中交给 View 的 alignItems/justifyContent。
-    top: 4,
-    right: 4,
+    top: 2,
+    right: 2,
     height: 20,
     paddingHorizontal: 10,
     borderRadius: designRadius.pill,

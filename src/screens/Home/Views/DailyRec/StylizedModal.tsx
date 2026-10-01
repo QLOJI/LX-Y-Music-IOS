@@ -102,6 +102,23 @@ export default memo(({ visible, onClose, onConfirm }: StylizedModalProps) => {
   const theme = useTheme()
   const [selectedCategoryName, setSelectedCategoryName] = useState<keyof typeof CATEGORIES>('曲风')
   const [selectedTags, setSelectedTags] = useState<number[]>([])
+  // ✅ 关键规避（2026-10-01，P0「所有界面滑动/点击都没反应」）：本组件是**唯一**
+  // 直接用 react-native 原生 <Modal> 且常驻挂载（DailyRec 一直挂着、只翻 visible）
+  // 的实例，而 iOS 上 transparent + overFullScreen 的 Modal 关闭存在竞态：偶发
+  // RCTModalHostView 不被移除，残留的不可见宿主会吞掉整页触摸（页面看着正常、
+  // 后台音乐照放、点击/滚动全无效，只能杀进程 —— 上游 facebook/react-native#12872）。
+  // 同一个规避在 components/common/Modal.tsx 与 ImagePreviewModal.tsx 都有；
+  // 那时把 Modal 从组件树整个卸载，这里照搬同一口径：隐藏后延迟 300ms 卸挂载，
+  // 重新打开立即挂回（淡入不受影响）。
+  const [mounted, setMounted] = useState(visible)
+  useEffect(() => {
+    if (visible) {
+      setMounted(true)
+      return
+    }
+    const timer = setTimeout(() => { setMounted(false) }, 300)
+    return () => { clearTimeout(timer) }
+  }, [visible])
 
   useEffect(() => {
     if (visible) {
@@ -158,6 +175,9 @@ export default memo(({ visible, onClose, onConfirm }: StylizedModalProps) => {
   }
 
   const currentTags = CATEGORIES[selectedCategoryName].tags
+
+  // 已卸载（含淡出结束）时不渲染任何原生宿主——杜绝「看不见但还挂着」的 Modal 截胡整页触摸
+  if (!mounted) return null
 
   return (
     <Modal

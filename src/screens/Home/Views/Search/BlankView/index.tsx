@@ -29,9 +29,12 @@ export default forwardRef<BlankViewType, BlankViewProps>(({ header, onSearch }, 
   const t = useI18n()
   const theme = useTheme()
 
+  // 区块间距（A-4）：热门搜索 / 历史搜索 两个区块之间也用 lg(24)，与 content.paddingTop
+  // 同值 —— 需求原文是「间距和前后不一致」，此前是「上方 16 / 区块间 16 / 标题下 8」三套
+  // 互不相干的数字，读起来忽紧忽松。
   const cardStyle = useMemo(
     () => ({
-      marginBottom: designSpacing.md,
+      marginBottom: designSpacing.lg,
     }),
     [],
   )
@@ -86,9 +89,14 @@ export default forwardRef<BlankViewType, BlankViewProps>(({ header, onSearch }, 
 
 const styles = createStyle({
   content: {
-    // 「热门搜索/历史搜索」上方与搜索类型选择器之间的固定间距（A-2）：此前只有
-    // paddingBottom/Horizontal，区块标题顶端几乎贴住上方胶囊行，视觉上紧下松。
-    paddingTop: designSpacing.md,
+    // 「热门搜索/历史搜索」上方与搜索类型选择器之间的固定间距。
+    // A-2：此前只有 paddingBottom/Horizontal，区块标题顶端几乎贴住上方胶囊行。
+    // A-4（2026-10-01）：用户再次反馈「热门搜索这几个字已经靠紧了上方的歌曲/歌单/歌手/专辑栏，
+    // 下方的文字间距又很大」—— md(16) 不够。这里改 lg(24)，同时把标题自身的 marginBottom
+    // 收到 4（见 HotSearch/HistorySearch）：标题离「自己的内容」近、离「上一区块」远，
+    // 才是正确的视觉分组；此前的 8 加上胶囊内部的垂直居中留白（13pt 字挤在 44pt 胶囊里
+    // 上下各留 ~14pt），合起来反而比上方还空。
+    paddingTop: designSpacing.lg,
     paddingBottom: 180,
     paddingHorizontal: designSpacing.lg,
   },

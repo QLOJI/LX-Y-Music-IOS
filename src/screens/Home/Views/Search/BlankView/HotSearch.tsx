@@ -105,8 +105,12 @@ export default forwardRef<HotSearchType, ListProps>((props, ref) => {
 
 const styles = createStyle({
   title: {
-    // A-2：标题到词条 12→8，对齐 REF 的 8pt 节奏（区块上方 16 / 标题到内容 8 / 词条行距 12）
-    marginBottom: designSpacing.xs,
+    // A-2：标题到词条 12→8（区块上方 16 / 标题到内容 8 / 词条行距 12）。
+    // A-4（2026-10-01）：再收到 4 —— 用户反馈「下方的文字间距又很大」。词条是 44pt 高、
+    // 字号 13 的胶囊，文字在胶囊内垂直居中，胶囊顶边到文字顶边本身就有 ~14pt 留白，
+    // 若标题再留 8，视觉间距（~22pt）比标题离上方标签行（~19pt）还大，分组就反了。
+    // 4 是「贴着自己的内容」的量级，不引间距令牌（最小档 xs 就是 8，反而会退回原样）。
+    marginBottom: 4,
     fontWeight: '700',
   },
   list: {
