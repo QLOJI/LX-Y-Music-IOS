@@ -42,7 +42,9 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
   const handleInfoContainerLayout = useCallback(({ nativeEvent }: LayoutChangeEvent) => {
     const y = Math.round(nativeEvent.layout.y)
     if (y <= 0) return
-    setCoverRegionHeight(prev => (prev === y ? prev : y))
+    // 2pt 死区：亚像素级重排（转屏、全局字体缩放、封面尺寸微调）不驱动小歌词跟着重排。
+    // 小歌词每次重排都会重算留白与档位，是「滑动时文字抖动」的一条入口，能不动就不动。
+    setCoverRegionHeight(prev => (Math.abs(prev - y) < 2 ? prev : y))
   }, [])
   // 「信息块外框顶边 → 歌名栏视觉顶边」的距离，等于 SongInfo 自己的 marginTop
   //（大屏 20 / 小屏 8，见 SongInfo.tsx 的 styles.container 及其 isSmallWindow 分支）。
@@ -184,12 +186,12 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
   const pageBottomPadding = useMemo(() => ({
     paddingBottom: isSmallWindow ? 0 : PAGE_BOTTOM_PADDING,
   }), [isSmallWindow])
-  // 小歌词的 style 数组 memo 化：内联数组每次渲染都是新引用，会让 memo(MiniLyric) 失效——
+  // 小歌词的 style memo 化：内联对象每次渲染都是新引用，会让 memo(MiniLyric) 失效——
   // 滚动/切歌期父级重渲染会连带小歌词重渲染（抖动隔离的前提，见 W2 的小歌词重写）。
-  const miniLyricStyle = useMemo(() => [
-    styles.miniLyricContainerNew,
-    miniLyricAlignStyles[miniLyricAlign as keyof typeof miniLyricAlignStyles],
-  ], [miniLyricAlign])
+  // 这里只剩「水平对齐」一项：原先 miniLyricContainerNew 的 paddingHorizontal:10 已挪进
+  // MiniLyric 的 bleedH/文本内缩（容器自己带水平 padding 会把绝对定位的定位浮层一起缩进去，
+  // 见 MiniLyric 的 lineInsetH）。
+  const miniLyricStyle = useMemo(() => miniLyricAlignStyles[miniLyricAlign as keyof typeof miniLyricAlignStyles], [miniLyricAlign])
 
   return (
     <>
@@ -226,6 +228,10 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
                     未就绪时不传等价于不限制）。 */}
                 <MiniLyric
                   maxHeight={coverRegionHeight > 0 ? coverRegionHeight : undefined}
+                  // 小歌词用负 margin 把自己左右各外扩这么多，frame 顶到屏幕边缘：
+                  // 定位浮层（绝对定位，左右 0）因此和大歌词一样贴到右缘，虚线右端与播放三角
+                  // 离右缘的距离同大歌词完全一致（用户点名的问题）；歌词文本再按同值内缩回去。
+                  bleedH={containerPaddingH}
                   onPress={handleSwitchToLyricPage}
                   style={miniLyricStyle}
                 />
@@ -289,9 +295,9 @@ const styles = createStyle({
     flex: 0,
     flexShrink: 0,
   },
-  miniLyricContainerNew: {
-    paddingHorizontal: 10,
-  },
+  // 小歌词容器不再带水平内边距：容器带 padding 会把绝对定位的定位浮层一起缩进去
+  //（虚线右端因此离屏幕右缘更远）。原来那 10pt 已折算进 MiniLyric 的 bleedH 与文本内缩，
+  // 效果是「浮层贴到屏幕边、歌词文字与歌名栏对齐在同一条竖线上」。
   miniLyricAlignLeft: {
     alignItems: 'flex-start',
   },

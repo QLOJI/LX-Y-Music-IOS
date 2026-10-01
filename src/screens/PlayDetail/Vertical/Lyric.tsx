@@ -20,6 +20,8 @@ import { updateSetting } from '@/core/common'
 import { useTheme } from '@/store/theme/hook'
 import { useSettingValue } from '@/store/setting/hook'
 import { useIsPlay } from '@/store/player/hook'
+import { useComponentIds } from '@/store/common/hook'
+import { COMPONENT_IDS } from '@/config/constant'
 import { AnimatedColorText } from '@/components/common/Text'
 import { setSpText } from '@/utils/pixelRatio'
 import settingState from '@/store/setting/state'
@@ -216,6 +218,12 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
   // 暂停时音频时钟不再推进，循环体只会逐帧算不出变化而早退，但 rAF 仍每帧被
   // CADisplayLink 唤醒（120Hz 解锁后成本翻倍）——只冻结时间不停帧，省不掉这份开销。
   const isPlay = useIsPlay()
+  // 歌词页可见性（与横屏 Horizontal/Lyric.tsx 同一判据）：本组件没有 componentId 入参，
+  // 改用 RNN 组件栈的栈顶名字判断——componentIds 自栈底到栈顶，栈顶是 playDetail（本播放页）
+  // 才说明歌词页真的在前台；被评论页 / 设置页 / 歌单详情等压栈覆盖（栈顶换名）时不可见。
+  // 用途同横屏：不可见时停掉下面的每帧滚动循环（省电降温，见该循环 effect 的门控说明）。
+  const ids = useComponentIds()
+  const panelVisible = String(ids[ids.length - 1]?.name) === COMPONENT_IDS.playDetail
   // 逐字时间轴（与 lyricLines 同序）：第 i 项为第 i 行歌词的逐字数组；无逐字（纯 LRC）为 null。
   // 激活行据此走逐字卡拉OK渲染，否则退回整行高亮。
   const wordsByIndex = useLrcWordsMap()
@@ -821,9 +829,12 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
   // 渲染树的这份常驻开销。恢复播放时 effect 重跑、重新起帧。
   useEffect(() => {
     if (!active) return
+    // 双门控：播放态 × 歌词页可见性，任一不满足即取消 rAF（cancel，不是把速度改 0 / 让循环空转）。
     // 暂停期间用户可能手动滚动歌词/拖动进度条：恢复播放的首帧必须像「手动滚动恢复」一样
     // 以列表真实位置为平滑基准（见下面 wasPauseRef 分支），否则会被暂停前的旧基准拽回去。
-    if (!isPlay) {
+    // 被压栈页盖住（panelVisible=false）时同样停帧 —— 屏幕不可见却仍在逐帧 scrollToOffset，
+    // 是纯粹的耗电/发热（120Hz 解锁后成本翻倍），恢复首帧走同一条「重取基准」路径。
+    if (!isPlay || !panelVisible) {
       wasPauseRef.current = true
       return
     }
@@ -853,7 +864,7 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
     rafId = requestAnimationFrame(loop)
     return () => { cancelAnimationFrame(rafId) }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, isPlay, lyricLines])
+  }, [active, isPlay, panelVisible, lyricLines])
 
   // 从封面页切回歌词页时，立即把歌词时钟重锚到真实音频位置，并强制把当前行定位到【正中】
   // （viewPosition 0.5，不再是历史上的 42%——42% 与「高亮行居中」的要求冲突），

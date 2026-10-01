@@ -16,9 +16,8 @@ import { type Line, useLrcPlay, useLrcSet, useLrcWordsMap } from '@/plugins/lyri
 import { useSettingValue } from '@/store/setting/hook'
 import { useTheme } from '@/store/theme/hook'
 import { createStyle } from '@/utils/tools'
-import { scaleSizeH, setSpText } from '@/utils/pixelRatio'
+import { scaleSizeH, scaleSizeW, setSpText } from '@/utils/pixelRatio'
 import { useWindowSize } from '@/utils/hooks'
-import { scrollTo } from '@/utils/scroll'
 import playerState from '@/store/player/state'
 import { getReturnDuration, IDLE_RETURN_MS, LINE_CHANGE_GLIDE_MS } from '@/screens/PlayDetail/lyricAnimation'
 
@@ -44,8 +43,18 @@ const LINE_GAP_NORMAL = 8
 // 小屏（与 SongInfo / FeatureBtns 的判定阈值一致）空间不足：只保留当前行，
 // 避免三行定高窗口把歌名块顶出容器、压到下方控制条
 const SMALL_WINDOW_HEIGHT = 700
-// 定高窗口的目标行数；实测可用高度不足时降级为 1 行（只显示当前行）
-const WINDOW_ROWS = 3
+// 定高窗口的行数：由实测可用高度自动定档（用户要求「区域没填满就多显示一行」）。
+// 3 行是基准档，最多 4 行 —— 再多就会把上方封面挤掉，也不符合「3~4 行」的原话。
+// 可用高度更小时（小屏 / 横屏被压扁）逐档降到 2 行、1 行，绝不低于 1。
+const MAX_WINDOW_ROWS = 4
+// 外层还没实测出可用高度（首帧 / 老调用点）时的兜底行数：按基准档 3 行渲染，
+// 实测值一到就按实测重新定档。小屏另有更保守的降级（见下方 limit）。
+const FALLBACK_WINDOW_ROWS = 3
+// 歌词内容的左右内缩（pt，经横向缩放）：与信息块里其它文字（歌名/歌手/专辑）同一个左缘。
+// 它现在只作用在**列表内容**上，容器自身不再留左右内边距 —— 手动定位浮层（绝对定位、
+// 与本容器同级）要按大歌词的口径贴到屏幕边，容器带左右 padding 会把浮层一起缩进去
+// （用户原话：虚线和播放图标离最右侧太远了）。
+const BASE_LINE_INSET_H = 20
 // 档位切换的滞回余量（pt，经全局缩放）。见下方 rowCount 处的说明：
 // 它必须小于一行行高，否则降档判断会迟钝到把三行窗口挤出行外。
 const ROW_SWITCH_HYSTERESIS = 8
@@ -73,9 +82,17 @@ export interface MiniLyricProps {
    * 保持旧行为（小屏只显示当前行）；**绝不能当成 0**，否则首帧塌陷。
    */
   maxHeight?: number
+  /**
+   * 外层为对齐而加在小歌词上的**水平内边距**（pt）。传进来后小歌词会把自己左右各外扩这么多，
+   * 把 frame 顶到屏幕边缘 —— 手动定位浮层（绝对定位，左右 0）因此落在与大歌词完全相同的位置，
+   * 虚线右端与大歌词一致地贴到右侧（用户点名的问题）；而歌词文本自身再内缩相同距离，
+   * 文字左缘与歌名/歌手/专辑保持同一条竖线。
+   * 不传（= 0）时几何与旧行为完全一致。
+   */
+  bleedH?: number
 }
 
-const MiniLyric = ({ onPress, style, maxHeight }: MiniLyricProps) => {
+const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0 }: MiniLyricProps) => {
   const theme = useTheme()
   const { line: activeLine } = useLrcPlay()
   const lyricLines = useLrcSet()
@@ -95,6 +112,10 @@ const MiniLyric = ({ onPress, style, maxHeight }: MiniLyricProps) => {
   const isPauseScrollRef = useRef(false)
   const scrollTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const scrollCancelRef = useRef<(() => void) | null>(null)
+  // 本组件正在以动画方式驱动列表滚动（回位 / 跟随滑行）：这段时间列表归动画所有 ——
+  // 既不在 onScroll 里重新显示定位浮层（否则回位的路上浮层会重新冒出来），
+  // 也不让「换行跟随」在回位动画没落地时插队（两条动画抢同一个 offset 就是二次回摆的来源）
+  const isAutoScrollRef = useRef(false)
   // 上一次的窗口档位（三行 / 单行），只用于滞回判断，不参与渲染输出
   const rowCountRef = useRef<number | null>(null)
   // 本次拖动开始时的滚动偏移（判断「是否真的动过」，见 OVERLAY_SHOW_MOVE）
@@ -124,27 +145,41 @@ const MiniLyric = ({ onPress, style, maxHeight }: MiniLyricProps) => {
   // 可用高度上限：优先用竖屏布局实测传入的 maxHeight（该区域当前真实可用的高度）；
   // 未传时退回到不依赖外部测量的保守上限 —— 小屏只留当前行，大屏按三行窗口给满。
   // 注意这里不是 `?? 0`：首帧实测还没回来时若当成 0，整块会先塌陷再弹开。
-  const limit = maxHeight ?? (winHeight < SMALL_WINDOW_HEIGHT ? rowHeight : rowHeight * WINDOW_ROWS)
+  const limit = maxHeight ?? (winHeight < SMALL_WINDOW_HEIGHT ? rowHeight : rowHeight * FALLBACK_WINDOW_ROWS)
 
-  // 档位（三行 / 单行）必须断开「行数 → 自身高度 → 实测可用高度 → 行数」的自反馈环：
+  // 档位（能放几行）必须断开「行数 → 自身高度 → 实测可用高度 → 行数」的自反馈环：
   // maxHeight 是布局实测值，小歌词自己撑高后它可能变小，若在阈值上做硬判断，
-  // 阈值附近就会 3 行 ↔ 1 行来回抖。这里用滞回（Schmitt 触发器）：
-  //   已在三行档：跌到「三行高度 − 余量」以下才降档；
-  //   已在单行档：涨到「三行高度 + 余量」以上才升档。
+  // 阈值附近就会 3 行 ↔ 4 行来回抖。这里用滞回（Schmitt 触发器）：
+  //   升档：新的一行真的放得下、还多出 hysteresis 才升；
+  //   降档：连当前行数都放不下、且超出 hysteresis 才降。
   // 两个方向都要多走一个余量才切档 ⇒ 环路增益 < 1，不自激。
   // 用 ref（而不是 state）同步决定档位：每次渲染都按当前 limit 直接算出结果，
   // 不产生「先按旧档渲染一帧、再按新档重渲染」的中间帧 —— 中间帧本身就是一次抖动。
-  const fullHeight = rowHeight * WINDOW_ROWS
+  const fitRows = Math.max(1, Math.min(MAX_WINDOW_ROWS, Math.floor(limit / rowHeight)))
   const hysteresis = Math.max(scaleSizeH(ROW_SWITCH_HYSTERESIS), 1)
   const prevRowCount = rowCountRef.current
   let rowCount: number
-  if (prevRowCount == null) rowCount = limit >= fullHeight ? WINDOW_ROWS : 1
-  else if (prevRowCount >= WINDOW_ROWS) rowCount = limit >= fullHeight - hysteresis ? WINDOW_ROWS : 1
-  else rowCount = limit >= fullHeight + hysteresis ? WINDOW_ROWS : 1
+  if (prevRowCount == null) {
+    rowCount = fitRows
+  } else if (isPauseScrollRef.current) {
+    // 手势进行中（拖动 / 停手等待回位）冻结档位：此刻切档会连留白一起变，
+    // 手指下正在定位的那一行会突然跳走。松手后的下一次渲染自然回到 fitRows。
+    rowCount = prevRowCount
+  } else if (fitRows > prevRowCount) {
+    rowCount = limit >= (prevRowCount + 1) * rowHeight + hysteresis ? fitRows : prevRowCount
+  } else if (fitRows < prevRowCount) {
+    rowCount = limit < prevRowCount * rowHeight - hysteresis ? fitRows : prevRowCount
+  } else {
+    rowCount = fitRows
+  }
   rowCountRef.current = rowCount
   // 上下各留 (行数-1)/2 排：行号 i 居中 ⇔ 滚动偏移 = i × 行高；块高恒定为 行数 × 行高
   const topPadding = ((rowCount - 1) / 2) * rowHeight
   const containerHeight = rowCount * rowHeight
+
+  // 歌词文本的左右内缩（pt，屏幕坐标系）：自己那份基准内缩 + 外层为对齐加的内边距
+  // （外层内边距由根节点的负 margin 抵消掉了，文本要把它补回来，左缘才与歌名同一条竖线）
+  const lineInsetH = useMemo(() => bleedH + scaleSizeW(BASE_LINE_INSET_H), [bleedH])
 
   const rowStyle = useMemo<StyleProp<ViewStyle>>(() => ({ height: rowHeight }), [rowHeight])
   const textStyle = useMemo<StyleProp<TextStyle>>(() => ({ textAlign, lineHeight: metrics.lineHeight }), [textAlign, metrics.lineHeight])
@@ -162,32 +197,61 @@ const MiniLyric = ({ onPress, style, maxHeight }: MiniLyricProps) => {
       scrollCancelRef.current()
       scrollCancelRef.current = null
     }
+    isAutoScrollRef.current = false
   }, [])
 
   /**
    * 平滑滚动到第 index 行居中。
-   * 目标位置在启动动画**之前**一次算好并锁定（不做每帧重算），且先取消上一条动画 ——
-   * 这是「回位过程中不会先向上再向下」的结构性保证。
-   * duration 不传时按距离取 getReturnDuration（手动定位后的回位）。
+   *
+   * 逐帧 rAF + `scrollToOffset({animated:false})`，与竖屏/横屏大歌词同一族实现：
+   *   • 每帧落到「起点→终点」的**绝对**位置（不累加增量），因此没有累积误差、不会超调；
+   *   • 帧率跟着屏幕刷新率走（120Hz 每帧都出一帧画面），不像 setTimeout(10ms) 那样与 vsync 错拍；
+   *   • 起点与终点在启动前一次锁定，中途不重算 —— 这是「回位过程只朝一个方向走、
+   *     不会先向上再向下」的结构性保证。
+   * 先取消上一条动画；duration 不传时按距离取 getReturnDuration（手动定位后的回位）。
+   * onDone 在动画落地（或无需动画直接落位）后回调一次，任何路径都恰好回调一次。
    */
-  const animateToLine = useCallback((index: number, duration?: number) => {
+  const animateToLine = useCallback((index: number, duration?: number, onDone?: () => void) => {
     const list = listRef.current
-    if (!list) return
-    const offset = Math.max(0, index) * rowHeight
-    cancelScroll()
-    const info = scrollInfoRef.current
-    if (!info) {
-      list.scrollToOffset({ offset, animated: false })
+    if (!list) {
+      onDone?.()
       return
     }
-    const distance = offset - info.contentOffset.y
-    scrollCancelRef.current = scrollTo(
-      list,
-      info,
-      offset,
-      duration ?? getReturnDuration(distance),
-      () => { scrollCancelRef.current = null },
-    )
+    const offset = Math.max(0, index) * rowHeight
+    cancelScroll()
+    const from = scrollInfoRef.current?.contentOffset.y
+    const distance = from == null ? 0 : offset - from
+    // 起点未知（还没滚动过 / 首帧）或位移小到看不见：直接落位，不播动画
+    if (from == null || Math.abs(distance) < 1) {
+      list.scrollToOffset({ offset, animated: false })
+      onDone?.()
+      return
+    }
+    const total = Math.max(duration ?? getReturnDuration(distance), 1)
+    let rafId = 0
+    let startTime = 0
+    const step = (now: number) => {
+      if (!startTime) startTime = now
+      const t = Math.min(1, (now - startTime) / total)
+      // easeInOutQuad（与大歌词同一条曲线）
+      const eased = t < 0.5 ? 2 * t * t : 1 - ((-2 * t + 2) * (-2 * t + 2)) / 2
+      list.scrollToOffset({ offset: from + distance * eased, animated: false })
+      if (t < 1) {
+        rafId = requestAnimationFrame(step)
+        return
+      }
+      rafId = 0
+      scrollCancelRef.current = null
+      isAutoScrollRef.current = false
+      onDone?.()
+    }
+    isAutoScrollRef.current = true
+    scrollCancelRef.current = () => {
+      if (rafId) cancelAnimationFrame(rafId)
+      rafId = 0
+      isAutoScrollRef.current = false
+    }
+    rafId = requestAnimationFrame(step)
   }, [rowHeight, cancelScroll])
 
   // 播放行自动跟随：跨行距离很远（进度条 seek / 恢复播放）时直接落位，不做长距离快速滑动
@@ -256,10 +320,17 @@ const MiniLyric = ({ onPress, style, maxHeight }: MiniLyricProps) => {
       scrollTimeoutRef.current = null
       isOverlayShownRef.current = false
       playLineRef.current?.setVisible(false)
-      isPauseScrollRef.current = false
-      animateToLine(Math.max(0, activeLineRef.current))
+      const target = Math.max(0, activeLineRef.current)
+      // 回位动画期间继续扣住 isPauseScrollRef：否则「换行跟随」的 effect 会在回位没落地时插队，
+      // 两条动画抢同一个滚动偏移，观感就是先朝一个方向窜一下、再慢慢沉回去。
+      // 落地后再解除锁定；期间若歌曲已经换行（target 已过期），补一次跟随。
+      animateToLine(target, undefined, () => {
+        isPauseScrollRef.current = false
+        const now = Math.max(0, activeLineRef.current)
+        if (now !== target) followActiveLine(now)
+      })
     }, IDLE_RETURN_MS)
-  }, [animateToLine])
+  }, [animateToLine, followActiveLine])
 
   const handleScrollBeginDrag = useCallback(() => {
     isPauseScrollRef.current = true
@@ -292,6 +363,8 @@ const MiniLyric = ({ onPress, style, maxHeight }: MiniLyricProps) => {
 
   const handleScroll = useCallback(({ nativeEvent }: NativeSyntheticEvent<NativeScrollEvent>) => {
     scrollInfoRef.current = nativeEvent
+    // 动画驱动滚动期间不重开定位态：否则回位的路上浮层会重新冒出来、且每帧都在更新它
+    if (isAutoScrollRef.current) return
     if (!isPauseScrollRef.current) return
     // 首帧滚动信息可能到这一步才拿到，补一次起始位移
     if (dragStartOffsetRef.current == null) dragStartOffsetRef.current = nativeEvent.contentOffset.y
@@ -408,7 +481,11 @@ const MiniLyric = ({ onPress, style, maxHeight }: MiniLyricProps) => {
   }), [rowHeight])
 
   return (
-    <View style={[styles.container, { height: containerHeight }, style]}>
+    // marginHorizontal: -bleedH 把小歌词的 frame 左右各外扩 bleedH，顶到屏幕边缘 ——
+    // 根节点自己不再带左右内边距，于是绝对定位的定位浮层（left/right 0）与大歌词一样贴到屏幕边：
+    // 虚线右端、播放三角离右缘的距离与大歌词完全一致（用户点名的问题）。
+    // 文本内缩改由列表的 contentContainerStyle 承担（见 lineInsetH），文字位置不变。
+    <View style={[styles.container, { height: containerHeight, marginHorizontal: -bleedH }, style]}>
       <FlatList
         ref={listRef}
         data={lyricLines}
@@ -418,7 +495,9 @@ const MiniLyric = ({ onPress, style, maxHeight }: MiniLyricProps) => {
         style={styles.list}
         // 上下各留一排（单行模式为 0）：行号 i 居中 ⇔ 滚动偏移 = i × 行高，
         // 定位浮层的基准线（容器 50%）因此永远压在窗口正中那一行上。
-        contentContainerStyle={{ paddingTop: topPadding, paddingBottom: topPadding }}
+        // 左右内缩放在 contentContainer（而不是容器 padding）上：容器 padding 会把
+        // 绝对定位的浮层一起缩进去，而列表内容的左右留白与滚动偏移（纵向）无关。
+        contentContainerStyle={{ paddingTop: topPadding, paddingBottom: topPadding, paddingHorizontal: lineInsetH }}
         showsVerticalScrollIndicator={false}
         scrollEventThrottle={16}
         onScroll={handleScroll}
@@ -441,9 +520,9 @@ const MiniLyric = ({ onPress, style, maxHeight }: MiniLyricProps) => {
 
 const styles = createStyle({
   container: {
-    // 水平内边距与旧实现一致（竖屏封面页还会再叠一层 10pt）
-    paddingLeft: 20,
-    paddingRight: 20,
+    // 左右内边距必须为 0：定位浮层是绝对定位（left/right 0），父容器的内边距会把
+    // 虚线连带播放三角一起缩进去 —— 用户点名「虚线和播放图标离最右侧太远」就是这个。
+    // 文本的左右留白挪到了列表的 contentContainerStyle（见 lineInsetH），两者互不影响。
     // 高度由定高窗口算出，任何内容变化都不改变它
     overflow: 'hidden',
   },
