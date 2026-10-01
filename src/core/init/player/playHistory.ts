@@ -1,5 +1,6 @@
 import playerState from '@/store/player/state'
 import { addPlayHistory } from '@/core/player/playHistory'
+import { getTopSourceInfo } from '@/core/playListToDefault'
 import { LIST_IDS } from '@/config/constant'
 import listState from '@/store/list/state'
 
@@ -20,9 +21,20 @@ export default () => {
     if (!musicInfoRaw) return
 
     currentMusicInfo = 'progress' in musicInfoRaw ? musicInfoRaw.metadata.musicInfo : musicInfoRaw
-    currentListId = playMusicInfo.listId === LIST_IDS.TEMP
-      ? listState.tempListMeta.id ?? playMusicInfo.listId
-      : playMusicInfo.listId
+    const listId = playMusicInfo.listId
+    if (listId === LIST_IDS.DEFAULT) {
+      // 歌单/榜单/搜索点歌整份写入试听列表后，listId 是 default，真实来源记录在
+      // playListToDefault 的「顶部这一段」里。带 playIndex 守卫（playInfo.ts 先
+      // updatePlayIndex 再 emit musicToggled，这里读到的下标已经是对的）：
+      // 只有正在播的那一首确实位于这一段时才归给它，否则维持 'default' 走原有兜底来源。
+      const top = getTopSourceInfo()
+      const playIndex = playerState.playInfo.playIndex
+      currentListId = top.id && playIndex > -1 && playIndex < top.len ? top.id : listId
+    } else if (listId === LIST_IDS.TEMP) {
+      currentListId = listState.tempListMeta.id ?? listId
+    } else {
+      currentListId = listId
+    }
   }
 
   const handlePlayProgressChanged: typeof global.state_event.playProgressChanged = (progress) => {

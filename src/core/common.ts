@@ -66,6 +66,11 @@ export const setSafeAreaBottom = (size: number) => {
   commonActions.setSafeAreaBottom(size)
 }
 
+// 页面转场窗口（开始/结束）开关，只给 navigation 用；玻璃侧只读（useNavTransitioning）
+export const setNavTransitioning = (transitioning: boolean) => {
+  commonActions.setNavTransitioning(transitioning)
+}
+
 export const setComponentId = (name: COMPONENT_IDS, id: string) => {
   commonActions.setComponentId(name, id)
 }

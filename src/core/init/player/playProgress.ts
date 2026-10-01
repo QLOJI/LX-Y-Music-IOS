@@ -113,6 +113,17 @@ export default () => {
 
       if (!playerState.isPlay) return
 
+      // 【缓冲结束下降沿】上一拍还在缓冲、本拍引擎已确认在播：这是「落点/卡点恢复
+      // 出声」的确定性观测点（纯轮询得出，不依赖任何引擎事件，也不依赖 syncFromEngine
+      // 的重试链是否已在缓冲期耗尽）。强制补一次引擎位置重锚（含行级 ticker 重启、
+      // 时钟/原生基线重设），与 playing 事件重锚互为冗余——两条同时丢时行级 ticker
+      // 才会冻在旧行，这里把「三条门控同时落空」的窗口封死。缓冲中的 tick 走不到
+      // 这里（下面 isBuffering 分支直接 return），本边沿每个缓冲期只触发一次；本拍的
+      // 慢校准锚定/探针照常执行（同拍重复重锚无害，最多多一次桥接往返）。
+      if (wasBufferingHold && engineConfirmedPlaying) {
+        syncFromEngine(playerState.musicInfo.id)
+      }
+
       if (isBuffering) {
         // 解码器还在 buffering（音频没有真正出声）：冻结时钟，不外推。
         // 时钟已有锚点（播放中/暂停中）→ 自冻结在当前位置：nativeFlac 缓冲期
@@ -244,7 +255,13 @@ export default () => {
       if (!playerState.isPlay || playerState.musicInfo.id != musicId) return
       if (genAtCall != seekGen) return
       if (engineState !== 'playing') {
-        if (attempt < 6) {
+        // 重试预算按场景取值：seek 意图仍在新鲜期（15s）内时放宽到 ≈10s（200ms ×
+        // 50 次）——nativeFlac 流式 seek 缓冲 5~8s 是常态，原固定 6 次（1.2s）会在
+        // 出声前耗尽、把「出声即重锚」静默丢给后面的兜底网；10s 与看门狗宽限常量
+        // 同源（为同一现象设定）。非 seek 的普通状态抖动维持原 6 次预算；每次重试
+        // 前仍会复查 fresh 代际/切歌/暂停守卫，重试有界。
+        const retryBudget = Date.now() - lastSeekIntentAt < 15000 ? 50 : 6
+        if (attempt < retryBudget) {
           clearSyncRetry()
           syncRetryTimer = BackgroundTimer.setTimeout(() => {
             syncRetryTimer = null
@@ -469,26 +486,45 @@ export default () => {
       startBuffering()
     }
     setNowPlayTime(time)
-    // 对齐上游 seek→歌词时序（usePlayProgress.setProgress 只做 setNowPlayTime +
-    // setCurrentTime，不碰歌词）：seek 只立即跳进度条，歌词不动——时钟继续外推
-    // 当前（旧）位置，歌词跟着正在出声的音频走；引擎真正从落点出声时 playing
-    // 事件统一重锚（≈上游 onPlaying → lrc.play(currentTime)）。seekTargetPosition
-    // 窗口保留：窗口内引擎旧位置不得刷进进度条 UI（防拖动/seek 后进度条抽帧）。
+    // seek→歌词时序（对齐上游 usePlayProgress.setProgress 的前半段）：发起时只跳进度条、
+    // 歌词不动——时钟继续外推当前（旧）位置，歌词跟着正在出声的音频走。上游还有后半段
+    // 「显式重锚」：setCurrentTime resolve 后发 app_event.seekLyric(落点)（core/lyric.seek
+    // → lrc.play(落点) 重启行级 ticker）——本工程此前漏掉了这一步，只剩引擎事件重锚；
+    // nativeFlac 流式 seek 缓冲 5~8s 是常态，缓冲期事件/重试全部落空时行级 ticker 会
+    // 长时间冻在旧行（「快进/快退后不同步」的窗口）。seekTargetPosition 窗口保留：
+    // 窗口内引擎旧位置不得刷进进度条 UI（防拖动/seek 后进度条抽帧）。
     seekTargetPosition = time
     seekHoldUntil = Date.now() + 2000
     seekGen++
+    // 本代 seek 的代际编号：resolve 返回时若已不是最新代（用户又拖了/切了歌），
+    // 落点连同窗口/重锚一并作废（对齐模块内「在途快照/状态查询返回后旧代直接丢弃」
+    // 的既有约定）。
+    const genAtSeek = seekGen
 
     void setCurrentTime(time).then((targetPosition) => {
       if (!playerState.musicInfo.id) return
+      if (genAtSeek != seekGen) return
       if (targetPosition > 0) {
         setNowPlayTime(targetPosition)
         seekTargetPosition = targetPosition
         seekHoldUntil = Date.now() + 2000
+        // 【seek 完成后的显式重锚，补回上面说的后半段】resolve 时引擎位置已到达落点，
+        // 但可能仍在 buffering（nativeFlac seek 后重新解码，此时 getPosition 回报的是
+        // 目标、音频尚未出声）——重锚必须条件化：仅当状态查询确认已在新落点出声
+        // （playing）才发 seekLyric 重锚行级 ticker（≈上游 resolve 后无条件发
+        // app_event.seekLyric；本工程因引擎缓冲特性加这一道条件，避免把歌词提前拽到
+        // 未出声的目标行）；仍在缓冲则跳过，交给缓冲结束下降沿 / syncFromEngine
+        // 重试链 / 自愈探针兜底，保证不会永久冻在旧行。
+        void getPlaybackEngineState().then((engineState) => {
+          if (engineState !== 'playing' || !playerState.isPlay) return
+          if (playerState.musicInfo.id != musicId || seekGen != genAtSeek) return
+          global.app_event.seekLyric(targetPosition)
+        })
         // 硬保证对齐（≈上游 seeked）：setCurrentTime 内部的稳定化轮询在【引擎位置
         // 到达落点】之后才 resolve——此刻立即尝试重锚，等价于上游「seeked → playing
         // → lrc.play」里 playing 的即时性，不再等 300ms 快路径/1s 慢校准。
-        // syncFromEngine 自带代际/引擎状态守卫：仍在缓冲则安全丢弃，交给后续
-        // playing 事件 / 快路径 / 行级自愈探针的网。
+        // syncFromEngine 自带代际/引擎状态守卫与重试链：仍在缓冲则安全丢弃后延迟重试，
+        // 与上面的条件锚互为兜底（任一被状态抖动丢弃仍有另一条）。
         syncFromEngine(musicId)
         // 落点确认快路径：~300ms 后兜底重锚（覆盖 resolve 后引擎状态短暂波动被
         // 上面的立即尝试丢弃、或无状态变化引擎的 seek 事件缺失场景）

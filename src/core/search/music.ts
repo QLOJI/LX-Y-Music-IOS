@@ -180,6 +180,13 @@ export const search = async(
 
     if (listInfo?.key == key && listInfo?.list.length) {
       log.info('[Search Music] 使用缓存结果')
+      // 单源也要同步「当前关键词 / 来源」：
+      // 1) Search/MusicList 的缓存命中条件依赖 searchMusicState.searchText（聚合分支才写的话
+      //    单源永远不命中，每次切源都重发请求）；
+      // 2) 搜索点歌整份写入试听列表时，顶部段的身份是 search__<source>__<searchText>，
+      //    不更新会让换关键词后的结果被误判成「同一份列表」而原位替换掉上一份。
+      setSearchText(text)
+      setSource(sourceId)
       return listInfo?.list
     }
 
@@ -204,6 +211,9 @@ export const search = async(
             log.info('[Search Music] key不匹配，返回空数组')
             return []
           }
+
+          // 与聚合搜索分支保持一致：记录当前关键词（state.source 由 setListInfo 内部同步）
+          setSearchText(text)
 
           await supplementQuality(data.list, sourceId)
 

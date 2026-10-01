@@ -1,6 +1,7 @@
 import playerState from '@/store/player/state'
 import listState from '@/store/list/state'
 import { LIST_IDS } from '@/config/constant'
+import { getTopSourceInfo } from '@/core/playListToDefault'
 import wyApi from '@/utils/musicSdk/wy/user'
 
 export let scrobbleInfo: {
@@ -22,7 +23,16 @@ export const updateScrobbleInfo = () => {
   }
 
   let sourceId = ''
-  const sourceListId = listId === LIST_IDS.TEMP ? listState.tempListMeta.id : listId
+  const rawListId = listId === LIST_IDS.TEMP ? listState.tempListMeta.id : listId
+  let sourceListId = rawListId
+  if (rawListId === LIST_IDS.DEFAULT) {
+    // 歌单/榜单/搜索点歌整份写入试听列表后，playMusicInfo.listId 变成 default，
+    // 真实来源只记录在 playListToDefault 的「顶部这一段」里。带 playIndex 守卫：
+    // 只有正在播的那一首确实位于这一段时才归给该歌单，避免把其下的旧歌误报给这份歌单。
+    const top = getTopSourceInfo()
+    const playIndex = playerState.playInfo.playIndex
+    if (top.id && playIndex > -1 && playIndex < top.len) sourceListId = top.id
+  }
   if (sourceListId) {
     if (sourceListId.startsWith('album_')) {
       sourceId = sourceListId.replace('album_', '')

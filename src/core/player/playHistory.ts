@@ -26,7 +26,9 @@ export const resolvePlayHistorySource = (listId: string | null): LX.Player.PlayH
   if (!listId) return 'List'
 
   const sourceListId = listId
-  if (sourceListId === 'search') return 'Search'
+  // 搜索点歌整份写入试听列表后，来源 id 形如 search__<source>__<关键词>（见 Search/MusicList）。
+  if (sourceListId === 'search' || sourceListId.startsWith('search__')) return 'Search'
+  // 未能归因到具体源列表的试听列表播放，维持迁移前的观感
   if (sourceListId === LIST_IDS.DEFAULT) return 'Search'
   if (sourceListId.startsWith('dailyrec_') || sourceListId === 'heartbeat' || sourceListId === 'similar_songs_list') return 'Rec'
   if (sourceListId.startsWith('artist_detail_') || sourceListId.startsWith('album_')) return 'Detail'

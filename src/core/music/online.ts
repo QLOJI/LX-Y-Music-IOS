@@ -39,7 +39,9 @@ export const setPic = (datas: {
 }
  */
 
-export const getMusicUrl = async({
+// 取流并回传「链接 + 达成档」：quality 取自各分支实际达成（或缓存/请求已知）的档位，
+// 供播放器（playerState.quality）与音质标使用；只要 url 的旧调用方走文件末尾的 getMusicUrl 包装。
+export const getMusicUrlInfo = async({
   musicInfo,
   quality,
   isRefresh,
@@ -53,7 +55,7 @@ export const getMusicUrl = async({
   allowToggleSource?: boolean
   onToggleSource?: (musicInfo?: LX.Music.MusicInfoOnline) => void
   silent?: boolean
-}): Promise<string> => {
+}): Promise<{ url: string, quality: LX.Quality | null }> => {
   // if (!musicInfo._types[type]) {
   //   if (!(musicInfo.source == 'kw' && type == '128k')) throw new Error('该歌曲没有可播放的音频')
 
@@ -91,7 +93,9 @@ export const getMusicUrl = async({
     const cachedUrl = await getStoreMusicUrl(currentMusicInfo, targetQuality)
     if (cachedUrl) {
       setLastTryQuality(currentMusicInfo.id, targetQuality)
-      return cachedUrl
+      // 缓存命中没有「本次请求回传的达成档」：缓存按档位为键存取（utils/data.ts saveMusicUrl/
+      // getMusicUrl），targetQuality 命中的这条缓存链接本身就属于该档，用该已知档位兜底。
+      return { url: cachedUrl, quality: targetQuality }
     }
   }
 
@@ -122,7 +126,8 @@ export const getMusicUrl = async({
       if (!silent) console.log('### [WHITEBOX_API_URL] 异步 URL 真正就绪 ###', { title: currentMusicInfo.name, songId: currentMusicInfo.id, url: result.url })
       void saveMusicUrl(currentMusicInfo, result.quality, result.url)
       setLastTryQuality(currentMusicInfo.id, result.quality)
-      return result.url
+      // result.quality 是 handleGetOnlineMusicUrl 回传的「达成档」（含固定天梯降级/换源结果），原样带出
+      return { url: result.url, quality: result.quality }
     } catch (apiError) {
       if (!silent) console.log('Custom API request failed', apiError)
       throw apiError
@@ -136,7 +141,8 @@ export const getMusicUrl = async({
         void saveMusicUrl(currentMusicInfo, targetQuality, url)
         setLastTryQuality(currentMusicInfo.id, targetQuality)
         if (currentMusicInfo.id !== musicInfo.id) void saveMusicUrl(musicInfo, targetQuality, url)
-        return url
+        // cookie 接口不回传实际档位，与上方 setLastTryQuality 同口径，按请求档兜底
+        return { url, quality: targetQuality }
       }
     } catch (error) {
       if (!silent) console.log('Get music url with cookie failed, fallback to custom api', error)
@@ -155,9 +161,21 @@ export const getMusicUrl = async({
     void saveMusicUrl(currentMusicInfo, targetQuality, url)
     setLastTryQuality(currentMusicInfo.id, targetQuality)
     if (currentMusicInfo.id !== musicInfo.id) void saveMusicUrl(musicInfo, targetQuality, url)
-    return url
+    // 这里的 targetQuality 来自 handleGetOnlineMusicUrl 回传的「达成档」（含换源结果），随 url 一起带出
+    return { url, quality: targetQuality }
   })
 }
+
+// 兼容旧调用方：仍返回纯 url 字符串（列表下载 / 源测试 / download.ts 等直接调用点零改动）；
+// 需要「达成档」的调用方改用上面的 getMusicUrlInfo
+export const getMusicUrl = async(args: {
+  musicInfo: LX.Music.MusicInfoOnline
+  quality?: LX.Quality
+  isRefresh: boolean
+  allowToggleSource?: boolean
+  onToggleSource?: (musicInfo?: LX.Music.MusicInfoOnline) => void
+  silent?: boolean
+}): Promise<string> => getMusicUrlInfo(args).then(({ url }) => url)
 
 export const getPicUrl = async({
   musicInfo,

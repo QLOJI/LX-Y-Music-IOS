@@ -1,5 +1,6 @@
 import {
   getMusicUrl as getOnlineMusicUrl,
+  getMusicUrlInfo as getOnlineMusicUrlInfo,
   getPicUrl as getOnlinePicUrl,
   getLyricInfo as getOnlineLyricInfo,
 } from './online'
@@ -80,8 +81,8 @@ export const getMusicUrl = async({
 }
 
 // 取链并返回「链接 + 实际音质」，供播放器判断能否走原生 FLAC 高精度路径。
-// 参考 Q-1515/lx-music-mobile ios-adaptation：播放核心使用 getMusicUrlInfo，
-// 本项目的本地/WebDAV/汽水链路没有音质回传，故回退为请求时指定的音质（缺省 null）。
+// 在线分支直接走 online.ts 的 info 版本，带出 handleGetOnlineMusicUrl 的「本次达成档」，
+// 而不是之前硬塞的请求档；本地/WebDAV/汽水/下载链路没有音质回传，维持回退请求档（缺省 null）。
 export const getMusicUrlInfo = async({
   musicInfo,
   quality,
@@ -95,6 +96,11 @@ export const getMusicUrlInfo = async({
   onToggleSource?: (musicInfo?: LX.Music.MusicInfoOnline) => void
   allowToggleSource?: boolean
 }): Promise<{ url: string, quality: LX.Quality | null }> => {
+  // 条件与上方 getMusicUrl 的分支一一对应：只有在线分支能拿到达成档，
+  // 其余（下载/本地/WebDAV/汽水）继续走旧字符串链路，用请求档兜底
+  if (!('progress' in musicInfo) && musicInfo.source !== 'local' && musicInfo.source !== 'qs') {
+    return getOnlineMusicUrlInfo({ musicInfo, isRefresh, quality, onToggleSource, allowToggleSource })
+  }
   const url = await getMusicUrl({ musicInfo, quality, isRefresh, onToggleSource, allowToggleSource })
   return { url, quality: quality ?? null }
 }
