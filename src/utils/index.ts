@@ -26,6 +26,12 @@ export function compareVer(currentVer: string, targetVer: string): -1 | 0 | 1 {
   return 0
 }
 
+// 「无损及以上」伞形档：wy/kg/tx 曲目在元数据归一（toNewMusicInfo）时，只要命中其中任一档，
+// 就在最高档之上合成 master，让「显示最高音质」开关下的小标有 Master 这一档可显示。
+// 顺序按 QUALITY_RANK 从高到低，合成时复制命中的最高档条目（对齐参考工程做法）；
+// wav/ape 不在本工程 LX.Quality 类型里，但平台数据可能出现，按字符串匹配兜底。
+const MASTER_UMBRELLA_QUALITIES = ['atmos_plus', 'atmos', 'hires', 'flac24bit', 'flac', 'wav', 'ape']
+
 export const toNewMusicInfo = (oldMusicInfo: any): LX.Music.MusicInfo | null => {
   if (!oldMusicInfo?.songmid || !oldMusicInfo.source) {
     return null
@@ -94,6 +100,16 @@ export const toNewMusicInfo = (oldMusicInfo: any): LX.Music.MusicInfo | null => 
           if (quality.type == 'effect_plus') quality.type = 'atmos_plus'
           return quality
         })
+      }
+
+      // 合成 master：wy/kg/tx 命中「无损及以上」伞形档时补齐 master（不覆盖平台真实返回的
+      // master），「显示最高音质」开启后列表小标才能落到 Master。取流候选链是固定天梯、
+      // 不读 _qualitys（core/music/utils.ts C-11-3），此处合成只影响展示与元数据。
+      if (['wy', 'kg', 'tx'].includes(oldMusicInfo.source) && !meta._qualitys.master) {
+        const bestUmbrella = MASTER_UMBRELLA_QUALITIES.find((quality) => meta._qualitys[quality])
+        if (bestUmbrella) {
+          meta._qualitys.master = { ...meta._qualitys[bestUmbrella] }
+        }
       }
     }
 
