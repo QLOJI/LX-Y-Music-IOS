@@ -4,6 +4,7 @@ import { View, TouchableOpacity, ScrollView } from 'react-native'
 import { useTheme } from '@/store/theme/hook'
 import { useSettingValue } from '@/store/setting/hook'
 import { applyOpacity } from '@/utils/colorOpacity'
+import { useButtonRadius } from '@/utils/buttonRadius'
 import { createStyle } from '@/utils/tools'
 import Text from '@/components/common/Text'
 import { SETTING_SCREENS, type SettingScreenIds } from '../Main'
@@ -23,6 +24,8 @@ const ListItem = memo(
     const theme = useTheme()
     // 分类 Tab 的底色与边框随「按钮透明度」淡出（只改颜色 alpha，不用容器 opacity）
     const buttonOpacity = useSettingValue('theme.buttonOpacity')
+    // 「按钮圆角」：分类 Tab 行内覆盖；高度取 styles.listItem 的源值 40
+    const buttonRadius = useButtonRadius()
     const t = useI18n()
 
     const active = activeId == id
@@ -35,6 +38,8 @@ const ListItem = memo(
       <View
         style={{
           ...styles.listItem,
+          // 「按钮圆角」行内覆盖；高度取 styles.listItem 的源值 40（Tab 单行，可见高度即 40）
+          borderRadius: buttonRadius(40),
           backgroundColor: active
             ? applyOpacity(theme['c-primary'], buttonOpacity)
             : applyOpacity(theme['c-primary-light-900-alpha-200'], buttonOpacity),

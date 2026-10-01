@@ -2,6 +2,7 @@ import { memo, useCallback, useMemo } from 'react'
 import { ScrollView, TouchableOpacity, View } from 'react-native'
 import { createStyle } from '@/utils/tools'
 import { applyOpacity } from '@/utils/colorOpacity'
+import { useButtonRadius } from '@/utils/buttonRadius'
 import { designRadius, designSpacing } from '@/theme/DesignTokens'
 import { useTheme } from '@/store/theme/hook'
 import { useSettingValue } from '@/store/setting/hook'
@@ -21,6 +22,8 @@ export default memo(() => {
   const t = useI18n()
   const safeAreaBottom = useSafeAreaBottom()
   const buttonOpacity = useSettingValue('theme.buttonOpacity')
+  // 「按钮圆角」：分类按钮行内覆盖；高度取 styles.categoryItem.minHeight 的源值 56
+  const buttonRadius = useButtonRadius()
 
   const handlePress = useCallback((id: SettingScreenIds) => {
     const homeComponentId = commonState.componentIds.find(({ name }) => name === COMPONENT_IDS.home)?.id
@@ -50,9 +53,11 @@ export default memo(() => {
   // 0 时的目标是「只剩文字」而不是「整颗按钮连字一起消失」。
   const categoryItemStyle = useMemo(() => ({
     ...styles.categoryItem,
+    // 「按钮圆角」行内覆盖；高度取 styles.categoryItem.minHeight 的源值 56（单行分类按钮，可见高度即 minHeight）
+    borderRadius: buttonRadius(56),
     backgroundColor: applyOpacity(theme['c-primary-light-900-alpha-200'], buttonOpacity),
     borderColor: applyOpacity(theme['c-border-background'], buttonOpacity),
-  }), [theme, buttonOpacity])
+  }), [theme, buttonOpacity, buttonRadius])
 
   return (
     <View style={styles.container}>

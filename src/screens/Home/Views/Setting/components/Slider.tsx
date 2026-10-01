@@ -38,8 +38,13 @@ export default memo(
       borderColor: applyOpacity(theme['c-border-background'], buttonOpacity),
     }), [theme, buttonOpacity])
 
-    // 轨道两段同属「按钮底面」：已填充段是 c-button-background-active、
-    // 未填充段是 c-button-background，两者都是按钮底色令牌，一并随设置淡出。
+    // 轨道两段：已填充段用 c-button-background-active、未填充段用 c-button-background，
+    // 一并随「按钮透明度」淡出。
+    //
+    // 口径注记（对应 scripts/check-button-radius-coverage.js 的具名豁免 TOKEN_EXEMPT）：
+    // 这两个令牌在这里只作**轨道 tint（颜色）**，滑块轨道不是按钮族 —— 外面 cardStyle 的
+    // 圆角归容器令牌 designRadius.md 管，本文件没有按钮族外观可覆盖，所以不接
+    // useButtonRadius。硬接等于把「轨道」误当按钮，且同样不生效（本文件没有按钮半径可覆盖）。
     const trackTints = useMemo(() => ({
       minimum: applyOpacity(theme['c-button-background-active'], buttonOpacity),
       maximum: applyOpacity(theme['c-button-background'], buttonOpacity),

@@ -34,6 +34,7 @@ interface SliderRowProps {
     | 'theme.subContainerOpacity'
     | 'theme.tabBarDistance'
     | 'theme.buttonOpacity'
+    | 'theme.buttonRadius'
   title: string
   value: number
   /**

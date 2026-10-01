@@ -6,6 +6,7 @@ import { designRadius, designSpacing } from '@/theme/DesignTokens'
 import { useTheme } from '@/store/theme/hook'
 import { useSettingValue } from '@/store/setting/hook'
 import { applyOpacity } from '@/utils/colorOpacity'
+import { useButtonRadius } from '@/utils/buttonRadius'
 import { createStyle } from '@/utils/tools'
 
 type ButtonProps = BtnProps
@@ -16,6 +17,8 @@ type ButtonProps = BtnProps
 export default memo(({ disabled, onPress, children }: ButtonProps) => {
   const theme = useTheme()
   const buttonOpacity = useSettingValue('theme.buttonOpacity')
+  // 「按钮圆角」：按钮基元行内覆盖；高度取 styles.button.minHeight 的源值 40
+  const buttonRadius = useButtonRadius()
 
   // 底色与边框随「按钮透明度」淡出，按钮文字（c-primary）不动。
   // 只改颜色 alpha，不用容器 style.opacity——后者会把文字一起变淡。
@@ -29,6 +32,8 @@ export default memo(({ disabled, onPress, children }: ButtonProps) => {
       style={[
         styles.button,
         buttonStyle,
+        // 「按钮圆角」行内覆盖；高度取 styles.button.minHeight 的源值 40（14 号单行文字，可见高度即 minHeight）
+        { borderRadius: buttonRadius(40) },
       ]}
       onPress={onPress}
       disabled={disabled}

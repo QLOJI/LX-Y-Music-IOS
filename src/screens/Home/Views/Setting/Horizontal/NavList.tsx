@@ -7,6 +7,7 @@ import { useTheme } from '@/store/theme/hook'
 import { useSettingValue } from '@/store/setting/hook'
 import { createStyle } from '@/utils/tools'
 import { applyOpacity } from '@/utils/colorOpacity'
+import { useButtonRadius } from '@/utils/buttonRadius'
 import Text from '@/components/common/Text'
 import { scaleSizeH } from '@/utils/pixelRatio'
 import { designRadius, designSpacing, designTypography } from '@/theme/DesignTokens'
@@ -31,6 +32,8 @@ const ListItem = memo(
     const t = useI18n()
     // 分类按钮的底色/边框随「按钮透明度」淡出（只改颜色 alpha，不用容器 opacity）
     const buttonOpacity = useSettingValue('theme.buttonOpacity')
+    // 「按钮圆角」：分类按钮行内覆盖；高度取 ITEM_HEIGHT 的源值 44（scaleSizeH(44)，传未缩放设计值）
+    const buttonRadius = useButtonRadius()
 
     const active = activeId == id
 
@@ -40,7 +43,7 @@ const ListItem = memo(
 
     return (
       <View
-        style={{
+        style={[{
           ...styles.listItem,
           height: ITEM_HEIGHT,
           borderRadius: designRadius.sm,
@@ -52,7 +55,10 @@ const ListItem = memo(
             ? applyOpacity(theme['c-primary'], buttonOpacity)
             : applyOpacity(theme['c-border-background'], buttonOpacity),
           borderWidth: 1,
-        }}
+        }, {
+          // 「按钮圆角」行内覆盖；高度取 ITEM_HEIGHT 的源值 44（scaleSizeH(44)，传未缩放设计值）
+          borderRadius: buttonRadius(44),
+        }]}
       >
         {active ? (
           <Icon

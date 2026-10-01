@@ -7,6 +7,7 @@ import { designRadius, designSpacing, designTypography } from '@/theme/DesignTok
 import { useTheme } from '@/store/theme/hook'
 import { useSettingValue } from '@/store/setting/hook'
 import { applyOpacity } from '@/utils/colorOpacity'
+import { useButtonRadius } from '@/utils/buttonRadius'
 import Text from '@/components/common/Text'
 
 export interface InputItemProps extends InputProps {
@@ -22,6 +23,8 @@ export default memo(({ value, label, onChanged, ...props }: InputItemProps) => {
   const inputRef = useRef<InputType>(null)
   const theme = useTheme()
   const buttonOpacity = useSettingValue('theme.buttonOpacity')
+  // 「按钮圆角」：输入框行内覆盖；高度取本组件 styles.input 的源值 36（调用方 style 优先生效，须在此重接）
+  const buttonRadius = useButtonRadius()
 
   const stableOnChanged = useCallback((text: string, callback: (vlaue: string) => void) => {
     onChanged?.(text, callback)
@@ -102,7 +105,12 @@ export default memo(({ value, label, onChanged, ...props }: InputItemProps) => {
         ref={inputRef}
         onChangeText={handleSetSelectMode}
         {...props}
-        style={StyleSheet.compose({ ...styles.input, backgroundColor: theme['c-primary-input-background'] }, props.style)}
+        style={StyleSheet.compose({
+          ...styles.input,
+          backgroundColor: theme['c-primary-input-background'],
+          // 「按钮圆角」行内覆盖；36 = 本组件 styles.input 的源值（调用方 style 优先于 common/Input 内部覆盖，静态圆角原样保留作兜底）
+          borderRadius: buttonRadius(36),
+        }, props.style)}
         onBlur={saveValue}
       />
     </View>
