@@ -1,6 +1,5 @@
 import { useMemo, useState, useCallback, useEffect, useRef } from 'react'
 import { View, ScrollView, Image, TouchableOpacity } from 'react-native'
-import { Navigation } from 'react-native-navigation'
 import Clipboard from '@react-native-clipboard/clipboard'
 import Video, { type VideoRef } from 'react-native-video'
 
@@ -10,6 +9,7 @@ import { useTheme } from '@/store/theme/hook'
 import Text from '@/components/common/Text'
 import { useAnnouncementInfo } from '@/store/announcement/hook'
 import ModalContent from './ModalContent'
+import { dismissOverlay } from '@/navigation/utils'
 import { hideModal, dismissAnnouncement } from '@/core/announcement'
 import announcementActions from '@/store/announcement/action'
 import { designRadius, designSpacing, designTypography } from '@/theme/DesignTokens'
@@ -245,7 +245,9 @@ const AnnouncementModal = ({ componentId }: { componentId: string }) => {
       // 失败兜底：短暂延迟后直接重试 dismiss；期间本组件保持渲染（弹窗可见可交互），
       // 不会产生「null 内容 + 活跃 overlay」的隐形拦截层。
       setTimeout(() => {
-        Navigation.dismissOverlay(componentId).catch(() => {})
+        // 走 navigation/utils 的统一封装：裸调在 RNN 重复 dismiss / 转场竞态时会 reject，
+        // 而这里正是「已经失败过一次」的兜底路径，更需要内建重试（本工程 PactModal 同款改法）
+        void dismissOverlay(componentId)
       }, 100)
       return
     }
@@ -272,7 +274,8 @@ const AnnouncementModal = ({ componentId }: { componentId: string }) => {
   // 立刻自摘 overlay，绝不让「null 内容 + 活跃 overlay」共存。
   useEffect(() => {
     if (!announcementInfo || !isVisible) {
-      Navigation.dismissOverlay(componentId).catch(() => {})
+      // 同上：裸调失败会静默留下透明 overlay（整页假死），改走带重试的统一封装
+      void dismissOverlay(componentId)
     }
   }, [announcementInfo, isVisible, componentId])
 
@@ -389,18 +392,21 @@ const styles = createStyle({
   },
   markdownParagraph: {
     fontSize: designTypography.body,
-    lineHeight: 22,
+    // A-8：改用全局行高令牌（此前写死 22 ＝ 15pt 的 1.47×，公告正文行距明显比全站松）
+    lineHeight: designTypography.body * designTypography.lineHeightRatio,
     marginBottom: 6,
   },
   markdownListItem: {
     fontSize: designTypography.body,
-    lineHeight: 22,
+    // A-8：同上
+    lineHeight: designTypography.body * designTypography.lineHeightRatio,
     marginBottom: 2,
     paddingLeft: designSpacing.xs,
   },
   markdownQuote: {
     fontSize: designTypography.caption,
-    lineHeight: 20,
+    // A-8：同令牌口径（此前 20 ＝ 13pt 的 1.54×）
+    lineHeight: designTypography.caption * designTypography.lineHeightRatio,
     paddingLeft: designSpacing.xs,
     borderLeftWidth: 3,
     borderLeftColor: '#ccc',
@@ -458,7 +464,8 @@ const styles = createStyle({
   markdownCodeText: {
     fontFamily: 'monospace',
     fontSize: designTypography.caption,
-    lineHeight: 18,
+    // A-8：等宽字体本身行框偏高，同令牌口径（此前 18 ＝ 13pt 的 1.38×）
+    lineHeight: designTypography.caption * designTypography.lineHeightRatio,
   },
   copyBtn: {
     alignSelf: 'flex-end',

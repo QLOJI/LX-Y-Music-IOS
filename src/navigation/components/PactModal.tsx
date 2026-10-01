@@ -9,6 +9,7 @@ import { useTheme } from '@/store/theme/hook'
 import Text from '@/components/common/Text'
 import ModalContent from './ModalContent'
 import { exitApp } from '@/utils/nativeModules/utils'
+import { dismissOverlay } from '@/navigation/utils'
 import { updateSetting } from '@/core/common'
 import { checkAnnouncement } from '@/core/announcement'
 import { initDeeplink } from '@/core/init/deeplink'
@@ -253,7 +254,13 @@ const Footer = ({ componentId }: { componentId: string }) => {
   const handleConfirm = () => {
     const wasAgreed = !!isAgreePact
     if (!wasAgreed) updateSetting({ 'common.isAgreePact': true })
-    void Navigation.dismissOverlay(componentId)
+    // P0（2026-10-01）：这里原来是**裸调** Navigation.dismissOverlay，绕过了
+    // navigation/utils 里带重试的 dismissOverlay。协议 overlay 是
+    // interceptTouchOutside:true 的透明全屏层，dismiss 一旦偶发失败就残留、拦截
+    // 全屏触摸（本工程 navigation/utils.ts 与 common/Modal.tsx 都逐字记录过这个
+    // 「整页点不动的假死」）。启动期是**最可能失败**的时机（窗口未就绪、转场竞态），
+    // 恰恰只有这一处没有重试。改为走统一封装（失败重试一次并打日志）。
+    void dismissOverlay(componentId)
     // 首次签署才提示“本软件免费开源”，延后 2s 等 overlay 关闭动画走完
     if (!wasAgreed) scheduleFreeOpenSourceTip()
   }
@@ -334,12 +341,14 @@ const styles = createStyle({
   },
   text: {
     fontSize: designTypography.body,
-    lineHeight: 22,
+    // A-8：改用全局行高令牌（此前写死 22 ＝ 15pt 的 1.47×，协议长文行距比全站松一档）
+    lineHeight: designTypography.body * designTypography.lineHeightRatio,
     marginBottom: designSpacing.xs,
   },
   bold: {
     fontSize: designTypography.body,
-    lineHeight: 22,
+    // A-8：同上，与 text 必须同值（同一段里粗细混排，行高不一致会出现「一行松一行紧」）
+    lineHeight: designTypography.body * designTypography.lineHeightRatio,
     fontWeight: 'bold',
   },
   tip: {
