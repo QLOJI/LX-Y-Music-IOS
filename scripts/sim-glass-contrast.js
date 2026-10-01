@@ -159,6 +159,20 @@ const backingLuminance = ({ bgL, isDark, hasMaterial, alpha, tintL }) => {
 /** 用户设置 0~100 → 覆层实际 alpha */
 const mapUserAlpha = (userValue) => Math.max(0, Math.min(1, userValue / 100)) * TINT_ALPHA_CAP
 
+/**
+ * 深色分支：用户设置 0~100 → 覆层实际 alpha（镜像 LiquidGlass.tsx 的**仿射重映射**，
+ * 与组件人工同步，组件侧有反向指路注释）。
+ *
+ * 组件把深色用户全域映射到 [保底, 1] 后再乘上限 ⇒ 最终 alpha = 保底 + (上限−保底)×用户值。
+ * 不能写成 max(用户值, 保底)：那会把 0~保底 一整段钳成同一个 alpha，滑条前三分之一
+ * 物理零响应 —— 即 LGGlassViewFactory.swift 的 maxTintAlpha 注释明确排除的「假区间」。
+ * 端点与旧实现相同（0 → DARK_OVERLAY_FLOOR、100 → TINT_ALPHA_CAP），中间严格递增，
+ * 全程落在断言7 认证过的 [DARK_OVERLAY_FLOOR, TINT_ALPHA_CAP] 带内。
+ */
+const mapUserAlphaDark = (userValue) =>
+  DARK_OVERLAY_FLOOR +
+  (TINT_ALPHA_CAP - DARK_OVERLAY_FLOOR) * Math.max(0, Math.min(1, userValue / 100))
+
 // ---------------------------------------------------------------- 断言框架
 
 const results = []
@@ -263,7 +277,7 @@ console.log(`材质收敛系数 k=${MATERIAL_CONVERGE}，覆层 alpha 映射上�
   for (const isDark of [false, true]) {
     const v = isDark ? TAB_INACTIVE_DARK_V : TAB_INACTIVE_LIGHT_V
     const textL = luminance([v, v, v])
-    const alpha = Math.max(mapUserAlpha(40), isDark ? DARK_OVERLAY_FLOOR : 0) // 默认设置 40 与保底取大
+    const alpha = isDark ? mapUserAlphaDark(40) : mapUserAlpha(40) // 默认设置 40（深色走仿射重映射，见 mapUserAlphaDark）
     for (const bg of BACKGROUNDS) {
       const bgL = backingLuminance({
         bgL: bg.L, isDark, hasMaterial: true, alpha, tintL: luminance(isDark ? OVERLAY_DARK : OVERLAY_LIGHT),

@@ -113,8 +113,9 @@ console.log('\n' + '='.repeat(78))
 console.log('大屏（390x844）：不同 paddingBottom 下信息块位置与安全性')
 console.log('='.repeat(78))
 const oldMini = miniLyricHeight({ lines: 1, hasTranslation: false, paddingV: 10, fontSize: { current: 13, neighbor: 13 } })
-const newMiniTr = miniLyricHeight({ lines: 3, hasTranslation: true, paddingV: 4, fontSize: { current: 20, neighbor: 16 }, lineGap: 8 })
-console.log(`  迷你歌词高度：旧 1 行 = ${oldMini}pt，新 3 行+翻译(行距 8) = ${newMiniTr}pt`)
+// 2026-10-01 用户要求「小歌词每行间距减半」：行距模型 8 → 4，与 MiniLyric 的改动同步
+const newMiniTr = miniLyricHeight({ lines: 3, hasTranslation: true, paddingV: 4, fontSize: { current: 20, neighbor: 16 }, lineGap: 4 })
+console.log(`  迷你歌词高度：旧 1 行 = ${oldMini}pt，新 3 行+翻译(行距 4) = ${newMiniTr}pt`)
 // 生产实现：大屏 paddingBottom = 常量（当前 12pt，见 VerticalNew 的 PAGE_BOTTOM_PADDING），小屏 = 0
 const PROD_PAGE_BOTTOM_PADDING = 12
 const prodPaddingBottom = (h) => (h < 700 ? 0 : PROD_PAGE_BOTTOM_PADDING)
@@ -166,14 +167,19 @@ console.log('='.repeat(78))
   const prevLyricTop = prev.infoBottom - prevMini
   const nowLyricTop = now.infoBottom - newMiniTr
   const shift = nowLyricTop - prevLyricTop
-  console.log(`  paddingBottom ${42} → ${pb}pt；行距 2 → 8pt；歌词块高 ${prevMini} → ${newMiniTr}pt`)
+  console.log(`  paddingBottom ${42} → ${pb}pt；行距 2 → 4pt；歌词块高 ${prevMini} → ${newMiniTr}pt`)
   console.log(`  歌词块顶：${prevLyricTop.toFixed(0)}pt → ${nowLyricTop.toFixed(0)}pt（下移 ${shift.toFixed(0)}pt）`)
   console.log(`  红框(SongInfo)上边：${(prev.infoTop + SONGINFO.marginTop).toFixed(0)}pt → ${(now.infoTop + SONGINFO.marginTop).toFixed(0)}pt`)
   console.log(`  中缝：${prev.gap.toFixed(0)}pt → ${now.gap.toFixed(0)}pt；块底 ${now.infoBottom.toFixed(0)}pt，容器底 ${now.containerBottom.toFixed(0)}pt（余 ${(now.containerBottom - now.infoBottom).toFixed(0)}pt）`)
   check('歌词块整体下移', shift > 0, `shift=${shift.toFixed(1)}`)
-  check('下移幅度适中（8~20pt，符合"一点"）', shift >= 8 && shift <= 20, `shift=${shift.toFixed(1)}`)
-  check('行距确实加大（8 > 2）', 8 > 2)
-  check('行距与行高比例合理（行距 >= 行高的 1/3，避免挤成一团）', 8 * 3 >= 21)
+  // 行距 8 → 4 后本轮块高只比上一轮多 6pt（原多 18pt）；信息块贴底、块顶 = 块底 − 块高，
+  // 净下移因此从 12pt 变成 24pt，上限 20 → 30 仅为覆盖这次行距减半带来的位移。
+  check('下移幅度适中（8~30pt，符合"一点"）', shift >= 8 && shift <= 30, `shift=${shift.toFixed(1)}`)
+  check('行距确实加大（4 > 2）', 4 > 2) // 行距减半后仍大于上一轮方案的 2pt
+  // 原判据「3 × 行距 ≥ 21」（即行距 ≥ 行高的 1/3）是行距 8 时代的历史取舍阈值，
+  // 不是实现不变量（实现由后方源码契约单独对拍）；行距减半到 4 后 12 < 21 必然不过，
+  // 改为同一思路、在新值下自洽的比值「行距 ≥ 行高的 1/6」：4 × 6 = 24 ≥ 21，仍能挡住行距塌缩。
+  check('行距与行高比例合理（行距 >= 行高的 1/6，避免挤成一团）', 4 * 6 >= 21)
   check('下移后仍不溢出', !now.overflow, `free=${now.free}`)
   check('信息块不压到 Player 区', now.infoBottom <= now.containerBottom)
   // 底部余量 = paddingBottom，即信息块底到容器底的间隙。它是防止歌词视觉上贴住
@@ -190,7 +196,8 @@ console.log('2026-09-30 本轮：三行歌词间距一致 + 歌名块上移 8pt'
 console.log('='.repeat(78))
 
 // 与 MiniLyric 的 LINE_GAP_NORMAL 对齐（契约里会校验两者一致）
-const LINE_GAP = 8
+// 2026-10-01 行距减半：8 → 4（契约对拍与反例 ⑦ 的 from 串已同步）
+const LINE_GAP = 4
 
 // ---- 实测基线：用户截图（887x1920 px = 390x844pt，scale 2.274）逐像素扫描墨迹 ----
 const MEASURED = {
@@ -202,25 +209,28 @@ const MEASURED = {
   lyricNext: [567.2, 579.5], // 乐器技师：于磊（16pt）
   iconRow: [629.6, 657.0],
 }
+// 该截图墨迹分析针对的是旧实现（每份 marginTop = 8pt）的 bug 现场，是历史实测量：
+// 本轮行距减半改的是现行定高窗口，历史截图不会重拍，故固定 8，不跟随 LINE_GAP。
+const SHOT_MARGIN_TOP = 8
 {
   // 墨迹间距 = 上行行盒下余量 + marginTop + 下行行盒上余量 ⇒ 两处相减即可剥出 marginTop 之差
   const gPrevCur = MEASURED.lyricCurrent[0] - MEASURED.lyricPrev[1]
   const gCurNext = MEASURED.lyricNext[0] - MEASURED.lyricCurrent[1]
   const slackUp = gPrevCur - 0 // 旧实现：prev ↔ current 之间没有 marginTop
-  const slackDown = gCurNext - LINE_GAP // 旧实现：只有 next 带一份
+  const slackDown = gCurNext - SHOT_MARGIN_TOP // 旧实现：只有 next 带一份（历史值 8，不用现行 LINE_GAP）
   const albumToFirst = MEASURED.lyricPrev[0] - MEASURED.album[1]
   console.log(`  实测墨迹间距：上一行↔当前行 ${gPrevCur.toFixed(1)}pt ／ 当前行↔下一行 ${gCurNext.toFixed(1)}pt（差 ${(gCurNext - gPrevCur).toFixed(1)}pt）`)
   console.log(`  扣掉 marginTop 后的行盒外余量之和：${slackUp.toFixed(1)}pt ／ ${slackDown.toFixed(1)}pt（差 ${Math.abs(slackUp - slackDown).toFixed(1)}pt）`)
   console.log(`  专辑 → 首行歌词：${albumToFirst.toFixed(1)}pt`)
-  check('实测两处间隙之差 ≈ 一份 marginTop（8±0.6pt）⇒ 根因是 marginTop 挂错行', Math.abs((gCurNext - gPrevCur) - LINE_GAP) <= 0.6, `diff=${(gCurNext - gPrevCur).toFixed(1)}`)
+  check('实测两处间隙之差 ≈ 一份 marginTop（8±0.6pt）⇒ 根因是 marginTop 挂错行', Math.abs((gCurNext - gPrevCur) - SHOT_MARGIN_TOP) <= 0.6, `diff=${(gCurNext - gPrevCur).toFixed(1)}`)
   check('扣掉 marginTop 后两处余量之和几乎相等（差 < 0.5pt）⇒ 排除「中英文字体自然行高不同」这个假设', Math.abs(slackUp - slackDown) < 0.5)
-  const fixed = [slackUp + LINE_GAP, slackDown + LINE_GAP]
+  const fixed = [slackUp + SHOT_MARGIN_TOP, slackDown + SHOT_MARGIN_TOP]
   check(`新实现（两处各一份 marginTop）预测两处墨迹间距相等：${fixed[0].toFixed(1)} vs ${fixed[1].toFixed(1)}pt`, Math.abs(fixed[0] - fixed[1]) < 0.5)
 }
 
 // ---- 盒间距：每个间隙恰好一份 marginTop，且总高不变（无净位移）----
 // 注意（结构换代说明，未改动断言逻辑）：本节的 miniLyricHeight() 描述的是**旧版**
-// 「三行行盒流式堆叠 + 每个间隙一份 marginTop」结构（120pt 那一套）。新版 MiniLyric 已改为
+// 「三行行盒流式堆叠 + 每个间隙一份 marginTop」结构（旧值 120pt；本轮行距减半后重算为 108pt）。新版 MiniLyric 已改为
 // 定高窗口：行高 rowHeight = 主行行盒 + gap（+ 翻译槽），行块高 = 行数 × rowHeight，
 // 与这里的模型不再对应（该模型块不读 MiniLyric 源码，故不受影响）。
 // 下方「源码契约」节已按新结构断言同一不变量（相邻行净间距恒等）。模型是否重算见报告。
@@ -236,7 +246,8 @@ const MEASURED = {
   check('旧实现：prev ↔ current 之间 0pt（marginTop 落到了块顶）', heightOld === PV * 2 + LINE_GAP + H_NEIGHBOR + H_CURRENT + LINE_GAP + H_NEIGHBOR)
   check('新实现：两个间隙各一份 marginTop', heightNew - PV * 2 === H_NEIGHBOR + 2 * LINE_GAP + H_CURRENT + H_NEIGHBOR)
   check('块高不变（prev 那份挪到 current，margin 总数不变 ⇒ 无净位移）', heightOld === heightNew, `${heightOld} vs ${heightNew}`)
-  check('模型 miniLyricHeight() 内部自洽（旧结构：三行行盒 + 每个间隙一份 marginTop）', modelHeight === 120, `h=${modelHeight}`)
+  // 行距减半（8 → 4）：三份间隙共少 12pt，模型总高 120 → 108（三行行盒 + 翻译行盒不变）
+  check('模型 miniLyricHeight() 内部自洽（旧结构：三行行盒 + 每个间隙一份 marginTop）', modelHeight === 108, `h=${modelHeight}`)
 }
 
 // ---- 位置：歌名块上移 8pt、歌词块不动、不溢出 ----
@@ -313,7 +324,7 @@ const MEASURED = {
     { label: '④ 行内改为顶部对齐（余量全跑到下面 ⇒ 上下中缝不等）', file: 'mini', from: "justifyContent: 'center',", to: "justifyContent: 'flex-start'," },
     { label: '⑤ 缺翻译的行不再留占位（该行内容塌缩 ⇒ 有/无翻译的行间距不等）', file: 'mini', from: '{item.extendedLyrics?.[0] || BLANK}', to: '{item.extendedLyrics?.[0]}' },
     { label: '⑥ 翻译档位改成逐行判断（翻译行比别的行多一截 ⇒ 中缝不等）', file: 'mini', from: '() => lyricLines.some(line => (line.extendedLyrics?.length ?? 0) > 0),', to: '() => false,' },
-    { label: '⑦ 实现行距改成 12 而模型没跟（模型与实现脱钩）', file: 'mini', from: 'const LINE_GAP_NORMAL = 8', to: 'const LINE_GAP_NORMAL = 12' },
+    { label: '⑦ 实现行距改成 12 而模型没跟（模型与实现脱钩）', file: 'mini', from: 'const LINE_GAP_NORMAL = 4', to: 'const LINE_GAP_NORMAL = 12' },
     { label: '⑧ 歌名块 marginBottom 退回 10（本次需求被回滚）', file: 'song', from: 'marginBottom: 18,', to: 'marginBottom: 10,' },
   ]
   for (const t of tampers) {

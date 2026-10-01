@@ -26,6 +26,9 @@
  *     `if uniform, let previous`，而第一帧 previous 恰好是 nil → 整幅黑被当成背景提交。
  *     修法：均匀帧一律沿用上一帧（nil 就继续没有纹理，draw() 的 guard 会跳过本帧、
  *     视图保持透明），上限仍是 maxUniformHoldFrames 帧。
+ *     （2026-10-01 同步：同日另有墙钟沉降窗口改动——窗口内均匀帧的沿用上限顺延到
+ *     captureSettleMaxHold 墙钟秒，帧数上限表达式原样保留。本节断言已逐条核对、未失真；
+ *     窗口与半成品判据由 sim-glass-firstmount-contract.js 单独钉住。）
  *
  * 运行：node scripts/sim-bottom-overlay-stability.js
  */

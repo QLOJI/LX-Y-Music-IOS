@@ -9,6 +9,9 @@
  *   ② 类型声明（`src/types/app_setting.d.ts`，'circle' | 'square'）；
  *   ③ 两个封面组件（竖屏 `Vertical/Pic.tsx`、横屏 `Horizontal/Pic.tsx`）
  *      必须把「方形」同时作用于**两个**维度：圆角改小 + 旋转停掉。
+ *   ④ 封面的圆角**只有一个真值来源**（由 coverShape 推导）：不得被全局「按钮圆角」
+ *      （`theme.buttonRadius`，默认 0 = 直角）或行内字面量二次覆盖 —— 历史上正是这三层
+ *      行内覆盖把圆形封面压成了直角方块，形状设置整个失效（见 invariant 11）。
  *
  * 为什么不能只做一半（只改圆角、不关旋转，或反之）：
  * 方形绕中心旋转时四角扫出 2√2 倍外接范围，即使容器裁切也只见抖动残角；
@@ -20,7 +23,8 @@
  * 才看得见。本脚本把三处落点绑在一起，并带反例自检。
  *
  * 运行：node scripts/sim-cover-shape.js
- * 退出码：不变量 1~6 全过、且 6 例反例全被拦下时为 0，否则 1。
+ * 退出码：组件级不变量（1~6、3b、11、12）与全局不变量（7~10）全过，且组件反例 8 例 +
+ *         全局反例 4 例全部被拦下时为 0，否则 1。
  */
 
 const fs = require('fs')
@@ -179,6 +183,49 @@ function coverInvariants(name, src, lang) {
     )
   }
 
+  // 11. **圆角单一真值来源**：形状只由 coverShape 推导，两层二次覆盖都要拦住 ——
+  //     ① 全局「按钮圆角」（useButtonRadius / buttonRadius(n)）：默认值 0 = 直角，
+  //        接上就等于把封面形状交给一个默认关闭的设置；
+  //     ② 行内字面量（`borderRadius: 0` 之类，不管是写在样式对象里还是 JSX 数组里）：
+  //        会让 `isSquare ? … : …` 这条分支被旁路，切形状后毫无变化。
+  //     历史上竖屏三层、横屏三层各带一处行内 `borderRadius: buttonRadius(40)`，
+  //     合起来把「圆形封面」渲染成直角方块 —— 契约必须能挡住它重来。
+  {
+    const noHook = !/\buseButtonRadius\b/.test(code) && !/\bbuttonRadius\s*\(/.test(code)
+    // 字面量：数字或字符串形式的 borderRadius（`radius` / `imageContainerStyle.borderRadius` 这类
+    // 由 coverShape 推导的写法不算 —— 它们正是期望的唯一来源）。
+    const noLiteral = !/borderRadius\s*:\s*(?:\d|['"])/.test(code)
+    // JSX 行内数组里叠加 borderRadius（`style={[x, { borderRadius: 0 }]}` / `style={[x, { borderRadius: y }]}`）。
+    // `[^\]]*` 到本数组的第一个 `]` 为止：横屏 `style={[styles.content, imageContainerStyle, { overflow: 'hidden' }]}`
+    // 这类合法写法碰不到 borderRadius，不会误报。
+    const noInlineArray = !/style=\{\[[^\]]*\bborderRadius\b/.test(code)
+    add(
+      'invariant 11: 圆角无二次覆盖（不接全局按钮圆角、无行内字面量、无 JSX 数组内叠加）',
+      noHook && noLiteral && noInlineArray,
+      `无按钮圆角引用=${noHook} 无字面量=${noLiteral} 无 JSX 数组内叠加=${noInlineArray}`,
+    )
+  }
+
+  // 12. **可见性门控在位**：自转必须由「播放态 × 可见性」共同决定。
+  //     方形封面的「不旋转」正是靠这条链路生效的一半（另一半是圆角）：只把 allowSpin 接上、
+  //     却把可见性从启停分支里拿掉，就会回到「不可见时原生动画仍逐帧驱动」（纯白烧电）。
+  //     竖屏还有第二条可见性来源「封面页是 PagerView 当前页」（active prop，由 VerticalNew 下传）；
+  //     横屏无分页（左栏常驻），可见性只有屏幕是否被压栈页覆盖一个来源。
+  {
+    const covered = /useScreenCovered\s*\(/.test(code)
+    // 启停分支里必须真的**分支**到 spinVisible（不是只在别处 && 一下）：
+    // 形如 `if (spinVisible) startAnimation()` + 对应的停驱动分支。
+    const branches = /if\s*\(\s*spinVisible\s*\)/.test(code) && /else\s+stopAnimation\(\)/.test(code)
+    // 有 active prop 的组件（竖屏）必须让它参与可见性判定
+    const hasActiveProp = /active\s*=\s*true/.test(code)
+    const activeInGate = !hasActiveProp || /spinVisible\s*=\s*active\s*&&\s*!screenCovered/.test(code)
+    add(
+      'invariant 12: 可见性参与启停（useScreenCovered + spinVisible 分支；有 active prop 时必须合流）',
+      covered && branches && activeInGate,
+      `用 useScreenCovered=${covered} 启停分支=${branches} active 合流=${activeInGate}`,
+    )
+  }
+
   return out
 }
 
@@ -220,7 +267,9 @@ function globalInvariants() {
 function tamperCases(src) {
   // 竖屏写成命名常量、横屏写成字面量 4；两种形态都要能挂上反例
   const radiusRe = /const radius = isSquare \? (SQUARE_RADIUS|\d+) : (size|imgWidth) \/ 2/
-  if (!src.includes('const allowSpin = isCoverSpin && !isSquare') || !radiusRe.test(src)) {
+  // ⑪ 的锚点：封面元素的行内 style 引用（竖屏 animatedCoverStyle / 横屏 imageStyle）。
+  const coverStyleRe = /style=\{(?:animatedCoverStyle|imageStyle)\}/
+  if (!src.includes('const allowSpin = isCoverSpin && !isSquare') || !radiusRe.test(src) || !coverStyleRe.test(src)) {
     throw new Error('反例锚点未命中：源码已变，反例需同步')
   }
   return [
@@ -250,13 +299,32 @@ function tamperCases(src) {
         .replace(/(\} as any\), \[size, )radius(, spin\])/, '$1$2'),
     },
     {
+      // 用正则而不是裸字符串：gate 行将来若带上附加条件（如 `&& !screenCovered`），
+      // 裸字符串会「替换未命中」而把这条反例变成假红/空转，正则仍能咬住。
       label: '⑤ 动画门控退回 isCoverSpin（等于没关旋转）',
-      mutate: (s) => s.replace('if (isPlay && allowSpin) {', 'if (isPlay && isCoverSpin) {'),
+      mutate: (s) => s.replace(/if\s*\(isPlay && allowSpin([^)]*)\)\s*\{/, 'if (isPlay && isCoverSpin$1) {'),
     },
     {
       label: '⑥ 把 allowSpin 定义注释掉（去注释后必须失效）',
       mutate: (s) => s.replace('const allowSpin = isCoverSpin && !isSquare',
         '// const allowSpin = isCoverSpin && !isSquare'),
+    },
+    {
+      // 复现历史 bug 的形状：在封面元素的行内 style 上再叠一层 borderRadius 写字面量
+      //（原文就是 `borderRadius: buttonRadius(40)`，全局按钮圆角默认 0 ⇒ 圆形封面被压成直角）。
+      // 这里用字面量 0 而不是重引 buttonRadius：字面量更难被「只查 hook 引用」的守卫漏掉，
+      // 拦住它就同时证明了 invariant 11 的两条路（无 hook 引用 / 无行内字面量）都在岗。
+      label: '⑪ 封面行内 style 再叠一层 borderRadius 字面量（形状设置被旁路，历史 bug 复现）',
+      mutate: (s) => s.replace(coverStyleRe, (m) => `style={[${m.slice('style={'.length, -1)}, { borderRadius: 0 }]}`),
+    },
+    {
+      // 去掉「不可见时停驱动」那一支：门控只剩播放态 ⇒ 滑到歌词页 / 被压栈页盖住后
+      // 原生动画仍逐帧驱动（纯白烧电），且恢复可见时相位语义也一并丢失。
+      label: '⑫ 启停分支丢掉可见性（不可见时仍继续转 = 空烧电）',
+      mutate: (s) => s.replace(
+        /if\s*\(\s*spinVisible\s*\)\s*startAnimation\(\)\s*\n\s*else\s+stopAnimation\(\)/,
+        'startAnimation()',
+      ),
     },
   ]
 }
