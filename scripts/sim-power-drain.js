@@ -358,9 +358,13 @@ const pausedInvariants = (files) => {
   if (!/paused=\{paused\}/.test(files.comp)) {
     reasons.push('LiquidGlass.tsx 未透传 paused（声明了但没接）')
   }
-  // ④ 消费点：TabBar 按全局 Home 判定；PlayerBar 按所属屏幕 componentId 判定
-  if (!/useHomeCovered\(\)/.test(files.tabbar) || !/paused=\{homeCovered\}/.test(files.tabbar)) {
-    reasons.push('ModernTabBar 未接 paused={homeCovered}（Tab 栏玻璃被覆盖时仍逐帧渲染）')
+  // ④ 消费点：TabBar 按全局 Home 判定；PlayerBar 按所属屏幕 componentId 判定。
+  // 匹配口径（2026-10-01 C-9 补充）：homeCovered 允许再或上「本块玻璃当前不可见」的
+  // 条件（收起态圆钮玻璃在展开态不可见、展开态胶囊玻璃在收起态不可见，两边都该停帧），
+  // 故写成 paused={homeCovered} 或 paused={homeCovered || <不可见条件>} 都算达标；
+  // 但 homeCovered **必须是第一个析取项** —— 少了它才是真缺陷（被压栈页覆盖仍渲染）。
+  if (!/useHomeCovered\(\)/.test(files.tabbar) || !/paused=\{homeCovered\s*(\|\|[^}]*)?\}/.test(files.tabbar)) {
+    reasons.push('ModernTabBar 未接 paused={homeCovered}(||…)（Tab 栏玻璃被覆盖时仍逐帧渲染）')
   }
   if (!/useScreenCovered\(componentId\)/.test(files.playerbar) || !/paused=\{screenCovered\}/.test(files.playerbar)) {
     reasons.push('PlayerBar 未接 paused={screenCovered}（迷你条玻璃被覆盖时仍逐帧渲染）')
@@ -400,7 +404,7 @@ const runPausedCounterExamples = () => {
   }), '未透传 paused')
   // P5 消费点脱钩
   check('P5 TabBar 抹掉 paused', readGlass({
-    tabbar: read(GLASS_FILES.tabbar).replace(/paused=\{homeCovered\}/g, 'removedX={homeCovered}'),
+    tabbar: read(GLASS_FILES.tabbar).replace(/paused=\{homeCovered\s*(\|\|[^}]*)?\}/g, 'removedX={homeCovered}'),
   }), 'ModernTabBar 未接')
   check('P6 PlayingIcon 恢复无条件动画', readGlass({
     playingIcon: read(GLASS_FILES.playingIcon).replace('const active = isPlay && !homeCovered', 'const active = isPlay'),
