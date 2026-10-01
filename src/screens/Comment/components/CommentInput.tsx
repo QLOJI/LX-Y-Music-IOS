@@ -2,6 +2,8 @@ import { memo, useState, useCallback, useRef, forwardRef, useImperativeHandle } 
 import { View, TextInput, TouchableOpacity, Keyboard } from 'react-native'
 import { createStyle } from '@/utils/tools'
 import { useTheme } from '@/store/theme/hook'
+import { useSettingValue } from '@/store/setting/hook'
+import { applyOpacity } from '@/utils/colorOpacity'
 import Text from '@/components/common/Text'
 import { Icon } from '@/components/common/Icon'
 import { useI18n } from '@/lang'
@@ -26,6 +28,7 @@ const INPUT_HEIGHT = scaleSizeH(48)
 
 const CommentInput = forwardRef<CommentInputType, CommentInputProps>(({ onSend, disabled }, ref) => {
   const theme = useTheme()
+  const buttonOpacity = useSettingValue('theme.buttonOpacity')
   const t = useI18n()
   const [text, setText] = useState('')
   const [replyInfo, setReplyInfo] = useState<ReplyInfo | null>(null)
@@ -90,7 +93,8 @@ const CommentInput = forwardRef<CommentInputType, CommentInputProps>(({ onSend, 
                     disabled={disabled || !text.trim()}
                     style={{
                       ...styles.sendBtn,
-                      backgroundColor: theme['c-primary-background-hover'],
+                      // 底色随「按钮透明度」淡出
+                      backgroundColor: applyOpacity(theme['c-primary-background-hover'], buttonOpacity),
                     }}
                 >
                     <Icon

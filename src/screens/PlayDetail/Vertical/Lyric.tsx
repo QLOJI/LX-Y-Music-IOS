@@ -461,6 +461,14 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
   // 切行滑动：起点偏移 / 终点偏移 / 滑动起始时间戳（< 0 表示当前不在滑动中）。
   const glideFromRef = useRef(0)
   const glideToRef = useRef(0)
+  // glideStartTsRef：本次切行滑动的起始时间戳（< 0 = 当前不在滑动中）。
+  // ⚠️ 这一行曾在「换行节奏对齐 REF」那轮改写里连同注释块一起被删掉、而所有使用点
+  // （handleScrollToActive 的硬跳复位、scrollToActiveContinuous 的起滑/重新锚定、
+  // 复位 effect、恢复首帧 effect）都还留着。运行时后果是打开播放详情页（点迷你播放器）
+  // 立刻抛 ReferenceError: Property 'glideStartTsRef' doesn't exist——Hermes 对完全
+  // 未声明的标识符就是这么报的，挂在 useEffect 里所以栈上是 commitHookEffectListMount。
+  // 改这段时务必保留声明：它和 glideFromRef / glideToRef 是一组，缺一即崩。
+  const glideStartTsRef = useRef(-1)
   // 换行节奏对齐 REF 参考工程（需求 #1「换行动画顺滑不生硬」）：
   //   REF 是「连续换行（diff==1）后先停留 600ms，再用 600ms 滑到新行」——
   //   停留见 REF Vertical/Lyric.tsx:290-298（diff==1 时 setTimeout(600) 后才 handleScrollToActive），

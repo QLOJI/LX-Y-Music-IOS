@@ -9,6 +9,7 @@ import { applyOpacity } from '@/utils/colorOpacity'
 import Text from '@/components/common/Text'
 import { Icon } from '@/components/common/Icon'
 import { designRadius, designSpacing } from '@/theme/DesignTokens'
+import { scaleSizeW } from '@/utils/pixelRatio'
 import { handleCollect, handlePlay } from './listAction'
 import songlistState from '@/store/songlist/state'
 import { useI18n } from '@/lang'
@@ -58,9 +59,18 @@ export default memo(({ onBack }: { onBack?: () => void }) => {
       >
         <View style={styles.primaryContent}>
           <Icon name="play" size={15} color={theme['c-primary-light-1000']} />
-          <Text style={{ ...styles.controlBtnText, color: theme['c-primary-light-1000'] }}>
+          {/* 图标与文字之间的 6pt 间距只属于这一颗（唯一带图标的按钮）：
+              以前它写在共用的 controlBtnText 里，后两颗（收藏歌单 / 返回）没有图标
+              却被一起往右推了 6pt —— 按钮内容看起来「不居中」。
+              现在间距只作用在本按钮的文字上，另外两颗的文字严格居中。 */}
+          <Text style={{ ...styles.controlBtnText, marginLeft: 6, color: theme['c-primary-light-1000'] }}>
             {t('play_all')}
           </Text>
+          {/* 右侧补一块与「图标宽 + 6pt 间距」等宽的对称留白。
+              没有它时：flex 居中的是「图标+文字」这一组，文字自身中心比按钮中心
+              右偏 (scaleSizeW(15)+6)/2 ≈ 10pt —— 三颗按钮里唯独这一颗的文字不在
+              中线，和「收藏歌单 / 返回」的文字对不齐。补上后居中的就是文字本身。 */}
+          <View style={{ width: scaleSizeW(15) + 6 }} />
         </View>
       </Button>
       <Button
@@ -111,7 +121,9 @@ const styles = createStyle({
     alignItems: 'center',
   },
   controlBtnText: {
-    marginLeft: 6,
+    // 这里**不能**再写 marginLeft：本样式被三颗按钮共用，只有第一颗（播放全部）
+    // 带图标需要 6pt 间距，写在共用样式里会把「收藏歌单 / 返回」的文字整体右移
+    // 6pt（居中项 +6 左外边距 = 视觉中心右偏 3pt）。间距已下沉到第一颗按钮的 Text 上。
     fontSize: 14,
     fontWeight: '600',
     textAlign: 'center',

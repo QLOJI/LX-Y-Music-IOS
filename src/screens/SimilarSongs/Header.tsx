@@ -5,7 +5,9 @@ import { pop } from '@/navigation'
 import Text from '@/components/common/Text'
 import { useStatusbarHeight } from '@/store/common/hook'
 import { useTheme } from '@/store/theme/hook'
+import { useSettingValue } from '@/store/setting/hook'
 import { createStyle } from '@/utils/tools'
+import { applyOpacity } from '@/utils/colorOpacity'
 import { scaleSizeH } from '@/utils/pixelRatio'
 import { HEADER_HEIGHT as _HEADER_HEIGHT } from '@/config/constant'
 import { designSpacing } from '@/theme/DesignTokens'
@@ -15,6 +17,7 @@ const HEADER_HEIGHT = scaleSizeH(_HEADER_HEIGHT)
 export default memo(({ componentId, title }: { componentId: string, title: string }) => {
   const statusBarHeight = useStatusbarHeight()
   const theme = useTheme()
+  const buttonOpacity = useSettingValue('theme.buttonOpacity')
   const back = () => { void pop(componentId) }
 
   return (
@@ -22,7 +25,8 @@ export default memo(({ componentId, title }: { componentId: string, title: strin
       <View style={styles.container}>
         <TouchableOpacity
           onPress={back}
-          style={{ ...styles.button, width: HEADER_HEIGHT, backgroundColor: theme['c-primary-background'] }}
+          // 返回按钮底色随「按钮透明度」淡出；只改颜色 alpha，不用容器 opacity，否则图标会一起变淡
+          style={{ ...styles.button, width: HEADER_HEIGHT, backgroundColor: applyOpacity(theme['c-primary-background'], buttonOpacity) }}
         >
           <Icon name="chevron-left" size={19} color={theme['c-primary']} />
         </TouchableOpacity>

@@ -5,7 +5,9 @@ import Image from '@/components/common/Image'
 import ImagePreviewModal from '@/components/common/ImagePreviewModal'
 import Text from '@/components/common/Text'
 import { useTheme } from '@/store/theme/hook'
+import { useSettingValue } from '@/store/setting/hook'
 import { createStyle, toast } from '@/utils/tools'
+import { applyOpacity } from '@/utils/colorOpacity'
 import { useStatusbarHeight } from '@/store/common/hook'
 import { Icon } from '@/components/common/Icon'
 import wyApi from '@/utils/musicSdk/wy/user'
@@ -27,6 +29,7 @@ interface Props {
 
 export default memo(({ artist, onFollow: _onFollow, componentId }: Props) => {
   const theme = useTheme()
+  const buttonOpacity = useSettingValue('theme.buttonOpacity')
   const statusBarHeight = useStatusbarHeight()
   const similarArtistsModalRef = useRef<SimilarArtistsModalType>(null)
   const [isDescExpanded, setDescExpanded] = useState(false)
@@ -127,14 +130,19 @@ export default memo(({ artist, onFollow: _onFollow, componentId }: Props) => {
 
           </View>
           {artist?.source !== 'tx' && artist?.source !== 'kg' && (
-            <TouchableOpacity style={styles.followButton} onPress={toggleFollow}>
+            <TouchableOpacity
+              // 「关注歌手」圆钮底色随「按钮透明度」淡出；只改颜色 alpha，不用容器 style.opacity
+              style={[styles.followButton, { backgroundColor: applyOpacity('rgba(255,255,255,0.22)', buttonOpacity) }]}
+              onPress={toggleFollow}
+            >
               <Icon name={isFollowed ? 'love-filled' : 'love'} color={isFollowed ? theme['c-liked'] : '#fff'} size={18} />
             </TouchableOpacity>
           )}
           {artist?.source !== 'kg' && (
             <TouchableOpacity
               activeOpacity={0.82}
-              style={styles.similarButton}
+              // 「相似歌手」胶囊底色随「按钮透明度」淡出；只改颜色 alpha，不用容器 style.opacity
+              style={[styles.similarButton, { backgroundColor: applyOpacity('rgba(255,255,255,0.24)', buttonOpacity) }]}
               onPress={() => similarArtistsModalRef.current?.show({ id: artist?.mid || artist?.id, name: artistName, source: artist?.source })}
             >
               <Text size={designTypography.caption} color="#FFFFFF" numberOfLines={1}>相似歌手</Text>

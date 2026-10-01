@@ -4,7 +4,9 @@ import Image from '@/components/common/Image'
 import ImagePreviewModal from '@/components/common/ImagePreviewModal'
 import Text from '@/components/common/Text'
 import { useTheme } from '@/store/theme/hook'
+import { useSettingValue } from '@/store/setting/hook'
 import { createStyle, toast } from '@/utils/tools'
+import { applyOpacity } from '@/utils/colorOpacity'
 import { dateFormat } from '@/utils/common'
 import { useStatusbarHeight } from '@/store/common/hook'
 import { Icon } from '@/components/common/Icon'
@@ -23,6 +25,7 @@ interface Props {
 
 export default memo(({ albumInfo, componentId }: Props) => {
   const theme = useTheme()
+  const buttonOpacity = useSettingValue('theme.buttonOpacity')
   const statusBarHeight = useStatusbarHeight()
   const isSubscribed = useIsWyAlbumSubscribed(albumInfo.id)
   const [isPreviewVisible, setPreviewVisible] = useState(false)
@@ -96,7 +99,11 @@ export default memo(({ albumInfo, componentId }: Props) => {
         </View>
         {albumInfo.source !== 'tx' && albumInfo.source !== 'kg' && (
           <TouchableOpacity
-            style={{ ...styles.followButton, backgroundColor: theme['c-primary-background'] }}
+            style={{
+              ...styles.followButton,
+              // 按钮底色随「按钮透明度」设置淡出；只改颜色 alpha，不用容器 opacity，图标不受影响
+              backgroundColor: applyOpacity(theme['c-primary-background'], buttonOpacity),
+            }}
             onPress={toggleSubscribe}
           >
               <Icon

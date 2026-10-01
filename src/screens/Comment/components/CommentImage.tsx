@@ -6,6 +6,8 @@ import Text from '@/components/common/Text'
 import { scaleSizeH } from '@/utils/pixelRatio'
 import { BorderWidths } from '@/theme'
 import { useTheme } from '@/store/theme/hook'
+import { useSettingValue } from '@/store/setting/hook'
+import { applyOpacity } from '@/utils/colorOpacity'
 
 const MAX_IMAGE_HEIGHT = scaleSizeH(260)
 
@@ -13,6 +15,7 @@ export default ({ url, maxWidth }: { url: string, maxWidth: number }) => {
   const [show, setShow] = useState(false)
   const [wh, setWH] = useState({ width: 0, height: 0 })
   const theme = useTheme()
+  const buttonOpacity = useSettingValue('theme.buttonOpacity')
 
   useEffect(() => {
     getSize(url, (realWidth, realHeight) => {
@@ -57,8 +60,9 @@ export default ({ url, maxWidth }: { url: string, maxWidth: number }) => {
         <TouchableOpacity
           style={{
             ...styles.defaultPic,
-            borderColor: theme['c-border-background'],
-            backgroundColor: theme['c-primary-light-200-alpha-900'],
+            // 「显示图片」虚线按钮自身的底色与描边随「按钮透明度」淡出，只改颜色 alpha
+            borderColor: applyOpacity(theme['c-border-background'], buttonOpacity),
+            backgroundColor: applyOpacity(theme['c-primary-light-200-alpha-900'], buttonOpacity),
           }}
           onPress={() => {
             setShow(true)
