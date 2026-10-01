@@ -49,6 +49,9 @@ export interface ProgressDrag {
  */
 const SEEK_JUMP_SEC = 2
 const SEEK_TRANSITION_MS = designMotion.quick
+// 拖动手势看门狗：拖动中连续这么久没有任何移动事件，就认定手势回调已丢失（见 ProgressTouchArea）。
+// 取 8s：真人拖进度条不会站着不动 8 秒，而假死是「永久失效」，宁可晚一点也不能不兜。
+const DRAG_WATCHDOG_MS = 8000
 const SEEK_EASING = Easing.bezier(0.22, 1, 0.36, 1)
 export const useSmoothProgressAnim = (progress: number, duration: number): Animated.Value => {
   const anim = useRef(new Animated.Value(clamp01(progress))).current
@@ -148,6 +151,47 @@ export const ProgressTouchArea = memo(
     const handlersRef = useRef({ onDragStart, onDragEnd, onDrag })
     handlersRef.current = { onDragStart, onDragEnd, onDrag }
 
+    // 拖动期间扣着两把锁（PagerView 原生横滑、playProgress 的逐秒校准让路），正常由
+    // release / terminate 复位。但这两条回调**都可能不来**：拖动中组件被卸载（切页/压栈）、
+    // 手势被系统吞掉（无 terminate）—— 锁一旦永久留下，就是「横滑彻底失效 + 歌词与进度条
+    // 一直卡在手指位置」。这里补两道保险：
+    //   ① 看门狗：拖动中连续 DRAG_WATCHDOG_MS 没有任何移动事件 ⇒ 认定手势已丢失，强制复位；
+    //   ② 卸载兜底：卸载时仍在拖动 ⇒ 无条件复位（卸载后没有任何回调会再来）。
+    // unlock / armWatchdog 的依赖链最终都落在 [] 上，引用恒定 —— PanResponder 只在首帧创建，
+    // 闭包里抓到的是同一份函数，不存在读到旧值的问题。
+    const isLockedRef = useRef(false)
+    const watchdogRef = useRef<NodeJS.Timeout | null>(null)
+    const clearWatchdog = useCallback(() => {
+      if (watchdogRef.current) {
+        clearTimeout(watchdogRef.current)
+        watchdogRef.current = null
+      }
+    }, [])
+    const unlock = useCallback(() => {
+      clearWatchdog()
+      if (!isLockedRef.current) return
+      isLockedRef.current = false
+      setPagerScrollEnabled(true)
+      emitDragState(false)
+    }, [clearWatchdog])
+    const armWatchdog = useCallback(() => {
+      clearWatchdog()
+      watchdogRef.current = setTimeout(() => {
+        watchdogRef.current = null
+        if (!isLockedRef.current) return
+        // 手势已经丢失：先复位锁，再按「松开」收尾，避免进度条半途停住不跟音频
+        unlock()
+        handlersRef.current.onDragEnd()
+      }, DRAG_WATCHDOG_MS)
+    }, [clearWatchdog, unlock])
+    useEffect(() => () => {
+      clearWatchdog()
+      if (!isLockedRef.current) return
+      isLockedRef.current = false
+      setPagerScrollEnabled(true)
+      emitDragState(false)
+    }, [clearWatchdog])
+
     const panResponder = useRef(
       PanResponder.create({
         // capture 阶段拦截：手指刚落下就抢 responder，避免 PagerView / ScrollView 在 bubble 阶段抢走。
@@ -155,13 +199,17 @@ export const ProgressTouchArea = memo(
         onMoveShouldSetPanResponderCapture: () => true,
 
         onPanResponderMove: (_evt, gestureState) => {
+          // 有移动事件就说明手势还活着，看门狗重新计时
+          armWatchdog()
           handlersRef.current.onDrag(gestureState.dx)
         },
         onPanResponderGrant: (evt, gestureState) => {
           // 拖动进度条期间同步禁用 PagerView 原生横滑（直接 setNativeProps，绕过 state 异步），
           // 避免原生分页控件在左拖时抢占横向手势导致卡顿 / 误切歌词页。
+          isLockedRef.current = true
           setPagerScrollEnabled(false)
           emitDragState(true)
+          armWatchdog()
           handlersRef.current.onDragStart(
             gestureState.dx,
             evt.nativeEvent.locationX,
@@ -169,16 +217,14 @@ export const ProgressTouchArea = memo(
           )
         },
         onPanResponderRelease: (_evt, gestureState) => {
-          setPagerScrollEnabled(true)
-          emitDragState(false)
+          unlock()
           handlersRef.current.onDragEnd(gestureState.dx, gestureState.dy)
         },
         // 手势被系统中断（来电 / 下拉通知 / 控制中心 / 父级接管）时必须复位：
         // 否则 isDraging 永久为 true，进度条被钉在手指位置不再随音频前进，
         // playProgress 的歌词时钟也会一直 hold 住，出现「音频在放、进度条和歌词不动」。
         onPanResponderTerminate: () => {
-          setPagerScrollEnabled(true)
-          emitDragState(false)
+          unlock()
           handlersRef.current.onDragEnd()
         },
         // 关键修复：拒绝被父级（播放页纵向滑动切歌）手势抢占。

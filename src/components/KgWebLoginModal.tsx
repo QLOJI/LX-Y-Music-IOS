@@ -35,6 +35,16 @@ const KgWebLoginModal = forwardRef<KgWebLoginModalType, object>((_, ref) => {
   const [showVerify, setShowVerify] = useState(false)
   const [verifyHtml, setVerifyHtml] = useState('')
   const [showMultiAccount, setShowMultiAccount] = useState(false)
+  // 原生 Modal 延迟卸载（见下方 RNModal 处注释）
+  const [multiAccountMounted, setMultiAccountMounted] = useState(false)
+  useEffect(() => {
+    if (showMultiAccount) {
+      setMultiAccountMounted(true)
+      return
+    }
+    const timer = setTimeout(() => { setMultiAccountMounted(false) }, 300)
+    return () => { clearTimeout(timer) }
+  }, [showMultiAccount])
   const [pendingData, setPendingData] = useState<{ mobile: string, code: string } | null>(null)
   const [selectedId, setSelectedId] = useState('')
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
@@ -157,22 +167,28 @@ const KgWebLoginModal = forwardRef<KgWebLoginModalType, object>((_, ref) => {
           </View>
         ) : null}
 
-        <RNModal visible={showMultiAccount} transparent animationType="fade" onRequestClose={() => { setShowMultiAccount(false) }}>
-          <View style={styles.modalOverlay}>
-            <View style={[styles.modalBox, { backgroundColor: '#fff' }]}>
-              <Text size={16} style={{ textAlign: 'center', marginBottom: 16, color: theme['c-font'] }}>该手机号绑定了多个账号</Text>
-              <View style={[styles.idInput, { borderBottomColor: (theme as any)['c-border'] }]}>
-                <TextInput style={[styles.idInputText, { color: theme['c-font'] }]} placeholder="请输入您要登录的酷狗ID" placeholderTextColor={theme['c-font-label']} value={selectedId} onChangeText={setSelectedId} keyboardType="number-pad" autoFocus />
+        {/* multiAccountMounted 同 common/Modal 的延迟卸载口径：本组件是全工程里
+            仅剩的一处绕过卸载规避的原生 Modal（多账号选择框）。它嵌在安全的
+            <Modal> 内、宿主生命周期已被外层兜住，但残留宿主吞触摸的机制与
+            StylizedModal 完全同类，故按同一口径补齐（隐藏后 300ms 卸载）。 */}
+        {multiAccountMounted ? (
+          <RNModal visible={showMultiAccount} transparent animationType="fade" onRequestClose={() => { setShowMultiAccount(false) }}>
+            <View style={styles.modalOverlay}>
+              <View style={[styles.modalBox, { backgroundColor: '#fff' }]}>
+                <Text size={16} style={{ textAlign: 'center', marginBottom: 16, color: theme['c-font'] }}>该手机号绑定了多个账号</Text>
+                <View style={[styles.idInput, { borderBottomColor: (theme as any)['c-border'] }]}>
+                  <TextInput style={[styles.idInputText, { color: theme['c-font'] }]} placeholder="请输入您要登录的酷狗ID" placeholderTextColor={theme['c-font-label']} value={selectedId} onChangeText={setSelectedId} keyboardType="number-pad" autoFocus />
+                </View>
+                <TouchableOpacity style={[styles.modalBtn, { backgroundColor: '#1677ff', marginTop: 20 }]} onPress={async() => handleMultiLogin(selectedId)} disabled={!selectedId.trim()} activeOpacity={0.8}>
+                  <Text size={16} color="#fff">确定登录</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={[styles.modalBtn, { backgroundColor: (theme as any)['c-border'], marginTop: 10 }]} onPress={() => { setShowMultiAccount(false); setPendingData(null); setSelectedId('') }} activeOpacity={0.8}>
+                  <Text size={16} color="#fff">取消</Text>
+                </TouchableOpacity>
               </View>
-              <TouchableOpacity style={[styles.modalBtn, { backgroundColor: '#1677ff', marginTop: 20 }]} onPress={async() => handleMultiLogin(selectedId)} disabled={!selectedId.trim()} activeOpacity={0.8}>
-                <Text size={16} color="#fff">确定登录</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={[styles.modalBtn, { backgroundColor: (theme as any)['c-border'], marginTop: 10 }]} onPress={() => { setShowMultiAccount(false); setPendingData(null); setSelectedId('') }} activeOpacity={0.8}>
-                <Text size={16} color="#fff">取消</Text>
-              </TouchableOpacity>
             </View>
-          </View>
-        </RNModal>
+          </RNModal>
+        ) : null}
       </View>
     </Modal>
   )

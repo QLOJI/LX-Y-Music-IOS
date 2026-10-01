@@ -1,8 +1,8 @@
 import { memo, useCallback, useEffect, useMemo, useRef } from 'react'
 import { Animated, Easing, View, TouchableOpacity } from 'react-native'
 import { useHorizontalMode, useKeyboard } from '@/utils/hooks'
-import { scaleSizeW, scaleSizeH } from '@/utils/pixelRatio'
-import { useTabBarCollapsed, setMiniPlayerHeight, useMiniPlayerHeight, getCollapsedPillSize } from '@/utils/tabBarCollapse'
+import { scaleSizeH } from '@/utils/pixelRatio'
+import { useTabBarCollapsed, setMiniPlayerHeight, useCollapsedRowGeometry } from '@/utils/tabBarCollapse'
 import Pic from './components/Pic'
 import Title from './components/Title'
 import PlayInfo from './components/PlayInfo'
@@ -20,8 +20,6 @@ import {
   designSpacing,
   bottomFloatGap,
   tabBarBaseHeight,
-  collapsedFloatBottom,
-  collapsedPillGap,
   floatDistance,
 } from '@/theme/DesignTokens'
 import LiquidGlass from '@/components/common/LiquidGlass'
@@ -50,14 +48,17 @@ export default memo(({ componentId, isHome = false }: { componentId?: string, is
   // Tab 栏收起时（仅 Home）：迷你播放器下移到收起按钮所在行并左侧让位（对齐参考交互）。
   // 动画为逐帧收窄：bottom/paddingLeft 两布局属性随 220ms 插值同步变化，胶囊边收窄
   // 边滑入落点。收起/展开过程玻璃逐帧变形（背景捕获的动画跟踪由引擎内建）。
-  // 收起态几何与圆钮**同源**（getCollapsedPillSize / collapsedFloatBottom /
-  // collapsedPillGap 三个共享量）：圆钮的左缘、尺寸、底边都由同一组常量算出，
-  // 两边不再各算各的——「同排」靠共享事实来源保证，不靠两边把数字写的一样。
+  // 收起态几何与圆钮**同源**：左缘 / 尺寸 / 底边 / 让位四个量全部来自
+  // collapsedRow（useCollapsedRowGeometry），与 ModernTabBar 是**同一个对象**——
+  // 「同排」靠共享计算结果保证，不靠两边把数字写的一样。
   const tabBarCollapsed = useTabBarCollapsed()
   const effectiveCollapsed = isHome && tabBarCollapsed
-  // 圆钮尺寸（= 实测的播放器高度）：收起态的左侧让位要用它，与 ModernTabBar 取同一个值
-  const miniPlayerHeight = useMiniPlayerHeight()
-  const pillSize = getCollapsedPillSize(miniPlayerHeight)
+  // 收起行几何（尺寸 / 底边 / 播放器左让位）：**与 ModernTabBar 的圆钮取同一个对象**。
+  // 2026-10-01（B1 重点修复）：此前两边各自调 getCollapsedPillSize /
+  // collapsedFloatBottom 各算一遍，公式同源但计算两次，任何一次读取时序差就会
+  // 重现「播放器还停在展开位、圆钮已经在左下角」。现在只在这里取一次。
+  const collapsedRow = useCollapsedRowGeometry()
+  const pillSize = collapsedRow.size
   // 「Tab栏距离」滑块（0-100）：展开态播放器底边与 Tab 栏顶边之间的间距来源
   const tabBarDistance = useSettingValue('theme.tabBarDistance')
   const collapseAnim = useRef(new Animated.Value(effectiveCollapsed ? 1 : 0)).current
@@ -103,13 +104,12 @@ export default memo(({ componentId, isHome = false }: { componentId?: string, is
       const bottomExpanded = safeAreaBottom + (isHome
         ? (isHorizontalMode ? 76 : bottomFloatGap + scaleSizeH(tabBarBaseHeight) + floatDistance(tabBarDistance))
         : bottomFloatGap)
-      // 收起态底边：与 ModernTabBar 圆钮共用同一条公式（safeArea + gap），不是重算一遍
-      const bottomCollapsed = collapsedFloatBottom(safeAreaBottom)
-      // 收起态左让位 = 圆钮左缘 + 圆钮尺寸 + 间距，三项全部来自共享事实来源：
-      // 左缘 scaleSizeW(24)（与 Tab 栏左右缘、展开态左 padding 同一个 24 基准，不能再
-      // 混裸值——裸值 + 缩放值混写会让字体 ≠1 时左右缘分叉，第一轮「大小/位置不一致」
-      // 的根因）、尺寸 pillSize（与圆钮同源）、间距 collapsedPillGap（裸值常量）。
-      const paddingLeftCollapsed = scaleSizeW(designSpacing.lg) + pillSize + collapsedPillGap
+      // 收起态底边：直接取收起行几何里的 bottom（与 ModernTabBar 圆钮同一个数），
+      // 不再在这里复算一遍公式
+      const bottomCollapsed = collapsedRow.bottom
+      // 收起态左让位 = 圆钮左缘 + 圆钮尺寸 + 间距，三项都来自同一个几何对象
+      // （collapsedRow.playerLeft），与圆钮右缘的间距恒等于 collapsedPillGap。
+      const paddingLeftCollapsed = collapsedRow.playerLeft
       return (
         <Animated.View
           style={[
@@ -121,9 +121,9 @@ export default memo(({ componentId, isHome = false }: { componentId?: string, is
               }),
               paddingLeft: collapseAnim.interpolate({
                 inputRange: [0, 1],
-                // 两端同为 scaleSizeW 口径：展开端与右 padding（styles.wrapper 的
-                // paddingHorizontal）同值，任意字体下左右缘都与 Tab 栏重合
-                outputRange: [scaleSizeW(designSpacing.lg), paddingLeftCollapsed],
+                // 展开端取 collapsedRow.roundLeft（= scaleSizeW(24)，与圆钮左缘、
+                // Tab 栏左右缘同一个基准）：任意字体下左右缘都与 Tab 栏重合
+                outputRange: [collapsedRow.roundLeft, paddingLeftCollapsed],
               }),
             },
             // 关键：wrapper 全宽且盖在收起按钮上层，必须 box-none——否则透明区域
@@ -131,9 +131,28 @@ export default memo(({ componentId, isHome = false }: { componentId?: string, is
             { pointerEvents: 'box-none' },
           ]}
         >
+          {/* 收起态**把高度钉死成 pillSize**（= 圆钮边长，同一个数）。
+              这是「同排/共线」的最后一环，也是前几轮没修好的真正原因：
+                · 两边 bottom 早已同源（collapsedRow.bottom）——底边在同一条线上；
+                · 圆钮边长 = 实测的**展开态**胶囊高（pillSize）；
+                · 可收起态胶囊的**高度是内容撑出来的**（wrapper 只给了 bottom/paddingLeft），
+                  左让位把可用宽度压窄后，只要标题/副标题多占一行、或字体档位变化让行盒
+                  长高一两 pt，胶囊就会比圆钮高 —— 底边齐、顶边不齐 = 看起来「不共线 /
+                  高出圆钮」。调数值永远追不上，因为它本来就不是个常数。
+              高度写死成 pillSize 后，胶囊高 ≡ 圆钮高是**构造保证**：无论 pillSize 是
+              实测值还是首帧兜底（token ≈57），两边永远是同一个数。内容若真的超高，
+              由 overflow:hidden 裁掉——同尺寸优先。 */}
           <View
-            style={styles.container}
-            onLayout={(e) => { setMiniPlayerHeight(e.nativeEvent.layout.height) }}
+            style={[styles.container, effectiveCollapsed && { height: pillSize }]}
+            onLayout={(e) => {
+              // 只按**展开态**的测量上报（2026-10-01，B1/「大小不一致」）：收起态
+              // 左让位把可用宽度压窄 ~63pt，标题/副标题可能因此换行、容器高度变大；
+              // 一旦把这个偏大的值当成「圆钮边长」，圆钮会跟着变高变胖。展开态是
+              // 最宽形态、高度最小且稳定，是唯一可靠的基准。首帧若恰好处于收起态
+              // 则不上报，由 getCollapsedPillSize 的 token 兜底（≈57）。
+              if (effectiveCollapsed) return
+              setMiniPlayerHeight(e.nativeEvent.layout.height)
+            }}
           >
             <LiquidGlass glassOpacity={glassOpacity} dark={theme.isDark} liquid={liquidGlassOn} paused={screenCovered} style={{ borderRadius: designRadius.glass }} />
             <TouchableOpacity style={styles.left} onPress={handleNavigate} activeOpacity={0.8}>
@@ -150,7 +169,7 @@ export default memo(({ componentId, isHome = false }: { componentId?: string, is
         </Animated.View>
       )
     },
-    [glassOpacity, liquidGlassOn, screenCovered, theme.isDark, isHome, handleNavigate, safeAreaBottom, isHorizontalMode, collapseAnim, pillSize, tabBarDistance, tabBarCollapsed],
+    [glassOpacity, liquidGlassOn, screenCovered, theme.isDark, isHome, handleNavigate, safeAreaBottom, isHorizontalMode, collapseAnim, pillSize, collapsedRow, tabBarDistance, tabBarCollapsed],
   )
 
   return keyboardShown ? null : playerComponent

@@ -2,14 +2,14 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Animated, Easing, PanResponder, Pressable, StyleSheet, View, type LayoutChangeEvent } from 'react-native'
 import { useTheme } from '@/store/theme/hook'
 import { useI18n } from '@/lang'
-import { useNavActiveId, useSafeAreaBottom, useHomeCovered } from '@/store/common/hook'
+import { useNavActiveId, useHomeCovered } from '@/store/common/hook'
 import { setNavActiveId } from '@/core/common'
 import { useSettingValue } from '@/store/setting/hook'
 import { createStyle, isIOS26_2OrAbove } from '@/utils/tools'
 import { scaleSizeW } from '@/utils/pixelRatio'
-import { useTabBarCollapsed, useMiniPlayerHeight, getCollapsedPillSize } from '@/utils/tabBarCollapse'
+import { useTabBarCollapsed, useCollapsedRowGeometry } from '@/utils/tabBarCollapse'
 import { setTabBarExpanded } from '@/utils/nativeModules/utils'
-import { designRadius, designSpacing, tabBarBaseHeight, collapsedFloatBottom } from '@/theme/DesignTokens'
+import { designRadius, designSpacing, tabBarBaseHeight } from '@/theme/DesignTokens'
 import type { NAV_ID_Type } from '@/config/constant'
 import { Icon } from '@/components/common/Icon'
 import Text from '@/components/common/Text'
@@ -147,16 +147,18 @@ const CHILD_TAB_PARENT: Partial<Record<NAV_ID_Type, (typeof TAB_IDS)[number]['id
   nav_play_history: 'nav_discovery',
 }
 
-// A-5「长按底部激活滑动」：长按 250ms 激活拖动（松手按落点吸附切 tab）。
-// 这是**恢复被移除的功能**（2026-09-29 曾把长按/横滑拖拽切页整体移除），
-// 不是参数调优。硬编码 250ms，不引设置项（需求指定，不低于 200ms）。
-const LONG_PRESS_MS = 250
+// A-5「长按底部激活滑动」：长按激活拖动（松手按落点吸附切 tab）。
+// 2026-10-01 需求「减少长按触发时间」：250 → **150**。
+// 阈值压低后，「按得稍久的点击」会先触发长按、从而抑制 onPress——若不管它，
+// 用户会觉得「点 tab 没反应」。故配一条回退：长按后**既没拖动**、按压时长又
+// 短于 TAP_FALLBACK_MS 的，仍按点击语义切页（见 handleTabPressOut）。
+const LONG_PRESS_MS = 150
+const TAP_FALLBACK_MS = 350
 
 export default memo(() => {
   const theme = useTheme()
   const t = useI18n()
   const activeId = useNavActiveId()
-  const safeAreaBottom = useSafeAreaBottom()
 
   // 深浅色模式均无描边（纯玻璃质感，玻璃材质自带边缘光）
   const barStyle = useMemo(() => styles.bar, [])
@@ -182,13 +184,12 @@ export default memo(() => {
   // 收起形态（iOS 26 风格）：歌曲列表滚动离开顶部 → 整条 tab 栏收成左下角
   // 圆形玻璃按钮（宫格图标）；点击按钮弹出，保持展开直到下一次滚动离开顶部。
   const collapsed = useTabBarCollapsed()
-  // 圆钮尺寸对齐收起态迷你播放器高度（宽=高保持圆形）；未测量时用 token 兜底。
-  // 唯一来源是 getCollapsedPillSize——PlayerBar 收起态的左侧让位用的是同一个值，
-  // 两处不再各写 55/57（尺寸分叉过一次，字体/测量时机一变就再分叉一次）
-  const miniPlayerHeight = useMiniPlayerHeight()
-  const pillSize = getCollapsedPillSize(miniPlayerHeight)
-  // 收起行（圆钮 / 迷你播放器）底边距屏底的统一公式，与 PlayerBar 同源
-  const floatBottom = collapsedFloatBottom(safeAreaBottom)
+  // 收起行几何（尺寸 / 底边 / 左缘 / 播放器让位）：与 PlayerBar 收起态**取同一个
+  // 对象**，不再各算一遍——B1「迷你播放器高出圆钮、间距很大」重点修复，
+  // 原理见 tabBarCollapse.useCollapsedRowGeometry 的注释。
+  const collapsedRow = useCollapsedRowGeometry()
+  const pillSize = collapsedRow.size
+  const floatBottom = collapsedRow.bottom
   const collapseAnim = useRef(new Animated.Value(collapsed ? 1 : 0)).current
   useEffect(() => {
     Animated.timing(collapseAnim, {
@@ -246,6 +247,19 @@ export default memo(() => {
   const draggingRef = useRef(false)
   const dragStartLensXRef = useRef(0)
   const lastDragCenterXRef = useRef(0)
+  // A-5 会话看门狗（P0 加固，2026-10-01）：拖动锁 emitTabBarDragActive(true) 只在
+  // release / terminate / 卸载三处解除。一旦某次会话收不到收尾事件（系统手势抢占、
+  // 原生子视图被回收、页面在拖动中被压栈覆盖…），Main 的 pagerScrollEnabled 会被
+  // **永久**锁成 false——现象是「首页滑不动、只能杀进程」。两段式兜底：
+  //   arm 后 8s 仍未真正接管 → 解除 arm（透镜落回原位）；
+  //   接管后 8s 仍未收尾   → 强制收尾（落回原槽 + 解锁）。
+  // 正常会话最长也就一两秒，8s 不可能是误伤。
+  const armWatchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const dragWatchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const pressOutTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // 「带点击回退的长按」用的按下信息（见 LONG_PRESS_MS 注释）
+  const pressStartAtRef = useRef(0)
+  const pressedTabIdRef = useRef<NAV_ID_Type | null>(null)
   useEffect(() => {
     barWidthRef.current = barWidth
     lensXRef.current = lensX
@@ -257,6 +271,11 @@ export default memo(() => {
   // pagerDragSessionRef）。position/offset 的约定取「position + offset」这个两种
   // 原生约定（floor+unsigned / round+signed）下都成立的连续进度，再夹到 [0, 4]。
   useEffect(() => subscribePagerProgress((position, offset) => {
+    // A-5 拖动会话优先级最高（2026-10-01 修正，A2「椭圆无规律抽动」的直接来源）：
+    // 长按 arm / 拖动期间，pager 的跟手进度一律丢弃。拖动时横滑已被
+    // emitTabBarDragActive 锁住，但**锁之前**发车的进度帧、以及锁生效瞬间的
+    // 迟到帧仍会到达；两路 setFollowX 交替写同一个 followX，就是「抽动」。
+    if (dragArmedRef.current || draggingRef.current) return
     const width = barWidthRef.current
     if (width <= 0) return
     const slot = width / TAB_IDS.length
@@ -266,21 +285,46 @@ export default memo(() => {
 
   // Main → TabBar：手势会话开始/结束（抬起/放下透镜；结束时会话收尾）
   useEffect(() => subscribePagerDrag((dragging) => {
+    // 同上：A-5 拖动/待拖动期间不接受 pager 的抬落指令，否则透镜会被
+    // 「放下 → 抬起」来回翻转（抽动的另一半）。A-5 自己负责抬落（arm 时抬、
+    // finishTabDrag 里落），不会因此卡在抬起态。
+    if (dragArmedRef.current || draggingRef.current) return
     lensRef.current?.setLifted(dragging)
     if (!dragging) lensRef.current?.endFollow()
   }), [])
 
   // A-5：长按某个 tab → arm 拖动（透镜抬起，等待手指移动接管）。
   // 边界：收起态 / 液态玻璃关闭 / iOS 26.2+（透镜不渲染）→ 不 arm，长按无效果。
-  const handleTabLongPress = useCallback(() => {
+  const handleTabLongPress = useCallback((id: NAV_ID_Type) => {
+    // 记录按下的 tab：长按没拖动就抬手时用它做「点击语义」回退
+    pressedTabIdRef.current = id
     if (!lensReadyRef.current) return
     dragArmedRef.current = true
     lensRef.current?.setLifted(true)
+    // arm 看门狗：只 arm 不接管（抬手被系统手势吃掉 / 抬手事件丢失）时自动解除，
+    // 否则下一次触摸在栏体上滑动会被 PanResponder 当成拖动接管，连点击都受影响
+    if (armWatchdogRef.current) clearTimeout(armWatchdogRef.current)
+    armWatchdogRef.current = setTimeout(() => {
+      armWatchdogRef.current = null
+      if (draggingRef.current || !dragArmedRef.current) return
+      dragArmedRef.current = false
+      lensRef.current?.setFollowX(lensXRef.current)
+      lensRef.current?.setLifted(false)
+      lensRef.current?.endFollow()
+    }, 8000)
   }, [])
 
   // A-5 收尾：吸附 + 切页 + 解除 arm（commit=false 为系统终止：落回当前槽心）
   const finishTabDrag = useCallback((commit: boolean) => {
     if (!draggingRef.current) return
+    if (dragWatchdogRef.current) {
+      clearTimeout(dragWatchdogRef.current)
+      dragWatchdogRef.current = null
+    }
+    if (armWatchdogRef.current) {
+      clearTimeout(armWatchdogRef.current)
+      armWatchdogRef.current = null
+    }
     draggingRef.current = false
     dragArmedRef.current = false
     emitTabBarDragActive(false)
@@ -312,16 +356,32 @@ export default memo(() => {
   }, [])
 
   // 长按后未拖动就抬手：收回抬起态并解除 arm（不切页——长按已抑制 onPress）。
-  // 延后一拍判定：onPanResponderGrant（拖动接管）与本次抬手可能在同批事件里竞态，
-  // 同步判定会误伤刚开始的拖动。
+  // 2026-10-01 修正（A2「椭圆抽动」的第二来源）：原来是 setTimeout(...,0) 判定，
+  // 而 onPanResponderGrant 是**原生手势事件**、过桥到达 JS 的时机晚于这个 0ms 宏任务
+  // ——「长按 → 快速拖动」会在 grant 到达前就把 arm 清掉，拖动被腰斩、透镜弹回起点。
+  // 现在改为 400ms 宽限，且真正的接管会在 grant 里清掉本定时器。
+  const handleTabPressIn = useCallback((id: NAV_ID_Type) => {
+    pressStartAtRef.current = Date.now()
+    pressedTabIdRef.current = id
+  }, [])
   const handleTabPressOut = useCallback(() => {
-    setTimeout(() => {
-      if (draggingRef.current || !dragArmedRef.current) return
+    // 按压时长必须在这里取：下面的定时器要 400ms 之后才跑，那时 Date.now() 已经不对了
+    const releasedAt = Date.now()
+    if (pressOutTimerRef.current) clearTimeout(pressOutTimerRef.current)
+    pressOutTimerRef.current = setTimeout(() => {
+      pressOutTimerRef.current = null
+      if (draggingRef.current) return
+      if (!dragArmedRef.current) return
       dragArmedRef.current = false
       lensRef.current?.setFollowX(lensXRef.current)
       lensRef.current?.setLifted(false)
       lensRef.current?.endFollow()
-    }, 0)
+      // 点击语义回退（LONG_PRESS_MS 压到 150 的配套）：长按触发了、但既没拖动、
+      // 按压时长又短于 TAP_FALLBACK_MS —— 用户本意就是「点一下这个 tab」，
+      // 补上一次切页，否则会表现为「点 tab 没反应」。
+      const id = pressedTabIdRef.current
+      if (id && releasedAt - pressStartAtRef.current < TAP_FALLBACK_MS) setNavActiveId(id)
+    }, 400)
   }, [])
 
   // A-5 手势层：挂在**内层** Animated.View（pointerEvents='auto' 的栏体）上——
@@ -337,6 +397,21 @@ export default memo(() => {
       draggingRef.current = true
       dragStartLensXRef.current = lensXRef.current
       lastDragCenterXRef.current = lensXRef.current
+      // 真正接管了：撤销「长按后没拖动」的抬手收尾，以及 arm 看门狗
+      if (pressOutTimerRef.current) {
+        clearTimeout(pressOutTimerRef.current)
+        pressOutTimerRef.current = null
+      }
+      if (armWatchdogRef.current) {
+        clearTimeout(armWatchdogRef.current)
+        armWatchdogRef.current = null
+      }
+      // 拖动看门狗：收尾事件丢失时强制收尾，避免 pager 横滑被永久锁死
+      if (dragWatchdogRef.current) clearTimeout(dragWatchdogRef.current)
+      dragWatchdogRef.current = setTimeout(() => {
+        dragWatchdogRef.current = null
+        finishTabDrag(false)
+      }, 8000)
       // 锁住 pager 横滑（与 B-7 互斥）；透镜已被长按抬起
       emitTabBarDragActive(true)
     },
@@ -360,6 +435,9 @@ export default memo(() => {
     if (draggingRef.current) emitTabBarDragActive(false)
     dragArmedRef.current = false
     draggingRef.current = false
+    if (armWatchdogRef.current) { clearTimeout(armWatchdogRef.current); armWatchdogRef.current = null }
+    if (dragWatchdogRef.current) { clearTimeout(dragWatchdogRef.current); dragWatchdogRef.current = null }
+    if (pressOutTimerRef.current) { clearTimeout(pressOutTimerRef.current); pressOutTimerRef.current = null }
   }, [])
 
   return (
@@ -396,7 +474,10 @@ export default memo(() => {
           {/* 玻璃衬底带与容器一致的圆角：按压下陷内缩时仍呈圆角，不露直角边。
               圆角 28 = 透镜圆角（56 药丸的胶囊半高，见 LiquidLensView），2026-09-29
               起玻璃端头曲线统一 circular，观感与透镜一致 */}
-          <LiquidGlass glassOpacity={glassOpacity} dark={theme.isDark} liquid={liquidGlassOn} paused={homeCovered} style={{ borderRadius: designRadius.glass }} />
+          {/* 省电门扩展（C9 发热）：本栏在收起态是**完全不可见**的（opacity 0 + 下移 28），
+              却仍在跑 Metal 逐帧渲染 —— 收起态是长时间驻留状态（只要列表不停在顶部），
+              这是纯白烧的电。可见性一并纳入门控。 */}
+          <LiquidGlass glassOpacity={glassOpacity} dark={theme.isDark} liquid={liquidGlassOn} paused={homeCovered || collapsed} style={{ borderRadius: designRadius.glass }} />
           {/* 液态透镜药丸（tab 切换动画）：玻璃之上、tab 内容之下；快速点击走
               Pressable 切页（x prop 弹簧），横滑跟手 / 长按拖动走 ref 命令式
               followX（同一套通道，见组件上部注释） */}
@@ -415,10 +496,11 @@ export default memo(() => {
                 key={tab.id}
                 style={styles.item}
                 onPress={() => { setNavActiveId(tab.id) }}
-                // A-5：长按激活拖动（delayLongPress 硬编码 250ms）；长按后 onPress
+                // A-5：长按激活拖动（delayLongPress = LONG_PRESS_MS）；长按后 onPress
                 // 被 Pressability 抑制（点/拖互斥白拿），onPressOut 负责「长按后未
-                // 拖动就抬手」的收尾
-                onLongPress={handleTabLongPress}
+                // 拖动就抬手」的收尾（并对短按做点击回退）
+                onPressIn={() => { handleTabPressIn(tab.id) }}
+                onLongPress={() => { handleTabLongPress(tab.id) }}
                 delayLongPress={LONG_PRESS_MS}
                 onPressOut={handleTabPressOut}
               >
@@ -461,10 +543,11 @@ export default memo(() => {
           style={[
             styles.pillWrapper,
             {
-              // left 内联 scaleSizeW（与 tab 栏左右缘、播放器展开/收起让位同一个 24 基准），
-              // bottom 与 PlayerBar 收起态共用 collapsedFloatBottom
-              left: scaleSizeW(designSpacing.lg),
-              bottom: floatBottom,
+              // left / bottom 直接取收起行几何（与 PlayerBar 收起态同一个对象）：
+              // left 是 scaleSizeW 后的 24 基准（与 tab 栏左右缘、播放器展开态左缘同源），
+              // bottom 就是 PlayerBar 收起态的 bottom。这里**不再自己算**。
+              left: collapsedRow.roundLeft,
+              bottom: collapsedRow.bottom,
               width: pillSize,
               height: pillSize,
               opacity: collapseAnim.interpolate({ inputRange: [0, 1], outputRange: [0, 1] }),
@@ -473,7 +556,8 @@ export default memo(() => {
           ]}
           pointerEvents={collapsed ? 'auto' : 'none'}
         >
-          <LiquidGlass glassOpacity={glassOpacity} dark={theme.isDark} liquid={liquidGlassOn} paused={homeCovered} style={{ borderRadius: designRadius.pill }} />
+          {/* 同上：圆钮在展开态完全不可见（opacity 0 + scale 0.5），可见性纳入省电门 */}
+          <LiquidGlass glassOpacity={glassOpacity} dark={theme.isDark} liquid={liquidGlassOn} paused={homeCovered || !collapsed} style={{ borderRadius: designRadius.pill }} />
           <Pressable style={styles.pillInner} onPress={handlePillPress}>
             <View style={styles.pillIcon} pointerEvents="none">
               <Icon name="menu" size={20} color={theme['c-primary']} />
