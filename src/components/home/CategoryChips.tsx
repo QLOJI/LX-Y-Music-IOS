@@ -43,10 +43,13 @@ const CategoryChips = memo(({ options, selectedId, onChange }: CategoryChipsProp
 
   // 底色/边框随「按钮透明度」淡出，文字色不动。不用容器 style.opacity：
   // 那会把胶囊里的文字一并变淡，0 时就「什么都不剩」而非「只剩文字」。
-  // 激活态（c-primary 实底）一起处理，避免未激活透明、激活实心的割裂。
+  // 选中态一起处理，避免未选中透明、选中实心的割裂。
+  // 选中态底色由「主色实底」改为主色的 20% 淡染：选中文字已统一改为主题主色
+  // （与设置里「LX-Y Music 字体大小预览」同一个色值），同色实心底会把文字吃掉；
+  // 选中感改由「主色边框 + 主色文字」承担。
   const activeChipStyle = useMemo(
     () => ({
-      backgroundColor: applyOpacity(theme['c-primary'], buttonOpacity),
+      backgroundColor: applyOpacity(theme['c-primary-alpha-800'], buttonOpacity),
       borderColor: applyOpacity(theme['c-primary'], buttonOpacity),
     }),
     [theme, buttonOpacity],
@@ -84,7 +87,7 @@ const CategoryChips = memo(({ options, selectedId, onChange }: CategoryChipsProp
             <Text
               style={styles.label}
               size={designTypography.caption}
-              color={isActive ? theme['c-primary-light-1000'] : theme['c-font']}
+              color={isActive ? theme['c-primary'] : theme['c-font']}
               numberOfLines={1}
             >
               {option.label}

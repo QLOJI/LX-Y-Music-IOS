@@ -54,11 +54,14 @@ const PlatformChips = memo(({ options, selectedId, onChange, noInset }: Platform
   const buttonRadius = useButtonRadius()
 
   // 胶囊的底色与边框随「按钮透明度」淡出；只改颜色 alpha，不能用容器 style.opacity
-  // ——那会把文字一起变淡，而需求是 0 时「只剩文字」。激活态（c-primary 实底）同样处理，
-  // 否则未激活的透明了、当前选中的平台却还是实心，出现割裂。
+  // ——那会把文字一起变淡，而需求是 0 时「只剩文字」。选中态同样处理，
+  // 否则未选中的透明了、当前选中的平台却还是实心，出现割裂。
+  // 选中态底色由「主色实底」改为主色的 20% 淡染：选中文字已统一改为主题主色
+  // （与设置里「LX-Y Music 字体大小预览」同一个色值），同色实心底会把文字吃掉；
+  // 选中感改由「主色边框 + 主色文字」承担，buttonOpacity 拖到 0 时也还有颜色可辨。
   const activeChipStyle = useMemo(
     () => ({
-      backgroundColor: applyOpacity(theme['c-primary'], buttonOpacity),
+      backgroundColor: applyOpacity(theme['c-primary-alpha-800'], buttonOpacity),
       borderColor: applyOpacity(theme['c-primary'], buttonOpacity),
     }),
     [theme, buttonOpacity],
@@ -97,7 +100,7 @@ const PlatformChips = memo(({ options, selectedId, onChange, noInset }: Platform
             <Text
               style={styles.label}
               size={designTypography.body}
-              color={isActive ? theme['c-primary-light-1000'] : theme['c-font']}
+              color={isActive ? theme['c-primary'] : theme['c-font']}
               numberOfLines={1}
             >
               {option.label}
