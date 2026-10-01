@@ -10,7 +10,7 @@ import { useSettingValue } from '@/store/setting/hook'
 import Text from '@/components/common/Text'
 import { getTags } from '@/core/songlist'
 import { type Source, type TagInfo } from '@/store/songlist/state'
-import { designSpacing } from '@/theme/DesignTokens'
+import { controlGap, designSpacing } from '@/theme/DesignTokens'
 
 export interface TagRowsProps {
   onTagChange: (name: string, id: string) => void
@@ -165,7 +165,11 @@ export default forwardRef<TagRowsType, TagRowsProps>(({ onTagChange }, ref) => {
 
 const styles = createStyle({
   container: {
-    marginTop: designSpacing.xs,
+    // 排序胶囊行 → 标签行（原为 xs 8，比同为「行间距」的 sortRow.marginTop 12 近）
+    marginTop: controlGap,
+    // 标签分组行与行之间：旧实现没有任何间距，展开多组时 32pt 高的胶囊上下贴在一起，
+    // 是「有些间距太近」最极端的一处；现在与横向按钮间距同值（controlGap）。
+    gap: controlGap,
   },
   groupScroll: {
     flexGrow: 0,
@@ -177,14 +181,18 @@ const styles = createStyle({
     paddingRight: designSpacing.lg,
   },
   groupName: {
-    marginRight: designSpacing.xs,
+    // 组名 → 本组第一个标签胶囊：与按钮间距同值（原 xs 8）
+    marginRight: controlGap,
   },
   tagButton: {
     height: 32,
     justifyContent: 'center',
     alignItems: 'center',
-    paddingHorizontal: designSpacing.sm,
-    marginRight: designSpacing.xs,
+    // 胶囊内边距统一为 md(16)：与平台/排序/搜索平台的胶囊同值（原 sm 12）
+    paddingHorizontal: designSpacing.md,
+    // 标签胶囊之间：原 xs 8，是全部按钮行里唯一用 8 的一处（平台/排序/搜索平台
+    // 胶囊与搜索类型按钮都是 12），统一到 controlGap。
+    marginRight: controlGap,
     borderRadius: 999,
     borderWidth: 1,
   },

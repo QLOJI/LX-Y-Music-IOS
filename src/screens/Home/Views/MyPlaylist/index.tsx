@@ -11,7 +11,7 @@ import { useWySubscribedPlaylists, useWyUid } from '@/store/user/hook.ts'
 import { useBottomOverlayInset } from '@/store/common/hook'
 import { useHorizontalMode } from '@/utils/hooks'
 import { useI18n } from '@/lang'
-import { designSpacing } from '@/theme/DesignTokens'
+import { designSpacing, pageTitleLineHeight } from '@/theme/DesignTokens'
 import PageTopInset from '@/components/common/PageTopInset'
 import userState from '@/store/user/state'
 import { useSettingValue } from '@/store/setting/hook'
@@ -257,6 +257,7 @@ const styles = StyleSheet.create({
   },
   titleText: {
     fontWeight: '800',
-    lineHeight: 36,
+    // 34pt 页面大标题统一行高（原写死 36，与推荐/歌单页的 42 差 6pt）
+    lineHeight: pageTitleLineHeight,
   },
 })

@@ -7,7 +7,7 @@ import { applyOpacity } from '@/utils/colorOpacity'
 import { useButtonRadius } from '@/utils/buttonRadius'
 import Text from '@/components/common/Text'
 import { createStyle } from '@/utils/tools'
-import { designSpacing } from '@/theme/DesignTokens'
+import { controlGap, designSpacing } from '@/theme/DesignTokens'
 
 export interface SortTabProps {
   onSortChange: (id: string) => void
@@ -115,9 +115,12 @@ const styles = createStyle({
     height: 36,
     justifyContent: 'center',
     alignItems: 'center',
-    paddingLeft: designSpacing.lg,
-    paddingRight: designSpacing.lg,
-    marginRight: designSpacing.sm,
+    // 胶囊内边距统一为 md(16)：与平台胶囊(PlatformChips)/搜索平台胶囊/搜索类型按钮
+    // 同值。原来这里是 lg(24)，比同一屏上方平台胶囊(16)多出整整一档，读起来就是
+    // 「有的太松、有的太紧」。（按钮之间的外间距见 marginRight，统一走 controlGap。）
+    paddingLeft: designSpacing.md,
+    paddingRight: designSpacing.md,
+    marginRight: controlGap,
     borderRadius: 999,
     borderWidth: 1,
   },

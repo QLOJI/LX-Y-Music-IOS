@@ -10,7 +10,7 @@ import Text from '@/components/common/Text'
 import { useTheme } from '@/store/theme/hook'
 import { useSettingValue } from '@/store/setting/hook'
 import { getSearchSetting } from '@/utils/data'
-import { designRadius, designSpacing } from '@/theme/DesignTokens'
+import { controlGap, designRadius, designSpacing } from '@/theme/DesignTokens'
 
 const SEARCH_TYPE_LIST = ['music', 'songlist', 'singer', 'album'] as const
 
@@ -107,9 +107,11 @@ const styles = createStyle({
     height: 36,
     justifyContent: 'center',
     alignItems: 'center',
-    paddingLeft: designSpacing.sm,
-    paddingRight: designSpacing.sm,
-    marginRight: designSpacing.sm,
+    // 内边距与其余胶囊行统一为 md(16)（原 sm 12）
+    paddingLeft: designSpacing.md,
+    paddingRight: designSpacing.md,
+    // 按钮之间的外间距：全应用按钮行统一 controlGap（值与原 sm 相同，仅收敛来源）
+    marginRight: controlGap,
     borderRadius: designRadius.pill,
     borderWidth: 1,
   },

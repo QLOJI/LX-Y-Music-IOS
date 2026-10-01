@@ -4,7 +4,7 @@ import RNFetchBlob from '@/utils/rnFetchBlob'
 import playerState from '@/store/player/state'
 import playerActions from '@/store/player/action'
 import settingState from '@/store/setting/state'
-import { setMusicUrl, stop, playList, playNext } from '@/core/player/player'
+import { setMusicUrl, stop, playList, playListById, playNext } from '@/core/player/player'
 import { log } from '@/utils/log'
 
 import { addListMusics, removeListMusics, updateListMusicPosition, updateListMusics } from '@/core/list'
@@ -211,7 +211,9 @@ export const handleToggleSource = async(listId: string, musicInfo: LX.Music.Musi
     if (index != -1 && index < oldIdx) oldIdx--
     await updateListMusicPosition(listId, oldIdx, [id])
     if (playerState.playMusicInfo.listId == listId && playerState.playMusicInfo.musicInfo?.id == oldId) {
-      void (playerActions as any).playListById(listId, toggleMusicInfo.id)
+      // 必须调 core 里的 playListById：store 的默认导出（playerActions）没有这个方法，
+      // 原来写成 (playerActions as any).playListById 会在切源时抛 TypeError，歌不会重播。
+      void playListById(listId, toggleMusicInfo.id)
     }
   })
   return true

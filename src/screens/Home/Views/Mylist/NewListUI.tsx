@@ -24,7 +24,7 @@ import ListImportExport, { type ListImportExportType } from './MyList/ListImport
 import { handleRemove, handleSync } from './MyList/listAction'
 import { LIST_IDS, COMPONENT_IDS } from '@/config/constant'
 import { scaleSizeH } from '@/utils/pixelRatio'
-import { designRadius, designSpacing } from '@/theme/DesignTokens'
+import { designRadius, designSpacing, pageTitleGap, pageTitleLineHeight } from '@/theme/DesignTokens'
 import { useButtonRadius } from '@/utils/buttonRadius'
 import { useBottomOverlayInset } from '@/store/common/hook'
 import PageTopInset from '@/components/common/PageTopInset'
@@ -584,6 +584,13 @@ export default memo(() => {
   //  · 覆盖层已经开着（横屏分栏常驻 / 竖屏正停在歌单里）→ List 自己监听 jumpListPosition
   //    事件去换列表并定位。两条路都幂等，重复触发最多只是多滚一次。
   const openPlayingList = useCallback(() => {
+    // 一次性标记必须在本函数里复位，不能只在本页挂载时复位（见下方 effect）：
+    // app_event.jumpListPosition() 在**任何**一次长按时都会置位，而本页是「访问过即常驻」的，
+    // 常驻期间走的是事件通道、永远走不到挂载分支 —— 标记会一直留在 true。
+    // 之后只要本页重挂载（切到设置页会被 hideWhenSettingActive 卸下、PagerView 兜底重建
+    // 会重建整棵树），挂载 effect 就会把几分钟前那次长按当成一次新的跳转，
+    // 用户侧表现为「刚切回我的页，歌曲列表自己弹了出来」。置于消费点即彻底一次性。
+    global.lx.jumpMyListPosition = false
     const listId = playerState.playMusicInfo.listId
     if (!listId) return
     // 与 handleItemPress 同一套前置：先盖时间戳与目标 id，再写全局状态。
@@ -598,11 +605,9 @@ export default memo(() => {
     global.app_event.on('jumpListPosition', openPlayingList)
     // 冷启动 / 本页还没挂载时的那一路：jumpListPosition() 在切到「我的」前就把
     // global.lx.jumpMyListPosition 置了位（见 appEvent.jumpListPosition），本页挂载时
-    // 补读一次。读到即复位，避免之后任何一次重挂载把它当成一次新的跳转。
-    if (global.lx.jumpMyListPosition) {
-      global.lx.jumpMyListPosition = false
-      openPlayingList()
-    }
+    // 补读一次。复位由 openPlayingList 内部统一负责（标记在那里被清掉），
+    // 这样事件通道与挂载通道都消费即清，标记不会残留到下一次重挂载。
+    if (global.lx.jumpMyListPosition) openPlayingList()
     return () => {
       global.app_event.off('jumpListPosition', openPlayingList)
     }
@@ -949,11 +954,13 @@ const styles = createStyle({
     alignItems: 'center',
     justifyContent: 'space-between',
     paddingHorizontal: designSpacing.lg,
-    marginBottom: designSpacing.xs,
+    // 标题行 → 下方第一行内容：四页共用 pageTitleGap（原为 xs 8，比推荐页的 16 近一半）
+    marginBottom: pageTitleGap,
   },
   pageTitle: {
     fontWeight: '800',
-    lineHeight: 36,
+    // 四页共用的标题行高（42）：原写死 36，与推荐页的 42 差 6pt
+    lineHeight: pageTitleLineHeight,
   },
   cardContainer: {
     flexDirection: 'row',

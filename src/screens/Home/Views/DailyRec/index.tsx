@@ -7,7 +7,7 @@ import { useButtonRadius } from '@/utils/buttonRadius'
 import { useTheme } from '@/store/theme/hook'
 import { useSettingValue } from '@/store/setting/hook'
 import { useI18n } from '@/lang'
-import { designSpacing } from '@/theme/DesignTokens'
+import { designSpacing, pageTitleLineHeight } from '@/theme/DesignTokens'
 import PagerView, { type PagerViewOnPageSelectedEvent } from 'react-native-pager-view'
 import RecPlaylists from './RecPlaylists'
 import RecSongs from './RecSongs'
@@ -236,7 +236,8 @@ const styles = createStyle({
   },
   titleText: {
     fontWeight: '800',
-    lineHeight: 36,
+    // 34pt 页面大标题统一行高（原写死 36，与推荐/歌单页的 42 差 6pt）
+    lineHeight: pageTitleLineHeight,
   },
   // 四个按钮同一行；窄屏 / 放大字号放不下时自动换行，避免最后一个按钮被裁掉
   tabsRow: {

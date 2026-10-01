@@ -2,7 +2,7 @@ import { useRef, forwardRef, useImperativeHandle, useMemo } from 'react'
 import { ScrollView, TouchableOpacity, View } from 'react-native'
 
 // import music from '@/utils/musicSdk'
-import { designSpacing } from '@/theme/DesignTokens'
+import { controlGap, designSpacing } from '@/theme/DesignTokens'
 // import InsetShadow from 'react-native-inset-shadow'
 import SearchInput, { type SearchInputType, type SearchInputProps } from './SearchInput'
 import { createStyle } from '@/utils/tools'
@@ -164,7 +164,9 @@ export default forwardRef<HeaderBarType, HeaderBarProps>(
 const styles = createStyle({
   container: {
     zIndex: 2,
-    marginBottom: designSpacing.xs,
+    // 不设 marginBottom：平台胶囊行自身已有 platformContent.paddingVertical(controlGap)
+    // 作为下留白，再叠一个 marginBottom 会让「胶囊行 → 类型按钮行」变成 20pt 以上
+    // （RN 相邻 margin 不合并），是搜索页里最明显的一处「间距太远」。
   },
   openHeader: {
     flexDirection: 'row',
@@ -176,7 +178,10 @@ const styles = createStyle({
     alignItems: 'center',
     height: 48,
     marginRight: designSpacing.sm,
-    marginBottom: designSpacing.sm,
+    // 搜索框行 → 「搜索平台」标题行：controlGap（与下方各行间距同值）。
+    // 这里必须由本行承担间距：下方 platformHeader 原本另有 marginTop xs(8)，
+    // 两者相加是 20pt，已去掉那一个。
+    marginBottom: controlGap,
     borderRadius: 999,
     borderWidth: 1,
     zIndex: 2,
@@ -194,7 +199,8 @@ const styles = createStyle({
     alignItems: 'center',
     justifyContent: 'space-between',
     paddingHorizontal: designSpacing.lg,
-    marginTop: designSpacing.xs,
+    // 与上方搜索框行的间距由 searchBar.marginBottom（controlGap）承担，这里不再叠加
+    // marginTop：旧写法 xs(8) + sm(12) = 20pt，比同页其它行距（12）明显更远。
   },
   platformScroll: {
     flexGrow: 0,
@@ -202,14 +208,18 @@ const styles = createStyle({
   },
   platformContent: {
     paddingHorizontal: designSpacing.lg,
-    paddingVertical: designSpacing.sm,
+    // 平台胶囊行的上/下留白：controlGap，同时充当「标题行 → 胶囊行」与
+    // 「胶囊行 → 类型按钮行」两处间距（下方 typeRow 已不再额外加 marginBottom）。
+    paddingVertical: controlGap,
   },
   platformItem: {
     minHeight: 38,
     justifyContent: 'center',
     alignItems: 'center',
+    // 内边距 md(16)：与 PlatformChips / SortTab / TagRows 的胶囊同值
     paddingHorizontal: designSpacing.md,
-    marginRight: designSpacing.sm,
+    // 胶囊之间的外间距：全应用按钮行统一 controlGap
+    marginRight: controlGap,
     borderRadius: 999,
   },
 })

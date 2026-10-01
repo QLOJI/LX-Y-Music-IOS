@@ -8,7 +8,7 @@ import { createStyle } from '@/utils/tools'
 import { type Source } from '@/store/songlist/state'
 import { useTheme } from '@/store/theme/hook'
 import { useStatusbarHeight } from '@/store/common/hook'
-import { designSpacing } from '@/theme/DesignTokens'
+import { controlGap, designSpacing, pageTitleGap, pageTitleLineHeight } from '@/theme/DesignTokens'
 import Text from '@/components/common/Text'
 
 export interface HeaderBarProps {
@@ -66,13 +66,17 @@ const styles = createStyle({
   },
   title: {
     fontWeight: '800',
-    lineHeight: 36,
-    marginBottom: designSpacing.sm,
+    // 四页共用的标题行高（42）：原写死 36，比推荐页（42，被右上角圆钮撑高）
+    // 矮了 6pt，加上下方间距差 4pt，切页时平台胶囊行会整行跳一下。
+    lineHeight: pageTitleLineHeight,
+    // 标题行 → 平台胶囊行：四页共用 pageTitleGap
+    marginBottom: pageTitleGap,
     paddingHorizontal: designSpacing.lg,
   },
   sortRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginTop: designSpacing.sm,
+    // 平台胶囊行 → 排序胶囊行：与行内按钮间距同值（controlGap）
+    marginTop: controlGap,
   },
 })

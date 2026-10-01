@@ -15,7 +15,7 @@ import { useSettingValue } from '@/store/setting/hook'
 import { applyOpacity } from '@/utils/colorOpacity'
 import { useButtonRadius } from '@/utils/buttonRadius'
 import { createStyle, toast } from '@/utils/tools'
-import { designRadius, designSpacing, designTypography } from '@/theme/DesignTokens'
+import { designRadius, designSpacing, designTypography, pageTitleGap, pageTitleLineHeight } from '@/theme/DesignTokens'
 import PageTopInset from '@/components/common/PageTopInset'
 import SwipeBackArea from '@/components/common/SwipeBackArea'
 
@@ -471,8 +471,10 @@ const styles = createStyle({
   },
   pageTitleText: {
     fontWeight: '800',
-    lineHeight: 36,
-    marginBottom: designSpacing.sm,
+    // 与推荐/歌单/我的三页共用的标题行高（42）与下方间距（pageTitleGap）保持一致
+    // （本页标题同样是 34pt 大标题，原为 36 / 12）
+    lineHeight: pageTitleLineHeight,
+    marginBottom: pageTitleGap,
   },
   popupContent: {
     paddingHorizontal: 16,

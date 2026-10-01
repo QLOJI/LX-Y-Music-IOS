@@ -303,7 +303,10 @@ const styles = createStyle({
     flex: 1,
   },
   typeRow: {
-    height: 42,
+    // 高度 = 类型按钮自身高度 36（原为 42）：多出的 6pt 会让按钮上下各留 3pt 白边，
+    // 叠加到平台胶囊行的 paddingVertical 之上，「胶囊行 → 类型按钮行」就比同页其它
+    // 行距更远。收成 36 后上间距恰为 controlGap，与搜索页其它各行一致。
+    height: 36,
     paddingHorizontal: designSpacing.lg,
     justifyContent: 'center',
   },

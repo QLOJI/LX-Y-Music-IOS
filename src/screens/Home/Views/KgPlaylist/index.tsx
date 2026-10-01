@@ -18,7 +18,7 @@ import ConfirmAlert, { type ConfirmAlertType } from '@/components/common/Confirm
 import Input from '@/components/common/Input'
 import { useHorizontalMode } from '@/utils/hooks'
 import { useButtonRadius } from '@/utils/buttonRadius'
-import { designSpacing } from '@/theme/DesignTokens'
+import { designSpacing, pageTitleLineHeight } from '@/theme/DesignTokens'
 import PageTopInset from '@/components/common/PageTopInset'
 import { useBottomOverlayInset } from '@/store/common/hook'
 
@@ -348,7 +348,8 @@ const styles = StyleSheet.create({
   },
   titleText: {
     fontWeight: '800',
-    lineHeight: 36,
+    // 34pt 页面大标题统一行高（原写死 36，与推荐/歌单页的 42 差 6pt）
+    lineHeight: pageTitleLineHeight,
   },
   tabBar: {
     flexDirection: 'row',

@@ -10,7 +10,7 @@ import { createStyle, toast } from '@/utils/tools'
 import { retryAsync } from '@/utils/retry'
 import { applyOpacity } from '@/utils/colorOpacity'
 import { useButtonRadius } from '@/utils/buttonRadius'
-import { designRadius, designSpacing, designTypography } from '@/theme/DesignTokens'
+import { designRadius, designSpacing, designTypography, pageTitleGap, pageTitleLineHeight } from '@/theme/DesignTokens'
 import songlistState, { type ListInfoItem, type Source } from '@/store/songlist/state'
 import settingState from '@/store/setting/state'
 import boardState, { type BoardItem } from '@/store/leaderboard/state'
@@ -53,10 +53,15 @@ const styles = createStyle({
     alignItems: 'center',
     justifyContent: 'space-between',
     paddingHorizontal: designSpacing.lg,
-    marginBottom: designSpacing.md,
+    // 标题行 → 平台胶囊行：四页共用 pageTitleGap（原本推荐页 16 / 歌单页 12 / 我的页 8）
+    marginBottom: pageTitleGap,
   },
   title: {
     fontWeight: '800',
+    // 四页共用的标题行高（见 DesignTokens.pageTitleLineHeight 的说明）。
+    // 这里**必须**写在 createStyle 内：只有经 trasformeStyle 才会乘 global.lx.fontSize，
+    // 与同行的 42pt 播放历史圆钮（height → scaleSizeH）同口径缩放，字号变了也不会错位。
+    lineHeight: pageTitleLineHeight,
   },
   historyButton: {
     width: 42,
@@ -67,9 +72,6 @@ const styles = createStyle({
   },
   sectionGap: {
     marginTop: designSpacing.lg,
-  },
-  chips: {
-    marginTop: designSpacing.md,
   },
   daily: {
     marginTop: designSpacing.lg,
@@ -370,8 +372,10 @@ export default memo(() => {
   const titleStyle = useMemo(
     () => StyleSheet.compose(styles.title, {
       color: theme['c-font'],
-      // 不写死 lineHeight：fontSize 随 app 字号缩放（setSpText），行高小于字高时
-      // 大标题顶部笔画会被裁掉；交给系统按字体度量计算行高，任何字号下都完整显示。
+      // 行高统一写在 styles.title 的 pageTitleLineHeight（42，四页共用）。
+      // 它 > 34 × 1.15 ≈ 39.1，不存在「行高小于字高、大标题顶部笔画被裁掉」的问题；
+      // 之所以不再交给 Text 组件兜底，是为了让四个主页的标题行高度完全一致
+      // （见 DesignTokens.pageTitleLineHeight 的说明）。
     }),
     [theme],
   )
@@ -467,13 +471,16 @@ export default memo(() => {
           </TouchableOpacity>
         </View>
 
-        <View style={styles.chips}>
-          <PlatformChips
-            options={platformOptions}
-            selectedId={selectedSource}
-            onChange={(id) => { setSelectedSource(id as Source) }}
-          />
-        </View>
+        {/* 平台胶囊行直接用 PlatformChips 的 ScrollView 当子节点，外面不再包一层带
+            marginTop 的 View：旧写法这里 marginTop md(16) 与上方 header 的 marginBottom
+            md(16) 相加成 32pt（RN 的相邻 margin 不像 CSS 那样合并），歌单页同一行只有
+            12pt，两页的平台胶囊行因此上下错开一整截。现在间距只由 header.marginBottom
+            的 pageTitleGap 承担，与歌单页严格同值。 */}
+        <PlatformChips
+          options={platformOptions}
+          selectedId={selectedSource}
+          onChange={(id) => { setSelectedSource(id as Source) }}
+        />
 
         {isWide ? (
           // 宽屏（iPad 竖屏/横屏）：日推卡（左，垂直居中）与榜单两行网格（右）

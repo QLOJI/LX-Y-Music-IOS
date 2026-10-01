@@ -6,7 +6,7 @@ import { useTheme } from '@/store/theme/hook'
 import { useI18n } from '@/lang'
 import ActiveListName, { type ActiveListNameType } from './ActiveListName'
 import Text from '@/components/common/Text'
-import { designSpacing } from '@/theme/DesignTokens'
+import { designSpacing, pageTitleLineHeight } from '@/theme/DesignTokens'
 
 export interface HeaderBarType {
   setBound: (source: LX.OnlineSource, id: string, name: string) => void
@@ -46,6 +46,7 @@ const styles = createStyle({
   },
   title: {
     fontWeight: '800',
-    lineHeight: 36,
+    // 34pt 页面大标题统一行高（原写死 36，与推荐/歌单页的 42 差 6pt）
+    lineHeight: pageTitleLineHeight,
   },
 })
