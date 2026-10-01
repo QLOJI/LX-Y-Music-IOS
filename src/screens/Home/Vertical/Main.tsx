@@ -305,15 +305,46 @@ const Main = () => {
       global.app_event.off('changeHomePageScrollEnabled', handleScrollEnabled)
     }
   }, [])
-  useEffect(() => subscribeTabBarDragActive(setTabBarDragActive), [])
+  // A-5 拖动锁（TabBar → Main）的兜底看门狗（P0 加固，2026-10-01）：
+  // 锁一旦超过 8s 未释放就强制解锁。TabBar 侧另有一道会话看门狗，两道各自独立——
+  // 任一侧的事件通道断开（组件卸载、事件丢失、原生手势被系统抢占）都不会让首页
+  // 横滑永久失效（此前的失效表现是「滑不动，只能杀进程」）。
+  const tabBarDragWatchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(() => {
+    const clearDragWatchdog = () => {
+      if (tabBarDragWatchdogRef.current) {
+        clearTimeout(tabBarDragWatchdogRef.current)
+        tabBarDragWatchdogRef.current = null
+      }
+    }
+    const unsubscribe = subscribeTabBarDragActive((active) => {
+      clearDragWatchdog()
+      setTabBarDragActive(active)
+      if (active) {
+        tabBarDragWatchdogRef.current = setTimeout(() => {
+          tabBarDragWatchdogRef.current = null
+          setTabBarDragActive(false)
+        }, 8000)
+      }
+    })
+    return () => {
+      clearDragWatchdog()
+      unsubscribe()
+    }
+  }, [])
 
   // PagerView 非 idle 状态的兜底恢复定时器（防止 homePagerIdle 卡死在 false）
   const pagerIdleFallbackRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // 拖动会话兜底定时器的清理（卸载时也要把会话收尾，否则监听端会停在抬起态）
   useEffect(() => {
     return () => {
       if (pagerIdleFallbackRef.current) {
         clearTimeout(pagerIdleFallbackRef.current)
         pagerIdleFallbackRef.current = null
+      }
+      if (pagerDragFallbackRef.current) {
+        clearTimeout(pagerDragFallbackRef.current)
+        pagerDragFallbackRef.current = null
       }
       if (clearLastIssuedIndexRef.current) {
         clearTimeout(clearLastIssuedIndexRef.current)
@@ -420,13 +451,32 @@ const Main = () => {
   // dragging，跟手进度因此只在真实手势期间发出，绝不会抢掉点击时的弹簧动画
   // （recon fixPlan 第 7 条）。类型写法对齐先例 VerticalNew.tsx:73。
   const pagerDragSessionRef = useRef(false)
+  // 会话兜底看门狗（P0 加固，2026-10-01）：原生偶发丢配对的 idle 事件时，会话会
+  // 永久停在「拖动中」——透镜一直跟手、tab 栏停在抬起态、后续点击的弹簧动画被抢。
+  // 每收到一帧进度就续期；3s 没有任何进度帧即判定手势已结束、主动收尾（现有
+  // homePagerIdle 的 800ms 兜底只管它自己那个标志，不管这条会话）。
+  const pagerDragFallbackRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const endPagerDragSession = useCallback(() => {
+    if (pagerDragFallbackRef.current) {
+      clearTimeout(pagerDragFallbackRef.current)
+      pagerDragFallbackRef.current = null
+    }
+    if (!pagerDragSessionRef.current) return
+    pagerDragSessionRef.current = false
+    emitPagerDrag(false)
+  }, [])
   const onPageScroll = useCallback((e: { nativeEvent: { position: number, offset: number } }) => {
     // 只用 ref 判定、绝不 setState（先例 VerticalNew.tsx:60-68）：本回调是滚动
     // 帧级频率，setState 会让整条 tab 栏在 120Hz 下逐帧重渲染。
     // progress = position + offset 的约定无关取法见 ModernTabBar（订阅端 clamp）。
     if (!pagerDragSessionRef.current) return
+    if (pagerDragFallbackRef.current) clearTimeout(pagerDragFallbackRef.current)
+    pagerDragFallbackRef.current = setTimeout(() => {
+      pagerDragFallbackRef.current = null
+      endPagerDragSession()
+    }, 3000)
     emitPagerProgress(e.nativeEvent.position, e.nativeEvent.offset)
-  }, [])
+  }, [endPagerDragSession])
 
   const onPageScrollStateChanged = useCallback(
     ({ nativeEvent }: PageScrollStateChangedNativeEvent) => {
@@ -437,13 +487,11 @@ const Main = () => {
         emitPagerDrag(true)
       }
       if (nativeEvent.pageScrollState == 'idle') {
-        if (pagerDragSessionRef.current) {
-          pagerDragSessionRef.current = false
-          // 手势结束：通知 tab 栏结束跟手、放下透镜。最后一次跟手进度即目标槽心
-          // （跟手是原生零动画直落），若随后换了页，navActiveIdUpdated 会用新的
-          // x prop 走原生同位守卫自然接管，不会重播弹簧。
-          emitPagerDrag(false)
-        }
+        // 手势结束：通知 tab 栏结束跟手、放下透镜。最后一次跟手进度即目标槽心
+        // （跟手是原生零动画直落），若随后换了页，navActiveIdUpdated 会用新的
+        // x prop 走原生同位守卫自然接管，不会重播弹簧。
+        // 走 endPagerDragSession：它顺带撤掉续期看门狗（正常收尾时不留悬挂定时器）
+        endPagerDragSession()
         if (pagerIdleFallbackRef.current) {
           clearTimeout(pagerIdleFallbackRef.current)
           pagerIdleFallbackRef.current = null
@@ -460,7 +508,7 @@ const Main = () => {
         }, 800)
       }
     },
-    [],
+    [endPagerDragSession],
   )
 
   useEffect(() => {
