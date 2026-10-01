@@ -507,7 +507,13 @@ fragment half4 liquidGlassEffect(VertexOutput input [[stage_in]],
         float normalizedDepth = -shapeDistance * logicalResolution.y;
 
         // Refraction shift factor
-        float depthRatio = 1.0f - normalizedDepth / uniforms.glassThickness;
+        // depthRatio 必须钳进 [0,1]：本分支的进入条件是 shapeDistance < 0.005，其中
+        // shapeDistance ∈ (0, 0.005) 落在形状**外侧**的抗锯齿带里，那里 normalizedDepth
+        // 为负值、depthRatio = 1 + |负值|/thickness > 1，pow 后喂给 asin 就是域外参数
+        // （|x| > 1）。域外 asin 在 MSL 快算下返回 NaN 或垃圾有限值，经后面的混合写进
+        // BGRA8 会被硬件钳成纯黑——药丸边缘一圈黑弧/黑发丝。钳位后外侧带等价于「最薄
+        // 处」的折射，是定义良好的取值，观感连续。
+        float depthRatio = clamp(1.0f - normalizedDepth / uniforms.glassThickness, 0.0f, 1.0f);
         float incidentAngle = asin(pow(depthRatio, 2.0f));
         float transmittedAngle = asin(1.0f / uniforms.refractiveIndex * sin(incidentAngle));
         float edgeShiftFactor = -tan(transmittedAngle - incidentAngle);
@@ -547,7 +553,14 @@ fragment half4 liquidGlassEffect(VertexOutput input [[stage_in]],
             outputColor = mix(
                 outputColor,
                 half4(lchToSrgb(fresnelLch), 1.0h),
-                half(fresnelValue * uniforms.fresnelIntensity * 0.7f * length(surfaceNormal))
+                // 权重必须钳进 [0,1]：computeSurfaceNormal 返回的是**未归一化**的梯度
+                // （那行 normalize 被注释掉了，量级 = 1414 / resolution.y，56pt 的药丸
+                // 在 @3x 下约 8.4），把 length(surfaceNormal) 直接乘进权重会让 mix 变成
+                // 外推：t > 1 时 mix(a,b,t) = a + t·(b−a) 会取到 a、b 之外的颜色，配合
+                // 上面 LCH 提亮到出域的亮度，负值经 gammaCorrectSRGB 原样输出、被硬件
+                // 钳成纯黑——「椭圆内部黑色线条」的另一条来源。钳到 1 之后最坏只是完全
+                // 取用目标色，语义正确，正常区间（t ≤ 1）的观感零变化。
+                half(clamp(fresnelValue * uniforms.fresnelIntensity * 0.7f * length(surfaceNormal), 0.0f, 1.0f))
             );
 
             // Glare: Directional, LCH-boosted (lightness + chroma)
@@ -578,7 +591,10 @@ fragment half4 liquidGlassEffect(VertexOutput input [[stage_in]],
             outputColor = mix(
                 outputColor,
                 half4(lchToSrgb(glareLch), 1.0h),
-                half(angularGlare * glareGeometryValue * length(surfaceNormal))
+                // 同上：glare 的权重在三项相乘后能到 ~2.6（0.53 × 0.59 × 8.4），是外推
+                // 的主力——外推色一旦出域产生负的分量，gamma 直通、硬件钳零，就是纯黑。
+                // 钳到 [0,1] 后高光最多完全取代该像素，正是 glare 的语义上限。
+                half(clamp(angularGlare * glareGeometryValue * length(surfaceNormal), 0.0f, 1.0f))
             );
         }
     } else {

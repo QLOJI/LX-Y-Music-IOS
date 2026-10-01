@@ -44,6 +44,15 @@ public final class LiquidLensView: UIView, AnyLiquidLensView {
     /// Maximum scale deviation from 1.0 (clamped for visual stability).
     private let maxScaleDeviation: CGFloat = 0.3
 
+    /// 挤压/拉伸目标的低通系数（指数平滑，见 applyAccelerationSize）。加速度是从
+    /// 离散位置样本里二阶差分出来的，天然带尖峰；即使采样修正后仍会逐帧抖，
+    /// 直接写进 frame 就是 120Hz 的高频胀缩（用户报的「抖动太厉害」）。
+    /// 0.18 在 ProMotion 上仍是即时跟手的手感，但把逐帧抖动压成一次平滑过渡。
+    private let scaleSmoothingFactor: CGFloat = 0.18
+
+    /// 低通状态：当前实际生效的缩放量（0 = 未变形）。
+    private var smoothedScale: CGFloat = 0
+
     // MARK: - Position Tracking
 
     private var positionHistory: [(position: CGPoint, timestamp: TimeInterval)] = []
@@ -317,6 +326,7 @@ public final class LiquidLensView: UIView, AnyLiquidLensView {
 
     private func startPositionTracking() {
         positionHistory.removeAll()
+        smoothedScale = 0
         displayLink = CADisplayLink(target: self, selector: #selector(updatePositionTracking))
         displayLink?.add(to: .main, forMode: .common)
     }
@@ -326,6 +336,7 @@ public final class LiquidLensView: UIView, AnyLiquidLensView {
         displayLink = nil
         positionHistory.removeAll()
         // Reset liquid glass view to original bounds
+        smoothedScale = 0
         liquidGlassView.frame = bounds
     }
 
@@ -333,16 +344,26 @@ public final class LiquidLensView: UIView, AnyLiquidLensView {
         let currentTime = CACurrentMediaTime()
         let currentPosition = layer.position
 
-        // Add current position to history
-        positionHistory.append((position: currentPosition, timestamp: currentTime))
+        // 只在位置真的变化时记一个样本：displayLink 按屏幕刷新率回调（ProMotion 最高
+        // 120Hz），而药丸中心只在跟手（followX 到达，JS 帧率且不均匀）或弹簧动画推进时
+        // 才变化。逐帧无条件记账会让「位置没变」的帧算出 velocity = 0、紧接着位置跳变的
+        // 帧算出巨大 velocity；这个 0 / 巨大 交替的序列做二阶差分（加速度）会被无限放大，
+        // 再乘 coefficient 后恒定撞上 ±maxScaleDeviation 的钳位，于是缩放量逐帧在
+        // +0.3 / -0.3 之间翻转 —— 透镜以屏幕刷新率反复胀缩，就是肉眼看到的剧烈抖动。
+        // 跳过硬采样点后，dt 恢复成「两次真实位移之间的时间」，速度/加速度才有物理意义。
+        if positionHistory.last?.position != currentPosition {
+            positionHistory.append((position: currentPosition, timestamp: currentTime))
+        }
 
-        // Remove old entries outside the time window
+        // 时间窗裁剪每个 tick 都要做（包括没有新样本的 tick）：手指停住后若旧样本一直
+        // 留在表里，加速度会是一个非零常量，透镜会被永久定格在变形尺寸上不回正。
         let cutoffTime = currentTime - accelerationWindowDuration
-        positionHistory.removeAll { $0.timestamp < cutoffTime }
+        if positionHistory.first.map({ $0.timestamp < cutoffTime }) ?? false {
+            positionHistory.removeAll { $0.timestamp < cutoffTime }
+        }
 
         // Calculate average acceleration and apply size change
         let acceleration = calculateAverageAcceleration()
-//        print(acceleration)
         applyAccelerationSize(acceleration)
     }
 
@@ -370,7 +391,6 @@ public final class LiquidLensView: UIView, AnyLiquidLensView {
 
         // Calculate accelerations between consecutive velocity samples
         var totalAccelerationX: CGFloat = 0
-        var totalAccelerationY: CGFloat = 0
         var count: CGFloat = 0
 
         for i in 1..<velocities.count {
@@ -379,23 +399,17 @@ public final class LiquidLensView: UIView, AnyLiquidLensView {
             let dt = curr.timestamp - prev.timestamp
             guard dt > 0 else { continue }
             totalAccelerationX += (curr.velocity.x - prev.velocity.x) / dt
-            totalAccelerationY += (curr.velocity.y - prev.velocity.y) / dt
             count += 1
         }
 
         guard count > 0 else { return 0 }
 
-        // Calculate average acceleration and apply size change
-        // Combine accelerations:
-        // - Positive X acceleration (right) or negative Y acceleration (up in UIKit coords) → stretch X
-        // - Negative X acceleration (left) or positive Y acceleration (down) → squash X
-        // In UIKit, Y increases downward, so upward movement = negative Y velocity,
-        // and accelerating upward = negative Y acceleration.
-        // We want upward acceleration to have the same effect as rightward acceleration,
-        // so we subtract Y acceleration from X acceleration.
-        let avgAccelerationX = totalAccelerationX / count
-        let avgAccelerationY = totalAccelerationY / count
-        return avgAccelerationX - avgAccelerationY
+        // 只取 X。透镜在 tab 栏里是纯水平跟手：宿主（LGLiquidLensHostView.layoutSubviews）
+        // 每帧把 _lens.center.y 钉死在 bounds.height/2，Y 方向不存在真实位移，layer.position.y
+        // 的变化只来自浮点误差/重布局的亚像素差。对它做二阶差分得到的是除以 dt² 的噪声，
+        // 量级足以污染合成值（原式 avgX - avgY）—— 这正是抖动里那部分「无中生有」的激励。
+        // 上游把 Y 解释为「向上加速度」，但那是给可垂直拖拽的通用透镜写的，本宿主不存在该自由度。
+        return totalAccelerationX / count
     }
 
     /// Applies squash/stretch size change to liquidGlassView based on acceleration.
@@ -405,19 +419,28 @@ public final class LiquidLensView: UIView, AnyLiquidLensView {
         // Clamp to reasonable range for visual stability
         let clampedScale = max(-maxScaleDeviation, min(maxScaleDeviation, scaleFactor))
 
+        // 低通：把钳位后的目标值按指数平滑逼近期望值，而不是逐帧直接写进 frame。
+        // 加速度的原始信号在 ProMotion（120Hz 采样）上仍带残余尖峰，直接驱动 frame 就是
+        // 每帧 ±0.3 的胀缩抖动；平滑后单帧位移被限制在目标的 18%，视觉上是一次连续过渡
+        // 而非高频振荡（0.18 在 120Hz 下一帧即走完近两成，跟手性没有可感知损失）。
+        smoothedScale += (clampedScale - smoothedScale) * scaleSmoothingFactor
+
         // Apply opposite scale to width and height to create squash/stretch effect
         // Positive acceleration → stretch width, squash height
         // Negative acceleration → squash width, stretch height
-        let scaleX = 1 + clampedScale
-        let scaleY = 1 - clampedScale
+        let scaleX = 1 + smoothedScale
+        let scaleY = 1 - smoothedScale
 
-        let newWidth = bounds.width * scaleX
-        let newHeight = bounds.height * scaleY
+        // 取整：透镜的 Metal 背景捕获与 shader 采样都以这个 frame 为画布，非整数尺寸/原点
+        // 会让采样栅格落在半像素上，边缘出现暗色接缝——也就是用户看到的「椭圆内部的黑色
+        // 线条」。拉伸是连续的，取整产生的 ≤0.5pt 量化误差不可见。
+        let newWidth = (bounds.width * scaleX).rounded()
+        let newHeight = (bounds.height * scaleY).rounded()
 
         // Center the new frame within bounds
         liquidGlassView.frame = CGRect(
-            x: (bounds.width - newWidth) / 2,
-            y: (bounds.height - newHeight) / 2,
+            x: ((bounds.width - newWidth) / 2).rounded(),
+            y: ((bounds.height - newHeight) / 2).rounded(),
             width: newWidth,
             height: newHeight
         )
