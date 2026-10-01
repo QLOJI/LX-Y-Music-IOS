@@ -345,11 +345,12 @@ const styles = createStyle({
   },
   playCount: {
     position: 'absolute',
-    // 角标统一约定（临时，与 PlaylistCard.tsx、SongList/ListItem.tsx 逐字一致）：
+    // 角标统一约定（与 PlaylistCard.tsx、SongList/ListItem.tsx 逐字一致）：
     // 从原先的「右下角 bottom:8/right:8 + paddingH 8（小于半高，圆弧有削字隐患）」改为右上角
-    // 贴角 top/right 4、固定高 20、水平内边距 10 ≥ 半高；居中交给 View 的居中三件套。
-    top: 4,
-    right: 4,
+    // 贴角 top/right 2（2026-10-01 需求「数字位置再往右上角靠近一点」，4 → 2）、
+    // 固定高 20、水平内边距 10 ≥ 半高；居中交给 View 的居中三件套。
+    top: 2,
+    right: 2,
     height: 20,
     paddingHorizontal: 10,
     borderRadius: designRadius.pill,

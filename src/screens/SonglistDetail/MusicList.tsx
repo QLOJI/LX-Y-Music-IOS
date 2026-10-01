@@ -100,7 +100,10 @@ export default forwardRef<MusicListType, MusicListProps>(({ componentId, isCreat
         const createDetailInfo = (detail: typeof listDetailInfo.info): DetailInfo => ({
           name: (info.name || detail.name) ?? '',
           desc: detail.desc || info.desc || '',
-          playCount: info.play_count ?? detail.play_count ?? '',
+          // 用 || 而不是 ??：酷狗/腾讯推荐歌单的入口把 play_count 写死成 0（占位），
+          // 0 不是 null/undefined，?? 不会回退，于是 formatPlayCountText(0) 返回空串 ——
+          // 详情页左上角封面右上角的播放量小标就直接消失了（用户点名的「数字不显示」）。
+          playCount: info.play_count || detail.play_count || '',
           imgUrl: info.img ?? detail.img,
           userId: info.userId || detail.userId,
           total: listDetailInfo.total,
