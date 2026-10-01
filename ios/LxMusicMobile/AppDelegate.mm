@@ -3932,6 +3932,13 @@ RCT_EXPORT_MODULE();
 }
 
 - (void)handleApplicationDidBecomeActive:(NSNotification *)notification {
+  // P0 兜底（整屏无响应 / 只能重启）：回到前台时把主窗口的 key 与交互状态恢复一次。
+  // 此前这条恢复只挂在文件选择器、分享面板的关闭回调上；其它能把主窗口弄成
+  // 非 keyWindow / userInteractionEnabled=NO 的路径（系统浮层收起、控制器转场被
+  // 打断、原生面板被强杀…）没有任何自愈点，只能杀进程。
+  // LXEnsureKeyWindow 自带 isKeyWindow 判空守卫，窗口本来就正常时是零副作用；
+  // 它必须在 currentURL 早退之前调用——「没在播放」恰恰是最需要兜底的那一类会话。
+  LXEnsureKeyWindow();
   if (self.currentURL.length == 0) return;
   [self schedulePlaybackOutputRestoreWithDelays:@[ @0.05, @0.2, @0.8 ]];
 }
