@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, memo, type ComponentRef, type ReactNode } from 'react'
-import { Keyboard, View } from 'react-native'
+import { AppState, Keyboard, View } from 'react-native'
 import Search from '../Views/Search'
 import Discovery from '../Views/Discovery'
 import SongList from '../Views/SongList'
@@ -65,6 +65,19 @@ const PAGER_REBUILD_DEBOUNCE_MS = 3000
  * （详见组件内 clearNativePagerScrolling 的注释）。
  */
 const PAGER_DRAG_SILENCE_MS = 3000
+
+/**
+ * 横滑开关（pagerScrollEnabled）向原生重发的低频心跳周期（2026-10-01，P0）。
+ * 背景：横滑开关在原生侧落在两个**互相独立**的闩锁上（RNCPagerView.m 的
+ * scrollView.scrollEnabled 与 scrollView.panGestureRecognizer.enabled），
+ * 而 JS 的 scrollEnabled prop 走 React 的 prop diff——值与上次相同时不会再下发。
+ * 任何一次绕过 prop 的原生改写（imperative setScrollEnabled、被取消的手势、
+ * 库内 disableSwipe、后台恢复后原生子视图重建）都可能把闩锁留在「不可滑」，
+ * JS 这边却毫不知情，后续 render 也永远修不回来——用户侧就是「五页滑不动，
+ * 点击与 tab 栏都正常，重启才好」。心跳按 JS 侧唯一真值周期重发（写入幂等），
+ * 正常情况下是空操作；见组件内 resyncPagerScroll 的注释。
+ */
+const PAGER_SCROLL_RESYNC_MS = 4000
 
 const SearchPage = () => (
   useHomeLazyPage('nav_search', () => <Search />)
@@ -426,6 +439,39 @@ const Main = () => {
     setPagerRebuild(v => v + 1)
   }, [])
 
+  // ---- 横滑开关的原生重同步（2026-10-01，P0：五页滑不动、点击与 tab 栏正常）----
+  // 布局：pagerScrollEnabled（drawerScrollEnabled && !tabBarDragActive）是横滑的唯一真值，
+  // 但它落到原生时是两个互相独立的闩锁：
+  //   ① RNCPagerView.m 的 shouldScroll:（prop 与 imperative 两条路都汇到这里）
+  //      写的 scrollView.scrollEnabled；
+  //   ② 同文件手势回调（gestureRecognizer:shouldRecognizeSimultaneouslyWith…）
+  //      单独写的 scrollView.panGestureRecognizer.enabled。
+  // 而 JS 的 scrollEnabled prop 走 React 的 prop diff——值与上次相同时**根本不会再下发**，
+  // 于是任何一次绕过 prop 的原生改写（src/components/player/progressCore.tsx 经全局单例
+  // 下发的 imperative setScrollEnabled、被取消的手势、库内 disableSwipe、后台恢复后原生
+  // 子视图重建）都可能把闩锁永久留在「不可滑」，而 JS 看起来一切正常、后续 render 也修不
+  // 回来——用户侧就是「页面滑不动，点击和 tab 栏都正常，只能重启」。
+  // 对策：在几个关键时机把当前值主动重发一遍（幂等），并加一条低频心跳兜底。
+  // 通道说明：PagerView.setScrollEnabled → 原生 setScrollEnabledImperatively →
+  // shouldScroll:，与 src/utils/pagerScrollControl.ts 用的是同一条命令式通道。本组件的
+  // pager 没有注册进那个全局单例（它是播放页进度条拖动时用来锁手势的），所以这里直接调
+  // 实例方法、不经过单例，避免与播放页的锁互相覆盖。
+  const pagerScrollEnabledRef = useRef(pagerScrollEnabled)
+  useEffect(() => {
+    pagerScrollEnabledRef.current = pagerScrollEnabled
+  }, [pagerScrollEnabled])
+  const resyncPagerScroll = useCallback(() => {
+    pagerViewRef.current?.setScrollEnabled?.(pagerScrollEnabledRef.current)
+  }, [])
+  useEffect(() => {
+    // 立即重发一次：覆盖「prop 值没变、原生闩锁却被别的路径改写」的存量失配
+    resyncPagerScroll()
+    const timer = setInterval(resyncPagerScroll, PAGER_SCROLL_RESYNC_MS)
+    return () => {
+      clearInterval(timer)
+    }
+  }, [pagerScrollEnabled, resyncPagerScroll])
+
   const onPageSelected = useCallback(({ nativeEvent }: PagerViewOnPageSelectedEvent) => {
     activeIndexRef.current = nativeEvent.position
     // observedIndex 只在原生回调里更新，反映 pager 的真实落点——区别于
@@ -435,6 +481,13 @@ const Main = () => {
     observedIndexRef.current = nativeEvent.position
     // 原生已回报落点 ⇒ 兜底重建的"目标页"使命结束，后续 remount 回到常规口径
     rebuildTargetRef.current = null
+    // 重建配额还回去：能回报落点说明 pager 已经活过来了。配额只该限制「连续修不好时
+    // 的反复重建」，不该让一次早期消耗把整场会话的修复能力用光——否则后期真的再坏
+    // 一次（比如又一次越界/后台恢复）就只能重启 App。
+    rebuildCountRef.current = 0
+    // 每次成功切页顺手把横滑开关重发一次（幂等）：页面切换是原生状态最可能被重建/
+    // 改写的时刻之一，重发即自我修复。
+    resyncPagerScroll()
     if (pageRetryTimerRef.current) {
       clearTimeout(pageRetryTimerRef.current)
       pageRetryTimerRef.current = null
@@ -452,7 +505,7 @@ const Main = () => {
         setNavActiveId(selectedId)
       }
     }
-  }, [indexMap, viewMap])
+  }, [indexMap, viewMap, resyncPagerScroll])
 
   // 手势拖动会话：仅在「用户手势开始（dragging）」到「落定（idle）」之间为 true。
   // 程序化 setPage*（点击切页 / 重试链 / 兜底重建）只产生 settling/idle、不产生
@@ -498,6 +551,20 @@ const Main = () => {
     pagerDragSessionRef.current = false
     emitPagerDrag(false)
   }, [clearNativePagerScrolling])
+  // 后台恢复兜底（2026-10-01）：原生在后台可能重建子视图 / 丢事件（repairPager 注释
+  // 记录过同类场景），回前台时把 JS 侧两条保险各收一次：
+  // ① PagerView 私有 isScrolling 闩锁（卡住 = 五页列表拖不动，见 clearNativePagerScrolling）；
+  // ② 横滑开关重发（原生闩锁可能已被改写，而 prop 没变不会自动下发，见 resyncPagerScroll）。
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state !== 'active') return
+      clearNativePagerScrolling()
+      resyncPagerScroll()
+    })
+    return () => {
+      sub.remove()
+    }
+  }, [clearNativePagerScrolling, resyncPagerScroll])
   const onPageScroll = useCallback((e: { nativeEvent: { position: number, offset: number } }) => {
     // 只用 ref 判定、绝不 setState（先例 VerticalNew.tsx:60-68）：本回调是滚动
     // 帧级频率，setState 会让整条 tab 栏在 120Hz 下逐帧重渲染。
@@ -573,8 +640,12 @@ const Main = () => {
         setNavActiveId(visibleNavs[0].id)
       }
     } else if (index != null) {
-      // 防御：索引必须在当前页面集范围内，避免对原生 pager 下发越界页码
-      if (index >= visibleNavs.length) return
+      // 防御：索引必须在当前页面集范围内（**含下界**），避免对原生 pager 下发越界页码。
+      // 上界之外还必须挡住负数：原生 goTo: 收到越界索引后会先 disableSwipe 再 return，
+      // 把 reactPageViewController.view 的 userInteractionEnabled 永久留在 NO——
+      // 整片页面区连点带滑全部失效（详见 render 里 pagerCell 的注释与 dependencies-patch.js
+      // 里对 goTo: 的补丁）。正常路径下 viewMap 只会给出 0..4，这里纯属防御。
+      if (index < 0 || index >= visibleNavs.length) return
       activeIndexRef.current = index
       pagerViewRef.current?.setPageWithoutAnimation(index)
     }
@@ -628,7 +699,7 @@ const Main = () => {
         index = 0
       }
       // 防御：索引必须在当前页面集范围内，避免对原生 pager 下发越界页码
-      if (index != null && index < visibleNavs.length) {
+      if (index != null && index >= 0 && index < visibleNavs.length) {
         activeIndexRef.current = index
         // 本页是否就是「强制同步」的目标页。forceSyncNavActiveId() 重新广播的是
         // **当前** navActiveId，所以只有 id 与 commonState.navActiveId 一致的那次
@@ -730,27 +801,51 @@ const Main = () => {
 
   return (
     <View style={styles.container}>
-      <PagerView
-        // pagerRebuild：兜底重建计数。原生实例在后台恢复后可能失效（见 repairPager 注释），
-        // 换 key 让 RN 重建原生 PagerView，initialPage 落到目标页。
-        key={`${pagerKey}#${pagerRebuild}`}
-        ref={pagerViewRef}
-        initialPage={initialPageIndex}
-        offscreenPageLimit={1}
-        onPageSelected={onPageSelected}
-        onPageScrollStateChanged={onPageScrollStateChanged}
-        // 跟手：只在真实手势会话内发轻量进度（不 setState），见 onPageScroll
-        onPageScroll={onPageScroll}
-        // 横滑开关：抽屉开合锁 + A-5 长按拖动互斥（不再有 common.homePageScroll 设置项）
-        scrollEnabled={pagerScrollEnabled}
-        // 播放历史浮层 / detail 宿主显示时整体隐藏（仅改透明度：页面仍挂载，返回后
-        // 滚动位置/状态不丢），让上层透出 Home 已经绘制好的背景层，既有背景不会被
-        // 下面的列表内容干扰。
-        style={isTabPageCovered ? styles.pagerViewHidden : styles.pagerView}
+      {/* pointerEvents 与「覆盖态隐藏」必须挂在这个普通 <View> 上，绝不能挂在 PagerView 上。
+          根因（全部有本地上游源码佐证，2026-10-01 定案）：
+          ① RNCViewPager 的原生宿主类是纯 UIView（node_modules/react-native-pager-view/ios/
+             RNCPagerView.h：`@interface RNCPagerView: UIView`），不响应 setPointerEvents:；
+          ② RN 0.73.11 的 RCTViewManager.m 里 pointerEvents 的 UIView 兜底分支
+             （RCT_CUSTOM_VIEW_PROPERTY(pointerEvents, …)）在 RCTPointerEventsUnspecified
+             分支**缺一个 break**：先置 UIE=YES，随即穿透进 RCTPointerEventsNone 分支置
+             UIE=NO；
+          ③ 而 'auto' 恰好映射到 RCTPointerEventsUnspecified（React/Base/RCTConvert.m 的
+             RCT_ENUM_CONVERTER(RCTPointerEvents, …)），'none' 也进同一个 NO 分支——
+             两个取值殊途同归，pager 宿主从挂载第一帧起 userInteractionEnabled=NO。
+          后果：整个 pager 子树（推荐/歌单/搜索/我的/设置五页）收不到任何触摸——不只是
+          滑不动，是**点也点不动**；tab 栏在 pager 之外（Content.tsx 里 Main 的后继兄弟）
+          所以照常可点。上游直到 0.84 线才补上这个 break，0.73 已 EOL。
+          挂在普通 View 上就没这问题：RN 的 View 宿主是 RCTView，走 RCTView.m 自己的
+          setPointerEvents:（UIE = pointerEvents != none），'none'/'auto' 语义正确；
+          本仓自有的 LiquidGlassViewManager.mm 注释也写明「Host view: an RCTView so all
+          standard RN view props (…pointerEvents…) keep working」。
+          外层 View 只包 PagerView（不包 detailHost / 播放历史浮层，否则 'none' 会把详情页
+          和浮层一起打死）；flex 链 container → pagerCell → pagerView 保持不变。 */}
+      <View
+        style={isTabPageCovered ? styles.pagerCellHidden : styles.pagerCell}
         pointerEvents={isTabPageCovered ? 'none' : 'auto'}
       >
-        {pages}
-      </PagerView>
+        <PagerView
+          // pagerRebuild：兜底重建计数。原生实例在后台恢复后可能失效（见 repairPager 注释），
+          // 换 key 让 RN 重建原生 PagerView，initialPage 落到目标页。
+          key={`${pagerKey}#${pagerRebuild}`}
+          ref={pagerViewRef}
+          initialPage={initialPageIndex}
+          offscreenPageLimit={1}
+          onPageSelected={onPageSelected}
+          onPageScrollStateChanged={onPageScrollStateChanged}
+          // 跟手：只在真实手势会话内发轻量进度（不 setState），见 onPageScroll
+          onPageScroll={onPageScroll}
+          // 横滑开关：抽屉开合锁 + A-5 长按拖动互斥（不再有 common.homePageScroll 设置项）
+          scrollEnabled={pagerScrollEnabled}
+          // 播放历史浮层 / detail 宿主显示时整体隐藏（仅改透明度：页面仍挂载，返回后
+          // 滚动位置/状态不丢），让上层透出 Home 已经绘制好的背景层，既有背景不会被
+          // 下面的列表内容干扰。透明度挂在舞台 View 上，pager 自身样式恒定不变。
+          style={styles.pagerView}
+        >
+          {pages}
+        </PagerView>
+      </View>
       {/* detail 宿主：常驻堆叠层（唯一原生 PagerView 仍是上面的 tab pager，红线段 3）。
           层级在 pager 之上、播放历史浮层之下；不可见层 pointerEvents='none' 全部穿透。 */}
       <View
@@ -777,14 +872,21 @@ const styles = createStyle({
     // 数值 = wrapper paddingTop 4 + 容器内边距 20 + 内容区约 46 + 进度条 3 ≈ 73，取 80 留余量。
     paddingBottom: 0,
   },
-  pagerView: {
+  // pager 舞台：承载「覆盖态隐藏」与 pointerEvents 的那一层（必须是普通 View，
+  // 见 render 里的根因注释——挂在 PagerView 上会把五页的触摸全部打死）。
+  pagerCell: {
     flex: 1,
     overflow: 'hidden',
   },
-  pagerViewHidden: {
+  pagerCellHidden: {
     flex: 1,
     overflow: 'hidden',
     opacity: 0,
+  },
+  // PagerView 自身样式恒定：绝不再随覆盖态变化，也绝不再接收 pointerEvents。
+  pagerView: {
+    flex: 1,
+    overflow: 'hidden',
   },
   // detail 宿主：盖在 pager 之上、播放历史浮层之下的一层透明容器（只做定位与层级）。
   // 不铺背景色：隐藏时整层不可见/不可点，显示时由激活层自己的页面内容铺底。
