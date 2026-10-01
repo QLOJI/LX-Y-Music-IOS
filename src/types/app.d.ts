@@ -63,6 +63,13 @@ interface GlobalData {
    */
   homePagerForceSync: boolean
 
+  /**
+   * 一次性标记：本次切到「我的」页的目的是定位当前播放歌曲。
+   * 由 app_event.jumpListPosition() 置位，由「我的」歌曲列表挂载时消费并复位。
+   * 用于兜住时序——列表尚未挂载时补发的 jumpListPosition 事件会丢，只能挂载时补做。
+   */
+  jumpMyListPosition: boolean
+
   // windowInfo: {
   //   screenW: number
   //   screenH: number

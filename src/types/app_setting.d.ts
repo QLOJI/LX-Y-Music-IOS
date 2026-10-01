@@ -196,6 +196,31 @@ declare global {
        * 各消费点与 LiquidGlass 组件内被门控（UIGlassEffect 白底/图底切换闪烁）。
        */
       'theme.liquidGlass': boolean
+
+      /**
+       * 音效设置：均衡器 / 环境混响 / 3D 环绕 / 变调。
+       * panner.*（3D 环绕）与 pitchShifter.playbackRate（变调）为新增键，
+       * 默认值见 config/defaultSetting.ts，读取方见 plugins/player/soundEffect。
+       */
+      'player.soundEffect.enabled': boolean
+      'player.soundEffect.preset': LX.SoundEffectPresetId
+      'player.soundEffect.convolution.fileName': string
+      'player.soundEffect.convolution.mainGain': number
+      'player.soundEffect.convolution.sendGain': number
+      'player.soundEffect.eq.31': number
+      'player.soundEffect.eq.62': number
+      'player.soundEffect.eq.125': number
+      'player.soundEffect.eq.250': number
+      'player.soundEffect.eq.500': number
+      'player.soundEffect.eq.1000': number
+      'player.soundEffect.eq.2000': number
+      'player.soundEffect.eq.4000': number
+      'player.soundEffect.eq.8000': number
+      'player.soundEffect.eq.16000': number
+      'player.soundEffect.panner.enable': boolean
+      'player.soundEffect.panner.soundR': number
+      'player.soundEffect.panner.speed': number
+      'player.soundEffect.pitchShifter.playbackRate': number
     }
   }
 }
