@@ -1674,9 +1674,9 @@ export default memo(() => {
         showMiddle={!!logText}
       >
         <View style={styles.logContent} onStartShouldSetResponder={() => true}>
+          {/* A-8：日志是 13pt 等宽感文本，行高 18(1.38×) → 16（13 × 1.15 ≈ 15，取 16
+              留 1pt 余量，日志行尾常有下划线/方括号，压太紧会视觉相接） */}
           {logText ? (
-            {/* A-8：日志是 13pt 等宽感文本，行高 18(1.38×) → 16（13 × 1.15 ≈ 15，取 16
-                留 1pt 余量，日志行尾常有下划线/方括号，压太紧会视觉相接） */}
             <Text selectable={true} style={{ fontSize: 13, lineHeight: 16 }}>
               {logText}
             </Text>
