@@ -722,7 +722,16 @@ final class LiquidGlassView: MTKView {
     private func commitCapturedTexture(_ texture: MTLTexture?, previous: MTLTexture?, isUniform: Bool) {
         if isUniform {
             consecutiveUniformFrames += 1
-            if consecutiveUniformFrames <= Self.maxUniformHoldFrames, let previous {
+            if consecutiveUniformFrames <= Self.maxUniformHoldFrames {
+                // 冷启动 / 刚挂载（previous == nil）时这一帧是「backdrop 还没合成」的
+                // 整幅均匀色，绝不能画出去：previous 为 nil 时这次赋值等于「继续没有
+                // 背景纹理」，draw() 见 backgroundTexture == nil 会跳过本帧、视图保持
+                // 透明（页面背景直接透出来），等真实背景的第一帧到了再显形。
+                // 2026-10-01 修复：原实现写成 `..., let previous`，只有**已有上一帧**时
+                // 才沿用，而冷启动第一帧恰恰是 previous == nil —— 整幅黑被当背景提交，
+                // 就是「迷你播放器/底部 Tab 栏一出来就闪一下很粗的黑边」。
+                // 上限仍保留：真实均匀背景（纯色底/暗色主题）最多挡 maxUniformHoldFrames
+                // 帧，之后照常接受，不会把上一页内容永久留在玻璃里。
                 backgroundTexture = previous
                 return
             }
