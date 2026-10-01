@@ -4,7 +4,9 @@ import { View, TouchableOpacity, FlatList, type FlatListProps } from 'react-nati
 import { Icon } from '@/components/common/Icon'
 
 import { useTheme } from '@/store/theme/hook'
+import { useSettingValue } from '@/store/setting/hook'
 import { createStyle } from '@/utils/tools'
+import { applyOpacity } from '@/utils/colorOpacity'
 import Text from '@/components/common/Text'
 import { scaleSizeH } from '@/utils/pixelRatio'
 import { designRadius, designSpacing, designTypography } from '@/theme/DesignTokens'
@@ -27,6 +29,8 @@ const ListItem = memo(
   }) => {
     const theme = useTheme()
     const t = useI18n()
+    // 分类按钮的底色/边框随「按钮透明度」淡出（只改颜色 alpha，不用容器 opacity）
+    const buttonOpacity = useSettingValue('theme.buttonOpacity')
 
     const active = activeId == id
 
@@ -40,10 +44,13 @@ const ListItem = memo(
           ...styles.listItem,
           height: ITEM_HEIGHT,
           borderRadius: designRadius.sm,
+          // 按钮底面与边框随「按钮透明度」淡出；文字色与 chevron 图标色不动
           backgroundColor: active
-            ? theme['c-primary']
-            : theme['c-primary-light-900-alpha-200'],
-          borderColor: active ? theme['c-primary'] : theme['c-border-background'],
+            ? applyOpacity(theme['c-primary'], buttonOpacity)
+            : applyOpacity(theme['c-primary-light-900-alpha-200'], buttonOpacity),
+          borderColor: active
+            ? applyOpacity(theme['c-primary'], buttonOpacity)
+            : applyOpacity(theme['c-border-background'], buttonOpacity),
           borderWidth: 1,
         }}
       >

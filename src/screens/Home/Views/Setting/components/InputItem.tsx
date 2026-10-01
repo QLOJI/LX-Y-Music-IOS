@@ -5,6 +5,8 @@ import type { InputType, InputProps } from '@/components/common/Input'
 import Input from '@/components/common/Input'
 import { designRadius, designSpacing, designTypography } from '@/theme/DesignTokens'
 import { useTheme } from '@/store/theme/hook'
+import { useSettingValue } from '@/store/setting/hook'
+import { applyOpacity } from '@/utils/colorOpacity'
 import Text from '@/components/common/Text'
 
 export interface InputItemProps extends InputProps {
@@ -19,6 +21,7 @@ export default memo(({ value, label, onChanged, ...props }: InputItemProps) => {
   const isMountRef = useRef(false)
   const inputRef = useRef<InputType>(null)
   const theme = useTheme()
+  const buttonOpacity = useSettingValue('theme.buttonOpacity')
 
   const stableOnChanged = useCallback((text: string, callback: (vlaue: string) => void) => {
     onChanged?.(text, callback)
@@ -78,15 +81,16 @@ export default memo(({ value, label, onChanged, ...props }: InputItemProps) => {
 
   // 与设置页其它行统一（对齐推荐页「排行榜」按钮的视觉语言）：
   // 圆角 + 1px 边框 + 半透明主题色底，让输入项与开关行看起来是同一套控件。
+  // 行卡片底色/边框随「按钮透明度」淡出（只改颜色 alpha，标签与输入文字不受影响）。
   const cardStyle = useMemo(() => ({
     borderRadius: designRadius.md,
     borderWidth: 1,
-    backgroundColor: theme['c-primary-light-900-alpha-200'],
-    borderColor: theme['c-border-background'],
+    backgroundColor: applyOpacity(theme['c-primary-light-900-alpha-200'], buttonOpacity),
+    borderColor: applyOpacity(theme['c-border-background'], buttonOpacity),
     paddingHorizontal: designSpacing.sm,
     paddingTop: designSpacing.xs,
     paddingBottom: designSpacing.sm,
-  }), [theme])
+  }), [theme, buttonOpacity])
 
   return (
     <View style={[styles.container, cardStyle]}>
