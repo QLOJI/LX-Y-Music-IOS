@@ -181,6 +181,14 @@ enum LGGlassMaterial {
     public override func layoutSubviews() {
         super.layoutSubviews()
         effectView.frame = bounds
+        // 必须先让 effectView 自己完成本轮布局，再读 contentView 的尺寸：contentView 由
+        // UIVisualEffectView 在**它自己的** layout 阶段维护，父视图刚给 effectView 赋完 frame 时
+        // 它的 bounds 还是上一代值（首次布局即 .zero）。覆层没有 autoresizingMask、也没有约束，
+        // 尺寸**只**由下面这一行决定，而宿主尺寸定型后本方法不会再被调用（tab 栏与迷你播放器都
+        // 是固定尺寸，收起动效只改 transform/opacity）—— 少掉的这一拍补不回来，覆层就永久停
+        // 在零尺寸。而 glassOpacity 的唯一视觉输出就是这层 alpha（didSet → tintOverlay.alpha），
+        // 于是表现为「玻璃在、不透明度滑条却拖了没反应」。
+        effectView.layoutIfNeeded()
         tintOverlay.frame = effectView.contentView.bounds
     }
 }

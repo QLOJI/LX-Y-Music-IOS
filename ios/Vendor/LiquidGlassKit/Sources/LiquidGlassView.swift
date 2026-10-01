@@ -17,6 +17,15 @@
 //     previous frames, and its forced per-capture commit presented the hidden state
 //     to the display (periodic blinking/jumping, recorded on video).
 //     See captureRootView and LICENSE-NOTES.md.
+//  4. Capture commit gate (2026-10-01): "not ready" now means "within a wall-clock
+//     settle window (opened at backdrop insert / view enters window / beginLiveCapture)
+//     AND the frame still looks suspicious". Closes two residuals: the frame-count hold
+//     cap (4 frames = unbounded wall time when cold start drops frames) and the
+//     uniform-only criterion (partially-composited frames are non-uniform and were
+//     committed as-is). Partial-composite criterion = near-black grid-cell fraction,
+//     disabled in dark appearance; every in-window hold is hard-capped by wall clock
+//     so the glass can never stay permanently transparent nor keep a previous page.
+//     See commitCapturedTexture / analyzeCapture / beginCaptureSettleWindow.
 //  Upstream: Copyright © 2025 DnV1eX, https://github.com/DnV1eX/LiquidGlassKit
 //
 
@@ -334,6 +343,78 @@ final class LiquidGlassView: MTKView {
     private static let maxUniformHoldFrames = 4
     private var consecutiveUniformFrames = 0
 
+    // MARK: - 未就绪判定：墙钟沉降窗口（2026-10-01）
+
+    // 关掉 commitCapturedTexture 的两个残留窗口（背景见该函数的长注释）：
+    //  ① 沿用上限从「帧数」改成「墙钟」——帧数口径在冷启动掉帧时无法预期；
+    //  ② 判据从「整幅均匀」扩到「半成品形态」（近黑格子占比），并带深色逃逸。
+    // 以下所有状态的共同点：只影响「什么时候接受背景纹理」，绝不让玻璃多画/少画内容。
+
+    /// 沉降窗口开启时刻（墙钟秒，CACurrentMediaTime）。0 = 尚未开启过。
+    /// 为什么必须用墙钟：窗口要对齐的是「render server 合成完 backdrop 需要多久」——
+    /// 一件与渲染帧率无关的事。帧数上限（maxUniformHoldFrames）在冷启动掉帧时
+    /// 4 帧可能横跨几百 ms，与合成耗时没有对应关系。
+    private var captureSettleStartedAt: TimeInterval = 0
+
+    /// 最近一次捕获的稀疏网格里近黑格子占比是否过高（半成品形态候选）。
+    /// 由 analyzeCapture 每次采样时重写；commitCapturedTexture 只在沉降窗口内采信。
+    private var lastCaptureHadPartialBlack = false
+
+    /// 沉降窗口时长（墙钟秒）：自「backdrop 插入层级 / 视图进入窗口 / 抬起会话开始」
+    /// 起算。这段时间内**半成品形态判据**（lastCaptureHadPartialBlack）有效。
+    /// 标定：正常合成 1~2 拍（30~60fps）即完成，0.35s 给冷启动掉帧留了约 5~20 倍余量；
+    /// 再长只会把「真实暗色内容」误挡得更久，无收益（误挡本身已被硬上限封顶）。
+    private static let captureSettleDuration: TimeInterval = 0.35
+
+    /// 沉降窗口的**墙钟硬上限**（秒）：窗口内任何「未就绪沿用」到点必须放行，
+    /// 之后 commitCapturedTexture 必然接受当前帧。
+    /// 这是「玻璃永久透明」与「玻璃永久留着上一页内容」两条红线共用的安全阀：
+    /// 任何调参都不允许删掉它或让它失效（见 sim-glass-firstmount-contract.js 的 A 段）。
+    private static let captureSettleMaxHold: TimeInterval = 0.6
+
+    /// 半成品判据（二要素之一）：网格单元格的最大通道值 ≤ 该值视为「近黑」。
+    /// 取 8/255：render server 未合成的区域是纯黑（个位数），真实内容即使很暗也
+    /// 极少整片 ≤8（8/255 以下在屏幕上已几乎不可辨内容）。
+    private static let partialBlackValueThreshold: UInt8 = 8
+
+    /// 半成品判据（二要素之二）：近黑格子占比 ≥ 该比例 → 判为「部分合成未完成」。
+    /// 标定依据（2026-10-01 阈值核算，用户实测形态 = 「边缘一圈黑、中间正常」）：
+    /// 采样网格每轴 16~17 格（sampleCapture：ceil(dim / floor(dim/16))，2x 机短条
+    /// 可到 22 行）。最外 1 格厚的边环 = NM-(N-2)(M-2) = 2N+2M-4 格：
+    /// 16×16 → 60/256 ≈ 23.4%；17×17 → 64/289 ≈ 22.2%；最差实际网格
+    /// 17×22 → 74/374 ≈ 19.8%。原 0.35 高过上述全部值——「一圈黑边」整类形态
+    /// 都会漏过（黑边照常提交，bug 残留）。取 0.18：低于最差实际网格 19.8%
+    /// 且留余量；误触发（浅色外观下真实暗内容恰好 ≥18%）的代价被沉降窗口
+    /// （≤0.35s）与深色逃逸封顶——最坏只让玻璃晚接受到窗口到点，不画错内容、
+    /// 不永久透明（见 commitCapturedTexture 与 captureSettleMaxHold 注释）。
+    private static let partialBlackRatioThreshold: Double = 0.18
+
+    /// 是否处于沉降窗口内（now = 当前墙钟；extended = 用硬上限还是形态判据有效期）。
+    /// 上限由「开启时刻 + 常量」现算：到点后本函数恒返回 false，不存在绕过路径。
+    private func isInsideCaptureSettleWindow(_ now: TimeInterval, extended: Bool) -> Bool {
+        guard captureSettleStartedAt > 0 else { return false }
+        let limit = extended ? Self.captureSettleMaxHold : Self.captureSettleDuration
+        return now - captureSettleStartedAt < limit
+    }
+
+    /// 开启（或重置）沉降窗口。三个锚点（见各自调用点）：
+    /// ① captureBackdrop：backdropView 插入层级——合成源刚建立，最初的捕获不可信；
+    /// ② didMoveToWindow：26.2+ 走根视图捕获，没有 backdropView 插入点，视图进窗口
+    ///    是同一件事（层级刚建立、页面与合成都还没就绪）；
+    /// ③ beginLiveCapture：透镜抬起/收起圆钮重新入层级，纹理已重置、重新采景。
+    private func beginCaptureSettleWindow() {
+        captureSettleStartedAt = CACurrentMediaTime()
+    }
+
+    /// 深色外观逃逸（2026-10-01）：深色外观下真实背景本来就接近黑，「近黑占比」
+    /// 判据失去区分度，半成品形态判据直接不启用（均匀判据不受影响——它对纯黑/纯白
+    /// 是对称的）。取自身 traitCollection：本工程没有 window 级 override（见
+    /// LGGlassViewFactory 的说明，App 主题与系统明暗允许不一致）。不一致的组合下
+    /// 最坏只是「少挡一拍」或「多挡到硬上限」，不产生永久影响。
+    private var isDarkAppearance: Bool {
+        traitCollection.userInterfaceStyle == .dark
+    }
+
     // MARK: - 自适应刷新率
 
     /// 静止态 30fps（见 init 注释：省电）；背景一变化就提到高刷。
@@ -410,6 +491,18 @@ final class LiquidGlassView: MTKView {
         GlassInstanceRegistry.shared.instances.remove(self)
     }
 
+    /// 视图进入窗口 = 一次新的「刚插入层级」（2026-10-01）：开启墙钟沉降窗口（见
+    /// captureSettleDuration 与 commitCapturedTexture）。
+    /// 26.2+ 走根视图捕获、没有 backdropView 的插入点，这是该路径唯一的锚点；
+    /// 14~26.1 与 backdropView 插入点重复锚定也无害——两个锚点都在同一瞬间附近，
+    /// 晚开的锚点只是把窗口开启时刻整体后移（上限始终从开启时刻现算，不会因此失效）。
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        if window != nil {
+            beginCaptureSettleWindow()
+        }
+    }
+
     func setupMetal() {
         guard let device else { return }
 
@@ -432,6 +525,10 @@ final class LiquidGlassView: MTKView {
     // MARK: - Background Capture
 
     func captureBackground() {
+        // 本帧的形态判据只属于本帧（2026-10-01）：analyzeCapture 会重写此标记；
+        // 捕获提前返回（节流 / 缺窗口 / backdrop 不可用）时也保持 false，
+        // 避免把上一帧的「半成品」印象带进下一次提交。
+        lastCaptureHadPartialBlack = false
         if #available(iOS 26.2, *) {
             captureRootView()
         } else {
@@ -459,6 +556,11 @@ final class LiquidGlassView: MTKView {
         lastCaptureGrid = nil
         consecutiveUniformFrames = 0
         backgroundTexture = nil
+        // 2026-10-01：抬起 = 新的采景会话（纹理已丢，重新开始）。重开沉降窗口：
+        // 透镜/收起圆钮的上一帧（previous）此时恒为 nil，窗口内沿用 = 继续透明，
+        // 等的是本次会话的第一帧可信背景，不会把上一次抬起/上一页的内容带进来
+        //（旧内容已在上一行被丢弃）。
+        beginCaptureSettleWindow()
         preferredFramesPerSecond = Self.liveFramesPerSecond
     }
 
@@ -617,6 +719,10 @@ final class LiquidGlassView: MTKView {
         // Ensure backdrop view is in superview (below us)
         if backdropView.superview !== superview {
             superview.insertSubview(backdropView, belowSubview: self)
+            // 2026-10-01：backdrop 源刚进层级，render server 尚未合成它——重开墙钟
+            // 沉降窗口（见 captureSettleDuration 与 commitCapturedTexture）。
+            // 下面注释记录的「冷启动最初若干帧采到整幅均匀黑」就发生在这一刻之后。
+            beginCaptureSettleWindow()
         }
 
         // Capture using drawHierarchy (gets windowserver-composited content)
@@ -624,7 +730,8 @@ final class LiquidGlassView: MTKView {
         // CABackdropLayer 进入层级后的最初若干帧，render server 尚未合成 backdrop
         // 源内容，drawHierarchy 捕获到的是整幅均匀黑 → shader 当背景折射 = 闪黑。
         // 捕获后做稀疏采样判定（见 analyzeCapture/commitCapturedTexture）：
-        // 均匀帧视为 backdrop 未就绪，沿用上一帧纹理（上限 maxUniformHoldFrames 帧）。
+        // 均匀帧视为 backdrop 未就绪，沿用上一帧纹理——沉降窗口内按墙钟上限
+        //（captureSettleMaxHold），窗口外仍按 maxUniformHoldFrames 帧、且只挡整幅均匀。
         let previousTexture = backgroundTexture
         let captureStartedAt = CACurrentMediaTime()
         var capturedIsUniform = false
@@ -680,6 +787,10 @@ final class LiquidGlassView: MTKView {
     ///    30fps。「背景实时显示」和「静止省电」本来互斥，只有按内容变化自适应才能两者
     ///    兼得；只靠透镜抬起时的显式高刷不够——tab 栏玻璃被透镜采进背景纹理（18.4
     ///    路径没有排除机制），它慢一拍同样会表现为「椭圆里还是上一页的背景」。
+    /// ③ 半成品形态（2026-10-01）——部分合成帧（一半真实背景、一半黑条，即本文件
+    ///    captureReferenceSize 注释里的「半张没合成的黑条」）是**非均匀**的，① 看不见
+    ///    它。在同一次扫描里统计近黑格子占比写进 lastCaptureHadPartialBlack，供
+    ///    commitCapturedTexture 在沉降窗口内采信（深色外观下不启用，见 isDarkAppearance）。
     /// 返回 isUniform。
     private func analyzeCapture(_ buffer: CVPixelBuffer, now: TimeInterval) -> Bool {
         let grid = Self.sampleCapture(buffer)
@@ -705,21 +816,45 @@ final class LiquidGlassView: MTKView {
             preferredFramesPerSecond = Self.idleFramesPerSecond
         }
 
-        guard !grid.isEmpty else { return true }
+        guard !grid.isEmpty else {
+            lastCaptureHadPartialBlack = false
+            return true
+        }
         var minV: UInt8 = 255
         var maxV: UInt8 = 0
+        var nearBlackCount = 0
         for value in grid {
             if value < minV { minV = value }
             if value > maxV { maxV = value }
+            if value <= Self.partialBlackValueThreshold { nearBlackCount += 1 }
         }
+        // 半成品形态判据（2026-10-01）：近黑格子占比。只在沉降窗口内被采信，
+        // 稳态（窗口外）不参与任何判定，见 commitCapturedTexture。
+        lastCaptureHadPartialBlack = Double(nearBlackCount) / Double(grid.count) >= Self.partialBlackRatioThreshold
         return Int(maxV) - Int(minV) <= 3
     }
 
-    /// 捕获结果落地。均匀帧（backdrop 未就绪的整幅黑）沿用上一帧纹理——但必须有上限：
+    /// 捕获结果落地。未就绪帧沿用上一帧纹理——但必须有上限：
     /// 真实背景也可能恰好均匀（纯色底/暗色主题），无上限地沿用就等于把上一个页面的
     /// 内容永久留在透镜里（真机「点歌单再点搜索，椭圆背景里还是歌单的背景」）。
     /// 多缓冲（ZeroCopyBridge）保证「上一帧纹理」的内容真的还是上一帧的。
+    ///
+    /// 2026-10-01（本轮）：把「未就绪」判定从「是否整幅均匀」扩成「是否处于刚进入
+    /// 层级的墙钟沉降窗口内、且画面仍可疑」，关掉两个残留窗口：
+    /// ① 原上限是**帧数**（maxUniformHoldFrames）：冷启动掉帧时 4 帧可能横跨几百 ms，
+    ///    与「backdrop 合成需要多久」没有对应关系；合成慢于 4 帧时第 5 帧就把整幅
+    ///    均匀黑无条件提交（用户：「不论是首次进入软件……都会显示一瞬间的黑边阴影」）。
+    ///    窗口内改用墙钟口径（CACurrentMediaTime），到 captureSettleMaxHold 强制放行。
+    /// ② 原判据只挡「整幅均匀」：**部分合成**（一半真实背景、一半黑条）是非均匀的，
+    ///    走下面的 else 分支直接落到无条件提交，把带黑边的半成品画出去（用户措辞是
+    ///    「黑**边**」，形态上更贴这一条）。窗口内新增形态判据：稀疏网格里近黑格子
+    ///    占比过高视为未就绪；深色外观下该判据不启用（真实背景本来就接近黑）。
+    /// 最坏结局 = 玻璃晚出现一会儿：两条上限都由墙钟常量现算，到点必然接受当前帧，
+    /// 不存在「永久透明」或「永久留着上一页内容」的路径（沿用值恰是 previous，
+    /// 窗口只是延后接受当前帧，从不改写当前帧）。
     private func commitCapturedTexture(_ texture: MTLTexture?, previous: MTLTexture?, isUniform: Bool) {
+        let now = CACurrentMediaTime()
+        var shouldHold = false
         if isUniform {
             consecutiveUniformFrames += 1
             if consecutiveUniformFrames <= Self.maxUniformHoldFrames {
@@ -732,11 +867,28 @@ final class LiquidGlassView: MTKView {
                 // 就是「迷你播放器/底部 Tab 栏一出来就闪一下很粗的黑边」。
                 // 上限仍保留：真实均匀背景（纯色底/暗色主题）最多挡 maxUniformHoldFrames
                 // 帧，之后照常接受，不会把上一页内容永久留在玻璃里。
-                backgroundTexture = previous
-                return
+                shouldHold = true
+            }
+            // 墙钟口径（2026-10-01）：沉降窗口内均匀帧不再受帧数上限约束——冷启动
+            // 掉帧时「4 帧」的时间跨度无法预期，帧数口径在合成跟不上时会在第 5 帧
+            // 漏出整幅黑。窗口内继续沿用，最迟 captureSettleMaxHold 到点放行。
+            if !shouldHold, isInsideCaptureSettleWindow(now, extended: true) {
+                shouldHold = true
             }
         } else {
             consecutiveUniformFrames = 0
+            // 半成品形态判据（2026-10-01）：部分合成帧非均匀，上面的均匀判据看不见它。
+            // 只在沉降窗口（captureSettleDuration 有效期）内、且浅色外观时启用：
+            // 深色外观下真实背景本来就接近黑，「近黑占比」失去区分度，直接不启用。
+            if lastCaptureHadPartialBlack,
+               isInsideCaptureSettleWindow(now, extended: false),
+               !isDarkAppearance {
+                shouldHold = true
+            }
+        }
+        if shouldHold {
+            backgroundTexture = previous
+            return
         }
         backgroundTexture = texture
     }

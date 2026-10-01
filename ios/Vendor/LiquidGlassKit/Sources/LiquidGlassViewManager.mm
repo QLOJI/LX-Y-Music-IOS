@@ -156,6 +156,15 @@
   container.backgroundColor = [UIColor clearColor];
   container.clipsToBounds = YES;
   container.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+  // 显式铺满宿主「当前」尺寸：autoresizing 只在**宿主 bounds 变化的那一刻**按增量重排子视图。
+  // 挂载路径（init 时宿主还是 .zero，随后由 RN 布局到实际尺寸）本来就依赖那一次增量，这里取到
+  // 零尺寸与原行为逐字等价；但 liquid 开关切换会**在宿主尺寸已定型之后**重建背衬
+  // （applyLiquidMode: → 本方法），此刻之后不会再有任何 bounds 变化，容器于是永久停在 0×0 ——
+  // 背衬整树（材质层 + 染色覆层）零尺寸，玻璃不可见，glassOpacity 也没有可着色的对象。
+  // 这正是「取消勾选液态玻璃后，底部 tab 栏与迷你播放器的玻璃不透明度滑条拖了没反应」：
+  // 两个消费点在同一次设置变更里各自重建、同时失效。显式写入后两条路径得到同一几何，
+  // 紧接着的 reapplyCachedPropsToBacking 也会立即作用在可见背衬上。
+  container.frame = CGRectMake(0, 0, CGRectGetWidth(self.bounds), CGRectGetHeight(self.bounds));
   backing.userInteractionEnabled = NO;
   backing.backgroundColor = [UIColor clearColor];
   backing.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
