@@ -31,8 +31,9 @@ import { useButtonRadius } from '@/utils/buttonRadius'
 //      所以「虚线必须压住行垂直中心」由「调用方把该行对齐到 topPercent」唯一决定，
 //      不再是两套常量各算各的（这是用户点名过的问题点）。
 //   2) 淡入淡出时长改用 lyricAnimation 的 OVERLAY_FADE_MS（全局动效单一来源），不再内联 300。
-//   3) 新增「左起 1/3 段完全透明、其后渐显」的虚线画法（用户要求「从左端三分之一位置从淡开始显示」），
-//      线段铺满与位置不变，见 DASH_FADE_START_RATIO / getDashColor。
+//   3) 新增「左起 1/3 段完全透明、跨过 1/3 后快速淡入」的虚线画法（用户要求「从左端 1/3 处
+//      开始淡出，1/3 之前透明看不见、之后颜色看得见」），线段铺满与位置不变，
+//      见 DASH_FADE_START_RATIO / DASH_FADE_SPAN_RATIO / getDashColor。
 //
 // 浮层状态（滚动信息 / 行高 / 歌词行）走命令式 handle 更新，不经过父组件 setState：
 // 拖动的每一帧只会重渲染浮层自身，歌词列表与歌名块完全不动（滚动期抖动隔离的关键）。
@@ -65,9 +66,12 @@ const LABEL_RIGHT_FALLBACK = 45
 // 由左(浅)→右(深)渐变的不透明度区间；最深也不超过右侧播放三角(c-button-font≈0.9)
 const DASH_ALPHA_MIN = 0.15
 const DASH_ALPHA_MAX = 0.5
-// 用户要求「虚线从左端三分之一位置从淡开始显示」：左起这 1/3 段完全不可见(alpha=0)，
-// 1/3 之后再从 0 平滑渐显（与上面的渐变相乘，1/3 处不会出现硬跳变）
+// 用户要求「虚线从左端 1/3 处开始淡出（1/3 之前透明看不见）」：左起这 1/3 段完全
+// 不可见(alpha=0)；跨过 1/3 之后，在右侧 DASH_FADE_SPAN_RATIO 的宽度内快速淡入到
+// 该处的渐变值。**不把淡入摊到剩下的 2/3 上**——那样「1/3 之后」的一大半仍然只有
+// 0.0x 的不透明度，观感依旧是看不见，与「三分之一前透明、之后看得见」不符。
 const DASH_FADE_START_RATIO = 1 / 3
+const DASH_FADE_SPAN_RATIO = 0.1
 // REF 的定位线在容器 40% 处
 const DEFAULT_TOP_PERCENT = 0.4
 
@@ -168,8 +172,8 @@ export default forwardRef<PlayLineType, PlayLineProps>(({ onPlayLine, topPercent
   const dashCount = dashWidth > 0 && dashStep > 0 ? Math.floor((dashWidth + scaleSizeW(DASH_GAP)) / dashStep) : 0
   const getDashColor = (index: number) => {
     const ratio = dashCount > 1 ? index / (dashCount - 1) : 1
-    // 左端 1/3 段 alpha 归零；其后由归一化系数 0→1 渐显，乘到原渐变上保证过渡平滑
-    const fadeIn = ratio <= DASH_FADE_START_RATIO ? 0 : (ratio - DASH_FADE_START_RATIO) / (1 - DASH_FADE_START_RATIO)
+    // 左端 1/3 段 alpha 归零；跨过 1/3 后在 10% 宽度内由 0 淡入到 1（钳到 1），再乘到原渐变上
+    const fadeIn = Math.min(Math.max((ratio - DASH_FADE_START_RATIO) / DASH_FADE_SPAN_RATIO, 0), 1)
     const alpha = ((DASH_ALPHA_MIN + (DASH_ALPHA_MAX - DASH_ALPHA_MIN) * ratio) * fadeIn).toFixed(2)
     return `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${alpha})`
   }
