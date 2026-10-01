@@ -40,8 +40,10 @@ const ListItem = memo(
           ...styles.listItem,
           // 「按钮圆角」行内覆盖；高度取 styles.listItem 的源值 40（Tab 单行，可见高度即 40）
           borderRadius: buttonRadius(40),
+          // 选中态底面由「主色实底」改为主色 20% 淡染：选中文字已改成主题主色
+          // （与设置里「LX-Y Music 字体大小预览」同色），同色实心底会把文字吃掉
           backgroundColor: active
-            ? applyOpacity(theme['c-primary'], buttonOpacity)
+            ? applyOpacity(theme['c-primary-alpha-800'], buttonOpacity)
             : applyOpacity(theme['c-primary-light-900-alpha-200'], buttonOpacity),
           borderColor: active
             ? applyOpacity(theme['c-primary'], buttonOpacity)
@@ -52,7 +54,7 @@ const ListItem = memo(
         <TouchableOpacity style={styles.listName} onPress={handlePress}>
           <Text
             numberOfLines={1}
-            color={active ? theme['c-primary-light-1000'] : theme['c-font']}
+            color={active ? theme['c-primary'] : theme['c-font']}
           >
             {t(`setting_${id}`)}
           </Text>

@@ -48,8 +48,10 @@ const ListItem = memo(
           height: ITEM_HEIGHT,
           borderRadius: designRadius.sm,
           // 按钮底面与边框随「按钮透明度」淡出；文字色与 chevron 图标色不动
+          // 选中态底面由「主色实底」改为主色 20% 淡染：选中文字已改成主题主色
+          // （与设置里「LX-Y Music 字体大小预览」同色），同色实心底会把文字吃掉
           backgroundColor: active
-            ? applyOpacity(theme['c-primary'], buttonOpacity)
+            ? applyOpacity(theme['c-primary-alpha-800'], buttonOpacity)
             : applyOpacity(theme['c-primary-light-900-alpha-200'], buttonOpacity),
           borderColor: active
             ? applyOpacity(theme['c-primary'], buttonOpacity)
@@ -72,7 +74,7 @@ const ListItem = memo(
           <Text
             numberOfLines={1}
             size={designTypography.body}
-            color={active ? theme['c-primary-light-1000'] : theme['c-font']}
+            color={active ? theme['c-primary'] : theme['c-font']}
             style={active ? styles.listActiveText : undefined}
           >
             {t(`setting_${id}`)}
