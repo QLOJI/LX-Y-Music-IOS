@@ -1,4 +1,4 @@
-import { forwardRef, useCallback, useImperativeHandle, useMemo, useRef, useState } from 'react'
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
 import { Animated, Pressable, View, type LayoutChangeEvent, type StyleProp, type ViewStyle } from 'react-native'
 
 import { type COMPONENT_IDS } from '@/config/constant'
@@ -46,7 +46,6 @@ const DrawerLayoutFixed = forwardRef<DrawerLayoutFixedType, Props>(({
     if (!drawerWidth) return
     setVisible(true)
     setRasterize(true)
-    global.app_event.changeHomePageScrollEnabled?.(false)
     Animated.timing(animation, {
       toValue: 1,
       duration: 220,
@@ -65,9 +64,25 @@ const DrawerLayoutFixed = forwardRef<DrawerLayoutFixedType, Props>(({
     }).start(({ finished }) => {
       if (finished) setVisible(false)
       setRasterize(false)
-      global.app_event.changeHomePageScrollEnabled?.(true)
     })
   }, [animation])
+
+  // 抽屉锁（首页横滑开关）的唯一真值来源 = visible（2026-10-01，P0）。
+  // 旧写法只在 openDrawer 里发 false、在 closeDrawer 的动画完成回调里发 true，两个缺口：
+  // ① 关闭动画被打断（finished=false）时 setVisible(false) 不执行、但回调照样发 true——
+  //    抽屉还在屏幕上，锁却放开了（写反的另一种卡法：首页横滑与抽屉手势同时可用）；
+  // ② 组件在「锁住」期间被卸载（切主题/退出登录引起的重挂载、导航栈回收）后，
+  //    再也没有人发 true——首页 PagerView 永久停在不可横滑。用户侧表现为「推荐/歌单/
+  //    搜索/我的/设置五页滑不动，点击和底部 tab 栏都正常」。
+  // 改成由 visible 派生：进入/离开可见态各同步一次锁，语义与 overlay 自己的
+  // pointerEvents={visible ? 'auto' : 'box-none'} 完全一致；卸载时兜底放开
+  // （抽屉已不存在，锁必须交还，否则首页横滑直到杀进程都回不来）。
+  useEffect(() => {
+    global.app_event.changeHomePageScrollEnabled?.(!visible)
+  }, [visible])
+  useEffect(() => () => {
+    global.app_event.changeHomePageScrollEnabled?.(true)
+  }, [])
 
   useImperativeHandle(ref, () => ({
     openDrawer,

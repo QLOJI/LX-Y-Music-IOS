@@ -361,9 +361,16 @@ export default memo(() => {
   // ——「长按 → 快速拖动」会在 grant 到达前就把 arm 清掉，拖动被腰斩、透镜弹回起点。
   // 现在改为 400ms 宽限，且真正的接管会在 grant 里清掉本定时器。
   const handleTabPressIn = useCallback((id: NAV_ID_Type) => {
+    // 新一轮触摸开始（2026-10-01，P0）：上一次拖动会话若没走到收尾（onPanResponderRelease/
+    // Terminate 被系统手势吃掉、事件丢失），draggingRef 会残留——本次移动在
+    // onMoveShouldSetPanResponderCapture 里就会被当成拖动接管，同时 pager 横滑的
+    // A-5 锁也停在锁死态（旧代码只靠两道 8s 看门狗兜底，用户会先经历 8 秒滑不动的假死）。
+    // 触摸按下是「新会话开始」的确切信号，在这里强制收尾最及时（finishTabDrag(false)
+    // 内部会 emitTabBarDragActive(false)，幂等）。
+    if (draggingRef.current) finishTabDrag(false)
     pressStartAtRef.current = Date.now()
     pressedTabIdRef.current = id
-  }, [])
+  }, [finishTabDrag])
   const handleTabPressOut = useCallback(() => {
     // 按压时长必须在这里取：下面的定时器要 400ms 之后才跑，那时 Date.now() 已经不对了
     const releasedAt = Date.now()
