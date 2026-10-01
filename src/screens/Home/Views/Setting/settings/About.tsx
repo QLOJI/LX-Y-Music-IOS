@@ -133,18 +133,19 @@ const styles = createStyle({
   text: {
     fontSize: designTypography.body,
     // A-6：离群行高收敛 24→20（24 配 15pt=1.6×，为全仓最离群样本）
-    lineHeight: 20,
+    // A-8：20 仍是 1.33×，改用全局行高令牌，与全站同口径
+    lineHeight: designTypography.body * designTypography.lineHeightRatio,
   },
   link: {
     fontSize: designTypography.body,
-    // A-6：同上 24→20
-    lineHeight: 20,
+    // A-8：同 text
+    lineHeight: designTypography.body * designTypography.lineHeightRatio,
   },
   boldText: {
     fontSize: designTypography.body,
     fontWeight: 'bold',
-    // A-6：同上 24→20
-    lineHeight: 20,
+    // A-8：同 text（粗细混排同段，行高必须一致）
+    lineHeight: designTypography.body * designTypography.lineHeightRatio,
   },
   rewardImage: {
     width: 200,

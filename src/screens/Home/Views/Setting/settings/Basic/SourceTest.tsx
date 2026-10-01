@@ -1675,7 +1675,9 @@ export default memo(() => {
       >
         <View style={styles.logContent} onStartShouldSetResponder={() => true}>
           {logText ? (
-            <Text selectable={true} style={{ fontSize: 13, lineHeight: 18 }}>
+            {/* A-8：日志是 13pt 等宽感文本，行高 18(1.38×) → 16（13 × 1.15 ≈ 15，取 16
+                留 1pt 余量，日志行尾常有下划线/方括号，压太紧会视觉相接） */}
+            <Text selectable={true} style={{ fontSize: 13, lineHeight: 16 }}>
               {logText}
             </Text>
           ) : (
@@ -1692,32 +1694,35 @@ export default memo(() => {
         <View style={styles.logContent} onStartShouldSetResponder={() => true}>
           {/* A-6：本 FAQ 块 9 处 fontSize:14 + lineHeight:22（1.57×）为同类离群值，
               统一收敛到 20；fixPlan 点名的 1693/1699/1717 为样本行，只改这 3 处
-              会造成同一弹窗内 20/22 混排 */}
-          <Text style={{ fontSize: 14, lineHeight: 20, marginBottom: 12 }}>
+              会造成同一弹窗内 20/22 混排。
+              A-8（2026-10-01）：20 仍是 1.43×（本弹窗是全仓行距最松的一处），随
+              「所有界面文字间距缩小」再收到 16（14 × 1.15 ≈ 16）；9 处同上一次一样
+              必须整块改，留任何一处都会在同一个弹窗里出现 16/20 混排 */}
+          <Text style={{ fontSize: 14, lineHeight: 16, marginBottom: 12 }}>
             本功能在开发阶段经过大量测试，准确率高达90%+
           </Text>
-          <Text style={{ fontSize: 14, lineHeight: 20, fontWeight: '600', marginBottom: 8 }}>
+          <Text style={{ fontSize: 14, lineHeight: 16, fontWeight: '600', marginBottom: 8 }}>
             常见问题：
           </Text>
-          <Text style={{ fontSize: 14, lineHeight: 20, marginBottom: 12 }}>
+          <Text style={{ fontSize: 14, lineHeight: 16, marginBottom: 12 }}>
             为什么音源元数据标注支持母带级音质，但实际仅能获取FLAC甚至更低规格音频
           </Text>
-          <Text style={{ fontSize: 14, lineHeight: 20, fontWeight: '600', marginBottom: 8 }}>
+          <Text style={{ fontSize: 14, lineHeight: 16, fontWeight: '600', marginBottom: 8 }}>
             最终测试结果受多重客观因素约束，具体如下：
           </Text>
-          <Text style={{ fontSize: 14, lineHeight: 20, marginBottom: 8 }}>
+          <Text style={{ fontSize: 14, lineHeight: 16, marginBottom: 8 }}>
             1. 音源服务稳定性不足（普遍现象）：多数音源底层集成多套请求接口、多组鉴权账号池，不同接口/账号的会员、资源下发权限存在差异；音源服务端随机调度链路，客户端无法控制本次请求使用的接口与账号，因此同一音源短时间内两次测试，返回的最高可用音质存在明显波动。
           </Text>
-          <Text style={{ fontSize: 14, lineHeight: 20, marginBottom: 8 }}>
+          <Text style={{ fontSize: 14, lineHeight: 16, marginBottom: 8 }}>
             2. 目标歌曲版权库未开放对应高音质资源权限，不支持该档位音频分发。
           </Text>
-          <Text style={{ fontSize: 14, lineHeight: 20, marginBottom: 8 }}>
+          <Text style={{ fontSize: 14, lineHeight: 16, marginBottom: 8 }}>
             3. 音源接口BUG：部分音源存在资源档位错配Bug，典型表现为请求master臻品母带返回atmos杜比全景声资源，请求atmos档位却下发flac无损音频，规格标识与实际音频文件不匹配。
           </Text>
-          <Text style={{ fontSize: 14, lineHeight: 20, marginBottom: 8 }}>
+          <Text style={{ fontSize: 14, lineHeight: 16, marginBottom: 8 }}>
             4. 时效问题：今日上午、当前其他设备均可正常获取 master 母带资源，仅当前使用设备、在当前时段无法拉取高音质音频；该场景成因多为音频播放临时 URL 失效、临时鉴权权限受限导致测试失败
           </Text>
-          <Text style={{ fontSize: 14, lineHeight: 20, marginTop: 12, fontWeight: '600' }}>
+          <Text style={{ fontSize: 14, lineHeight: 16, marginTop: 12, fontWeight: '600' }}>
             解决方式：进入软件设置 - 其他设置页面，清除本地缓存后重新执行音质测试。
           </Text>
         </View>
@@ -1970,7 +1975,8 @@ const styles = StyleSheet.create({
   },
   warningText: {
     fontSize: designTypography.caption,
-    lineHeight: 18,
+    // A-8：改用全局行高令牌（此前 18 ＝ 13pt 的 1.38×）
+    lineHeight: designTypography.caption * designTypography.lineHeightRatio,
     color: '#D35400',
   },
   errorContainer: {
@@ -1983,7 +1989,8 @@ const styles = StyleSheet.create({
   },
   errorText: {
     fontSize: designTypography.caption,
-    lineHeight: 18,
+    // A-8：改用全局行高令牌（此前 18 ＝ 13pt 的 1.38×）
+    lineHeight: designTypography.caption * designTypography.lineHeightRatio,
     color: '#C0392B',
   },
   testingContainer: {
@@ -1996,7 +2003,8 @@ const styles = StyleSheet.create({
   },
   testingText: {
     fontSize: designTypography.caption,
-    lineHeight: 18,
+    // A-8：改用全局行高令牌（此前 18 ＝ 13pt 的 1.38×）
+    lineHeight: designTypography.caption * designTypography.lineHeightRatio,
     color: '#D35400',
   },
   logContent: {
