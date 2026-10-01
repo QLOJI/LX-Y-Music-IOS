@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { onTabBarCollapseChanged } from '@/utils/nativeModules/utils'
 import { scaleSizeW } from '@/utils/pixelRatio'
-import { tabBarBaseHeight } from '@/theme/DesignTokens'
+import { tabBarBaseHeight, designSpacing, collapsedFloatBottom, collapsedPillGap } from '@/theme/DesignTokens'
+import { useSafeAreaBottom } from '@/store/common/hook'
 
 /**
  * 底部 Tab 栏收起状态（iOS 26 风格最小化）：
@@ -76,3 +77,35 @@ export const setMiniPlayerHeight = (height: number): void => {
  *  字体档位一变就对不上；尺寸只能从这里取。 */
 export const getCollapsedPillSize = (measuredHeight: number): number =>
   measuredHeight > 0 ? measuredHeight : scaleSizeW(tabBarBaseHeight)
+
+/** 收起行（圆钮 + 迷你播放器）的完整几何，**一次算出、两边取用**。
+ *
+ *  2026-10-01 定案（B1「迷你播放器高出圆钮且间距很大」重点修复）：
+ *  此前两个消费方各自调用同一组函数、各算一遍 left/bottom/size——公式同源但
+ *  **计算两次、订阅两次**，任何一次漏读（订阅时序 / 测量时序）都会让「播放器还停在
+ *  展开位、圆钮已经出现在左下角」这类分叉在设备上重现，而盯着公式看是看不出问题的
+ *  （这就是它修了好几轮都好不了的原因）。现在只保留这一处计算：
+ *    - bottom ：收起行底边（圆钮 bottom 与播放器收起态 bottom 取同一个数）
+ *    - size   ：圆钮边长 = 收起态播放器高度（等高才叫同排）
+ *    - roundLeft ：圆钮左缘（scaleSizeW 口径，与 tab 栏/播放器展开态左缘同一个 24）
+ *    - playerLeft：播放器收起态左内边距 = 圆钮右缘 + collapsedPillGap（贴着圆钮）
+ *  两边**不再各自推导**，只允许从这里取值。 */
+export interface CollapsedRowGeometry {
+  size: number
+  bottom: number
+  roundLeft: number
+  playerLeft: number
+}
+
+export const useCollapsedRowGeometry = (): CollapsedRowGeometry => {
+  const safeAreaBottom = useSafeAreaBottom()
+  const measured = useMiniPlayerHeight()
+  const size = getCollapsedPillSize(measured)
+  const roundLeft = scaleSizeW(designSpacing.lg)
+  return useMemo(() => ({
+    size,
+    bottom: collapsedFloatBottom(safeAreaBottom),
+    roundLeft,
+    playerLeft: roundLeft + size + collapsedPillGap,
+  }), [size, safeAreaBottom, roundLeft])
+}
