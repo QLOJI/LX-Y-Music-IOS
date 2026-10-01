@@ -7,6 +7,7 @@ import { createStyle, toast } from '@/utils/tools'
 import { useTheme } from '@/store/theme/hook'
 import { useI18n } from '@/lang'
 import { httpFetch } from '@/utils/request'
+import { useButtonRadius } from '@/utils/buttonRadius'
 import { handleImportScript } from './action'
 import { designRadius, designSpacing, designTypography } from '@/theme/DesignTokens'
 
@@ -17,6 +18,7 @@ interface UrlInputType {
 }
 const UrlInput = forwardRef<UrlInputType, {}>((props, ref) => {
   const theme = useTheme()
+  const buttonRadius = useButtonRadius()
   const [text, setText] = useState('')
   const [placeholder, setPlaceholder] = useState('')
   const inputRef = useRef<InputType>(null)
@@ -40,7 +42,7 @@ const UrlInput = forwardRef<UrlInputType, {}>((props, ref) => {
       placeholder={placeholder}
       value={text}
       onChangeText={setText}
-      style={{ ...styles.input, backgroundColor: theme['c-primary-input-background'] }}
+      style={{ ...styles.input, borderRadius: buttonRadius(36), backgroundColor: theme['c-primary-input-background'] }}
     />
   )
 })

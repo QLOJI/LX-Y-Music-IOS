@@ -4,6 +4,7 @@ import { View, TouchableOpacity, ScrollView } from 'react-native'
 import { confirmDialog, createStyle } from '@/utils/tools'
 import { useTheme } from '@/store/theme/hook'
 import { applyOpacity } from '@/utils/colorOpacity'
+import { useButtonRadius } from '@/utils/buttonRadius'
 import { useI18n } from '@/lang'
 import { useUserApiList, state as userApiState } from '@/store/userApi'
 import { useSettingValue } from '@/store/setting/hook'
@@ -34,6 +35,7 @@ const ListItem = ({
 }) => {
   const theme = useTheme()
   const buttonOpacity = useSettingValue('theme.buttonOpacity')
+  const buttonRadius = useButtonRadius()
   const t = useI18n()
   const changeAllowShowUpdateAlert = (check: boolean) => {
     onChangeAllowShowUpdateAlert(item.id, check)
@@ -81,10 +83,10 @@ const ListItem = ({
         />
       </View>
       <View style={styles.listItemRight}>
-        <TouchableOpacity style={styles.btn} onPress={handleExport}>
+        <TouchableOpacity style={[styles.btn, { borderRadius: buttonRadius(32) }]} onPress={handleExport}>
           <SvgIcon name="export" color={theme['c-button-font']} />
         </TouchableOpacity>
-        <TouchableOpacity style={styles.btn} onPress={handleRemove}>
+        <TouchableOpacity style={[styles.btn, { borderRadius: buttonRadius(32) }]} onPress={handleRemove}>
           <Icon name="close" color={theme['c-button-font']} />
         </TouchableOpacity>
       </View>

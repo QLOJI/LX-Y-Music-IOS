@@ -8,6 +8,7 @@ import { connectServer, disconnectServer } from '@/plugins/sync'
 import InputItem from '../../components/InputItem'
 import { getWIFIIPV4Address } from '@/utils/nativeModules/utils'
 import { createStyle, toast } from '@/utils/tools'
+import { useButtonRadius } from '@/utils/buttonRadius'
 import { useI18n } from '@/lang'
 import { updateSetting } from '@/core/common'
 import { addSyncHostHistory, getSyncHost, setSyncHost } from '@/utils/data'
@@ -75,6 +76,7 @@ export default memo(({ host, setHost }: { host: string, setHost: (host: string) 
   const isEnableSync = useSettingValue('sync.enable')
   const isUnmountedRef = useRef(true)
   const theme = useTheme()
+  const buttonRadius = useButtonRadius()
   const [address, setAddress] = useState('')
   const [authCode, setAuthCode] = useState('')
   const confirmAlertRef = useRef<ConfirmAlertType>(null)
@@ -188,7 +190,12 @@ export default memo(({ host, setHost }: { host: string, setHost: (host: string) 
             placeholder={t('setting_sync_code_input_tip')}
             value={authCode}
             onChangeText={setAuthCode}
-            style={{ ...styles.authCodeInput, backgroundColor: theme['c-primary-background'] }}
+            style={{
+              ...styles.authCodeInput,
+              // 高度取 common/Input 的默认 height: 32（本样式未覆盖高度）
+              borderRadius: buttonRadius(32),
+              backgroundColor: theme['c-primary-background'],
+            }}
           />
         </View>
       </ConfirmAlert>

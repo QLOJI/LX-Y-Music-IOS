@@ -6,6 +6,7 @@ import { createStyle } from '@/utils/tools'
 import { useTheme } from '@/store/theme/hook'
 import { useSettingValue } from '@/store/setting/hook'
 import { applyOpacity } from '@/utils/colorOpacity'
+import { useButtonRadius } from '@/utils/buttonRadius'
 import { useI18n } from '@/lang'
 import Dialog, { type DialogType } from '@/components/common/Dialog'
 import Button from '@/components/common/Button'
@@ -18,6 +19,7 @@ interface RuleInputType {
 }
 const RuleInput = forwardRef<RuleInputType, {}>((props, ref) => {
   const theme = useTheme()
+  const buttonRadius = useButtonRadius()
   const t = useI18n()
   const [text, setText] = useState('')
   const inputRef = useRef<InputType>(null)
@@ -48,7 +50,7 @@ const RuleInput = forwardRef<RuleInputType, {}>((props, ref) => {
         multiline
         placeholder={t('setting_dislike_list_input_tip')}
         size={designTypography.caption}
-        style={{ ...styles.input, height, backgroundColor: theme['c-primary-input-background'] }}
+        style={{ ...styles.input, height, borderRadius: buttonRadius(height), backgroundColor: theme['c-primary-input-background'] }}
       />
     </View>
   )
@@ -69,6 +71,7 @@ export default forwardRef<DislikeEditModalType, DislikeEditModalProps>(({ onSave
   const [visible, setVisible] = useState(false)
   const theme = useTheme()
   const buttonOpacity = useSettingValue('theme.buttonOpacity')
+  const buttonRadius = useButtonRadius()
   const t = useI18n()
 
   const handleShow = (rules: string) => {
@@ -113,7 +116,7 @@ export default forwardRef<DislikeEditModalType, DislikeEditModalProps>(({ onSave
       <View style={styles.btns}>
         <Button
           // 按钮底色随「按钮透明度」淡出；只改颜色 alpha，不用容器 style.opacity
-          style={{ ...styles.btn, backgroundColor: applyOpacity(theme['c-button-background'], buttonOpacity) }}
+          style={{ ...styles.btn, borderRadius: buttonRadius(36), backgroundColor: applyOpacity(theme['c-button-background'], buttonOpacity) }}
           onPress={handleCancel}
         >
           <Text size={designTypography.body} color={theme['c-button-font']}>
@@ -122,7 +125,7 @@ export default forwardRef<DislikeEditModalType, DislikeEditModalProps>(({ onSave
         </Button>
         <Button
           // 同上：只改颜色 alpha，不用容器 style.opacity
-          style={{ ...styles.btn, backgroundColor: applyOpacity(theme['c-primary'], buttonOpacity) }}
+          style={{ ...styles.btn, borderRadius: buttonRadius(36), backgroundColor: applyOpacity(theme['c-primary'], buttonOpacity) }}
           onPress={handleConfirm}
         >
           <Text size={designTypography.body} color={theme['c-000']}>

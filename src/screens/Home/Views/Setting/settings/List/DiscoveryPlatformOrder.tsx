@@ -9,6 +9,7 @@ import { useSettingValue } from '@/store/setting/hook'
 import { updateSetting } from '@/core/common'
 import { createStyle } from '@/utils/tools'
 import { applyOpacity } from '@/utils/colorOpacity'
+import { useButtonRadius } from '@/utils/buttonRadius'
 import { designRadius, designSpacing } from '@/theme/DesignTokens'
 import songlistState, { type Source } from '@/store/songlist/state'
 import { getDiscoveryPlatformOrder } from '@/config/constant'
@@ -17,6 +18,7 @@ export default memo(() => {
   const t = useI18n()
   const theme = useTheme()
   const buttonOpacity = useSettingValue('theme.buttonOpacity')
+  const buttonRadius = useButtonRadius()
   const sourceNameType = useSettingValue('common.sourceNameType')
   const platformOrder = useSettingValue('common.discoveryPlatformOrder')
 
@@ -90,7 +92,7 @@ export default memo(() => {
               </View>
               <Pressable
                 hitSlop={6}
-                style={[styles.actionBtn, actionBtnStyle, index === 0 ? styles.actionDisabled : null]}
+                style={[styles.actionBtn, actionBtnStyle, index === 0 ? styles.actionDisabled : null, { borderRadius: buttonRadius(30) }]}
                 disabled={index === 0}
                 onPress={() => { moveSource(index, index - 1) }}
                 accessibilityRole="button"
@@ -100,7 +102,7 @@ export default memo(() => {
               </Pressable>
               <Pressable
                 hitSlop={6}
-                style={[styles.actionBtn, actionBtnStyle, isLast ? styles.actionDisabled : null]}
+                style={[styles.actionBtn, actionBtnStyle, isLast ? styles.actionDisabled : null, { borderRadius: buttonRadius(30) }]}
                 disabled={isLast}
                 onPress={() => { moveSource(index, index + 1) }}
                 accessibilityRole="button"

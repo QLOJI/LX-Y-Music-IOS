@@ -1452,14 +1452,13 @@ export default memo(() => {
         >
           终止测试
         </Button>
+        {/* 原来这里还给基元 Button 传了 ripple 和 { ...styles.logBtn, 底色 c-button-background }，
+            但基元只解构 disabled / onPress / children，style 与 ripple 被整个丢弃 —— 那段外层
+            从未生效过（注释写的「按钮底面随按钮透明度淡出」是假的）：这两个按钮真正的
+            底色/边框/圆角一直是基元按 buttonOpacity + useButtonRadius 自己渲染的。
+            故删掉死属性；要改这两处的观感，改 Setting/components/Button.tsx 的 styles.button。 */}
         <Button
           onPress={() => faqModalRef.current?.setVisible(true)}
-          ripple={{ borderless: true, radius: 18 }}
-          style={{
-            ...styles.logBtn,
-            // 按钮底面随「按钮透明度」淡出（只改颜色 alpha，文字色不动）
-            backgroundColor: applyOpacity(theme['c-button-background'], buttonOpacity),
-          }}
         >
           常见问题
         </Button>
@@ -1548,14 +1547,10 @@ export default memo(() => {
           disabled={isTesting}
           size={0.8}
         />
+        {/* 同「常见问题」：基元 Button 丢弃调用方的 style / ripple，原先的 logBtn 外层与
+            c-button-background 底色都没生效，一并删除（避免误以为这里能改底色）。 */}
         <Button
           onPress={openLogModal}
-          ripple={{ borderless: true, radius: 18 }}
-          style={{
-            ...styles.logBtn,
-            // 按钮底面随「按钮透明度」淡出（只改颜色 alpha，文字色不动）
-            backgroundColor: applyOpacity(theme['c-button-background'], buttonOpacity),
-          }}
         >
           测试日志
         </Button>
@@ -1911,12 +1906,6 @@ const styles = StyleSheet.create({
     alignSelf: 'center',
   },
 
-  logBtn: {
-    height: 36,
-    paddingHorizontal: designSpacing.sm,
-    borderRadius: designRadius.pill,
-    overflow: 'hidden',
-  },
   progressContainer: {
     padding: designSpacing.sm,
     backgroundColor: 'rgba(255, 193, 7, 0.1)',

@@ -12,6 +12,7 @@ import { useTheme } from '@/store/theme/hook'
 import { useI18n } from '@/lang'
 import { useSettingValue } from '@/store/setting/hook'
 import { createStyle } from '@/utils/tools'
+import { useButtonRadius } from '@/utils/buttonRadius'
 import { designSpacing } from '@/theme/DesignTokens'
 
 type SyncHistoryItem = Awaited<ReturnType<typeof getSyncHostHistory>>[number]
@@ -28,6 +29,7 @@ const HistoryListItem = ({
   onSelect: (index: number) => void
 }) => {
   const theme = useTheme()
+  const buttonRadius = useButtonRadius()
   const handleSetHost = () => {
     onSelect(index)
     // setHost({
@@ -48,7 +50,8 @@ const HistoryListItem = ({
       <TouchableOpacity style={styles.listName} onPress={handleSetHost}>
         <Text numberOfLines={1}>{item}</Text>
       </TouchableOpacity>
-      <TouchableOpacity onPress={handleRemove} style={styles.listBtn}>
+      {/* 图标按钮：可见高度 = 图标 12 + 上下 padding designSpacing.xs(8) × 2 = 28 */}
+      <TouchableOpacity onPress={handleRemove} style={[styles.listBtn, { borderRadius: buttonRadius(28) }]}>
         <Icon name="remove" color={theme['c-font-label']} size={12} />
       </TouchableOpacity>
     </View>
