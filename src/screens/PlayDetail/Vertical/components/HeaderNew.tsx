@@ -38,6 +38,10 @@ const DOT_ACTIVE_WIDTH = scaleSizeW(18)
 const DOT_INACTIVE_WIDTH = scaleSizeW(8)
 const DOT_HEIGHT = scaleSizeW(8)
 const DOT_BORDER_RADIUS = DOT_HEIGHT / 2
+// 右上角三枚图标（计时 / 音效 / 播放器设置）之间的**中心距**上限（设计 pt）。
+// 右区宽度 = 3 × 中心距，所以它同时也决定了右区最多能有多宽。
+// 56 ≈ 44pt 触控热区 + 12pt 间隙，经 scaleSizeW 在平板上按全屏统一的 1.2 倍有效比例放大。
+const RIGHT_ICON_STEP_MAX = 56
 
 const AnimatedIndicatorDot = ({ isActive }: { isActive: boolean }) => {
   const animatedWidth = useRef(new Animated.Value(isActive ? DOT_ACTIVE_WIDTH : DOT_INACTIVE_WIDTH)).current
@@ -107,7 +111,17 @@ const HeaderNew = memo(({ pageIndex }: { pageIndex?: number }) => {
   const iconColor = theme.isDark ? theme['c-font'] : theme['c-primary']
   const activeIndex = pageIndex ?? 0
 
-  const sideAreaWidth = winWidth * 0.2
+  // 右侧三枚按钮等分右区宽度，因此「图标中心距 = 右区宽 / 3」。
+  // 原实现右区 = winWidth × 0.2（iPhone 上中心距 ≈ winWidth / 15 ≈ 26pt，22pt 的图标之间
+  // 只剩约 4pt，三枚挤在一起）；需求「间距增大一倍」→ 右区 × 2 = winWidth × 0.4。
+  // 不直接写 winWidth × 0.4 的原因：iPad 竖屏 768pt 下那会算出 100pt 以上的中心距，
+  // 三枚图标散成一排孤点，所以再按 RIGHT_ICON_STEP_MAX 封顶（手机上封顶不生效，
+  // 恒等于 × 2；只有平板会被压回合理值）。
+  const rightAreaWidth = Math.min(winWidth * 0.4, scaleSizeW(RIGHT_ICON_STEP_MAX * 3))
+  // 左右两侧同宽：中区（两个翻页圆点）才能仍然居中在整屏中线上。
+  // 左侧只有一枚定宽 44pt 的返回键且左对齐（styles.leftArea 的 alignItems: 'flex-start'），
+  // 所以把左区一起加宽不会移动返回键，只改中区落点。
+  const sideAreaWidth = rightAreaWidth
   const dotGap = scaleSizeW(8)
   const containerPadding = scaleSizeW(10)
 

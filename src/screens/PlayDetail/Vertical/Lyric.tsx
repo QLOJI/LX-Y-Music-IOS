@@ -402,6 +402,17 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
   // 同一行重锚时再用“舒适区 15%”节流，避免逐秒重锚把歌词列表反复微滚动造成抖动。
   // force=true 时无视舒适区，用于切回歌词页 / 切歌 / 拖动进度条 / 点击歌词 / 恢复播放等需要立即定位的场景。
   const lastScrolledLineRef = useRef(-1)
+  // ---- 偏移写入的「单写者」不变式（2026-10-01，需求 6：防抖动 / 回跳 / 停错位置）----
+  // 连续滚动循环（scrollToActiveContinuous）在跑的时候，列表偏移**只能由它写**。
+  // 此前 handleScrollToActive 的非强制分支还会另发一个 animated:true 的原生滚动，
+  // 于是同一个偏移有两路写者：原生动画刚把列表带走，循环的下一帧就用自己那份旧基准
+  // （smoothOffsetRef）算出差值，把列表写回旧位置 —— 用户看到的就是上下抖动、回跳，
+  // 最后停在错误的位置。而走非强制分支的两条路径（行高测量回正 scheduleRecentre、
+  // 停手 1.5s 后的回位）恰恰都发生在播放中、循环正在跑的时候，所以这个冲突是必现的。
+  // 现在：非强制请求不再自己滚，改为排一个「滑到 targetOffset」的任务（pendingGlideRef），
+  // 由循环按**与换行滑动完全相同的一条 easeInOut 轨迹**落地（观感统一，也不再互抢）。
+  const isScrollLoopRunningRef = useRef(false)
+  const pendingGlideRef = useRef<{ index: number, target: number } | null>(null)
   // useCallback 稳定引用：handleLinePress / scheduleRecentre / 各 effect 依赖它，
   // 若每次渲染重建会让 handleLinePress 引用跟着变，LrcLine 的 memo 比较器
   // （onPress 引用比较）将永远失效，行切换时全部可见行都被迫重渲染。
@@ -428,6 +439,13 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
     // 非强制 + 同一行 + 当前行已在可视舒适区内（距目标 < 15% 视高）则跳过本次滚动（防抖动）；
     // 跨行切换 / 强制场景无条件滚动到中央，保证高亮行与音频同步且居中。
     if (!force && !lineChanged && Math.abs(targetOffset - scrollYRef.current) < listHeight * 0.15) return
+    // 非强制 + 连续滚动循环正在跑：不自己滚（见 isScrollLoopRunningRef 的单写者说明），
+    // 把这次定位排给循环，由它按统一的滑动轨迹落地。
+    if (!force && isScrollLoopRunningRef.current) {
+      pendingGlideRef.current = { index, target: targetOffset }
+      lastScrolledLineRef.current = index
+      return
+    }
     try {
       // force=true（切回歌词页 / 切歌 / 初次加载 / 拖动 / 点击）时立即定位，不用动画，避免高亮行“姗姗来迟”。
       flatListRef.current.scrollToOffset({ offset: targetOffset, animated: !force })
@@ -440,6 +458,9 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
         // 硬跳定位后取消进行中的切行滑动与未走完的停留窗口，否则下一帧会被滑动轨迹
         // 拉回旧位置、或被停留窗口冻住；同时把“上一次滚动到的行”对齐，避免下一帧把
         // 这次硬跳当成换行再滑一次。
+        // 已经硬跳到目标，排队中的非强制滑动请求随之作废（它的落点可能来自旧布局，
+        // 由循环按当前行重算即可）。
+        pendingGlideRef.current = null
         glideStartTsRef.current = -1
         lineChangeTsRef.current = -1
         glideStartedRef.current = true
@@ -510,7 +531,25 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
     // 末位参数 false：统一用非激活行高做基准，切行前后同基准，不会突跳。
     let i = lineRef.current.line
     if (i < 0 || i >= lyricLines.length) i = 0
-    const continuousOffset = lyricScrollLayoutRef.current.getTargetOffsetPrecise(i, listHeight, lyricLines, 0.5, paddingV, 0, false)
+    let continuousOffset = lyricScrollLayoutRef.current.getTargetOffsetPrecise(i, listHeight, lyricLines, 0.5, paddingV, 0, false)
+    // 消费「播放中排入的非强制定位请求」（测量回正 / 停手回位，见 isScrollLoopRunningRef 注释）：
+    // 把它当成一次正常的换行滑动来跑 —— 起点取当前位置（位移连续、不跳变），落点用请求里
+    // 已经算好的 targetOffset（一次性定位按激活行高算，比循环的常态口径更贴近真实居中位置）。
+    const pendingGlide = pendingGlideRef.current
+    if (pendingGlide) {
+      pendingGlideRef.current = null
+      i = pendingGlide.index
+      continuousOffset = pendingGlide.target
+      // 落点行已经指定：取消停留窗口、并把「上一次滚动到的行」对齐到它。否则下面的换行
+      // 分支会把这次定位当成一次新换行 —— 先冻满 600ms 停留窗口再滑，这段停顿就是
+      // 用户看到的「停在错误的位置」。
+      lineChangeTsRef.current = -1
+      glideStartedRef.current = true
+      lastContinuousIndexRef.current = i
+      glideFromRef.current = smoothOffsetRef.current
+      glideToRef.current = continuousOffset
+      glideStartTsRef.current = ts
+    }
     if (i !== lastContinuousIndexRef.current) {
       // REF 把换行分两类（REF Vertical/Lyric.tsx:290-298）：连续推进一行（diff==1）先停留
       // 600ms 再滑；非连续跳变立即定位。恢复首帧 lastContinuousIndexRef=-1 属未知态，按跳变处理。
@@ -613,17 +652,8 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
     }
   }
 
-  const onScrollEndDrag = () => {
-    if (!isPauseScrollRef.current) return
-    if (!isOverlayShownRef.current) {
-      // 全程没动过（横向翻页被外层 PagerView 抢走手势、或只是轻点了一下）：
-      // 直接解除定位态，既不显示浮层也不启动回位倒计时，避免列表白冻 3 秒。
-      isPauseScrollRef.current = false
-      // 必须一并清空：handleScroll 用「dragStartOffsetRef 非空」判断是否处于手动定位态，
-      // 留着一个过期的起点，后续自动跟随的滚动事件就会被当成用户在拖、把浮层弹出来。
-      dragStartOffsetRef.current = null
-      return
-    }
+  // 停手回位的统一入口（松手 + 惯性结束都走这里），每次都重新计时。
+  const armIdleReturn = () => {
     if (scrollTimoutRef.current) clearTimeout(scrollTimoutRef.current)
     scrollTimoutRef.current = setTimeout(() => {
       scrollTimoutRef.current = null
@@ -640,8 +670,35 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
       // 后同样要平滑回到高亮行（Bug 5）。同屏小歌词 MiniLyric 的停手回位本来就
       // 不判断 isPlay，这里与它对齐。注意：参考工程此回调带「暂停即 return」守卫，
       // 本行属对参考行为的有意分歧，不是移植遗漏——不要以参考工程为「正确行为」依据。
+      // 播放中这一句只会「排一个滑动任务」给连续滚动循环（单写者不变式，见
+      // isScrollLoopRunningRef 注释），回位轨迹与换行滑动完全一致。
       handleScrollToActive()
     }, IDLE_RETURN_MS)
+  }
+
+  const onScrollEndDrag = () => {
+    if (!isPauseScrollRef.current) return
+    if (!isOverlayShownRef.current) {
+      // 全程没动过（横向翻页被外层 PagerView 抢走手势、或只是轻点了一下）：
+      // 直接解除定位态，既不显示浮层也不启动回位倒计时，避免列表白冻 3 秒。
+      isPauseScrollRef.current = false
+      // 必须一并清空：handleScroll 用「dragStartOffsetRef 非空」判断是否处于手动定位态，
+      // 留着一个过期的起点，后续自动跟随的滚动事件就会被当成用户在拖、把浮层弹出来。
+      dragStartOffsetRef.current = null
+      return
+    }
+    armIdleReturn()
+  }
+
+  // 惯性滚动结束才算真正「停手」：重新计时，避免惯性还没停就触发回位。
+  // 此前本组件没有这个回调（同屏小歌词 MiniLyric 的 handleMomentumScrollEnd 一直有）：
+  // 手指抬起后列表还在惯性滑动（可达 1s+），而 IDLE_RETURN_MS 从抬手那一刻就开始走，
+  // 计时到点时列表仍在减速 —— 回位滚动和惯性滚动同时在推同一个偏移，观感就是
+  // 「抖一下、再被拽回去」（回跳）。现在惯性结束会把计时重新起算，回位必定发生在列表
+  // 真正静止之后。与 MiniLyric 同口径的两个前置条件（在定位态 + 浮层已显示）也一并保留。
+  const onMomentumScrollEnd = () => {
+    if (!isPauseScrollRef.current || !isOverlayShownRef.current) return
+    armIdleReturn()
   }
 
   // 点浮层的播放三角：从虚线指向的那一行开始播。
@@ -779,6 +836,9 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
     lineChangeTsRef.current = -1
     glideStartedRef.current = true
     lastContinuousIndexRef.current = -1
+    // 上一首歌排队中的非强制滑动请求随之作废：它的落点是按**旧歌词表**算出来的偏移，
+    // 留着会在新歌里滑到一个毫无关系的行位置。
+    pendingGlideRef.current = null
     if (!lyricLines.length) {
       pendingInitialScrollRef.current = false
       isPauseScrollRef.current = false
@@ -847,6 +907,10 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
       return
     }
     let rafId = 0
+    // 循环存活标记：handleScrollToActive 的非强制分支据此决定「自己滚」还是「排给循环」
+    // （单写者不变式，见 isScrollLoopRunningRef 声明处）。门控比循环体自身还严一档：
+    // 只有真的起了 rAF 才算「在跑」。
+    isScrollLoopRunningRef.current = true
     const loop = (ts: number) => {
       if (isPauseScrollRef.current) {
         wasPauseRef.current = true
@@ -870,7 +934,10 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
       rafId = requestAnimationFrame(loop)
     }
     rafId = requestAnimationFrame(loop)
-    return () => { cancelAnimationFrame(rafId) }
+    return () => {
+      isScrollLoopRunningRef.current = false
+      cancelAnimationFrame(rafId)
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active, isPlay, panelVisible, lyricLines])
 
@@ -1043,6 +1110,8 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
         scrollEventThrottle={16}
         onScrollBeginDrag={handleScrollBeginDrag}
         onScrollEndDrag={onScrollEndDrag}
+        // 惯性结束才算真正停手：把回位倒计时重新起算（见 onMomentumScrollEnd 注释）
+        onMomentumScrollEnd={onMomentumScrollEnd}
         // 首屏把整首歌的歌词行全部渲染一次（而不是只渲染前 60 行）：
         // 每行高度只能由 onLayout 实测，未渲染过的行只能用「已测量行平均高度」估算。
         // 一旦播放中途拖动进度条跳到中后段，FlatList 只会渲染目标附近的窗口，

@@ -56,18 +56,24 @@ export default memo(({ onBack }: { onBack?: () => void }) => {
           flexGrow: 1.45,
           // 按钮底色随「按钮透明度」设置淡出；图标/文字色不动
           // （不用容器 style.opacity，否则内容会一起变淡）
-          backgroundColor: applyOpacity(theme['c-primary'], buttonOpacity),
+          //
+          // 底色由「主色实底」改为淡灰 c-primary-background（与「收藏歌单」同一个键）：
+          // 需求是「播放全部的图标与文字改成收藏歌单的文字色」，而收藏歌单的文字色
+          // c-primary-font 在主题里**就等于主色 c-primary**（theme/themes/index.ts:79）。
+          // 主色文字压在原来的主色实底上会完全看不见，所以必须同时把底色降为淡灰。
+          // 改完三颗按钮（播放全部 / 收藏歌单 / 返回）的底色与文字色完全相同。
+          backgroundColor: applyOpacity(theme['c-primary-background'], buttonOpacity),
           // 三颗按钮共用 styles.controlBtn 的静态高 44，行内覆盖「按钮圆角」
           borderRadius: buttonRadius(44),
         })}
       >
         <View style={styles.primaryContent}>
-          <Icon name="play" size={15} color={theme['c-primary-light-1000']} />
+          <Icon name="play" size={15} color={theme['c-primary-font']} />
           {/* 图标与文字之间的 6pt 间距只属于这一颗（唯一带图标的按钮）：
               以前它写在共用的 controlBtnText 里，后两颗（收藏歌单 / 返回）没有图标
               却被一起往右推了 6pt —— 按钮内容看起来「不居中」。
               现在间距只作用在本按钮的文字上，另外两颗的文字严格居中。 */}
-          <Text style={{ ...styles.controlBtnText, marginLeft: 6, color: theme['c-primary-light-1000'] }}>
+          <Text style={{ ...styles.controlBtnText, marginLeft: 6, color: theme['c-primary-font'] }}>
             {t('play_all')}
           </Text>
           {/* 右侧补一块与「图标宽 + 6pt 间距」等宽的对称留白。
