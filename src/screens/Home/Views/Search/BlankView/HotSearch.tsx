@@ -56,7 +56,8 @@ const ListItem = ({
       }}
     >
       <Icon name="search-2" size={16} color={theme['c-primary']} style={styles.icon} />
-      <Text color={theme['c-font']} size={13}>
+      {/* 左对齐后词条可能超出胶囊（48% 宽、固定 44 高），按单行截断 */}
+      <Text color={theme['c-font']} size={13} style={styles.keyword} numberOfLines={1}>
         {keyword}
       </Text>
     </Button>
@@ -131,7 +132,9 @@ const styles = createStyle({
     width: '48%',
     height: 44,
     flexDirection: 'row',
-    justifyContent: 'center',
+    // 图标 + 文字整体左对齐（用户第 11 轮第 1 条）：原先居中，两列胶囊里的词条
+    // 由于长度不同起点参差，视觉上既不像列表也没法纵向对齐。
+    justifyContent: 'flex-start',
     alignItems: 'center',
     paddingHorizontal: designSpacing.md,
     borderRadius: 22,

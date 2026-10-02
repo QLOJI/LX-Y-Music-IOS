@@ -29,6 +29,9 @@ export interface HeaderBarProps {
   onOpenSearch: SearchInputProps['onFocus']
   onCancelSearch: () => void
   onShowTipList: SearchInputProps['onTouchStart']
+  // 上报搜索框自身几何（相对页面坐标），供筛选建议浮层「贴搜索框下端 + 等宽」定位
+  // （用户第 11 轮第 8 条）
+  onSearchBarLayout?: (rect: { x: number, y: number, width: number, height: number }) => void
 }
 
 export interface HeaderBarType {
@@ -48,6 +51,7 @@ export default forwardRef<HeaderBarType, HeaderBarProps>(
     onOpenSearch,
     onCancelSearch,
     onShowTipList,
+    onSearchBarLayout,
   }, ref) => {
     const searchInputRef = useRef<SearchInputType>(null)
     const theme = useTheme()
@@ -55,6 +59,9 @@ export default forwardRef<HeaderBarType, HeaderBarProps>(
     const statusBarHeight = useStatusbarHeight()
     const t = useI18n()
     const buttonRadius = useButtonRadius()
+    // 容器上内边距：既是 styles.container 的 paddingTop，也是「搜索框 onLayout 相对
+    // openHeader 的 y」换算成页面坐标时要补的偏移（openHeader 是容器的第一个子元素）
+    const containerPaddingTop = Math.max(designSpacing.sm, statusBarHeight - designSpacing.md)
 
     // 搜索平台胶囊：底色随「按钮透明度」淡出，文字色不动。只改颜色 alpha，
     // 不能用容器 style.opacity——那会把胶囊文字一起变淡。
@@ -91,10 +98,17 @@ export default forwardRef<HeaderBarType, HeaderBarProps>(
     )
 
     return (
-      <View style={[styles.container, { paddingTop: Math.max(designSpacing.sm, statusBarHeight - designSpacing.md) }]}>
+      <View style={[styles.container, { paddingTop: containerPaddingTop }]}>
         <View style={styles.openHeader}>
           {/* 搜索框容器是输入控件（不是按钮），不随「按钮透明度」变化 */}
           <View
+            onLayout={({ nativeEvent }) => {
+              if (!onSearchBarLayout) return
+              const { x, y, width, height } = nativeEvent.layout
+              // y 是相对 openHeader 的（该行无上下内边距，搜索框是行内最高元素），
+              // 加上容器上内边距才是页面坐标
+              onSearchBarLayout({ x, y: containerPaddingTop + y, width, height })
+            }}
             style={{
               ...styles.searchBar,
               flexShrink: 1,
@@ -172,16 +186,17 @@ const styles = createStyle({
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: designSpacing.lg,
+    // 搜索框行 → 「搜索平台」标题行的间距（controlGap，与下方各行间距同值）。
+    // 必须挂在**行**上而不是搜索框上：挂在搜索框上时本行高度会变成 48 + controlGap，
+    // 「取消」文字按整行垂直居中就会比搜索框中心低半个 controlGap（用户第 11 轮
+    // 第 6 条「取消文字偏下」）。挂到行上后行高 = 搜索框高 = 48，两者自然同轴。
+    marginBottom: controlGap,
   },
   searchBar: {
     flexDirection: 'row',
     alignItems: 'center',
     height: 48,
     marginRight: designSpacing.sm,
-    // 搜索框行 → 「搜索平台」标题行：controlGap（与下方各行间距同值）。
-    // 这里必须由本行承担间距：下方 platformHeader 原本另有 marginTop xs(8)，
-    // 两者相加是 20pt，已去掉那一个。
-    marginBottom: controlGap,
     borderRadius: 999,
     borderWidth: 1,
     zIndex: 2,

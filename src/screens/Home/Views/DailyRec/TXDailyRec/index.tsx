@@ -183,10 +183,13 @@ const styles = createStyle({
     lineHeight: pageTitleLineHeight,
   },
   // 四个 tab 同一行：横向滚动兜底，字号放大 / 窄屏放不下时可左右滑动，不会换行或被裁掉
+  // 标题行 → 按钮行 的间距（用户第 11 轮第 2 条：原来的 4pt 太近，按钮行几乎贴在标题上）。
+  // 取值对齐排行榜页同位置的 HeaderBar.titleRow.marginBottom = designSpacing.sm(12)，
+  // 「每日推荐栏 → 下方按钮」与「排行榜标题 → 下方内容」现在是同一个间距。
   tabsScroll: {
     flexGrow: 0,
     flexShrink: 1,
-    marginTop: 4,
+    marginTop: designSpacing.sm,
   },
   tabsContainer: {
     flexDirection: 'row',

@@ -60,31 +60,33 @@ export default forwardRef<BlankViewType, BlankViewProps>(({ header, onSearch }, 
     [visible],
   )
 
-  return visible ? (
-    isShowHotSearch || isShowHistorySearch ? (
-      <ScrollView>
-        {header}
-        <View style={styles.content}>
-          {isShowHotSearch ? (
-            <View style={cardStyle}>
-              <HotSearch ref={hotSearchRef} onSearch={onSearch} />
-            </View>
-          ) : null}
-          {isShowHistorySearch ? (
-            <View style={cardStyle}>
-              <HistorySearch ref={historySearchRef} onSearch={onSearch} />
-            </View>
-          ) : null}
-        </View>
-      </ScrollView>
-    ) : (
-      <View style={styles.welcome}>
-        <Text size={22} color={theme['c-font-label']}>
-          {t('search__welcome')}
-        </Text>
+  // 骨架（搜索框 + 类型选择器 + 区块容器）随组件挂载立刻渲染，不再等 show()：
+  // 以前 `visible` 为 false 时整棵返回 null，点「取消」时结果列表先卸载、空白页又晚一帧
+  // 才出现，中间那几帧整页空白就是用户看到的「整屏闪一下」（用户第 11 轮第 5 条）。
+  // visible 现在只用于「首帧挂载后补一次数据拉取」的判断，不再参与渲染。
+  return isShowHotSearch || isShowHistorySearch ? (
+    <ScrollView>
+      {header}
+      <View style={styles.content}>
+        {isShowHotSearch ? (
+          <View style={cardStyle}>
+            <HotSearch ref={hotSearchRef} onSearch={onSearch} />
+          </View>
+        ) : null}
+        {isShowHistorySearch ? (
+          <View style={cardStyle}>
+            <HistorySearch ref={historySearchRef} onSearch={onSearch} />
+          </View>
+        ) : null}
       </View>
-    )
-  ) : null
+    </ScrollView>
+  ) : (
+    <View style={styles.welcome}>
+      <Text size={22} color={theme['c-font-label']}>
+        {t('search__welcome')}
+      </Text>
+    </View>
+  )
 })
 
 const styles = createStyle({

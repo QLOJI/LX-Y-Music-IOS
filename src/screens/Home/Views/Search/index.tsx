@@ -1,6 +1,6 @@
 import { useRef, useEffect, useState, useCallback, useMemo } from 'react'
 import { InteractionManager } from 'react-native'
-import { type LayoutChangeEvent, View, BackHandler, KeyboardAvoidingView, Platform, StyleSheet } from 'react-native'
+import { type LayoutChangeEvent, View, BackHandler } from 'react-native'
 import HeaderBar, { type HeaderBarProps, type HeaderBarType } from './HeaderBar'
 import SearchTypeSelector from './SearchTypeSelector'
 import searchState, { type SearchType } from '@/store/search/state'
@@ -35,6 +35,19 @@ export default () => {
   const timeoutRef = useRef<NodeJS.Timeout | null>(null)
   const [selectedList, setSelectedList] = useState<ListInfoItem | null>(null)
   const [headerHeight, setHeaderHeight] = useState(0)
+  // 搜索框自身的几何（相对页面）。筛选建议浮层要「上贴搜索框下端、左右与搜索框等宽」，
+  // 不能再拿整块 header 的高度当上边距（那会落到平台胶囊/类型选择器下面），也不能
+  // 铺满整页宽（用户第 11 轮第 8 条）。由 HeaderBar 的 onLayout 上报。
+  const [searchBarRect, setSearchBarRect] = useState<{
+    x: number, y: number, width: number, height: number
+  } | null>(null)
+  const handleSearchBarLayout = useCallback((rect: { x: number, y: number, width: number, height: number }) => {
+    setSearchBarRect(prev => (
+      prev && prev.x == rect.x && prev.y == rect.y && prev.width == rect.width && prev.height == rect.height
+        ? prev
+        : rect
+    ))
+  }, [])
   const [source, setSource] = useState<SearchInfo['source']>(searchInfo.current.source)
   const [sourceType, setSourceType] = useState<SearchInfo['searchType']>(searchInfo.current.searchType)
   const selectedListRef = useRef(selectedList)
@@ -249,6 +262,7 @@ export default () => {
         onOpenSearch={() => {}}
         onCancelSearch={handleCancelSearch}
         onShowTipList={handleShowTipList}
+        onSearchBarLayout={handleSearchBarLayout}
       />
       <View style={styles.typeRow}>
         <SearchTypeSelector />
@@ -256,16 +270,27 @@ export default () => {
     </View>
   )
 
-  const tipListTopStyle = useMemo(
-    () => (headerHeight ? { top: headerHeight } : undefined),
-    [headerHeight],
+  // 筛选建议浮层几何：搜索框下方贴边 + 与搜索框等宽（用户第 11 轮第 8 条）。
+  // 搜索框几何来自 HeaderBar 的 onLayout；首帧（还没测量到）退回旧的「整块 header 下方 + 整宽」。
+  const tipListContainerStyle = useMemo(
+    () => searchBarRect
+      ? {
+          top: searchBarRect.y + searchBarRect.height,
+          left: searchBarRect.x,
+          width: searchBarRect.width,
+        }
+      : { top: headerHeight, left: 0, right: 0 },
+    [searchBarRect, headerHeight],
   )
 
   return (
-    // 键盘规避：键盘弹出时压缩结果列表高度，避免键盘遮挡列表底部（iOS 用 padding）
-    <KeyboardAvoidingView
+    // 刻意*不*用 KeyboardAvoidingView（用户第 11 轮第 4/5 条）：本页输入框在最上方，
+    // 键盘永远盖不到它，而 behavior='padding' 会让整块内容随键盘升降改高度——键盘收起时
+    // 就是这个「整页下移再上移」的抽动来源，点「取消」时（先 blur 再换页）叠在一起看就是
+    // 整屏闪一下。代价：键盘弹着时结果列表的底部被键盘盖住（可先收键盘或上滑列表），
+    // 换来的是键盘进出完全不改变布局。
+    <View
       style={styles.container}
-      behavior={Platform.OS == 'ios' ? 'padding' : undefined}
       onLayout={handleLayout}
     >
       { !selectedList && (
@@ -285,11 +310,11 @@ export default () => {
           />
         </View>
       ) : (
-        <View style={[styles.tipListContainer, tipListTopStyle]} pointerEvents="box-none">
+        <View style={[styles.tipListContainer, tipListContainerStyle]} pointerEvents="box-none">
           <TipList ref={searchTipListRef} onSearch={handleSearch} />
         </View>
       )}
-    </KeyboardAvoidingView>
+    </View>
   )
 }
 
@@ -311,7 +336,11 @@ const styles = createStyle({
     justifyContent: 'center',
   },
   tipListContainer: {
-    ...StyleSheet.absoluteFillObject,
+    // 几何（top/left/width 或 top/left/right）全部由行内 tipListContainerStyle 给出：
+    // 有搜索框测量值时贴搜索框下端并等宽，没有时退回旧的整宽布局。
+    // 这里只保留不随测量变化的定位基准与层级。
+    position: 'absolute',
+    bottom: 0,
     zIndex: 10,
   },
 })

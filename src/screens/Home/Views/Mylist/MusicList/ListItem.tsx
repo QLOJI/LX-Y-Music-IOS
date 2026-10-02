@@ -89,9 +89,12 @@ const ListItem = memo(
     const isWyLiked = useIsWyLiked(meta.songId)
     const txSongId = meta.id
     const isNumericId = txSongId && /^\d+$/.test(String(txSongId))
+    // 这里必须用上面的安全 meta（而不是 item.meta）：本地/下载任务转播放项、汽水(qs)等
+    // 经 filterListDetail 构造的歌曲没有 meta 字段，长按迷你播放器跳转到本页时会在渲染期
+    // 抛 `Cannot read property 'songmid' of undefined` 整列表崩掉（用户第 11 轮第 13 条）。
     const txSongMid = isNumericId
       ? String(txSongId)
-      : (item.meta as any).songmid || (item.meta as any).strMediaMid || (typeof item.id === 'string' && item.id.startsWith('tx_') ? item.id.slice(3) : item.id)
+      : (meta.songmid || meta.strMediaMid || (typeof item.id === 'string' && item.id.startsWith('tx_') ? item.id.slice(3) : item.id))
     const isTxLiked = useIsTxLiked(txSongMid)
     const isKgLiked = useIsKgLiked(meta.hash || meta.songId)
     const showLikeButton = item.source === 'wy' || item.source === 'tx' || item.source === 'kg'

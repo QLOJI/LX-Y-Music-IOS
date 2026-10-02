@@ -435,11 +435,13 @@ export default memo(() => {
               numColumns={isHorizontal ? 2 : 1}
               columnWrapperStyle={isHorizontal ? styles.columnWrapper : undefined}
               keyExtractor={item => item.id}
-              // 限制渲染窗口 + 离屏行视图摘除（iOS 滚动掉帧主杠杆）
+              // 限制渲染窗口减负；removeClippedSubviews 必须关闭：iOS 上新增行（下载刚完成
+              // 的歌曲进场）的离屏视图复用会让整行渲染成空白/白底，直到下一次重渲（点一下）
+              // 才恢复（用户第 11 轮第 12 条）。仓库内同类列表均已按此口径关闭。
               initialNumToRender={20}
               windowSize={5}
               maxToRenderPerBatch={10}
-              removeClippedSubviews={true}
+              removeClippedSubviews={false}
               updateCellsBatchingPeriod={50}
               renderItem={renderDownloadItem}
               ListEmptyComponent={
@@ -461,7 +463,8 @@ export default memo(() => {
               initialNumToRender={20}
               windowSize={5}
               maxToRenderPerBatch={10}
-              removeClippedSubviews={true}
+              // 同上：iOS 上开启离屏摘除会让新扫描/新下载进场的行整行变白，关闭
+              removeClippedSubviews={false}
               updateCellsBatchingPeriod={50}
               renderItem={renderLocalItem}
               ListEmptyComponent={
