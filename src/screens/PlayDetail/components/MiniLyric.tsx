@@ -21,14 +21,17 @@ import { useWindowSize } from '@/utils/hooks'
 import playerState from '@/store/player/state'
 import { getReturnDuration, IDLE_RETURN_MS, LINE_CHANGE_GLIDE_MS } from '@/screens/PlayDetail/lyricAnimation'
 
-// 迷你歌词 = 封面页上的「上一行 / 当前行 / 下一行」三行**定高**窗口。
+// 迷你歌词 = 封面页上的「上一行 / 当前行 / 下一行」**定窗**歌词窗（窗口高度固定，行高逐行算）。
 //
-// 定高是这一版的核心，三个历史问题都由它根治：
-//   1) 三行间距不等：行高由同一个常量算出，任意两行之间的净间距完全相等；
+// 定窗是这一版的核心，三个历史问题都由它根治：
+//   1) 三行间距不等：相邻两行文本之间的净间距恒为同一个 gap，与行高无关；
 //   2) 行数不足时高度塌缩、整块抖动：行数少于三行（首行/末行/歌词未就绪）时，
-//      内容上下留白各一排，块高始终 = 3 × 行高，绝不随内容变化；
+//      内容上下留白，块高始终 = 行数 × 最坏行高，绝不随内容变化；
 //   3) 换行时歌名等元素抖动：换行只改变列表的滚动位置（一次不重算目标的滚动动画），
-//      不改变任何一行的高度与字号（三行统一字号，当前行只靠颜色区分）。
+//      不改变任何一行的高度与字号（统一字号，当前行只靠颜色区分）。
+// 2026-10-02（第 16 轮第 8 条）：行高从「整首歌一个常量」改成「逐行按内容算」——
+// 只有**当前行**带真实翻译时那一行才多占一个翻译槽，其余行只占行盒 + 净间距，
+// 恢复重写前「翻译只跟当前行走」的密度（用户原话：现在间距太大了，还原以前的）。
 //
 // 交互：长按/拖动歌词进入手动定位态（浮层 = 虚线 + 时间 + 播放三角），
 // 停手 IDLE_RETURN_MS 后自动平滑回位到当前播放行并淡出浮层；点行文本仍切换到歌词页。
@@ -78,7 +81,7 @@ const calcMetrics = () => ({
 
 /**
  * 一行小歌词的整行高度（行盒 + 行间距；hasTranslation 时再叠加翻译行高度与它自己的间距）。
- * 与组件内部的 rowHeight **同源**（同一个 calcMetrics）。独立出来的唯一原因：
+ * 与组件内部的 baseRowHeight / worstRowHeight **同源**（同一个 calcMetrics）。独立出来的唯一原因：
  * 竖屏布局（VerticalNew）必须知道「一行小歌词至少多高」，
  * 才能把封面的尺寸上限压到「放得下这一行」——封面是 flexShrink:0 的居中块，
  * 小歌词被强制渲染 ≥1 行时多出来的高度会直接把封面顶到歌名上（用户报的越界）。
@@ -89,6 +92,11 @@ export const getMiniLyricRowHeight = (hasTranslation: boolean) => {
   const m = calcMetrics()
   return m.lineHeight + m.gap + (hasTranslation ? m.translationHeight + m.gap : 0)
 }
+// 「这一行真的有翻译」的判据：空串 / 纯空白不算。
+// 某些歌词源会给每一行都挂一条空翻译（[''] 或 [' ']），旧判据 (extendedLyrics.length > 0)
+// 会把整首歌误判成「有翻译」，于是每一行都留出一个看不见的翻译槽，行与行之间空出一大截 ——
+// 这是用户第 16 轮第 8 条「现在间距太大」的一种来源，必须按「有真内容」判断。
+const hasRealTranslation = (line: Line | undefined) => ((line?.extendedLyrics?.[0] ?? '').trim().length > 0)
 // 空占位必须用不换行空格：RN 里空字符串的 <Text> 高度为 0
 const BLANK = ' '
 
@@ -153,20 +161,41 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0 }: MiniLyricProps) =>
   // 三个尺寸常量（模块级 calcMetrics，与 getMiniLyricRowHeight 共享同一份算式）
   const metrics = useMemo(() => calcMetrics(), [])
 
-  // 翻译/罗马音：旧实现只给当前行挂一行翻译。定高窗口里「某些行比别人高」会直接破坏
-  // 等距与居中，所以只要整首歌存在翻译，就为每一行预留同一高度（没有的行渲染不可见占位）。
-  const hasTranslation = useMemo(
-    () => lyricLines.some(line => (line.extendedLyrics?.length ?? 0) > 0),
-    [lyricLines],
+  // 【第 16 轮第 8 条】恢复「以前」的行距口径：只有**当前行**挂翻译（重写前就是这样），
+  // 其余行只占行盒 + 净间距。旧的「整首歌只要有翻译 ⇒ 每一行都预留翻译槽」会把没有翻译的
+  // 行也撑到 48pt（22 行盒 + 4 + 18 翻译 + 4），两行主歌词之间空出一大截，观感就是
+  // 「间距太大、还原以前的」——用户本轮的原话。
+  // 现按行给高（rowHeights）：相邻文本之间的**净间距仍然恒为 gap**（第 2 轮「间距要相同」
+  // 的要求不破），而窗口高度与行数定档仍按**最坏情况**算（见 worstRowHeight），
+  // 块高与页面级布局不随歌词内容变化，不会引出整块跳动的老毛病。
+  const songHasTranslation = useMemo(() => lyricLines.some(hasRealTranslation), [lyricLines])
+  const translationSlot = metrics.translationHeight + metrics.gap
+  const baseRowHeight = metrics.lineHeight + metrics.gap
+  const worstRowHeight = baseRowHeight + (songHasTranslation ? translationSlot : 0)
+  const rowHeights = useMemo(
+    () => lyricLines.map((line, index) =>
+      baseRowHeight + (index === activeLine && hasRealTranslation(line) ? translationSlot : 0),
+    ),
+    [lyricLines, activeLine, baseRowHeight, translationSlot],
   )
-
-  const rowHeight = metrics.lineHeight + metrics.gap + (hasTranslation ? metrics.translationHeight + metrics.gap : 0)
+  // 每行在内容坐标系里的起点（前缀和）。滚动目标、getItemLayout、定位浮层三处同源，
+  // 保证「虚线指向的行」=「列表居中行」=「滚动目标行」永远一致。
+  const rowOffsets = useMemo(() => {
+    let acc = 0
+    return rowHeights.map((height) => {
+      const offset = acc
+      acc += height
+      return offset
+    })
+  }, [rowHeights])
 
   // 可用高度上限：优先用竖屏布局传入的 maxHeight（竖屏侧由页面容器实测高推导，
   // 表达式中不含小歌词自身高度）；未传时退回到不依赖外部测量的保守上限 ——
   // 小屏只留当前行，大屏按三行窗口给满。
   // 注意这里不是 `?? 0`：首帧实测还没回来时若当成 0，整块会先塌陷再弹开。
-  const limit = maxHeight ?? (winHeight < SMALL_WINDOW_HEIGHT ? rowHeight : rowHeight * FALLBACK_WINDOW_ROWS)
+  // 行数定档按最坏情况（有翻译的行）算：窗口高度必须在整首歌内保持恒定，
+  // 不能一会儿按 26pt 行高定档、一会儿按 48pt 定档，否则换行时块高会跟着变。
+  const limit = maxHeight ?? (winHeight < SMALL_WINDOW_HEIGHT ? worstRowHeight : worstRowHeight * FALLBACK_WINDOW_ROWS)
 
   // 档位（能放几行）必须断开「行数 → 自身高度 → 实测可用高度 → 行数」的自反馈环：
   // 旧口径的 maxHeight 把小歌词自身高度也算了进去（自己撑高后它反而变小），若在阈值上
@@ -178,7 +207,7 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0 }: MiniLyricProps) =>
   // 两个方向都要多走一个余量才切档 ⇒ 环路增益 < 1，不自激。
   // 用 ref（而不是 state）同步决定档位：每次渲染都按当前 limit 直接算出结果，
   // 不产生「先按旧档渲染一帧、再按新档重渲染」的中间帧 —— 中间帧本身就是一次抖动。
-  const fitRows = Math.max(1, Math.min(MAX_WINDOW_ROWS, Math.floor(limit / rowHeight)))
+  const fitRows = Math.max(1, Math.min(MAX_WINDOW_ROWS, Math.floor(limit / worstRowHeight)))
   const hysteresis = Math.max(scaleSizeH(ROW_SWITCH_HYSTERESIS), 1)
   const prevRowCount = rowCountRef.current
   let rowCount: number
@@ -189,22 +218,35 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0 }: MiniLyricProps) =>
     // 手指下正在定位的那一行会突然跳走。松手后的下一次渲染自然回到 fitRows。
     rowCount = prevRowCount
   } else if (fitRows > prevRowCount) {
-    rowCount = limit >= (prevRowCount + 1) * rowHeight + hysteresis ? fitRows : prevRowCount
+    rowCount = limit >= (prevRowCount + 1) * worstRowHeight + hysteresis ? fitRows : prevRowCount
   } else if (fitRows < prevRowCount) {
-    rowCount = limit < prevRowCount * rowHeight - hysteresis ? fitRows : prevRowCount
+    rowCount = limit < prevRowCount * worstRowHeight - hysteresis ? fitRows : prevRowCount
   } else {
     rowCount = fitRows
   }
   rowCountRef.current = rowCount
-  // 上下各留 (行数-1)/2 排：行号 i 居中 ⇔ 滚动偏移 = i × 行高；块高恒定为 行数 × 行高
-  const topPadding = ((rowCount - 1) / 2) * rowHeight
-  const containerHeight = rowCount * rowHeight
+  // 块高恒定为 行数 × 最坏行高：行高逐行化之后它仍是一个与歌词内容无关的定值
+  //（每行的实际高度见 rowHeights，当前行带翻译时那一行更高一些）。
+  const containerHeight = rowCount * worstRowHeight
+  // 上下留白按首行 / 末行各自的真实高度给：这样「行居中 ⇔ 滚动偏移 = 行中心 − 窗口中心」
+  // 这条算式对第一行（偏移 0）和最后一行（撞底）也精确成立，不会偏半行。
+  const topPadding = Math.max((containerHeight - (rowHeights[0] ?? baseRowHeight)) / 2, 0)
+  const bottomPadding = Math.max((containerHeight - (rowHeights[rowHeights.length - 1] ?? baseRowHeight)) / 2, 0)
+
+  // 把第 index 行滚到窗口正中：定高时代它就是 index × 行高，行高逐行化之后改成
+  // 「该行垂直中心 − 窗口中心」（topPadding + 行前缀和 + 行高/2 − containerHeight/2），
+  // 首行结果为 0（正好落在留白里），末行被 contentContainer 的下留白托住。
+  const getScrollOffset = useCallback((index: number) => {
+    const i = Math.min(Math.max(index, 0), Math.max(rowHeights.length - 1, 0))
+    const height = rowHeights[i] ?? baseRowHeight
+    const top = topPadding + (rowOffsets[i] ?? i * worstRowHeight)
+    return Math.max(top + height / 2 - containerHeight / 2, 0)
+  }, [rowHeights, rowOffsets, topPadding, containerHeight, baseRowHeight, worstRowHeight])
 
   // 歌词文本的左右内缩（pt，屏幕坐标系）：自己那份基准内缩 + 外层为对齐加的内边距
   // （外层内边距由根节点的负 margin 抵消掉了，文本要把它补回来，左缘才与歌名同一条竖线）
   const lineInsetH = useMemo(() => bleedH + scaleSizeW(BASE_LINE_INSET_H), [bleedH])
 
-  const rowStyle = useMemo<StyleProp<ViewStyle>>(() => ({ height: rowHeight }), [rowHeight])
   const textStyle = useMemo<StyleProp<TextStyle>>(() => ({ textAlign, lineHeight: metrics.lineHeight }), [textAlign, metrics.lineHeight])
   const translationStyle = useMemo<StyleProp<TextStyle>>(
     () => ({ textAlign, lineHeight: metrics.translationHeight, marginTop: metrics.gap }),
@@ -240,7 +282,7 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0 }: MiniLyricProps) =>
       onDone?.()
       return
     }
-    const offset = Math.max(0, index) * rowHeight
+    const offset = getScrollOffset(index)
     cancelScroll()
     const from = scrollInfoRef.current?.contentOffset.y
     const distance = from == null ? 0 : offset - from
@@ -275,19 +317,19 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0 }: MiniLyricProps) =>
       isAutoScrollRef.current = false
     }
     rafId = requestAnimationFrame(step)
-  }, [rowHeight, cancelScroll])
+  }, [getScrollOffset, cancelScroll])
 
   // 播放行自动跟随：跨行距离很远（进度条 seek / 恢复播放）时直接落位，不做长距离快速滑动
   const followActiveLine = useCallback((index: number) => {
     const info = scrollInfoRef.current
-    const offset = Math.max(0, index) * rowHeight
-    if (info && Math.abs(offset - info.contentOffset.y) > rowHeight * FAR_JUMP_ROWS) {
+    const offset = getScrollOffset(index)
+    if (info && Math.abs(offset - info.contentOffset.y) > worstRowHeight * FAR_JUMP_ROWS) {
       cancelScroll()
       listRef.current?.scrollToOffset({ offset, animated: false })
       return
     }
     animateToLine(index, LINE_CHANGE_GLIDE_MS)
-  }, [animateToLine, rowHeight, cancelScroll])
+  }, [animateToLine, getScrollOffset, worstRowHeight, cancelScroll])
 
   // 复位：切歌 / 歌词就绪时立即（无动画）回到当前行，避免从上一次的滚动位置长距离滑过去
   const resetScroll = useCallback(() => {
@@ -300,8 +342,8 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0 }: MiniLyricProps) =>
     }
     cancelScroll()
     playLineRef.current?.setVisible(false)
-    listRef.current?.scrollToOffset({ offset: Math.max(0, activeLineRef.current) * rowHeight, animated: false })
-  }, [rowHeight, cancelScroll])
+    listRef.current?.scrollToOffset({ offset: getScrollOffset(activeLineRef.current), animated: false })
+  }, [getScrollOffset, cancelScroll])
 
   // 歌词换行：把当前行滑到窗口正中（时长与其他歌词动效同源）
   useEffect(() => {
@@ -321,9 +363,9 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0 }: MiniLyricProps) =>
     playLineRef.current?.updateLyricLines(lyricLines)
     playLineRef.current?.updateLayoutInfo({
       spaceHeight: topPadding,
-      lineHeights: lyricLines.map(() => rowHeight),
+      lineHeights: rowHeights,
     })
-  }, [lyricLines, rowHeight, topPadding])
+  }, [lyricLines, rowHeights, topPadding])
 
   useEffect(() => () => {
     // 卸载时清掉定时器与动画，避免对已卸载的列表做 scrollToOffset
@@ -378,11 +420,11 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0 }: MiniLyricProps) =>
     cancelScroll()
     playLineRef.current?.setVisible(true)
     if (!scrollInfoRef.current) {
-      list.scrollToOffset({ offset: Math.max(0, activeLineRef.current) * rowHeight + SCROLL_NUDGE, animated: false })
+      list.scrollToOffset({ offset: getScrollOffset(activeLineRef.current) + SCROLL_NUDGE, animated: false })
     }
     // 松手后不动也会自动收起浮层并回位（回位目标就是当前播放行，位移 = 上面那半个像素）
     startIdleTimer()
-  }, [cancelScroll, rowHeight, startIdleTimer])
+  }, [cancelScroll, getScrollOffset, startIdleTimer])
 
   const handleScroll = useCallback(({ nativeEvent }: NativeSyntheticEvent<NativeScrollEvent>) => {
     scrollInfoRef.current = nativeEvent
@@ -445,7 +487,8 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0 }: MiniLyricProps) =>
     const endTime = lyricLines[index + 1]?.time ?? item.time + 4000
     return (
       <Pressable
-        style={[styles.line, rowStyle]}
+        // 行高逐行化（第 16 轮第 8 条）：当前行带翻译时这一行更高，其余行只占行盒 + 净间距
+        style={[styles.line, { height: rowHeights[index] ?? baseRowHeight }]}
         onPress={handlePress}
         onLongPress={handleLongPress}
         accessibilityRole="button"
@@ -481,10 +524,12 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0 }: MiniLyricProps) =>
               </Text>
               )
         }
-        {hasTranslation && (
+        {// 【第 16 轮第 8 条】只有当前行挂翻译（与重写前一致）：行高与内容一一对应，
+        // 不会再出现「整首歌有翻译 ⇒ 每一行都空出一个看不见的翻译槽」的大间距
+        isActive && hasRealTranslation(item) && (
           <Text
             size={TRANSLATION_FONT_SIZE}
-            color={isActive ? activeColor : inactiveColor}
+            color={activeColor}
             style={translationStyle}
             numberOfLines={1}
           >
@@ -493,15 +538,15 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0 }: MiniLyricProps) =>
         )}
       </Pressable>
     )
-  }, [activeLine, wordsByIndex, lyricLines, isKaraoke, rowStyle, textStyle, translationStyle, hasTranslation, activeColor, inactiveColor, handlePress, handleLongPress])
+  }, [activeLine, wordsByIndex, lyricLines, isKaraoke, baseRowHeight, rowHeights, textStyle, translationStyle, activeColor, inactiveColor, handlePress, handleLongPress])
 
   const getKey = useCallback((_item: Line, index: number) => `${index}`, [])
   // 定高行：getItemLayout 精确（不需要像大歌词那样动态测量），虚拟化窗口与滚动目标都以它为准
   const getItemLayout = useCallback((_data: unknown, index: number) => ({
-    length: rowHeight,
-    offset: rowHeight * index,
+    length: rowHeights[index] ?? baseRowHeight,
+    offset: topPadding + (rowOffsets[index] ?? index * worstRowHeight),
     index,
-  }), [rowHeight])
+  }), [rowHeights, rowOffsets, topPadding, baseRowHeight, worstRowHeight])
 
   return (
     // marginHorizontal: -bleedH 把小歌词的 frame 左右各外扩 bleedH，顶到屏幕边缘 ——
@@ -516,11 +561,11 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0 }: MiniLyricProps) =>
         keyExtractor={getKey}
         getItemLayout={getItemLayout}
         style={styles.list}
-        // 上下各留一排（单行模式为 0）：行号 i 居中 ⇔ 滚动偏移 = i × 行高，
-        // 定位浮层的基准线（容器 50%）因此永远压在窗口正中那一行上。
+        // 上下留白按首行/末行真实高度给：行号 i 居中 ⇔ 滚动偏移 = 该行中心 − 窗口中心
+        //（见 getScrollOffset），定位浮层的基准线（容器 50%）因此永远压在窗口正中那一行上。
         // 左右内缩放在 contentContainer（而不是容器 padding）上：容器 padding 会把
         // 绝对定位的浮层一起缩进去，而列表内容的左右留白与滚动偏移（纵向）无关。
-        contentContainerStyle={{ paddingTop: topPadding, paddingBottom: topPadding, paddingHorizontal: lineInsetH }}
+        contentContainerStyle={{ paddingTop: topPadding, paddingBottom: bottomPadding, paddingHorizontal: lineInsetH }}
         showsVerticalScrollIndicator={false}
         scrollEventThrottle={16}
         onScroll={handleScroll}
