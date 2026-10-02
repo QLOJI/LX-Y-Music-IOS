@@ -3,7 +3,7 @@ import { StyleSheet, View } from 'react-native'
 
 import SubTitle from '../../components/SubTitle'
 import Button from '../../components/Button'
-import CheckBox from '@/components/common/CheckBox'
+import CheckBoxGrid, { CheckBoxGridCell } from '../../components/CheckBoxGrid'
 import { toast, confirmDialog, resetNotificationPermissionCheck, resetIgnoringBatteryOptimizationCheck } from '@/utils/tools'
 import { sizeFormate } from '@/utils'
 import { useSettingValue } from '@/store/setting/hook'
@@ -84,18 +84,20 @@ export default memo(() => {
             : t('setting_other_cache_size') + cacheSize}
         </Text>
       </View>
-      <View style={styles.limitList}>
+      {/* 第 19 轮第 4 条：6 个上限档走两列网格（CheckBoxGrid），勾选框钉在两条固定列线上。
+          此前是 flexWrap 行内独立卡片：「不限制 / 128MB / … / 2GB」宽度不一，
+          第二行起的勾选框 x 与第一行不等 —— 用户原话「资源缓存管理的勾选框也要上下对齐」。 */}
+      <CheckBoxGrid style={styles.limitList}>
         {CACHE_LIMIT_OPTIONS.map((opt) => (
-          <CheckBox
+          <CheckBoxGridCell
             key={opt.value}
-            marginRight={8}
             check={Number(cacheLimit) == opt.value}
             label={opt.label}
             onChange={() => { handleSetCacheLimit(opt.value) }}
             need
           />
         ))}
-      </View>
+      </CheckBoxGrid>
       <View style={styles.clearBtn}>
         <Button disabled={cleaning} onPress={handleCleanCache}>
           {t('setting_other_cache_clear_btn')}
@@ -110,8 +112,8 @@ const styles = StyleSheet.create({
     marginBottom: 5,
   },
   limitList: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
+    // 两列网格（勾选框同列）；行距由卡片自身的 marginBottom(8) 提供，
+    // 这里只保留与下方「清除缓存」按钮之间的 5pt
     marginBottom: 5,
   },
   clearBtn: {

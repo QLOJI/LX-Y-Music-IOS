@@ -1,7 +1,6 @@
 import { memo } from 'react'
-import { View } from 'react-native'
 import SubTitle from '../../components/SubTitle'
-import CheckBox from '@/components/common/CheckBox'
+import CheckBoxGrid, { CheckBoxGridCell } from '../../components/CheckBoxGrid'
 import { useI18n } from '@/lang'
 import { useSettingValue } from '@/store/setting/hook'
 import { updateSetting } from '@/core/common'
@@ -18,8 +17,11 @@ const SettingItem = ({ settingKey, label }: { settingKey: MenuSettingKey, label:
     updateSetting({ [settingKey]: newValue })
   }
 
+  // 第 19 轮第 4 条：两项走两列网格（CheckBoxGrid）。此前是「flexWrap 行内独立卡片」，
+  // 第二项「不喜欢」的勾选框落在行中间，与上方「添加到歌曲的位置」的勾选框列
+  // 都不在一条线上 —— 用户原话「菜单设置的勾选框也要和上面的对齐」。
   return (
-    <CheckBox
+    <CheckBoxGridCell
       check={value}
       onChange={handleChange}
       label={label}
@@ -41,10 +43,10 @@ export default memo(() => {
           信息量；去掉后勾选框回到与其它设置行同一条左基准线（卡片左缘 = 页面内容左缘，
           图标左缘 = +12），「按钮透明度」的淡出效果由卡片行自身承担（见 CheckBox
           card 变体的 contentStyle），视觉效果不变。 */}
-      <View style={styles.content}>
+      <CheckBoxGrid style={styles.content}>
         <SettingItem settingKey="menu.playLater" label={t('play_later')} />
         <SettingItem settingKey="menu.dislike" label={t('dislike')} />
-      </View>
+      </CheckBoxGrid>
     </SubTitle>
   )
 })
@@ -52,8 +54,6 @@ export default memo(() => {
 const styles = createStyle({
   content: {
     marginTop: designSpacing.xs,
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: designSpacing.xs,
+    // 两列网格（勾选框同列）；行距由卡片自身的 marginBottom(8) 提供
   },
 })

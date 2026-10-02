@@ -3,7 +3,7 @@ import { memo, useMemo } from 'react'
 import { StyleSheet, View } from 'react-native'
 
 import SubTitle from '../../components/SubTitle'
-import CheckBox from '@/components/common/CheckBox'
+import CheckBoxGrid, { CheckBoxGridCell } from '../../components/CheckBoxGrid'
 import { useI18n } from '@/lang'
 import { setFontSize } from '@/core/common'
 import { useFontSize } from '@/store/common/hook'
@@ -61,9 +61,11 @@ const SizeText = () => {
 const Item = ({ size, label }: { size: SIZE_TYPE, label: string }) => {
   const isActive = useActive(size)
   // const [toggleCheckBox, setToggleCheckBox] = useState(false)
+  // 第 19 轮第 4 条：6 个选项走两列网格（CheckBoxGrid），勾选框钉在两条固定列线上。
+  // 此前是「flexWrap 行内独立卡片」：卡片宽度随标签字数（较小/小/标准/大/较大/非常大）
+  // 变化，第二行起的勾选框 x 与第一行不等，肉眼就是「上下没对齐」。
   return (
-    <CheckBox
-      marginRight={8}
+    <CheckBoxGridCell
       check={isActive}
       label={label}
       onChange={() => {
@@ -86,11 +88,11 @@ export default memo(() => {
       <View style={styles.preview}>
         <SizeText />
       </View>
-      <View style={styles.list}>
+      <CheckBoxGrid>
         {list.map(({ size, name }) => (
           <Item key={size} size={size} label={name} />
         ))}
-      </View>
+      </CheckBoxGrid>
     </SubTitle>
   )
 })
@@ -102,10 +104,5 @@ const styles = StyleSheet.create({
     // paddingTop: 3,
     paddingBottom: 10,
     minHeight: 45,
-  },
-  list: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    alignItems: 'center',
   },
 })

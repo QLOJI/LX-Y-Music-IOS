@@ -1,9 +1,7 @@
 import { memo, useMemo } from 'react'
 
-import { StyleSheet, View } from 'react-native'
-
 import SubTitle from '../../components/SubTitle'
-import CheckBox from '@/components/common/CheckBox'
+import CheckBoxGrid, { CheckBoxGridCell } from '../../components/CheckBoxGrid'
 import { useSettingValue } from '@/store/setting/hook'
 import { useI18n } from '@/lang'
 import { updateSetting } from '@/core/common'
@@ -23,9 +21,10 @@ const useActive = (type: ShareType) => {
 const Item = ({ id, name }: { id: ShareType, name: string }) => {
   const isActive = useActive(id)
   // const [toggleCheckBox, setToggleCheckBox] = useState(false)
+  // 第 19 轮第 4 条：两项走两列网格（CheckBoxGrid）。此前是「flexWrap 行内独立卡片」，
+  // 第二项「剪贴板」的勾选框落在行中间，与下方各组第一列的勾选框不在同一条线上。
   return (
-    <CheckBox
-      marginBottom={3}
+    <CheckBoxGridCell
       check={isActive}
       label={name}
       onChange={() => {
@@ -53,18 +52,11 @@ export default memo(() => {
 
   return (
     <SubTitle title={t('setting_basic_share_type')}>
-      <View style={styles.list}>
+      <CheckBoxGrid>
         {list.map(({ id, name }) => (
           <Item name={name} id={id} key={id} />
         ))}
-      </View>
+      </CheckBoxGrid>
     </SubTitle>
   )
-})
-
-const styles = StyleSheet.create({
-  list: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-  },
 })
