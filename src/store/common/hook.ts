@@ -1,5 +1,7 @@
 import { COMPONENT_IDS } from '@/config/constant'
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { AppState } from 'react-native'
+import { subscribePagerDrag } from '@/utils/homeTabScroll'
 import state, { type InitState } from './state'
 
 export const useFontSize = () => {
@@ -111,6 +113,64 @@ export const BOTTOM_OVERLAY_BASE_HEIGHT = 180
 export const useBottomOverlayInset = () => {
   const safeAreaBottom = useSafeAreaBottom()
   return BOTTOM_OVERLAY_BASE_HEIGHT + safeAreaBottom
+}
+
+/**
+ * App 是否处于前台（**响应式**，随 AppState 变化重新渲染）。
+ *
+ * 与 utils/tools.ts 的 `isActive()` 不同：那个是即时查询（非响应式，全仓唯一消费点是
+ * store/player/hook.ts 里的暂停态判断），拿不到「前台→后台」这个边沿。本 hook 是省电
+ * 门控用的：本 App 有音频后台播放能力，锁屏后进程仍常驻，只有前台才需要的工作
+ * （液态玻璃的 Metal 连续渲染、缓冲进度轮询、下载进度高频回调）必须随 App 退到后台而停。
+ *
+ * 判定口径 = `AppState.currentState === 'active'`：
+ *   · 'background'（已退到后台）与 'inactive'（iOS 切换器/控制中心/系统弹窗打断）都算
+ *     「非前台」——这两态下界面都不可见，继续渲染纯属浪费电。
+ *   · 订阅建立时立即对齐一次当前值（组件可能在 App 已经退到后台之后才挂载）。
+ *
+ * 只用 useState + AppState 订阅，不写进 store/common/state：门控是**组件局部**关心的事
+ * （Tab 栏 / 迷你播放器 / 详情页缓冲轮询各订阅各的，同时最多 3 个订阅者），
+ * 走 store + state_event 反而多一层广播。
+ */
+export const useAppActive = () => {
+  const [value, update] = useState(() => AppState.currentState === 'active')
+
+  useEffect(() => {
+    // 先对齐一次：从挂载到 effect 执行之间 AppState 可能已经变过
+    update(AppState.currentState === 'active')
+    const subscription = AppState.addEventListener('change', (nextState) => {
+      update(nextState === 'active')
+    })
+    return () => {
+      subscription.remove()
+    }
+  }, [])
+
+  return value
+}
+
+/**
+ * 首页 PagerView 是否正处于**真实手势**拖动会话中（2026-10-02 用户第 2/9 条）。
+ *
+ * 数据源是既有的轻量高频通道 `utils/homeTabScroll` 的 PagerDrag 信号：Main 在
+ * `onPageScrollStateChanged` 收到 'dragging' 时发 true、'idle'（或拖动静默看门狗
+ * 超时）时发 false —— 全程只有两次订阅回调，不是逐帧（逐帧的 onPageScroll 走
+ * PagerProgress，绝不经过本 hook）。程序化 setPage 不发该信号，所以只有真手势命中。
+ *
+ * 用途只有一个：给底部两块液态玻璃（Tab 栏 / 迷你播放器）的 `live` prop 供信号，
+ * 把原生采景从静止态 30fps 档放宽到实时档（见 LiquidGlass 的 live 说明）。
+ * 之所以放在这里而不是各自订阅：两个消费点（ModernTabBar、PlayerBar）都要，
+ * 且它们分散在不同子树、没有共同祖先可以传值。
+ *
+ * 用 useState 而不是 store：会话期间最多两次重渲染（开始/结束），且只有这两个
+ * 消费点关心，走 state_event 广播反而多一层。
+ */
+export const usePagerDragging = () => {
+  const [value, update] = useState(false)
+
+  useEffect(() => subscribePagerDrag(update), [])
+
+  return value
 }
 
 export const useComponentIds = () => {
