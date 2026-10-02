@@ -10,6 +10,14 @@ interface Props {
   title: string
   /** 可选：与标题同行的右侧内容（三大平台歌单页的两个 tab 切换） */
   children?: ReactNode
+  /**
+   * 等分模式（用户第 16 轮第 2 条）：标题与 children 各占行宽的等份。
+   * 选中后标题 flex:1 + 两侧内边距仍为 designSpacing.lg，调用方把 children 容器设成
+   * 「份数 − 1」份（如两个 tab → flex:2、每个 tab flex:1），全行即被等分成 N 份：
+   * 「酷狗歌单 / 自建歌单 / 收藏歌单」各占 1/3，且都在同一行、同一垂直中线上。
+   * 默认 false：标题按内容宽度、children 靠右（其它页面的原行为）。
+   */
+  equalColumns?: boolean
 }
 
 /**
@@ -36,11 +44,15 @@ interface Props {
  * 三、字号取 subPageTitleSize（= WebDAV 页标题 / 共享页头的字号，20），**不是**「我的」的
  *   34：这是需求里点名的参照物。想改成同级大标题只改 DesignTokens 里那一行。
  */
-const DetailPageTitle = memo(({ title, children }: Props) => {
+const DetailPageTitle = memo(({ title, children, equalColumns = false }: Props) => {
   const theme = useTheme()
   return (
     <View style={styles.row}>
-      <Text style={styles.title} size={subPageTitleSize} color={theme['c-font']}>
+      <Text
+        style={[styles.title, equalColumns ? styles.titleEqual : null]}
+        size={subPageTitleSize}
+        color={theme['c-font']}
+      >
         {title}
       </Text>
       {children}
@@ -65,5 +77,10 @@ const styles = createStyle({
     fontWeight: '800',
     // 与「我的」标题同一行高：标题行高度一致，下方第一行内容不会上下跳
     lineHeight: pageTitleLineHeight,
+  },
+  // 等分模式（用户第 16 轮第 2 条）：标题占满自己的那一份，文字仍左对齐（与全站页面标题
+  // 同一竖线），行内其余空间由 children 按份数瓜分见 Props.equalColumns。
+  titleEqual: {
+    flex: 1,
   },
 })
