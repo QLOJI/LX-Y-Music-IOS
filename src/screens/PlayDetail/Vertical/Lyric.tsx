@@ -260,6 +260,11 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
   const lastWrittenOffsetRef = useRef(-1)
   const lastFrameTsRef = useRef(0)
   const wasPauseRef = useRef(true)
+  // 「切回来要瞬时到位」（用户第 12 轮第 1 条：返回播放详情页时大歌词从旧位置慢慢滑
+  // 600ms 才追上当前行）。只在 rAF 循环**被整段停掉**的场景置真——暂停（isPlay=false）、
+  // 被评论页/设置页盖住（panelVisible=false），即「切走再切回」；用户手动滚动/拖动歌词
+  // 期间循环没停（只是逐帧早退），那条路径保持原来的平滑回位观感，不受本标志影响。
+  const resumeInstantRef = useRef(false)
   // 跳转/首开时大量行尚未测量，定位落地后需在新行完成测量时静默回正一次。
   const recentreTimerRef = useRef<NodeJS.Timeout | null>(null)
 
@@ -904,6 +909,8 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
     // 是纯粹的耗电/发热（120Hz 解锁后成本翻倍），恢复首帧走同一条「重取基准」路径。
     if (!isPlay || !panelVisible) {
       wasPauseRef.current = true
+      // 循环被整段停掉 = 用户「切走」了（暂停 / 被压栈页盖住），恢复首帧要瞬时到位
+      resumeInstantRef.current = true
       return
     }
     let rafId = 0
@@ -928,6 +935,17 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
           lineChangeTsRef.current = -1
           glideStartedRef.current = true
           lastContinuousIndexRef.current = -1
+          // 切回来（被盖住 / 暂停后恢复）的首帧：直接把高亮行瞬时定位到正中，不再从
+          // 切走前的旧位置滑 600ms 追上来（用户第 12 轮第 1 条「要实时显示歌词加载位置」）。
+          // 走既有的 force 通道：scrollToOffset({animated:false}) + 把平滑基准与切行滑动
+          // 状态（pendingGlide/glide/hold/lastContinuousIndex）全部对齐到目标；随后本帧的
+          // scrollToActiveContinuous 因目标已一致而无事可做，不会再把列表拽回去。
+          // 用 ref 取最新的 handleScrollToActive（本 effect 的依赖里只有 lyricLines，
+          // 闭包里的那份可能落后于 pagerHeight 变化）。
+          if (resumeInstantRef.current) {
+            resumeInstantRef.current = false
+            handleScrollToActiveRef.current(lineRef.current.line, true)
+          }
         }
         scrollToActiveContinuous(ts)
       }
