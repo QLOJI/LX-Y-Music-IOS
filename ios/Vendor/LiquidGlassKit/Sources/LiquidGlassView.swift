@@ -651,6 +651,18 @@ final class LiquidGlassView: MTKView {
         lastCaptureAt = 0
         preferredFramesPerSecond = Self.liveFramesPerSecond
         captureBackground()
+        // 复位之后还差最后一脚（2026-10-02，用户第 11 轮第 10 条：
+        // 「还是存在返回主界面，底部玻璃显示瞬间闪烁……瞬间闪烁一下切换到实际透过的画面」）：
+        // captureBackground 只换了**背景纹理**，屏幕上显示的仍是 CAMetalLayer 里暂停前
+        // 呈现的那一帧——真正改写它的只有 draw()+present，而 draw 本来只发生在 display link
+        // 的下一个 tick。返回转场一开始玻璃就被逐步露出，这一拍（乃至 settlement 期间被判定
+        // 未就绪时的若干拍沿用）的旧画面就是用户看到的「先闪一下旧画面、再跳到当前画面」。
+        // 这里复位后**立刻同步画一帧**：直接调用本类自己的 draw(_:)，不依赖 MTKView.draw()
+        // 的路由语义（有 delegate 与无 delegate 的路径不同，本类没有 delegate）。
+        // MTKView 在 isPaused == YES 时手动 draw 是官方支持的手动渲染路径（setPaused 也要到
+        // 复位之后才把 isPaused 置回 false），所以这一帧一定画得出去；drawable / 渲染描述符
+        // 未就绪时 draw(_:) 内部按既有分支安全返回（保持原样等下一 tick，不会崩、不会画错）。
+        draw(bounds)
     }
 
     /// Captures the background content via root View using layer render.
