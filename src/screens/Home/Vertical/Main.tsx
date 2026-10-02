@@ -473,13 +473,21 @@ const Main = () => {
     pagerViewRef.current?.setScrollEnabled?.(pagerScrollEnabledRef.current)
   }, [])
   useEffect(() => {
-    // 立即重发一次：覆盖「prop 值没变、原生闩锁却被别的路径改写」的存量失配
-    resyncPagerScroll()
-    const timer = setInterval(resyncPagerScroll, PAGER_SCROLL_RESYNC_MS)
+    // 心跳 = 横滑开关重发 + 抹平库私有闩锁（2026-10-02，用户第 4 条）。
+    // 两者失效时机相同（原生丢事件、程序化切页打断手势、后台恢复重建子视图），
+    // 合成一次周期即可；后者是「无真实手势会话时才执行」的幂等清理，所以这条心跳
+    // 是覆盖面最广的一道自愈——任何残留最多存活一个周期。
+    const heartbeat = () => {
+      resyncPagerScroll()
+      healPagerScrollLatch()
+    }
+    // 立即执行一次：覆盖「prop 值没变、原生闩锁却被别的路径改写」的存量失配
+    heartbeat()
+    const timer = setInterval(heartbeat, PAGER_SCROLL_RESYNC_MS)
     return () => {
       clearInterval(timer)
     }
-  }, [pagerScrollEnabled, resyncPagerScroll])
+  }, [pagerScrollEnabled, resyncPagerScroll, healPagerScrollLatch])
 
   const onPageSelected = useCallback(({ nativeEvent }: PagerViewOnPageSelectedEvent) => {
     activeIndexRef.current = nativeEvent.position
@@ -497,6 +505,11 @@ const Main = () => {
     // 每次成功切页顺手把横滑开关重发一次（幂等）：页面切换是原生状态最可能被重建/
     // 改写的时刻之一，重发即自我修复。
     resyncPagerScroll()
+    // 落点已确定 ⇒ 此刻一定没有进行中的手势，顺手抹平库私有闩锁（2026-10-02，用户第 4 条）。
+    // 这是用户「左右滑动切换页面」这条主动作上的自愈点：滑完一页闩锁即被清掉，
+    // 不会再把随后落在该页上的按压当成「拖动中的移动」在 capture 阶段抢走
+    // （表现就是点击完全没反应）。见 healPagerScrollLatch。
+    healPagerScrollLatch()
     if (pageRetryTimerRef.current) {
       clearTimeout(pageRetryTimerRef.current)
       pageRetryTimerRef.current = null
@@ -514,7 +527,7 @@ const Main = () => {
         setNavActiveId(selectedId)
       }
     }
-  }, [indexMap, viewMap, resyncPagerScroll])
+  }, [indexMap, viewMap, resyncPagerScroll, healPagerScrollLatch])
 
   // 手势拖动会话：仅在「用户手势开始（dragging）」到「落定（idle）」之间为 true。
   // 程序化 setPage*（点击切页 / 重试链 / 兜底重建）只产生 settling/idle、不产生
@@ -559,6 +572,19 @@ const Main = () => {
     if (!pagerDragSessionRef.current) return
     pagerDragSessionRef.current = false
     emitPagerDrag(false)
+  }, [clearNativePagerScrolling])
+  // 库私有闩锁的**受控**清理入口（2026-10-02，用户第 4 条）：
+  // 只在「本组件没有正在进行的真实手势会话」时抹平 isScrolling。会话中抹平是危险的
+  // ——库就是靠这个字段在 capture 阶段替 pager 抢 responder 的，中途清掉会让内层
+  // 列表在下一次移动判定里把横滑手势抢走（横滑变成列表滚动）。而会话结束之后清它
+  // 是纯收益：卡在 true 时它会把落在页面上的**按压**（手指落点总带一两像素位移，移动
+  // 判定必然触发）在 capture 阶段抢走，触摸目标拿不到 responder ⇒ 点击完全没反应，
+  // 而原生滚动照旧、滑一下（UIKit touch cancel → RN 释放 responder）又能点。
+  // 调用点：① 每次 onPageSelected（手势/程序化切页的落点确定时刻）；② navActiveIdUpdated
+  // 的切页路径；③ 4s 心跳；④ 会话收尾与回前台（各自直接调 clearNativePagerScrolling）。
+  const healPagerScrollLatch = useCallback(() => {
+    if (pagerDragSessionRef.current) return
+    clearNativePagerScrolling()
   }, [clearNativePagerScrolling])
   // 后台恢复兜底（2026-10-01）：原生在后台可能重建子视图 / 丢事件（repairPager 注释
   // 记录过同类场景），回前台时把 JS 侧两条保险各收一次：
@@ -703,6 +729,11 @@ const Main = () => {
         if (visibleNavs[0]) setNavActiveId(visibleNavs[0].id)
         return
       }
+      // 切页（点 tab / 点卡片 / 手势落点回流）统一在这里先抹平库私有闩锁再下发 setPage
+      // （2026-10-02，用户第 4 条）：闩锁卡在「拖动中」时，新页面上的一切按压都会在
+      // capture 阶段被 pager 抢走而毫无反应，正是「切回某个页面后点击锁死」的形态。
+      // 只在本组件没有真实手势会话时执行（见 healPagerScrollLatch）。
+      healPagerScrollLatch()
       let index = viewMap[id]
       if (index == null && visibleNavs.length > 0) {
         index = 0
@@ -773,7 +804,7 @@ const Main = () => {
         pageRetryTimerRef.current = null
       }
     }
-  }, [viewMap, visibleNavs, repairPager, detailNavIdSet])
+  }, [viewMap, visibleNavs, repairPager, detailNavIdSet, healPagerScrollLatch])
 
   // tab pager 的 5 页（顺序 = visibleNavs = TAB_PAGE_IDS）
   const pages = useMemo(() => {
