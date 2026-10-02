@@ -3756,29 +3756,48 @@ RCT_EXPORT_MODULE();
   switch (type) {
     case AVAudioSessionInterruptionTypeBegan: {
       __block BOOL shouldEmitPause = NO;
+      __block BOOL canReleaseSession = NO;
       dispatch_sync(self.renderQueue, ^{
         BOOL shouldHandle = self.sourceNode != nil && (self.playbackStarted || [self.currentState isEqualToString:@"buffering"]);
-        if (!shouldHandle || self.manualPause) return;
-        self.lastKnownPosition = [self currentPlaybackPositionLocked];
-        if (self.engine != nil && self.engine.isRunning) [self.engine pause];
-        _sourceRenderingEnabled.store(false, std::memory_order_release);
-        self.playbackStarted = NO;
-        shouldEmitPause = YES;
+        if (shouldHandle && !self.manualPause) {
+          self.lastKnownPosition = [self currentPlaybackPositionLocked];
+          if (self.engine != nil && self.engine.isRunning) [self.engine pause];
+          _sourceRenderingEnabled.store(false, std::memory_order_release);
+          self.playbackStarted = NO;
+          shouldEmitPause = YES;
+        }
+        // 【让出会话的前提】引擎必须先停下来：引擎还在跑时 setActive:NO 会把它的 IO 掐断，
+        // 之后 isRunning 仍为真、Ended 分支不会重启它 —— 表现为打断结束后无声。
+        canReleaseSession = self.sourceNode != nil && (self.engine == nil || !self.engine.isRunning);
       });
-      if (!shouldEmitPause) return;
+      // 【用户第 13 轮第 1 条】手动暂停 / 尚未出声时也必须走到这里。旧实现在这两种
+      // 情况下（!shouldHandle || manualPause）直接 return，于是：
+      //   ① 不置 interruptedBySystem —— 打断结束后 Ended 分支整单作废，表现为
+      //      「手动暂停时，其他音频播放结束后不会自动开始播放」；
+      //   ② 不让出音频会话 —— 其他音频在播，我们还占着（暂停态由 pause 命令
+      //      prepareAudioSession 保持着激活），其他音频无法正常使用。
       self.interruptedBySystem = YES;
+      if (canReleaseSession) {
+        // 与 openStream 接管会话时的对手写法：NotifyOthersOnDeactivation 把会话
+        // 干干净净地交还给系统 / 其他音频。
+        [[AVAudioSession sharedInstance] setActive:NO withOptions:AVAudioSessionSetActiveOptionNotifyOthersOnDeactivation error:nil];
+      }
+      if (!shouldEmitPause) return;
       self.currentState = @"paused";
       [self emitState:@"paused" position:@(self.lastKnownPosition) duration:@(self.duration)];
       break;
     }
     case AVAudioSessionInterruptionTypeEnded: {
-      BOOL shouldResume = ([userInfo[AVAudioSessionInterruptionOptionKey] unsignedIntegerValue] & AVAudioSessionInterruptionOptionShouldResume) != 0;
-      if (!self.interruptedBySystem || self.manualPause || !shouldResume) {
-        self.interruptedBySystem = NO;
-        return;
-      }
-
+      // 【用户第 13 轮第 1 条】其他音频结束 → 马上抢回音频会话并自动续播：与「是不是
+      // 用户手动暂停」（manualPause）以及「打断方有没有给 ShouldResume」都无关。
+      // 旧实现把这两个当门槛，只会出现「手动暂停后不再自动开始播放」。
+      // 标记由 Began 分支无条件置位（含手动暂停 / 未出声），这里只看它。
+      if (!self.interruptedBySystem) return;
       self.interruptedBySystem = NO;
+      // 没有可续播的流（从未 open / 已 stop / 已 reset）就别抢会话，只清标记：
+      // 那是用户明确结束播放，自动播放会变成误播。
+      if (self.sourceNode == nil || [self.currentState isEqualToString:@"stopped"] || [self.currentState isEqualToString:@"idle"]) return;
+
       NSError *sessionError = nil;
       if (![self prepareAudioSession:&sessionError]) {
         [self emitErrorMessage:sessionError.localizedDescription ?: @"Failed to reactivate audio session"];
@@ -4388,7 +4407,9 @@ RCT_REMAP_METHOD(pause, pauseStreamWithResolver:(RCTPromiseResolveBlock)resolve 
   dispatch_sync(self.renderQueue, ^{
     self.lastKnownPosition = [self currentPlaybackPositionLocked];
     self.manualPause = YES;
-    self.interruptedBySystem = NO;
+    // 【用户第 13 轮第 1 条】这里刻意**不**清 interruptedBySystem：其他音频正在播
+    // （打断进行中）时用户手动暂停，等它结束后仍要按需求自动续播；清掉标记就退化成
+    // 「手动暂停后不再自动开始播放」。真正取消自动续播的只有 stop / 切歌 / 复位。
     if (self.engine != nil && self.engine.isRunning) [self.engine pause];
     _sourceRenderingEnabled.store(false, std::memory_order_release);
     self.playbackStarted = NO;
