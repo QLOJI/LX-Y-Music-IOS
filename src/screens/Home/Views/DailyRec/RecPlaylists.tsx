@@ -1,4 +1,4 @@
-import { memo, useEffect, useState, useCallback, useRef, type ReactElement } from 'react'
+import { memo, useEffect, useState, useCallback, useRef } from 'react'
 import { View, FlatList, RefreshControl, Keyboard, TouchableOpacity } from 'react-native'
 import Text from '@/components/common/Text'
 import { useSettingValue } from '@/store/setting/hook'
@@ -13,9 +13,14 @@ import ListItem from '../MyPlaylist/ListItem'
 import { useBottomOverlayInset } from '@/store/common/hook'
 import { getDailyRecPlaylistsCache, setDailyRecPlaylistsCache, clearDailyRecPlaylistsCache } from '@/core/cache'
 
-export default memo(({ header, onOpenDetail }: { header?: ReactElement, onOpenDetail: (info: any) => void }) => {
+export default memo(({ onOpenDetail }: { onOpenDetail: (info: any) => void }) => {
   const [playlists, setPlaylists] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
+  // 下拉刷新动画只认「用户真的下拉过」（用户第 16 轮第 7 条）。此前 RefreshControl 直接吃
+  // loading，而 loading 初值为 true —— 列表挂载的那一帧刷新控件就被激活、把内容整体下压，
+  // 加载结束回弹时再上跳一次（「第一次进入向上刷新」）。现在只有 handleRefresh（用户下拉）
+  // 会置位 refreshing，程序触发的加载一律用 loading（只喂空列表占位文案）。
+  const [refreshing, setRefreshing] = useState(false)
   // 失败原因（'' = 没失败）。空列表时用它区分「没有歌单」与「请求失败」，并给用户重试入口
   const [loadError, setLoadError] = useState('')
   const cookie = useSettingValue('common.wy_cookie')
@@ -35,6 +40,7 @@ export default memo(({ header, onOpenDetail }: { header?: ReactElement, onOpenDe
       // 「请先设置网易云 Cookie」占位（对齐 SubscribedAlbums 的范式），
       // 避免用户面对一片空白分不清是没登录还是没加载
       setLoading(false)
+      setRefreshing(false)
       setPlaylists([])
       setLoadError('')
       return
@@ -52,7 +58,8 @@ export default memo(({ header, onOpenDetail }: { header?: ReactElement, onOpenDe
       }
     }
 
-    setLoading(true)
+    if (isRefresh) setRefreshing(true)
+    else setLoading(true)
     setLoadError('')
     wyApi.getRecPlaylists(cookie).then(async(list: any) => {
       const adaptedList = list
@@ -96,7 +103,10 @@ export default memo(({ header, onOpenDetail }: { header?: ReactElement, onOpenDe
       setLoadError(err?.message || '')
       toast(t('daily_rec_playlists_load_failed', { msg: err.message }))
     }).finally(() => {
-      if (loadId === loadIdRef.current) setLoading(false)
+      if (loadId === loadIdRef.current) {
+        setLoading(false)
+        setRefreshing(false)
+      }
     })
   }, [cookie, t])
 
@@ -153,7 +163,6 @@ export default memo(({ header, onOpenDetail }: { header?: ReactElement, onOpenDe
   return (
     <View style={{ flex: 1 }}>
       <FlatList
-        ListHeaderComponent={header}
         onScrollBeginDrag={Keyboard.dismiss}
         data={playlists}
         contentContainerStyle={{ paddingBottom: bottomInset }}
@@ -170,7 +179,8 @@ export default memo(({ header, onOpenDetail }: { header?: ReactElement, onOpenDe
         refreshControl={
           <RefreshControl
             colors={[theme['c-primary']]}
-            refreshing={loading}
+            // 只认用户下拉（见 refreshing 状态注释）；程序加载不会把内容压下去再弹回来
+            refreshing={refreshing}
             onRefresh={handleRefresh}
           />
         }

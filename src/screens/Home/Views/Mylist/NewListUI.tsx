@@ -386,6 +386,12 @@ export default memo(() => {
 
   const [listInfoMap, setListInfoMap] = useState<Map<string, { cover: string, total: number }>>(new Map())
   const [isLoading, setIsLoading] = useState(true)
+  // 下拉刷新动画只认「用户真的下拉过」（用户第 16 轮第 7 条）。isLoading 除了首载之外还有
+  // 一条后台路径：refreshListInfo 的 useCallback 依赖 allList，列表内容一变（别处增删歌曲）
+  // 它就会换新引用 → 挂载 effect 重跑 → setIsLoading(true)。旧写法 refreshing={isLoading}
+  // 会让刷新控件在这类程序触发里被点亮，把已挂载的列表压下去再弹回来（「向上刷新」）。
+  // refreshing 只在用户下拉那一刻置位，本次加载（isLoading true→false）落地后清除。
+  const [refreshing, setRefreshing] = useState(false)
   const [hasError, setHasError] = useState(false)
   const [showMusicList, setShowMusicList] = useState(false)
   const [isTouchingDragHandle, setIsTouchingDragHandle] = useState(false)
@@ -534,6 +540,11 @@ export default memo(() => {
   useEffect(() => {
     void refreshListInfo()
   }, [refreshListInfo])
+
+  // 用户下拉后，等这次加载落地（isLoading true→false）再收起刷新动画（见 refreshing 注释）
+  useEffect(() => {
+    if (refreshing && !isLoading) setRefreshing(false)
+  }, [refreshing, isLoading])
 
 
   useEffect(() => {
@@ -867,8 +878,9 @@ export default memo(() => {
             scrollEnabled={draggingIndex == null}
             refreshControl={
               <RefreshControl
-                refreshing={isLoading}
-                onRefresh={() => { void refreshListInfo(false) }}
+                // 只认用户下拉（见 refreshing 状态注释）
+                refreshing={refreshing}
+                onRefresh={() => { setRefreshing(true); void refreshListInfo(false) }}
                 colors={[theme['c-primary-font']]}
                 enabled={!isTouchingDragHandle}
               />

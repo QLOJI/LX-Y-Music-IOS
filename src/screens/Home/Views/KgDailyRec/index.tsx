@@ -4,12 +4,13 @@ import Text from '@/components/common/Text'
 import { createStyle } from '@/utils/tools'
 import { useTheme } from '@/store/theme/hook'
 import { useI18n } from '@/lang'
-import { designSpacing, pageTitleLineHeight } from '@/theme/DesignTokens'
+import { designSpacing } from '@/theme/DesignTokens'
 import PagerView, { type PagerViewOnPageSelectedEvent } from 'react-native-pager-view'
 import RecSongs from './RecSongs'
 import { BorderWidths } from '@/theme'
 import { setNavActiveId } from '@/core/common'
 import PageTopInset from '@/components/common/PageTopInset'
+import DetailPageTitle from '@/components/common/DetailPageTitle'
 import SwipeBackArea from '@/components/common/SwipeBackArea'
 
 type TabType = 'recommend' | 'everyday'
@@ -58,7 +59,6 @@ const Tabs = ({
 export default memo(() => {
   const [activeTab, setActiveTab] = useState<TabType>('recommend')
   const pagerViewRef = useRef<PagerView>(null)
-  const theme = useTheme()
   const t = useI18n()
 
   const handleTabChange = (newTab: TabType) => {
@@ -82,21 +82,24 @@ export default memo(() => {
     setNavActiveId('nav_discovery')
   }, [])
 
+  // 页头（状态栏占位 + 标题行）。用户第 16 轮第 6/7 条：
+  // ① 它以前是各页 OnlineList 的 ListHeaderComponent，在可滚动内容里 —— 列表挂载/换数据时
+  //    标题会跟着整体位移（「第一次进入向上刷新」），滚动时也会被推走（「标题没有固定」）。
+  //    现在提到 PagerView 外面，成为所有页共用的固定页头，任何情况下都不动。
+  // ② 标题与 tab 并排在同一行、同一垂直中线（原来是「标题一行、tab 另一行」两个基线）。
+  // ③ 顶部到标题行的间距加大：PageTopInset 之后再垫 designSpacing.sm（见 headerExtraTop）。
   const pageHeader = (
-    <>
+    <View style={styles.headerExtraTop}>
       <PageTopInset />
-      {/* 标题在上、按钮在同一行在其下方（原来按钮挤在标题右侧） */}
-      <View style={styles.titleBlock}>
-        <Text style={styles.titleText} size={34} color={theme['c-font']}>
-          {t('nav_kg_daily_rec')}
-        </Text>
+      <DetailPageTitle title={t('nav_kg_daily_rec')}>
         <Tabs activeTab={activeTab} onTabChange={handleTabChange} />
-      </View>
-    </>
+      </DetailPageTitle>
+    </View>
   )
 
   return (
     <View style={{ flex: 1 }}>
+      {pageHeader}
       <View style={{ flex: 1 }}>
         <PagerView
           ref={pagerViewRef}
@@ -106,10 +109,10 @@ export default memo(() => {
           scrollEnabled
         >
           <View key="recommend">
-            <RecSongs header={pageHeader} type="recommend" />
+            <RecSongs type="recommend" />
           </View>
           <View key="everyday">
-            <RecSongs header={pageHeader} type="everyday" />
+            <RecSongs type="everyday" />
           </View>
         </PagerView>
       </View>
@@ -119,22 +122,16 @@ export default memo(() => {
 })
 
 const styles = createStyle({
-  // 标题独占一行，两个 tab 在它下方另起一行（左右内边距与标题对齐）
-  titleBlock: {
-    paddingHorizontal: designSpacing.lg,
+  // 【第 16 轮第 6 条】「增大上面到顶部的间距」：PageTopInset（= 状态栏高度 − md，兜底 sm）之外
+  // 再垫 sm(12)。仅本页/另两页每日推荐加，歌单页不加 —— 用户点名的是每日推荐页。
+  headerExtraTop: {
+    paddingTop: designSpacing.sm,
   },
-  titleText: {
-    fontWeight: '800',
-    // 34pt 页面大标题统一行高（原写死 36，与推荐/歌单页的 42 差 6pt）
-    lineHeight: pageTitleLineHeight,
-  },
-  // 两个 tab 同一行：横向滚动兜底，字号放大 / 窄屏放不下时可左右滑动，不会换行或被裁掉
-  // 标题行 → 按钮行 的间距（用户第 11 轮第 2 条：原来的 4pt 太近）。
-  // 取值对齐排行榜页同位置的 HeaderBar.titleRow.marginBottom = designSpacing.sm(12)。
+  // 两个 tab 与标题同处一行（DetailPageTitle 的 row，alignItems center → 同一垂直中线）。
+  // flex:1 吃掉标题右侧的剩余宽度，横向滚动兜底：字号放大 / 窄屏放不下时可左右滑动，
+  // 不会换行或被裁掉。
   tabsScroll: {
-    flexGrow: 0,
-    flexShrink: 1,
-    marginTop: designSpacing.sm,
+    flex: 1,
   },
   tabsContainer: {
     flexDirection: 'row',

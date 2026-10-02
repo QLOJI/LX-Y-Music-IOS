@@ -1,4 +1,4 @@
-import { memo, useEffect, useRef, useCallback, useState, type ReactElement } from 'react'
+import { memo, useEffect, useRef, useCallback, useState } from 'react'
 import { View, FlatList, TouchableOpacity, Image, RefreshControl } from 'react-native'
 import OnlineList, { type OnlineListType } from '@/components/OnlineList'
 import Text from '@/components/common/Text'
@@ -17,7 +17,6 @@ import { useBottomOverlayInset } from '@/store/common/hook'
 type RecType = 'home' | 'radar' | 'newsong'
 
 interface Props {
-  header?: ReactElement
   type: RecType
   onOpenDetail?: (playlistInfo: ListInfoItem) => void
 }
@@ -52,11 +51,14 @@ const PlaylistItem = ({ item, onPress }: { item: { id: string, name: string, cov
   )
 }
 
-export default memo(({ header, type, onOpenDetail }: Props) => {
+export default memo(({ type, onOpenDetail }: Props) => {
   const listRef = useRef<OnlineListType>(null)
   const playerMusicInfo = usePlayerMusicInfo()
   const [playlists, setPlaylists] = useState<Array<{ id: string, name: string, cover: string, playCount: number }>>([])
   const [loading, setLoading] = useState(false)
+  // 下拉刷新动画只认「用户真的下拉过」（用户第 16 轮第 7 条）：loading 只喂空列表占位，
+  // 程序触发的加载不再激活 iOS 刷新控件（否则内容会被压下去再弹回来 = 向上刷新）。
+  const [refreshing, setRefreshing] = useState(false)
   // 失败原因（'' = 没失败）：空列表时用它区分「真的没推荐」与「请求失败」，并给重试入口。
   // 与同目录 RecPlaylists / 网易 recPlaylists 同一套失败态（②-5：原先失败只有一次 toast，
   // FlatList 没有 ListEmptyComponent，失败后没有任何恢复路径）
@@ -77,7 +79,8 @@ export default memo(({ header, type, onOpenDetail }: Props) => {
     if (type !== 'home') return
     if (!refresh && loadedRef.current) return
     const loadId = ++loadIdRef.current
-    setLoading(true)
+    if (refresh) setRefreshing(true)
+    else setLoading(true)
     setLoadError('')
     try {
       // 有界重试（2 次，800/2000ms）：冷启动首个请求容易输给「网络栈就绪 / 平台偶发 5xx」
@@ -99,7 +102,10 @@ export default memo(({ header, type, onOpenDetail }: Props) => {
       setLoadError(error?.message || '')
       toast('加载失败', 'long')
     } finally {
-      if (loadId === loadIdRef.current) setLoading(false)
+      if (loadId === loadIdRef.current) {
+        setLoading(false)
+        setRefreshing(false)
+      }
     }
   }, [type])
 
@@ -136,10 +142,12 @@ export default memo(({ header, type, onOpenDetail }: Props) => {
 
   useEffect(() => {
     if (type === 'home') {
-      loadPlaylists()
+      void loadPlaylists()
     } else {
-      listRef.current?.setStatus('refreshing')
-      fetchSongs()
+      // 首载用 'loading'（列表内占位），不用 'refreshing' —— 后者会当场激活 iOS 刷新控件，
+      // 把内容压下去再弹回来（用户第 16 轮第 7 条）。
+      listRef.current?.setStatus('loading')
+      void fetchSongs()
     }
   }, [type, loadPlaylists, fetchSongs])
 
@@ -147,8 +155,9 @@ export default memo(({ header, type, onOpenDetail }: Props) => {
     if (type === 'home') {
       void loadPlaylists(true)
     } else {
+      // 用户下拉：这条路径才播下拉刷新动画
       listRef.current?.setStatus('refreshing')
-      fetchSongs()
+      void fetchSongs()
     }
   }, [type, loadPlaylists, fetchSongs])
 
@@ -209,7 +218,6 @@ export default memo(({ header, type, onOpenDetail }: Props) => {
       <View style={{ flex: 1 }}>
         <FlatList
           data={playlists}
-          ListHeaderComponent={header}
           // 底部悬浮层（迷你播放器 + 底部 Tab + 安全区）统一避让高度
           contentContainerStyle={{ paddingBottom: bottomInset }}
           key={isHorizontal ? 'horizontal' : 'vertical'}
@@ -223,7 +231,8 @@ export default memo(({ header, type, onOpenDetail }: Props) => {
           keyExtractor={(item) => item.id}
           ListEmptyComponent={renderEmpty()}
           refreshControl={
-            <RefreshControl colors={[theme['c-primary']]} refreshing={loading} onRefresh={handleRefresh} />
+            // 只认用户下拉（见 refreshing 状态注释）
+            <RefreshControl colors={[theme['c-primary']]} refreshing={refreshing} onRefresh={handleRefresh} />
           }
         />
       </View>
@@ -235,7 +244,6 @@ export default memo(({ header, type, onOpenDetail }: Props) => {
       <OnlineList
         ref={listRef}
         listId={`tx_daily_rec_${type}`}
-        ListHeaderComponent={header}
         forcePlayList={true}
         playingId={playerMusicInfo.id}
         onPlayList={handlePlayList}

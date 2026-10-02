@@ -11,11 +11,17 @@ import Text from '@/components/common/Text'
 import ListItem from './ListItem'
 import { useHorizontalMode } from '@/utils/hooks'
 import PageTopInset from '@/components/common/PageTopInset'
+import DetailPageTitle from '@/components/common/DetailPageTitle'
 import { useBottomOverlayInset } from '@/store/common/hook'
 
 export default memo(() => {
   const subscribedAlbums = useWySubscribedAlbums()
   const [loading, setLoading] = useState(false)
+  // 下拉刷新动画只认「用户真的下拉过」（用户第 16 轮第 7 条）。本页列表**没有**首载闸门，
+  // 而挂载时那个 effect 会立刻调一次 onRefresh —— 旧写法 refreshing={loading} 会让刷新控件
+  // 在进入页面时当场激活：内容被压下去、加载完再弹回来（「第一次进入向上刷新」）。
+  // 现在程序加载只用 loading（只喂空态文案），refreshing 只由用户下拉置位。
+  const [refreshing, setRefreshing] = useState(false)
   const theme = useTheme()
   const t = useI18n()
   const cookie = useSettingValue('common.wy_cookie')
@@ -23,13 +29,15 @@ export default memo(() => {
   // 底部悬浮层（迷你播放器 + 底部 Tab + 安全区）统一避让高度
   const bottomInset = useBottomOverlayInset()
 
-  const onRefresh = useCallback(() => {
+  const onRefresh = useCallback((isPullRefresh = false) => {
     if (!cookie) {
       setLoading(false)
+      setRefreshing(false)
       setWySubscribedAlbums([])
       return
     }
-    setLoading(true)
+    if (isPullRefresh) setRefreshing(true)
+    else setLoading(true)
     wyApi.getAllSubAlbumList()
       .then(albums => {
         setWySubscribedAlbums(albums)
@@ -39,6 +47,7 @@ export default memo(() => {
       })
       .finally(() => {
         setLoading(false)
+        setRefreshing(false)
       })
   }, [cookie])
 
@@ -50,8 +59,14 @@ export default memo(() => {
 
   if (!cookie) {
     return (
-      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
-        <Text>{t('wy_cookie_not_set')}</Text>
+      <View style={{ flex: 1 }}>
+        {/* 未登录也要有和列表态同一位置的页面标题（用户第 14 轮第 1 条：
+            标题按「我的」标题位置固定，不随列表有无而变） */}
+        <PageTopInset />
+        <DetailPageTitle title={t('nav_subscribed_albums')} />
+        <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
+          <Text>{t('wy_cookie_not_set')}</Text>
+        </View>
       </View>
     )
   }
@@ -61,7 +76,15 @@ export default memo(() => {
       <FlatList
         onScrollBeginDrag={Keyboard.dismiss}
         data={subscribedAlbums}
-        ListHeaderComponent={PageTopInset}
+        ListHeaderComponent={
+          <>
+            <PageTopInset />
+            {/* 页面标题行：位置/行高/字重与「我的」标题同源，字号取 WebDAV 页标题
+                （共享页头）的字号。本页原先连标题都没有，只有共享页头那一行
+                （用户第 14 轮第 1 条：标题按「我的」标题位置固定且显示完全）。 */}
+            <DetailPageTitle title={t('nav_subscribed_albums')} />
+          </>
+        }
         contentContainerStyle={{ paddingBottom: bottomInset }}
         key={isHorizontal ? 'horizontal' : 'vertical'}
         numColumns={isHorizontal ? 2 : 1}
@@ -75,8 +98,9 @@ export default memo(() => {
         refreshControl={
           <RefreshControl
             colors={[theme['c-primary']]}
-            refreshing={loading}
-            onRefresh={onRefresh}
+            // 只认用户下拉（见 refreshing 状态注释）
+            refreshing={refreshing}
+            onRefresh={() => { onRefresh(true) }}
           />
         }
       />

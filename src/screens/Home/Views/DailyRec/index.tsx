@@ -7,7 +7,7 @@ import { useButtonRadius } from '@/utils/buttonRadius'
 import { useTheme } from '@/store/theme/hook'
 import { useSettingValue } from '@/store/setting/hook'
 import { useI18n } from '@/lang'
-import { designSpacing, pageTitleLineHeight } from '@/theme/DesignTokens'
+import { designSpacing } from '@/theme/DesignTokens'
 import PagerView, { type PagerViewOnPageSelectedEvent } from 'react-native-pager-view'
 import RecPlaylists from './RecPlaylists'
 import RecSongs from './RecSongs'
@@ -18,6 +18,7 @@ import { type ListInfoItem } from '@/store/songlist/state'
 import commonState from '@/store/common/state'
 import { setNavActiveId } from '@/core/common'
 import PageTopInset from '@/components/common/PageTopInset'
+import DetailPageTitle from '@/components/common/DetailPageTitle'
 import SwipeBackArea from '@/components/common/SwipeBackArea'
 
 const Tabs = ({
@@ -38,7 +39,8 @@ const Tabs = ({
   const buttonOpacity = useSettingValue('theme.buttonOpacity')
   const buttonRadius = useButtonRadius()
   return (
-    // 标题移到大标题下方独占一行（见 pageHeader 的 titleBlock），四个按钮并到同一行：
+    // 标题与这四个按钮同处一行（页头里的 DetailPageTitle，第 16 轮第 6 条：标题与「推荐」
+    // 字样在一条直线上、同一垂直中线）：
     // 推荐歌曲 / 推荐歌单 是主 tab（下划线选区），默认推荐 / 风格化推荐 是「推荐歌曲」下的子模式
     // （切到「推荐歌单」时没有风格化概念，故只在 songs 下显示）。
     // flexWrap：字号被调大或窄屏（375pt）放不下时自动换行，不至于把最后一个按钮裁掉。
@@ -124,7 +126,6 @@ export default memo(() => {
   const [selectedPlaylist, setSelectedPlaylist] = useState<ListInfoItem | null>(null)
   const selectedPlaylistRef = useRef(selectedPlaylist)
   selectedPlaylistRef.current = selectedPlaylist
-  const theme = useTheme()
   const t = useI18n()
   const handleTabChange = (newTab: 'songs' | 'playlists') => {
     if (activeTab === newTab) return
@@ -151,14 +152,16 @@ export default memo(() => {
     setNavActiveId('nav_discovery')
   }, [])
 
+  // 页头（状态栏占位 + 标题行）。用户第 16 轮第 6/7 条：
+  // ① 它以前是各页 RecSongs/RecPlaylists 的 ListHeaderComponent，在可滚动内容里 ——
+  //    列表挂载/换数据时标题跟着整体位移（「第一次进入向上刷新」），滚动时还会被推走
+  //    （「标题没有固定」）。现在提到 PagerView 外面，两页共用同一个固定页头。
+  // ② 标题与「推荐」按钮同一行、同一垂直中线（原来是「大标题一行、按钮另一行」两个基线）。
+  // ③ 顶部到标题行的间距加大：PageTopInset 之后再垫 designSpacing.sm（见 headerExtraTop）。
   const pageHeader = (
-    <>
+    <View style={styles.headerExtraTop}>
       <PageTopInset />
-      {/* 标题在上、四个按钮在同一行在其下方（原来按钮挤在标题右侧、子模式还另起一行） */}
-      <View style={styles.titleBlock}>
-        <Text style={styles.titleText} size={34} color={theme['c-font']}>
-          {t('nav_daily_rec')}
-        </Text>
+      <DetailPageTitle title={t('nav_daily_rec')}>
         <Tabs
           activeTab={activeTab}
           onTabChange={handleTabChange}
@@ -166,8 +169,8 @@ export default memo(() => {
           setIsStylized={setIsStylized}
           onOpenModal={() => { setShowStylizedModal(true) }}
         />
-      </View>
-    </>
+      </DetailPageTitle>
+    </View>
   )
 
   useEffect(() => {
@@ -188,6 +191,7 @@ export default memo(() => {
 
   return (
     <View style={{ flex: 1 }}>
+      {pageHeader}
       <View style={[{ flex: 1 }, selectedPlaylist ? { opacity: 0 } : null]} pointerEvents={selectedPlaylist ? 'none' : 'auto'}>
         <PagerView
           ref={pagerViewRef}
@@ -199,14 +203,13 @@ export default memo(() => {
           <View key="1">
             {(activeTab === 'songs') && (
               <RecSongs
-                header={pageHeader}
                 isStylized={isStylized}
                 stylizedSelection={stylizedSelection}
               />
             )}
           </View>
           <View key="2">
-            <RecPlaylists header={pageHeader} onOpenDetail={handleOpenDetail} />
+            <RecPlaylists onOpenDetail={handleOpenDetail} />
           </View>
         </PagerView>
         <StylizedModal
@@ -230,23 +233,20 @@ export default memo(() => {
 })
 
 const styles = createStyle({
-  // 标题独占一行，四个按钮在它下方另起一行（左右内边距与标题对齐）
-  titleBlock: {
-    paddingHorizontal: designSpacing.lg,
+  // 【第 16 轮第 6 条】「增大上面到顶部的间距」：PageTopInset（= 状态栏高度 − md，兜底 sm）之外
+  // 再垫 sm(12)。仅每日推荐页加，歌单页不加 —— 用户点名的是每日推荐页。
+  headerExtraTop: {
+    paddingTop: designSpacing.sm,
   },
-  titleText: {
-    fontWeight: '800',
-    // 34pt 页面大标题统一行高（原写死 36，与推荐/歌单页的 42 差 6pt）
-    lineHeight: pageTitleLineHeight,
-  },
-  // 四个按钮同一行；窄屏 / 放大字号放不下时自动换行，避免最后一个按钮被裁掉
-  // 标题行 → 按钮行 的间距（用户第 11 轮第 2 条：原来的 4pt 太近）。
-  // 取值对齐排行榜页同位置的 HeaderBar.titleRow.marginBottom = designSpacing.sm(12)。
+  // 四个按钮与标题同处一行（DetailPageTitle 的 row，alignItems center → 同一垂直中线）。
+  // flex:1 吃掉标题右侧剩余宽度；窄屏 / 放大字号放不下时自动换行，避免最后一个按钮被裁掉。
+  // marginLeft 让按钮组不贴着标题文字。
   tabsRow: {
     flexDirection: 'row',
     alignItems: 'center',
     flexWrap: 'wrap',
-    marginTop: designSpacing.sm,
+    flex: 1,
+    marginLeft: designSpacing.sm,
   },
   tab: {
     paddingVertical: 5,

@@ -1,4 +1,4 @@
-import { memo, useEffect, useRef, useState, useCallback, type ReactElement } from 'react'
+import { memo, useEffect, useRef, useState, useCallback } from 'react'
 import { RefreshControl, View, FlatList, TouchableOpacity, Image } from 'react-native'
 import Text from '@/components/common/Text'
 import { useTheme } from '@/store/theme/hook'
@@ -21,7 +21,6 @@ interface PlaylistInfo {
 }
 
 interface Props {
-  header?: ReactElement
   onOpenDetail: (playlistInfo: ListInfoItem) => void
 }
 
@@ -50,9 +49,12 @@ const ListItem = ({ item, onPress }: { item: PlaylistInfo, onPress: () => void }
   )
 }
 
-export default memo(({ header, onOpenDetail }: Props) => {
+export default memo(({ onOpenDetail }: Props) => {
   const [playlists, setPlaylists] = useState<PlaylistInfo[]>([])
   const [loading, setLoading] = useState(false)
+  // 下拉刷新动画只认「用户真的下拉过」（用户第 16 轮第 7 条）：loading 只喂空列表占位，
+  // 程序触发的加载不再激活 iOS 刷新控件（否则内容会被压下去再弹回来 = 向上刷新）。
+  const [refreshing, setRefreshing] = useState(false)
   // 失败原因（'' = 没失败）。空列表时用它区分「真的没有歌单」与「请求失败」，
   // 并给用户重试入口（②-5：原先失败只有一次 toast，FlatList 又没有 ListEmptyComponent，
   // 失败后除非重新挂载组件 effect 不会重跑，用户没有任何恢复路径）
@@ -73,7 +75,8 @@ export default memo(({ header, onOpenDetail }: Props) => {
   const loadPlaylists = useCallback(async(refresh = false) => {
     if (!refresh && loadedRef.current) return
     const loadId = ++loadIdRef.current
-    setLoading(true)
+    if (refresh) setRefreshing(true)
+    else setLoading(true)
     setLoadError('')
     try {
       // 有界重试（2 次，800/2000ms）：冷启动首个请求要跟「网络栈就绪 / Cookie 落盘 /
@@ -92,7 +95,10 @@ export default memo(({ header, onOpenDetail }: Props) => {
       setLoadError(error?.message || '')
       toast(t('load_failed'), 'long')
     } finally {
-      if (loadId === loadIdRef.current) setLoading(false)
+      if (loadId === loadIdRef.current) {
+        setLoading(false)
+        setRefreshing(false)
+      }
     }
   }, [t])
 
@@ -151,7 +157,6 @@ export default memo(({ header, onOpenDetail }: Props) => {
     <View style={{ flex: 1 }}>
       <FlatList
         onScrollBeginDrag={() => {}}
-        ListHeaderComponent={header}
         data={playlists}
         contentContainerStyle={{ paddingBottom: bottomInset }}
         key={isHorizontal ? 'horizontal' : 'vertical'}
@@ -165,7 +170,8 @@ export default memo(({ header, onOpenDetail }: Props) => {
         keyExtractor={(item) => String(item.id)}
         ListEmptyComponent={renderEmpty()}
         refreshControl={
-          <RefreshControl colors={[theme['c-primary']]} refreshing={loading} onRefresh={handleRefresh} />
+          // 只认用户下拉（见 refreshing 状态注释）
+          <RefreshControl colors={[theme['c-primary']]} refreshing={refreshing} onRefresh={handleRefresh} />
         }
       />
     </View>

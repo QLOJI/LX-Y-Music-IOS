@@ -40,6 +40,8 @@ import settingState from '@/store/setting/state'
 import { designRadius, designSpacing, designTypography } from '@/theme/DesignTokens'
 import { useBottomOverlayInset } from '@/store/common/hook'
 import PageTopInset from '@/components/common/PageTopInset'
+import DetailPageTitle from '@/components/common/DetailPageTitle'
+import { useI18n } from '@/lang'
 import WebDAVListMenu, { type WebDAVListMenuType, type SelectInfo as WebDAVSelectInfo } from './WebDAVListMenu'
 import WebDAVDownloadPath from './components/WebDAVDownloadPath'
 import MetadataEditModal from '@/components/MetadataEditModal'
@@ -239,12 +241,19 @@ const SongItem = memo(
 
 export default memo(() => {
   const theme = useTheme()
+  const t = useI18n()
   const buttonOpacity = useSettingValue('theme.buttonOpacity')
   // 「按钮圆角」：配置页按钮、搜索输入框与图标按钮的行内覆盖（静态 borderRadius 原样保留作兜底）
   const buttonRadius = useButtonRadius()
   const playMusicInfo = usePlayMusicInfo()
   const [activeTab, setActiveTab] = useState<ActiveTab>('list')
   const [loading, setLoading] = useState(false)
+  // 下拉刷新动画只认「用户真的下拉过」（用户第 16 轮第 7 条）。
+  // loading 是「忙」的共用开关：handleScan（扫描）、handleSelectCurrentFolder（选择目录）
+  // 也会置位，它同时还要禁用扫描/批量按钮。旧写法 refreshing={loading} 意味着扫描一开始
+  // 刷新控件就被激活——列表被压下去再弹回来（「向上刷新」）。refreshing 只由 handleRefresh
+  // （用户下拉）置位，程序触发的加载一律不碰它。
+  const [refreshing, setRefreshing] = useState(false)
   const [folderStack, setFolderStack] = useState<LX.WebDAV.DriveFolder[]>([])
   const [folders, setFolders] = useState<LX.WebDAV.DriveFolder[]>([])
   const [selectedFolder, setSelectedFolder] = useState<LX.WebDAV.DriveFolder | null>(null)
@@ -354,6 +363,8 @@ export default memo(() => {
 
   const handleRefresh = useCallback(() => {
     setLoading(true)
+    // 这条路径才是「用户下拉」，可以播刷新动画（见 refreshing 状态注释）
+    setRefreshing(true)
     setScanText('正在加载标签...')
     void Promise.all(
       songs.map(async(song) => {
@@ -391,6 +402,7 @@ export default memo(() => {
       toast(message, 'long')
     }).finally(() => {
       setLoading(false)
+      setRefreshing(false)
     })
   }, [songs])
 
@@ -754,6 +766,10 @@ export default memo(() => {
   const renderTabsHeader = () => (
     <>
       <PageTopInset />
+      {/* 页面标题：本页此前没有自己的标题，只有共享页头那一行；现按「我的」标题的位置/行高/
+          字重渲染，字号取共享页头（也就是本页原来那行）的字号 —— 用户第 14 轮第 1 条。
+          它与下面三段标签一起放在所有滚动容器之外，切标签、滚列表都不位移。 */}
+      <DetailPageTitle title={t('nav_webdav')} />
       <View style={{ ...styles.tabs, borderBottomColor: theme['c-border-background'] }}>
         <TabButton label="列表" tab="list" activeTab={activeTab} onPress={() => { setActiveTab('list') }} />
         <TabButton label="文件列表" tab="folders" activeTab={activeTab} onPress={() => { setActiveTab('folders') }} />
@@ -1020,7 +1036,8 @@ export default memo(() => {
         refreshControl={
           <RefreshControl
             colors={[theme['c-primary']]}
-            refreshing={loading}
+            // 只认用户下拉（见 refreshing 状态注释）：扫描/选目录不再把列表压下去再弹回来
+            refreshing={refreshing}
             onRefresh={handleRefresh}
           />
         }

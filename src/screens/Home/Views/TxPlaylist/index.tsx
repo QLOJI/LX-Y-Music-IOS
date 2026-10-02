@@ -114,16 +114,21 @@ export default memo(() => {
     }
   }, [])
 
-  const fetchPlaylists = useCallback(async(isRefresh = false) => {
+  // 取歌单。三种模式（用户第 16 轮第 7 条：刷新动画只能由「用户真的下拉」触发）：
+  //   'initial' 首载 —— 列表还没挂（listReady 闸门），loading 只喂加载占位；
+  //   'pull'    用户下拉 —— 只有这一条路径会把 RefreshControl 的 refreshing 置位；
+  //   'silent'  程序触发的重取（新建 / 删除歌单之后）—— 两者都不动，列表原地换数据，
+  //             不再出现「点完删除，顶部自己弹一次下拉动画再回弹」的上跳。
+  const fetchPlaylists = useCallback(async(mode: 'initial' | 'pull' | 'silent' = 'initial') => {
     try {
-      if (isRefresh) {
+      if (mode === 'pull') {
         setRefreshing(true)
-      } else {
+      } else if (mode === 'initial') {
         setLoading(true)
       }
       await Promise.all([
-        fetchCreatedPlaylists(isRefresh),
-        fetchCollectedPlaylists(isRefresh),
+        fetchCreatedPlaylists(mode !== 'pull'),
+        fetchCollectedPlaylists(mode !== 'pull'),
       ])
     } catch (err: any) {
       console.error('获取歌单失败:', err)
@@ -155,7 +160,7 @@ export default memo(() => {
   }, [])
 
   const onRefresh = useCallback(() => {
-    void fetchPlaylists(true)
+    void fetchPlaylists('pull')
   }, [fetchPlaylists])
 
   useEffect(() => {
@@ -212,7 +217,7 @@ export default memo(() => {
           try {
             await txUserApi.deletePlaylist(item.dirid)
             toast('删除成功')
-            await fetchPlaylists(true)
+            await fetchPlaylists('silent')
           } catch (err: any) {
             toast(`删除失败: ${err.message}`)
           }
@@ -233,7 +238,7 @@ export default memo(() => {
       toast('创建成功')
       setNewPlaylistName('')
       createModalRef.current?.setVisible(false)
-      await fetchPlaylists(true)
+      await fetchPlaylists('silent')
     } catch (err: any) {
       toast(`创建失败: ${err.message}`)
     }
@@ -254,6 +259,9 @@ export default memo(() => {
         <Text
           style={[styles.tabText, { borderBottomColor: isActive ? theme['c-primary-font-active'] : 'transparent' }]}
           color={theme['c-font']}
+          // 三等分后每份约 109pt（375 宽屏）：数量到 4 位或「字体大小」调得很大时只截断，
+          // 不换行 —— 换行会把整行撑高、三等分的视觉就被破坏（第 16 轮第 2 条）。
+          numberOfLines={1}
         >
           {label}
         </Text>
@@ -261,18 +269,20 @@ export default memo(() => {
     )
   }, [activeTab, theme, buttonRadius])
 
-  // 页头（状态栏占位 + 标题行 + 同行 tab）在「首载中」与「已就绪」两条分支里必须是同一份、
-  // 同一几何：加载分支把它当普通兄弟节点渲染，就绪分支把它当 ListHeaderComponent —— 两处
-  // 都在容器顶部、同样的 paddingTop/marginBottom，所以从转圈切到列表时标题一动不动
-  // （用户第 15 轮第 3 条）。
+  // 页头（状态栏占位 + 标题行 + 同行 tab）。用户第 16 轮第 2/7 条后它**不再**进列表：
+  // 之前它就是 ListHeaderComponent，列表挂载/换数据/下拉刷新时它都在可滚动内容里，
+  // 用户看到「第一次进入时标题和内容一起向上跳一下」。现在它是列表的兄弟节点、固定在
+  // 容器顶部 —— 标题在任何时候都不动（既不随列表滚动，也不随刷新位移），列表只占它
+  // 下面那块，首载中/已就绪两条分支的页头是同一份、同一几何（第 15 轮第 3 条也保持）。
   const pageHeader = (
     <>
       <PageTopInset />
       {/* 标题行与 tab 同行：位置/行高/字重与「我的」标题同源，字号取 WebDAV 页标题
           （共享页头）的字号。此前用裸 StyleSheet.create 写死 lineHeight 42、
           字号却随「字体大小」设置放大，字体调大后标题上下笔画被裁
-          —— 用户第 14 轮第 1 条的「显示不全」。详见组件注释。 */}
-      <DetailPageTitle title={t('nav_tx_playlist')}>
+          —— 用户第 14 轮第 1 条的「显示不全」。详见组件注释。
+          equalColumns：QQ歌单 / 自建歌单 / 收藏歌单 三等分、同一垂直中线（第 16 轮第 2 条）。 */}
+      <DetailPageTitle title={t('nav_tx_playlist')} equalColumns>
         <View style={[styles.tabBar]}>
           {renderTab('created', `自建歌单 (${createdPlaylists.length})`)}
           {renderTab('collected', `收藏歌单 (${collectedPlaylists.length})`)}
@@ -286,12 +296,12 @@ export default memo(() => {
         style={[{ flex: 1, overflow: 'hidden' }, selectedPlaylist ? { opacity: 0 } : null]}
         pointerEvents={selectedPlaylist ? 'none' : 'auto'}
       >
+        {pageHeader}
         {listReady ? (
           <FlatList
             key={`cols-${numColumns}`}
             onScrollBeginDrag={Keyboard.dismiss}
             data={playlists}
-            ListHeaderComponent={pageHeader}
             contentContainerStyle={{ paddingBottom: bottomInset, paddingRight: 0 }}
             numColumns={numColumns}
             renderItem={({ item }) => (
@@ -319,12 +329,9 @@ export default memo(() => {
             }
           />
         ) : (
-          <>
-            {pageHeader}
-            <View style={styles.loadingContainer}>
-              <ActivityIndicator color={theme['c-primary-font']} size="large" />
-            </View>
-          </>
+          <View style={styles.loadingContainer}>
+            <ActivityIndicator color={theme['c-primary-font']} size="large" />
+          </View>
         )}
       </View>
       {selectedPlaylist && (
@@ -364,10 +371,14 @@ const styles = StyleSheet.create({
     flex: 1,
     maxWidth: '50%',
   },
+  // 【第 16 轮第 2 条】三等分的后两份：标题 flex:1（DetailPageTitle.equalColumns）+ 本行
+  // flex:2，行宽被切成 3 等份（标题 / 自建歌单 / 收藏歌单各 1/3），每个 tab 再对半分。
+  // alignItems 由 'flex-end' 改成 'center'：tab 文字与标题同处 42pt 行高的垂直中线，
+  // 视觉上「在一条直线上」（原 bottom 对齐会比标题低半行）。
   tabBar: {
     flexDirection: 'row',
-    flex: 1,
-    alignItems: 'flex-end',
+    flex: 2,
+    alignItems: 'center',
   },
   tabItem: {
     flex: 1,

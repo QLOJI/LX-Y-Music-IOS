@@ -1,4 +1,4 @@
-import { memo, useEffect, useRef, useCallback, type ReactElement } from 'react'
+import { memo, useEffect, useRef, useCallback } from 'react'
 import { View } from 'react-native'
 import OnlineList, { type OnlineListType } from '@/components/OnlineList'
 import { toast } from '@/utils/tools'
@@ -9,7 +9,6 @@ import { stageOnlineListToDefault } from '@/core/playListToDefault'
 type RecType = 'recommend' | 'everyday'
 
 interface Props {
-  header?: ReactElement
   type: RecType
 }
 
@@ -18,13 +17,16 @@ const handlePlay = async(list: LX.Music.MusicInfoOnline[], listId: string, index
   await stageOnlineListToDefault(listId, [...list], index)
 }
 
-export default memo(({ header, type }: Props) => {
+export default memo(({ type }: Props) => {
   const listRef = useRef<OnlineListType>(null)
   const playerMusicInfo = usePlayerMusicInfo()
 
-  const fetchSongs = useCallback(async() => {
+  // isPullRefresh（第 16 轮第 7 条）：只有用户真的下拉才用 'refreshing' 播下拉动画。
+  // 首载走 'loading' —— 旧写法在挂载时也置 'refreshing'，iOS 刷新控件当场激活，把整个
+  // 列表（含当时的页内标题）压下去、加载结束再弹回来，就是用户看到的「第一次进入向上刷新」。
+  const fetchSongs = useCallback(async(isPullRefresh = false) => {
     try {
-      listRef.current?.setStatus('refreshing')
+      listRef.current?.setStatus(isPullRefresh ? 'refreshing' : 'loading')
       let songs: LX.Music.MusicInfoOnline[] = []
 
       switch (type) {
@@ -51,11 +53,11 @@ export default memo(({ header, type }: Props) => {
   }, [type])
 
   useEffect(() => {
-    fetchSongs()
+    void fetchSongs()
   }, [fetchSongs])
 
   const handleRefresh = useCallback(() => {
-    fetchSongs()
+    void fetchSongs(true)
   }, [fetchSongs])
 
   const handlePlayList = useCallback((index: number) => {
@@ -70,7 +72,6 @@ export default memo(({ header, type }: Props) => {
       <OnlineList
         ref={listRef}
         listId={`kg_daily_rec_${type}`}
-        ListHeaderComponent={header}
         forcePlayList={true}
         playingId={playerMusicInfo.id}
         onPlayList={handlePlayList}

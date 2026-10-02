@@ -5,7 +5,7 @@ import { createStyle } from '@/utils/tools'
 import { useButtonRadius } from '@/utils/buttonRadius'
 import { useTheme } from '@/store/theme/hook'
 import { useI18n } from '@/lang'
-import { designSpacing, pageTitleLineHeight } from '@/theme/DesignTokens'
+import { designSpacing } from '@/theme/DesignTokens'
 import PagerView, { type PagerViewOnPageSelectedEvent } from 'react-native-pager-view'
 import RecSongs from './RecSongs'
 import RecPlaylists from './RecPlaylists'
@@ -15,6 +15,7 @@ import { type ListInfoItem } from '@/store/songlist/state'
 import commonState from '@/store/common/state'
 import { setNavActiveId } from '@/core/common'
 import PageTopInset from '@/components/common/PageTopInset'
+import DetailPageTitle from '@/components/common/DetailPageTitle'
 import SwipeBackArea from '@/components/common/SwipeBackArea'
 
 type TabType = 'home' | 'radar' | 'songlist' | 'newsong'
@@ -73,7 +74,6 @@ export default memo(() => {
   const [selectedPlaylist, setSelectedPlaylist] = useState<ListInfoItem | null>(null)
   const selectedPlaylistRef = useRef(selectedPlaylist)
   selectedPlaylistRef.current = selectedPlaylist
-  const theme = useTheme()
   const t = useI18n()
 
   const handleTabChange = (newTab: TabType) => {
@@ -122,21 +122,24 @@ export default memo(() => {
   }, [])
 
 
+  // 页头（状态栏占位 + 标题行）。用户第 16 轮第 6/7 条：
+  // ① 它以前是四个子页的 ListHeaderComponent，在可滚动内容里 —— 列表挂载/换数据时标题跟着
+  //    整体位移（「第一次进入向上刷新」），滚动时还会被推走（「标题没有固定」）。现在提到
+  //    PagerView 外面，四页共用同一个固定页头，任何情况下都不动。
+  // ② 标题与 tab 同一行、同一垂直中线（原来是「标题一行、tab 另一行」两个基线）。
+  // ③ 顶部到标题行的间距加大：PageTopInset 之后再垫 designSpacing.sm（见 headerExtraTop）。
   const pageHeader = (
-    <>
+    <View style={styles.headerExtraTop}>
       <PageTopInset />
-      {/* 标题在上、按钮在同一行在其下方（原来按钮挤在标题右侧） */}
-      <View style={styles.titleBlock}>
-        <Text style={styles.titleText} size={34} color={theme['c-font']}>
-          {t('nav_tx_daily_rec')}
-        </Text>
+      <DetailPageTitle title={t('nav_tx_daily_rec')}>
         <Tabs activeTab={activeTab} onTabChange={handleTabChange} />
-      </View>
-    </>
+      </DetailPageTitle>
+    </View>
   )
 
   return (
     <View style={{ flex: 1 }}>
+      {pageHeader}
       <View
         style={[{ flex: 1 }, selectedPlaylist ? { opacity: 0 } : null]}
         pointerEvents={selectedPlaylist ? 'none' : 'auto'}
@@ -149,16 +152,16 @@ export default memo(() => {
           scrollEnabled
         >
           <View key="home">
-            <RecSongs header={pageHeader} type="home" onOpenDetail={handleOpenDetail} />
+            <RecSongs type="home" onOpenDetail={handleOpenDetail} />
           </View>
           <View key="radar">
-            <RecSongs header={pageHeader} type="radar" />
+            <RecSongs type="radar" />
           </View>
           <View key="songlist">
-            <RecPlaylists header={pageHeader} onOpenDetail={handleOpenDetail} />
+            <RecPlaylists onOpenDetail={handleOpenDetail} />
           </View>
           <View key="newsong">
-            <RecSongs header={pageHeader} type="newsong" />
+            <RecSongs type="newsong" />
           </View>
         </PagerView>
       </View>
@@ -173,23 +176,16 @@ export default memo(() => {
 })
 
 const styles = createStyle({
-  // 标题独占一行，四个 tab 在它下方另起一行（左右内边距与标题对齐）
-  titleBlock: {
-    paddingHorizontal: designSpacing.lg,
+  // 【第 16 轮第 6 条】「增大上面到顶部的间距」：PageTopInset（= 状态栏高度 − md，兜底 sm）之外
+  // 再垫 sm(12)。仅每日推荐页加，歌单页不加 —— 用户点名的是每日推荐页。
+  headerExtraTop: {
+    paddingTop: designSpacing.sm,
   },
-  titleText: {
-    fontWeight: '800',
-    // 34pt 页面大标题统一行高（原写死 36，与推荐/歌单页的 42 差 6pt）
-    lineHeight: pageTitleLineHeight,
-  },
-  // 四个 tab 同一行：横向滚动兜底，字号放大 / 窄屏放不下时可左右滑动，不会换行或被裁掉
-  // 标题行 → 按钮行 的间距（用户第 11 轮第 2 条：原来的 4pt 太近，按钮行几乎贴在标题上）。
-  // 取值对齐排行榜页同位置的 HeaderBar.titleRow.marginBottom = designSpacing.sm(12)，
-  // 「每日推荐栏 → 下方按钮」与「排行榜标题 → 下方内容」现在是同一个间距。
+  // 四个 tab 与标题同处一行（DetailPageTitle 的 row，alignItems center → 同一垂直中线）。
+  // flex:1 吃掉标题右侧的剩余宽度，横向滚动兜底：字号放大 / 窄屏放不下时可左右滑动，
+  // 不会换行或被裁掉。
   tabsScroll: {
-    flexGrow: 0,
-    flexShrink: 1,
-    marginTop: designSpacing.sm,
+    flex: 1,
   },
   tabsContainer: {
     flexDirection: 'row',

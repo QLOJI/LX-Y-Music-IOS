@@ -210,9 +210,10 @@ export default memo(() => {
     setSelectedPlaylist(null)
     setScrollToMusicInfo(null)
   }, [])
-  // 页头（状态栏占位 + 标题行）在「首载中」与「已就绪」两条分支里必须是同一份、同一几何：
-  // 加载分支把它当普通兄弟节点渲染，就绪分支把它当 ListHeaderComponent —— 两处都在容器
-  // 顶部、同样的 paddingTop/marginBottom，所以从转圈切到列表时标题一动不动（第 15 轮第 3 条）。
+  // 页头（状态栏占位 + 标题行）。用户第 16 轮第 2/7 条后它**不再**进列表：之前它是
+  // ListHeaderComponent（在可滚动内容里），列表挂载/换数据/下拉刷新时标题会跟着整体位移
+  // ——「第一次进入时标题和内容一起向上跳一下」。现在固定在列表上方，标题在任何情况下
+  // 都不动；首载中/已就绪两条分支共用同一份页头（第 15 轮第 3 条）。
   const pageHeader = (
     <>
       <PageTopInset />
@@ -226,11 +227,11 @@ export default memo(() => {
   return (
     <View style={{ flex: 1 }}>
       <View style={[{ flex: 1 }, selectedPlaylist ? { opacity: 0 } : null]} pointerEvents={selectedPlaylist ? 'none' : 'auto'}>
+        {pageHeader}
         {listReady ? (
           <FlatList
             onScrollBeginDrag={Keyboard.dismiss}
             data={playlists}
-            ListHeaderComponent={pageHeader}
             contentContainerStyle={{ paddingBottom: bottomInset }}
             key={isHorizontal ? 'horizontal' : 'vertical'}
             numColumns={isHorizontal ? 2 : 1}
@@ -250,12 +251,9 @@ export default memo(() => {
             }
           />
         ) : (
-          <>
-            {pageHeader}
-            <View style={styles.loadingContainer}>
-              <ActivityIndicator color={theme['c-primary-font']} size="large" />
-            </View>
-          </>
+          <View style={styles.loadingContainer}>
+            <ActivityIndicator color={theme['c-primary-font']} size="large" />
+          </View>
         )}
       </View>
       {selectedPlaylist && (
