@@ -1,4 +1,10 @@
-import { saveLyric, saveMusicUrl, getMusicUrl as getStoreMusicUrl } from '@/utils/data'
+import {
+  saveLyric,
+  saveMusicUrl,
+  saveMusicUrlRequestQuality,
+  getMusicUrl as getStoreMusicUrl,
+  getMusicUrlResolved as getStoreMusicUrlResolved,
+} from '@/utils/data'
 import {
   setLastTryQuality,
   buildLyricInfo,
@@ -90,12 +96,18 @@ export const getMusicUrlInfo = async({
 
   // 如果不是刷新请求，先检查缓存
   if (!isRefresh) {
-    const cachedUrl = await getStoreMusicUrl(currentMusicInfo, targetQuality)
-    if (cachedUrl) {
-      setLastTryQuality(currentMusicInfo.id, targetQuality)
+    // 【第 16 轮第 3 条】天梯模式（未显式指定档）走带达成档映射的读取：预取写入的是
+    // 「达成档」键（如 320k），而这里读的是「请求档」（天梯首档，如 flac）——
+    // 旧实现键不匹配直接穿透去发请求，用户实测一首歌被取 3 次（起播 / 最后 10 秒预取 / 切歌）。
+    // 显式指定档（下载、失败降级重试）保持原样：不允许把低档链接当成指定档命中。
+    const cached = quality == null
+      ? await getStoreMusicUrlResolved(currentMusicInfo, targetQuality)
+      : await getStoreMusicUrl(currentMusicInfo, targetQuality).then(url => url ? { url, quality: targetQuality } : null)
+    if (cached) {
+      setLastTryQuality(currentMusicInfo.id, cached.quality)
       // 缓存命中没有「本次请求回传的达成档」：缓存按档位为键存取（utils/data.ts saveMusicUrl/
-      // getMusicUrl），targetQuality 命中的这条缓存链接本身就属于该档，用该已知档位兜底。
-      return { url: cachedUrl, quality: targetQuality }
+      // getMusicUrl），命中的这条缓存链接本身就属于返回的档位（映射回退时是达成档），用该已知档位兜底。
+      return { url: cached.url, quality: cached.quality }
     }
   }
 
@@ -125,6 +137,12 @@ export const getMusicUrlInfo = async({
       if (!silent) console.log('Custom API request succeeded', result)
       if (!silent) console.log('### [WHITEBOX_API_URL] 异步 URL 真正就绪 ###', { title: currentMusicInfo.name, songId: currentMusicInfo.id, url: result.url })
       void saveMusicUrl(currentMusicInfo, result.quality, result.url)
+      // 【第 16 轮第 3 条】天梯降级（请求档 ≠ 达成档）时补一条映射记录，
+      // 让后续按请求档读缓存的调用方（最后 10 秒预取后的复用 / 切歌起播）能命中
+      // 预取刚写入的这条链接，不再重复请求。显式指定档不写（下载等链路语义不同）。
+      if (quality == null && result.quality !== targetQuality) {
+        void saveMusicUrlRequestQuality(currentMusicInfo, targetQuality, result.quality)
+      }
       setLastTryQuality(currentMusicInfo.id, result.quality)
       // result.quality 是 handleGetOnlineMusicUrl 回传的「达成档」（含固定天梯降级/换源结果），原样带出
       return { url: result.url, quality: result.quality }
@@ -156,13 +174,18 @@ export const getMusicUrlInfo = async({
     onToggleSource,
     isRefresh,
     allowToggleSource,
-  }).then(({ url, quality: targetQuality, musicInfo: targetMusicInfo, isFromCache }) => {
-    if (targetMusicInfo.id != currentMusicInfo.id && !isFromCache) { void saveMusicUrl(targetMusicInfo, targetQuality, url) }
-    void saveMusicUrl(currentMusicInfo, targetQuality, url)
-    setLastTryQuality(currentMusicInfo.id, targetQuality)
-    if (currentMusicInfo.id !== musicInfo.id) void saveMusicUrl(musicInfo, targetQuality, url)
-    // 这里的 targetQuality 来自 handleGetOnlineMusicUrl 回传的「达成档」（含换源结果），随 url 一起带出
-    return { url, quality: targetQuality }
+  }).then(({ url, quality: achievedQuality, musicInfo: targetMusicInfo, isFromCache }) => {
+    if (targetMusicInfo.id != currentMusicInfo.id && !isFromCache) { void saveMusicUrl(targetMusicInfo, achievedQuality, url) }
+    void saveMusicUrl(currentMusicInfo, achievedQuality, url)
+    // 【第 16 轮第 3 条】同 preferApi 分支：天梯模式下降级达成时补写「请求档 → 达成档」映射
+    if (quality == null && achievedQuality !== targetQuality) {
+      void saveMusicUrlRequestQuality(currentMusicInfo, targetQuality, achievedQuality)
+      if (currentMusicInfo.id !== musicInfo.id) void saveMusicUrlRequestQuality(musicInfo, targetQuality, achievedQuality)
+    }
+    setLastTryQuality(currentMusicInfo.id, achievedQuality)
+    if (currentMusicInfo.id !== musicInfo.id) void saveMusicUrl(musicInfo, achievedQuality, url)
+    // 这里的 achievedQuality 来自 handleGetOnlineMusicUrl 回传的「达成档」（含换源结果），随 url 一起带出
+    return { url, quality: achievedQuality }
   })
 }
 

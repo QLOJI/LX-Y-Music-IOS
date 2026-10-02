@@ -3,6 +3,7 @@ import {
   // getOtherSource as getOtherSourceFromStore,
   // saveOtherSource as saveOtherSourceFromStore,
   getMusicUrl as getStoreMusicUrl,
+  getMusicUrlResolved as getStoreMusicUrlResolved,
   getPlayerLyric,
   getLyric as getStoreLyric,
 } from '@/utils/data'
@@ -705,11 +706,16 @@ export const handleGetOnlineMusicUrl = async({
   userApiLog.info(`[在线播放] 是否刷新缓存: ${isRefresh}`)
   userApiLog.info(`[在线播放] 是否允许换源: ${allowToggleSource}`)
 
-  const cachedUrl = await getStoreMusicUrl(musicInfo, targetQuality)
-  if (cachedUrl && !isRefresh) {
+  // 【第 16 轮第 3 条】天梯模式（未显式指定档）读缓存带回退：请求档未命中时按
+  // 「请求档 → 达成档」映射再查（预取写入的是达成档键），命中即原样复用不请求。
+  // 显式指定档（下载 / 降级重试）保持只读该档，避免低档链接被当成指定档命中。
+  const cached = quality == null
+    ? await getStoreMusicUrlResolved(musicInfo, targetQuality)
+    : await getStoreMusicUrl(musicInfo, targetQuality).then(url => url ? { url, quality: targetQuality } : null)
+  if (cached && !isRefresh) {
     userApiLog.info('[在线播放] 命中缓存，直接返回播放地址')
     userApiLog.info('[在线播放] ========== 获取成功 ==========')
-    return { url: cachedUrl, musicInfo, quality: targetQuality, isFromCache: true }
+    return { url: cached.url, musicInfo, quality: cached.quality, isFromCache: true }
   }
 
   const tryGetMusicUrlWithFallback = async(qualities: LX.Quality[]): Promise<{ url: string, type: LX.Quality, isFromCache: boolean }> => {
