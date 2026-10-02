@@ -1,4 +1,4 @@
-import { memo, useMemo } from 'react'
+import { memo, useMemo, useState, useEffect, useCallback } from 'react'
 import { FlatList, View, RefreshControl } from 'react-native'
 import AlbumListItem from './AlbumListItem'
 import { useHorizontalMode, useLayout } from '@/utils/hooks'
@@ -30,6 +30,21 @@ export default memo(({ componentId, albums, loading, hasMore, onLoadMore, onRefr
   const isHorizontal = useHorizontalMode()
   // 底部悬浮层（迷你播放器 + 安全区）统一避让高度
   const bottomInset = useBottomOverlayInset()
+  // 下拉刷新动画只认「用户真的下拉过」（用户第 16 轮第 7 条）。
+  // 旧判据 refreshing={loading && albums.length === 0}：切到「所有专辑」tab 首次加载时
+  // albums 为空、loading 为 true，iOS 刷新控件当场激活——内容被压下去再弹回来（「向上刷新」）。
+  // 现在 refreshing 只在用户下拉的那一刻置位，等这次加载（loading true→false）落地后清除；
+  // 程序触发的加载（切 tab、缓存未命中）只会有 loading，永远不会点亮刷新控件。
+  const [refreshing, setRefreshing] = useState(false)
+
+  const handlePullRefresh = useCallback(() => {
+    setRefreshing(true)
+    onRefresh()
+  }, [onRefresh])
+
+  useEffect(() => {
+    if (refreshing && !loading) setRefreshing(false)
+  }, [refreshing, loading])
 
   const rowInfo = useMemo(() => {
     if (width === 0) return { num: 3, itemWidth: 0 }
@@ -93,8 +108,9 @@ export default memo(({ componentId, albums, loading, hasMore, onLoadMore, onRefr
           refreshControl={
             <RefreshControl
               colors={[theme['c-primary']]}
-              refreshing={loading && albums.length === 0}
-              onRefresh={onRefresh}
+              // 只认用户下拉（见 refreshing 状态注释）
+              refreshing={refreshing}
+              onRefresh={handlePullRefresh}
             />
           }
           columnWrapperStyle={rowInfo.num > 1 ? styles.row : undefined}
