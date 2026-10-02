@@ -3,12 +3,10 @@ import { View, StyleSheet, TouchableOpacity } from 'react-native'
 import Modal, { type ModalType } from '@/components/common/Modal'
 import WebView, { type WebViewNavigation } from 'react-native-webview'
 import { useTheme } from '@/store/theme/hook'
-import { useSettingValue } from '@/store/setting/hook'
 import { useStatusbarHeight } from '@/store/common/hook'
 import { Icon } from '@/components/common/Icon'
 import Text from '@/components/common/Text'
 import { toast } from '@/utils/tools'
-import { applyOpacity } from '@/utils/colorOpacity'
 import { useButtonRadius } from '@/utils/buttonRadius'
 import wyApi from '@/utils/musicSdk/wy/user'
 import CookieManager from '@react-native-cookies/cookies'
@@ -61,7 +59,6 @@ export default forwardRef<WebLoginModalType, {}>((props, ref) => {
   const isCheckingRef = useRef(false)
   const pollingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const theme = useTheme()
-  const buttonOpacity = useSettingValue('theme.buttonOpacity')
   const buttonRadius = useButtonRadius()
 
   const stopPolling = useCallback(() => {
@@ -263,8 +260,9 @@ export default forwardRef<WebLoginModalType, {}>((props, ref) => {
           <TouchableOpacity
             onPress={handleManualGetCookie}
             style={[styles.getCookieBtn, {
-              // 按钮底面随「按钮透明度」淡出；只改颜色 alpha，不用容器 opacity
-              backgroundColor: applyOpacity(theme['c-primary'], buttonOpacity),
+              // 固定主题主色：登录页内的动作按钮不跟随全局「按钮透明度」
+              //（跟随的话透明度=0 时底变透明，文字压在页面底色上，按钮整块看不见）
+              backgroundColor: theme['c-primary'],
               // 静态高 44（styles.getCookieBtn.height），行内覆盖「按钮圆角」
               borderRadius: buttonRadius(44),
             }]}

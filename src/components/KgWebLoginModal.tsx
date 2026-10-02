@@ -3,12 +3,10 @@ import { View, StyleSheet, TouchableOpacity, TextInput, ScrollView, Modal as RNM
 import WebView from 'react-native-webview'
 import Modal, { type ModalType } from '@/components/common/Modal'
 import { useTheme } from '@/store/theme/hook'
-import { useSettingValue } from '@/store/setting/hook'
 import { useStatusbarHeight } from '@/store/common/hook'
 import { Icon } from '@/components/common/Icon'
 import Text from '@/components/common/Text'
 import { toast } from '@/utils/tools'
-import { applyOpacity } from '@/utils/colorOpacity'
 import { useButtonRadius } from '@/utils/buttonRadius'
 import { sendCaptcha, loginByPhone, buildCookieString, getVerifyInfo, verifyUserInfo } from '@/utils/musicSdk/kg/utils/api'
 
@@ -26,10 +24,23 @@ s.onerror=function(e){window.ReactNativeWebView.postMessage(JSON.stringify({type
 document.head.appendChild(s);</script></body></html>`
 }
 
+// 登录页是本工程里少数「整页自绘」的界面：整页底色 + 按钮主色都按酷狗官方登录页
+// 固定，**不跟随全局「按钮透明度」**。此前这里写的是
+// `applyOpacity('#1677ff', buttonOpacity)`，用户把按钮透明度调到 0 后：
+//   · 登录按钮 → 底色透明 + 白字，压在本页 #ffffff 底上 = 完全看不见；
+//   · 登录后「多账号选择」弹窗的确定登录 → 同上；
+//   · 同弹窗的「取消」借的是 theme['c-border'] 当底色配白字，浅色主题下本来就是
+//     白底白字，跟按钮透明度无关也看不见。
+// （用户第 11 轮第 3 条）。现在这四处色值全部写死，任何按钮透明度下都保持可见；
+// 加载/禁用态另给一个浅蓝，避免用 c-border 时又撞成「底与字同色」。
+const KG_BRAND = '#1677ff'
+const KG_BRAND_BUSY = '#9dc3f7'
+const KG_NEUTRAL_BG = '#f2f2f2'
+const KG_NEUTRAL_FG = '#666666'
+
 const KgWebLoginModal = forwardRef<KgWebLoginModalType, object>((_, ref) => {
   const modalRef = useRef<ModalType>(null)
   const theme = useTheme()
-  const buttonOpacity = useSettingValue('theme.buttonOpacity')
   const buttonRadius = useButtonRadius()
   const [phone, setPhone] = useState('')
   const [code, setCode] = useState('')
@@ -176,8 +187,8 @@ const KgWebLoginModal = forwardRef<KgWebLoginModalType, object>((_, ref) => {
             </TouchableOpacity>
           </View>
           <TouchableOpacity style={[styles.loginBtn, {
-            // 登录按钮底色随「按钮透明度」淡出；文字色不动（logging 态用的 c-border 主题里无此键、运行时为 undefined，保持原样）
-            backgroundColor: logging ? (theme as any)['c-border'] : applyOpacity('#1677ff', buttonOpacity),
+            // 固定品牌色，不跟随「按钮透明度」（否则透明度=0 时白底白字，按钮整块消失）
+            backgroundColor: logging ? KG_BRAND_BUSY : KG_BRAND,
             // 可见高度 ≈ 46 = 16 号字默认行高 18（16 × 1.15）+ 上下 padding 14×2，行内覆盖「按钮圆角」
             borderRadius: buttonRadius(46),
           }]} onPress={handleLogin} disabled={logging}>
@@ -207,8 +218,8 @@ const KgWebLoginModal = forwardRef<KgWebLoginModalType, object>((_, ref) => {
                   <TextInput style={[styles.idInputText, { color: theme['c-font'] }]} placeholder="请输入您要登录的酷狗ID" placeholderTextColor={theme['c-font-label']} value={selectedId} onChangeText={setSelectedId} keyboardType="number-pad" autoFocus />
                 </View>
                 <TouchableOpacity style={[styles.modalBtn, {
-                  // 按钮底色随「按钮透明度」淡出；文字色不动
-                  backgroundColor: applyOpacity('#1677ff', buttonOpacity),
+                  // 固定品牌色，不跟随「按钮透明度」；未填 ID 的禁用态给浅蓝但文字仍可见
+                  backgroundColor: selectedId.trim() ? KG_BRAND : KG_BRAND_BUSY,
                   marginTop: 20,
                   // 可见高度 ≈ 46（依据同登录按钮：16 号字默认行高 18 + 上下 padding 14×2）
                   borderRadius: buttonRadius(46),
@@ -216,12 +227,14 @@ const KgWebLoginModal = forwardRef<KgWebLoginModalType, object>((_, ref) => {
                   <Text size={16} color="#fff">确定登录</Text>
                 </TouchableOpacity>
                 <TouchableOpacity style={[styles.modalBtn, {
-                  backgroundColor: (theme as any)['c-border'],
+                  // 次要按钮用固定浅灰底 + 深灰字：原来借 theme['c-border'] 配白字，
+                  // 浅色主题下底色本身就接近白，字完全看不见（与按钮透明度无关的老问题）
+                  backgroundColor: KG_NEUTRAL_BG,
                   marginTop: 10,
                   // 可见高度 ≈ 46（依据同登录按钮：16 号字默认行高 18 + 上下 padding 14×2）
                   borderRadius: buttonRadius(46),
                 }]} onPress={() => { setShowMultiAccount(false); setPendingData(null); setSelectedId('') }} activeOpacity={0.8}>
-                  <Text size={16} color="#fff">取消</Text>
+                  <Text size={16} color={KG_NEUTRAL_FG}>取消</Text>
                 </TouchableOpacity>
               </View>
             </View>

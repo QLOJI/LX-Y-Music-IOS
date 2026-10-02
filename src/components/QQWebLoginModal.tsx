@@ -3,8 +3,6 @@ import { View, StyleSheet, TouchableOpacity, Animated } from 'react-native'
 import Modal, { type ModalType } from '@/components/common/Modal'
 import WebView, { type WebViewNavigation } from 'react-native-webview'
 import { useTheme } from '@/store/theme/hook'
-import { useSettingValue } from '@/store/setting/hook'
-import { applyOpacity } from '@/utils/colorOpacity'
 import { useButtonRadius } from '@/utils/buttonRadius'
 import { useStatusbarHeight } from '@/store/common/hook'
 import { Icon } from '@/components/common/Icon'
@@ -22,7 +20,6 @@ export interface QQWebLoginModalType {
 const Header = ({ onClose, onLogout }: { onClose: () => void, onLogout: () => void }) => {
   const theme = useTheme()
   const statusBarHeight = useStatusbarHeight()
-  const buttonOpacity = useSettingValue('theme.buttonOpacity')
   const buttonRadius = useButtonRadius()
 
   return (
@@ -54,8 +51,9 @@ const Header = ({ onClose, onLogout }: { onClose: () => void, onLogout: () => vo
         onPress={onLogout}
         style={[
           styles.logoutButton,
-          // 按钮底面随「按钮透明度」淡出，只改颜色 alpha，文字/图标色不动
-          { backgroundColor: applyOpacity('#ff6b6b', buttonOpacity) },
+          // 固定红色：这是登录页里的品牌/危险动作按钮，不跟随全局「按钮透明度」
+          //（跟随的话透明度=0 时红底变透明，白字白底，整个「退出登录」看不见）
+          { backgroundColor: '#ff6b6b' },
           // 静态高 32（styles.logoutButton.height），行内覆盖「按钮圆角」
           { borderRadius: buttonRadius(32) },
         ]}
@@ -105,7 +103,6 @@ const QQWebLoginModal = forwardRef<QQWebLoginModalType, object>((props, ref) => 
   const modalRef = useRef<ModalType>(null)
   const webViewRef = useRef<any>(null)
   const theme = useTheme()
-  const buttonOpacity = useSettingValue('theme.buttonOpacity')
   const buttonRadius = useButtonRadius()
   const [isLoading, setIsLoading] = useState(true)
 
@@ -203,8 +200,9 @@ const QQWebLoginModal = forwardRef<QQWebLoginModalType, object>((props, ref) => 
             onPress={handleGetCookie}
             style={[
               styles.getCookieBtn,
-              // 按钮底面随「按钮透明度」淡出，只改颜色 alpha，文字色不动
-              { backgroundColor: applyOpacity(theme['c-primary'], buttonOpacity) },
+              // 固定主题主色：登录页内的动作按钮不跟随全局「按钮透明度」
+              //（跟随的话透明度=0 时底变透明，文字压在页面底色上，按钮整块看不见）
+              { backgroundColor: theme['c-primary'] },
               // 静态高 44（styles.getCookieBtn.height），行内覆盖「按钮圆角」
               { borderRadius: buttonRadius(44) },
             ]}

@@ -39,12 +39,15 @@ export interface ProgressDrag {
  * - 播放 tick（4Hz）直接落位，无过渡——上游每个 timeupdate 直接改 scaleX、无 transition，
  *   进度条以 tick 节奏阶梯前进（此前我们的 250ms 线性补间是超出上游的自造平滑，已按
  *   对齐要求移除）；
- * - 仅当相邻两次进度的跳变 >2s 时（seek / 后台恢复大跳 / 切歌归零），对这一次变更挂
- *   标准曲线过渡滑到目标（时长取 designMotion.quick，2026-10-01 统一动效档定为 200ms）——
- *   即上游 watch(|Δ|>2s) → activePlayProgressTransition → barTransition 类
+ * - 仅当「用户主动 seek（拖动松手 / 点击进度条 / 点歌词 / 远程命令）造成的 >2s 跳变」时，
+ *   对这一次变更挂标准曲线过渡滑到目标（时长取 designMotion.quick，2026-10-01 统一动效档
+ *   定为 200ms）——即上游 watch(|Δ|>2s) → activePlayProgressTransition → barTransition 类
  *   （上游时长原为 --duration-fast: 180ms × --ease-standard: cubic-bezier(.22,1,.36,1)，
  *   本工程时长按统一速率取 200，曲线照搬上游）；
  *   ≤2s 的短跳上游同样直接落位，不动画。
+ *   2026-10-02（用户第 12 轮第 1 条）收窄：非用户 seek 的大跳（退后台再回前台、重新进入
+ *   播放详情页、切歌归零）改为**瞬时落位**——此前这些场景也会挂 200ms 过渡，用户看到的
+ *   就是「切回来时进度条先播一段进度增长动画，太慢了」。判定见下面的 seekArmedRef。
  * translateX 在原生驱动白名单内，用「全宽条 + 负向位移」表达进度：translateX = (p-1) × 容器宽。
  */
 const SEEK_JUMP_SEC = 2
@@ -56,6 +59,20 @@ const SEEK_EASING = Easing.bezier(0.22, 1, 0.36, 1)
 export const useSmoothProgressAnim = (progress: number, duration: number): Animated.Value => {
   const anim = useRef(new Animated.Value(clamp01(progress))).current
   const targetRef = useRef(clamp01(progress))
+  // 这一次大跳是不是「用户主动 seek」（拖动松手 / 点击进度条 / 点歌词 / 远程命令）。
+  // 只有用户自己造成的跳转才值得挂过渡；切回来（退后台再回前台、重进播放详情）造成的
+  // 大跳必须瞬时落位——那正是用户第 12 轮第 1 条抱怨的「返回时要播一段进度增长动画，
+  // 太慢了，要实时显示当前进度」。用户 seek 的唯一入口是 global.app_event.setProgress，
+  // 所以这里只需订阅该事件打一个一次性标记，不改任何调用方。
+  const seekArmedRef = useRef(false)
+
+  useEffect(() => {
+    const handleSeek = () => { seekArmedRef.current = true }
+    global.app_event.on('setProgress', handleSeek)
+    return () => {
+      global.app_event.off('setProgress', handleSeek)
+    }
+  }, [])
 
   useEffect(() => {
     const target = clamp01(progress)
@@ -64,11 +81,17 @@ export const useSmoothProgressAnim = (progress: number, duration: number): Anima
     // 对齐上游 usePlayProgress 的 watch：跳变 >2s 才挂过渡，且只作用于这一次变更；
     // 时长未就绪（duration=0）时 Δ×0=0，永不触发过渡（直接落位）。
     const isJump = Math.abs(target - targetRef.current) * duration > SEEK_JUMP_SEC
+    // 标记只在「这一次跳变真的用掉它」时消费：seek 之后引擎真正落位前可能先来一两个
+    // 普通 tick，不能把它们当成 seek 消费掉，否则用户的 seek 会退化成硬跳。
+    // 反过来，切回来 / 切歌归零这类非用户跳变即使标记还残留也不会走过渡分支。
+    const isSeek = isJump && seekArmedRef.current
+    if (isJump) seekArmedRef.current = false
     targetRef.current = target
     Animated.timing(anim, {
       toValue: target,
-      // 播放 tick 直接落位（duration 0）；新动画自动接管正在运行的过渡，避免打架
-      duration: isJump ? SEEK_TRANSITION_MS : 0,
+      // 播放 tick 直接落位（duration 0）；用户 seek 的那一次才挂过渡；
+      // 新动画自动接管正在运行的过渡，避免打架
+      duration: isSeek ? SEEK_TRANSITION_MS : 0,
       easing: SEEK_EASING,
       isInteraction: false,
       useNativeDriver: true,

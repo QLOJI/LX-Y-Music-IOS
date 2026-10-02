@@ -82,14 +82,18 @@ const ListItem = memo(
     const isPlaying = playingId === item.id
     const isSelected = selectedList.includes(item)
     const coverUrl = useCoverUrl(item)
-    const isWyLiked = useIsWyLiked(item.meta.songId)
-    const txSongId = (item.meta as any).id
+    // 本地/下载任务转播放项、汽水(qs)等经 filterListDetail 构造的歌曲可能不带 meta 字段，
+    // 这里兜底避免下方 meta.xxx 访问 undefined 时整行抛错（用户第 11 轮第 13 条，
+    // Mylist/MusicList/ListItem.tsx 同一类崩溃）。
+    const meta = (item.meta ?? {}) as any
+    const isWyLiked = useIsWyLiked(meta.songId)
+    const txSongId = meta.id
     const isNumericId = txSongId && /^\d+$/.test(String(txSongId))
     const txSongMid = isNumericId
       ? String(txSongId)
-      : (item.meta as any).songmid || (item.meta as any).strMediaMid || (typeof item.id === 'string' && item.id.startsWith('tx_') ? item.id.slice(3) : item.id)
+      : (meta.songmid || meta.strMediaMid || (typeof item.id === 'string' && item.id.startsWith('tx_') ? item.id.slice(3) : item.id))
     const isTxLiked = useIsTxLiked(txSongMid)
-    const isKgLiked = useIsKgLiked((item.meta as any).hash || item.meta.songId)
+    const isKgLiked = useIsKgLiked(meta.hash || meta.songId)
 
     const moreButtonRef = useRef<TouchableOpacity>(null)
     const handleShowMenu = () => {
@@ -120,7 +124,7 @@ const ListItem = memo(
 
     const tagInfo = useQualityTag(item, qualityShowHighest)
     const historySource = (item as LX.Music.MusicInfoOnline & { playHistorySource?: LX.Player.PlayHistorySource }).playHistorySource
-    const singer = `${item.singer}${isShowAlbumName && item.meta.albumName ? `·${item.meta.albumName}` : ''}`
+    const singer = `${item.singer}${isShowAlbumName && meta.albumName ? `·${meta.albumName}` : ''}`
 
     return (
       <View
@@ -170,8 +174,8 @@ const ListItem = memo(
             <View style={styles.listItemSingle}>
               {showSource ? <Badge type="tertiary">{item.source.toUpperCase()}</Badge> : null}
               {tagInfo.type ? <Badge type={tagInfo.type}>{tagInfo.text}</Badge> : null}
-              {item.meta.fee === 1 ? <Badge type="vip">VIP</Badge> : null}
-              {item.source === 'wy' && item.meta.originCoverType === 2 ? <Badge type="normal">cover</Badge> : null}
+              {meta.fee === 1 ? <Badge type="vip">VIP</Badge> : null}
+              {item.source === 'wy' && meta.originCoverType === 2 ? <Badge type="normal">cover</Badge> : null}
               {historySource ? <Badge type="normal">{historySource}</Badge> : null}
               <Text
                 style={styles.listItemSingleText}
