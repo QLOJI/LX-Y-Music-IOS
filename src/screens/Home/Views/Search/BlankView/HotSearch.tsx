@@ -8,7 +8,7 @@ import Text from '@/components/common/Text'
 import { createStyle } from '@/utils/tools'
 import { applyOpacity } from '@/utils/colorOpacity'
 import { useButtonRadius } from '@/utils/buttonRadius'
-import { designSpacing, designTypography } from '@/theme/DesignTokens'
+import { controlGap, designSpacing, designTypography } from '@/theme/DesignTokens'
 import { useTheme } from '@/store/theme/hook'
 import { useSettingValue } from '@/store/setting/hook'
 import { useI18n } from '@/lang'
@@ -112,12 +112,14 @@ export default forwardRef<HotSearchType, ListProps>((props, ref) => {
 
 const styles = createStyle({
   title: {
-    // A-2：标题到词条 12→8（区块上方 16 / 标题到内容 8 / 词条行距 12）。
-    // A-4（2026-10-01）：再收到 4 —— 用户反馈「下方的文字间距又很大」。词条是 44pt 高、
-    // 字号 13 的胶囊，文字在胶囊内垂直居中，胶囊顶边到文字顶边本身就有 ~14pt 留白，
-    // 若标题再留 8，视觉间距（~22pt）比标题离上方标签行（~19pt）还大，分组就反了。
-    // 4 是「贴着自己的内容」的量级，不引间距令牌（最小档 xs 就是 8，反而会退回原样）。
-    marginBottom: 4,
+    // 「标题 → 自己的词条」间距：与「搜索平台」区块同源 —— HeaderBar 的
+    // platformContent.paddingVertical 用的就是 controlGap(12)。
+    // 第 19 轮第 2 条（用户原话）：「搜索页面，热门搜索和历史搜索下面与按钮的间距，
+    // 要和搜索平台和下面按钮的间距一致，确保整个画面间距一致。」
+    // A-4 曾单独收到 4（理由是胶囊内自带留白），但那让本页三处「标题→内容」变成
+    // 12 / 4 / 4 三套；现统一回 controlGap —— 本文件与 HistorySearch / HeaderBar
+    // 三处同值的要求由契约 scripts/sim-page-title-align.js D 组钉住。
+    marginBottom: controlGap,
     fontWeight: '700',
   },
   list: {

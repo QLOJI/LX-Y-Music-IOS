@@ -5,7 +5,7 @@ import Text from '@/components/common/Text'
 import { createStyle } from '@/utils/tools'
 import { applyOpacity } from '@/utils/colorOpacity'
 import { useButtonRadius } from '@/utils/buttonRadius'
-import { designSpacing, designTypography, designRadius } from '@/theme/DesignTokens'
+import { controlGap, designSpacing, designTypography, designRadius } from '@/theme/DesignTokens'
 import { useTheme } from '@/store/theme/hook'
 import { useSettingValue } from '@/store/setting/hook'
 import { useI18n } from '@/lang'
@@ -163,11 +163,11 @@ export default forwardRef<HistorySearchType, HistorySearchProps>((props, ref) =>
 
 const styles = createStyle({
   titleContent: {
-    // A-2：标题到词条 12→8（区块上方 16 / 标题到内容 8 / 词条行距 12）。
-    // A-4（2026-10-01）：再收到 4，与 HotSearch 同值 —— 历史词条是 36pt 高、字号 13 的胶囊，
-    // 胶囊顶边到文字顶边自带 ~10pt 留白，标题留 4 后视觉间距才与 HotSearch 一致
-    // （两个区块的「标题→内容」观感必须一样，否则左右两个区块自己就不齐）。
-    marginBottom: 4,
+    // 「标题 → 自己的词条」间距：与 HotSearch 的 title、以及「搜索平台」区块
+    // （HeaderBar.platformContent 的 paddingVertical）同为 controlGap(12)。
+    // 第 19 轮第 2 条要求整页「标题→内容」间距一致；A-4 的 4 已废弃 ——
+    // 本处与 HotSearch 必须同步，否则左右两个区块自己就不齐。
+    marginBottom: controlGap,
     flexDirection: 'row',
     alignItems: 'center',
   },

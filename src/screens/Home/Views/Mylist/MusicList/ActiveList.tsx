@@ -84,23 +84,23 @@ export default forwardRef<ActiveListType, ActiveListProps>(
           size={onBack ? 20 : 12}
         />
         {fetching ? <Loading color={theme['c-button-font']} style={styles.loading} /> : null}
-        {onBack
-          ? (
-              // 用户第 16 轮第 4 条：从「我的」进入某个列表（试听列表/我的收藏/同步列表等）时，
-              // 返回栏正中显示列表名称，替代原来的「返回」两个字——不显示名字根本认不出进的是哪个列表。
-              // 绝对定位 + 左右对称内边距：名称在整个栏（含两侧按钮）的水平中心，长名截断时也不被
-              // 箭头/按钮挤压；pointerEvents 关掉是为了让点击穿透到整行的 onPress（返回）。
-              <View style={styles.currentListName} pointerEvents="none">
-                <Text style={styles.currentListNameText} numberOfLines={1} color={theme['c-button-font']}>
-                  {currentListName}
-                </Text>
-              </View>
-            )
-          : (
-              <Text style={styles.currentListText} numberOfLines={1} color={theme['c-button-font']}>
-                {currentListName}
-              </Text>
-            )}
+        {/* 标题：整栏正中，两种状态共用同一套几何（绝对定位 + 左右对称内边距）。
+            第 16 轮第 4 条先在返回态这么做（从「我的」进入试听列表/我的收藏/同步列表等时，
+            不显示名字根本认不出进的是哪个列表）；第 19 轮第 3 条把非返回态也并过来 ——
+            用户原话「搜索和显示/关闭封面显示按钮应该在右端，返回按钮在左端，中心是标题」。
+            左端只留图标槽（返回态 chevron-left / 非返回态 chevron-right），右端是
+            「封面开关 + 搜索」两个图标按钮，名称容器绝对铺满整栏 + 左右各 96pt 内边距：
+            名称居中不被按钮挤压，长名截断时也压不到按钮；pointerEvents 关掉是为了让点击
+            穿透到整行的 onPress。 */}
+        <View style={styles.currentListName} pointerEvents="none">
+          <Text style={styles.currentListNameText} numberOfLines={1} color={theme['c-button-font']}>
+            {currentListName}
+          </Text>
+        </View>
+        {/* 弹性占位（第 19 轮第 3 条）：名称容器是 absolute、不参与 flex 布局，行内只剩
+            「箭头 + 两个按钮」三个定宽元素 —— 没有这个占位，两个按钮会紧跟在箭头后面挤在
+            左边；有了它才把按钮顶到栏尾。左端箭头 / 右端按钮 / 正中标题，三段各管一段。 */}
+        <View style={styles.currentListSpacer} />
         <TouchableOpacity style={[styles.currentListBtns, { borderRadius: buttonRadius(44) }]} onPress={onToggleView}>
           <Icon color={theme['c-button-font']} name={showCover ? 'menu' : 'album'} />
         </TouchableOpacity>
@@ -134,18 +134,12 @@ const styles = createStyle({
     // paddingTop: 10,
     // paddingBottom: 0,
   },
-  currentListText: {
-    flex: 1,
-    // minWidth: 70,
-    // paddingLeft: 10,
-    paddingRight: 10,
-    // paddingTop: 10,
-    // paddingBottom: 10,
-  },
-  // 【第 16 轮第 4 条】返回态（onBack）的列表名：整栏水平居中。
+  // 【第 16 轮第 4 条 + 第 19 轮第 3 条】列表名：整栏水平居中，两种状态共用。
   // 左右内边距按两侧「最宽遮挡物」取值：右侧 = 两个 46pt 图标按钮 + 容器 paddingRight 2；
   // 左侧 = 箭头槽（paddingLeft 12 + 20 图标 + paddingRight 10 = 42）与 loading（marginRight 5）
   // 里更宽的那个，取右侧值 96 ≥ 两者，保证名称既居中又不压住任何按钮。
+  // 旧的非返回态行内文字（currentListText，flex:1 靠左）已随第 19 轮第 3 条删除 ——
+  // 两种状态标题必须在同一个位置，否则列表内容一进入详情，标题就横跳。
   currentListName: {
     position: 'absolute',
     left: 0,
@@ -156,6 +150,11 @@ const styles = createStyle({
   },
   currentListNameText: {
     textAlign: 'center',
+  },
+  // 弹性占位（第 19 轮第 3 条）：行内唯一吃剩余宽度的元素。名称容器改成 absolute 之后，
+  // 若不补这个占位，右侧两个 46pt 按钮会紧贴箭头挤在左边 —— 「按钮在右端」就没了。
+  currentListSpacer: {
+    flex: 1,
   },
   loading: {
     marginRight: 5,

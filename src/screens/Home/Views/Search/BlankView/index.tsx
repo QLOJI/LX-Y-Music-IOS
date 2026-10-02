@@ -94,10 +94,11 @@ const styles = createStyle({
     // 「热门搜索/历史搜索」上方与搜索类型选择器之间的固定间距。
     // A-2：此前只有 paddingBottom/Horizontal，区块标题顶端几乎贴住上方胶囊行。
     // A-4（2026-10-01）：用户再次反馈「热门搜索这几个字已经靠紧了上方的歌曲/歌单/歌手/专辑栏，
-    // 下方的文字间距又很大」—— md(16) 不够。这里改 lg(24)，同时把标题自身的 marginBottom
-    // 收到 4（见 HotSearch/HistorySearch）：标题离「自己的内容」近、离「上一区块」远，
-    // 才是正确的视觉分组；此前的 8 加上胶囊内部的垂直居中留白（13pt 字挤在 44pt 胶囊里
-    // 上下各留 ~14pt），合起来反而比上方还空。
+    // 下方的文字间距又很大」—— md(16) 不够。这里改 lg(24)。
+    // 第 19 轮第 2 条（2026-10-02）：标题自身的下间距不再单独取值，统一回 controlGap(12)，
+    // 与「搜索平台」区块的「标题→胶囊」间距（HeaderBar.platformContent.paddingVertical）同值 ——
+    // 用户原话「热门搜索和历史搜索下面与按钮的间距，要和搜索平台和下面按钮的间距一致，
+    // 确保整个画面间距一致」。24 > 12，仍保持「标题离上一区块远、离自己的内容近」的分组关系。
     paddingTop: designSpacing.lg,
     paddingBottom: 180,
     paddingHorizontal: designSpacing.lg,
