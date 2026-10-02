@@ -1,4 +1,4 @@
-import { dismissOverlay, onModalDismissed, showSyncModeModal } from '@/navigation'
+import { cancelSyncModeModalRetries, dismissOverlay, onModalDismissed, showSyncModeModal } from '@/navigation'
 import syncState from '@/store/sync/state'
 import syncActions from '@/store/sync/action'
 
@@ -22,6 +22,9 @@ const closeSyncModeModal = () => {
     void dismissOverlay(syncState.syncModeComponentId)
     syncActions.setSyncModeComponentId('')
   }
+  // 无论此刻有没有 componentId，都让 showSyncModeModal 里还没到点的「挂载复查」作废 ——
+  // 用户已作答 / 取消 / 连接断开后若复查还活着，会把选择框重新弹出来（幽灵弹窗）。
+  cancelSyncModeModalRetries()
 }
 export const selectSyncMode = async <T extends keyof LX.Sync.ModeTypes>(
   serverName: string,

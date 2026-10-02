@@ -1,5 +1,6 @@
 import { getMusicUrlInfo } from '@/core/music'
 import { getNextPlayMusicInfo, resetRandomNextMusicInfo } from '@/core/player/player'
+import { startPreload } from '@/core/player/preload'
 import { checkUrl } from '@/utils/request'
 import playerState from '@/store/player/state'
 import settingState from '@/store/setting/state'
@@ -92,7 +93,17 @@ export default () => {
     // 不再是此前的一进歌（剩余 < 20s 起）就抢带宽。总长 ≤ 10s 的极短音频不预取，
     // 避免一开播就触发。preloadMusicInfo.info 有值即不再重复发起（一首歌只取一次）。
     if (duration > 10 && duration - progress.nowPlayTime < 10 && !preloadMusicInfo.info) {
+      // 用户第 15 轮第 4 条：这里是「最后 10 秒」的统一触发点。先走本模块的暖链
+      // （nativeFlac 预启动 / URL 预热），完成后再调 startPreload 跑完整预加载
+      // （下一首歌词预取 + 换源兜底取链）。刻意串行：第二步能命中第一步刚写入的
+      // URL 缓存（core/music 的 saveMusicUrl / getMusicUrl 按档位缓存），
+      // 同一时刻不会对同一首歌发两次请求。core/player/preload.ts 内部还有一道
+      // 时间闸（同样只放行最后 10 秒），controller 在起播时对它的调用不会再提前取歌。
       void preloadNextMusicUrl(progress.nowPlayTime)
+        .catch(() => {})
+        .then(() => {
+          startPreload()
+        })
     }
   }
 

@@ -16,6 +16,21 @@ const preloadNextMusic = async() => {
     return
   }
 
+  // 用户第 15 轮第 4 条：预加载只在当前歌曲「播到最后 10 秒」才开始，不再起播 / 切歌瞬间就
+  // 取下一首。本函数由 controller 在 playing / musicToggled 时调用（起播、暂停恢复、切歌都算），
+  // 时间闸必须放在函数内部，否则每次起播都会抢带宽（第 11 轮只收窄了进度驱动的
+  // init/player/preloadNextMusic.ts，漏了这里，所以用户仍能看到一起播就取下一首）。
+  // 真正进入最后 10 秒的触发由 init/player/preloadNextMusic.ts 的进度监听负责
+  // （它会在暖链完成后回调 startPreload）。口径与那边一致：总长 ≤ 10s 的极短音频不预取，
+  // 避免一开播就触发。
+  const { nowPlayTime, maxPlayTime } = playerState.progress
+  if (!(maxPlayTime > 10 && maxPlayTime - nowPlayTime < 10)) {
+    preloadLog.info(
+      `Not in last 10s (${Math.round(nowPlayTime)}/${Math.round(maxPlayTime)}), skipping preload`,
+    )
+    return
+  }
+
   isPreloading = true
   preloadLog.info('========== Preload Start ==========')
 
