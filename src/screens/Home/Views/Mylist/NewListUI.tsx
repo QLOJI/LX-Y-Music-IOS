@@ -4,6 +4,7 @@ import { useMyList, useActiveListId, useListFetching } from '@/store/list/hook'
 import { useSettingValue } from '@/store/setting/hook'
 import { setActiveList, updateUserListPosition } from '@/core/list'
 import { fetchCoverUrl } from '@/core/music/coverUrl'
+import { getJumpListId } from '@/core/player/player'
 import { getListMusics } from '@/utils/data'
 import { useTheme } from '@/store/theme/hook'
 import { useI18n } from '@/lang'
@@ -591,7 +592,9 @@ export default memo(() => {
     // 会重建整棵树），挂载 effect 就会把几分钟前那次长按当成一次新的跳转，
     // 用户侧表现为「刚切回我的页，歌曲列表自己弹了出来」。置于消费点即彻底一次性。
     global.lx.jumpMyListPosition = false
-    const listId = playerState.playMusicInfo.listId
+    // 与长按入口同一个取值口径：没有来源列表的歌（「稍后播放」插播）回退到播放器
+    // 当前所在列表，否则这里也会拿着空串早退、覆盖层根本不会开。
+    const listId = getJumpListId()
     if (!listId) return
     // 与 handleItemPress 同一套前置：先盖时间戳与目标 id，再写全局状态。
     // 时间戳同时挡住「刚跳过来就被上一个手势的余波/迟到关闭请求把覆盖层关掉」。

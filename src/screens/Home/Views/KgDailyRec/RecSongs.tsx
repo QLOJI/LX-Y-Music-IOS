@@ -4,10 +4,7 @@ import OnlineList, { type OnlineListType } from '@/components/OnlineList'
 import { toast } from '@/utils/tools'
 import kgDailyRec from '@/utils/musicSdk/kg/dailyRec'
 import { usePlayerMusicInfo } from '@/store/player/hook'
-import { LIST_IDS } from '@/config/constant'
-import { setTempList, setActiveList } from '@/core/list'
-import { playList } from '@/core/player/player'
-import { clearPlayedList } from '@/core/player/playedList'
+import { stageOnlineListToDefault } from '@/core/playListToDefault'
 
 type RecType = 'recommend' | 'everyday'
 
@@ -17,10 +14,8 @@ interface Props {
 }
 
 const handlePlay = async(list: LX.Music.MusicInfoOnline[], listId: string, index = 0) => {
-  await setTempList(listId, [...list])
-  clearPlayedList()
-  setActiveList(LIST_IDS.TEMP)
-  void playList(LIST_IDS.TEMP, index)
+  // 酷狗每日推荐整份写入试听列表(DEFAULT)，不再走临时列表（见 core/list.ts playOnlineList 的说明）
+  await stageOnlineListToDefault(listId, [...list], index)
 }
 
 export default memo(({ header, type }: Props) => {

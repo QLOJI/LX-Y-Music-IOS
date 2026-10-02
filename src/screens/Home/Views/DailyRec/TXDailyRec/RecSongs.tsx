@@ -10,10 +10,7 @@ import { retryAsync } from '@/utils/retry'
 import { useI18n } from '@/lang'
 import txApi from '@/utils/musicSdk/tx'
 import { usePlayerMusicInfo } from '@/store/player/hook'
-import { LIST_IDS } from '@/config/constant'
-import { setTempList, setActiveList } from '@/core/list'
-import { playList } from '@/core/player/player'
-import { clearPlayedList } from '@/core/player/playedList'
+import { stageOnlineListToDefault } from '@/core/playListToDefault'
 import { type ListInfoItem } from '@/store/songlist/state'
 import { useBottomOverlayInset } from '@/store/common/hook'
 
@@ -26,10 +23,8 @@ interface Props {
 }
 
 const handlePlay = async(list: LX.Music.MusicInfoOnline[], listId: string, index = 0) => {
-  await setTempList(listId, [...list])
-  clearPlayedList()
-  setActiveList(LIST_IDS.TEMP)
-  void playList(LIST_IDS.TEMP, index)
+  // QQ 每日推荐（雷达/新歌）整份写入试听列表(DEFAULT)，不再走临时列表（见 core/list.ts playOnlineList 的说明）
+  await stageOnlineListToDefault(listId, [...list], index)
 }
 
 const PlaylistItem = ({ item, onPress }: { item: { id: string, name: string, cover: string, playCount: number }, onPress: () => void }) => {

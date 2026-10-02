@@ -11,9 +11,7 @@ import { useSettingValue } from '@/store/setting/hook'
 import { applyOpacity } from '@/utils/colorOpacity'
 import { useButtonRadius } from '@/utils/buttonRadius'
 import { usePlayMusicInfo } from '@/store/player/hook'
-import { overwriteListMusics } from '@/core/list'
-import { playList } from '@/core/player/player'
-import { LIST_IDS } from '@/config/constant'
+import { stageOnlineListToDefault } from '@/core/playListToDefault'
 import { getDefaultDownloadPath } from '@/utils/downloadPath'
 import downloadActions from '@/store/download/action'
 import { mkdir, readDir, unlink, stat } from '@/utils/fs'
@@ -251,9 +249,9 @@ export default memo(() => {
   const handlePlayLocal = useCallback(
     (item: LocalFileItem, index: number) => {
       const playListData = localFiles.map(localFileToPlayItem)
-      void overwriteListMusics(LIST_IDS.TEMP, playListData).then(() => {
-        void playList(LIST_IDS.TEMP, index)
-      })
+      // 本地文件整份写入试听列表(DEFAULT)，不再走临时列表（见 core/list.ts playOnlineList 的说明）。
+      // 注意：试听列表是持久化 + 参与同步的列表，本地文件条目会随它一起被保存/备份。
+      void stageOnlineListToDefault('local_files', playListData, index)
     },
     [localFiles],
   )
@@ -261,9 +259,8 @@ export default memo(() => {
   const handlePlayTask = useCallback(
     (task: LX.Download.DownloadTask, index: number) => {
       const playListData = completedTasks.map(taskToPlayItem)
-      void overwriteListMusics(LIST_IDS.TEMP, playListData).then(() => {
-        void playList(LIST_IDS.TEMP, index)
-      })
+      // 已下载任务整份写入试听列表(DEFAULT)，与本地文件走的是两份不同的源列表
+      void stageOnlineListToDefault('download_tasks', playListData, index)
     },
     [completedTasks],
   )

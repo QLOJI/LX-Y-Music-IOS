@@ -1,4 +1,4 @@
-import { playList } from '@/core/player/player'
+import { getJumpListId, playList } from '@/core/player/player'
 import { useMemo, useRef, useState, useEffect, forwardRef, useImperativeHandle, useCallback, type ReactElement } from 'react'
 import {
   FlatList,
@@ -173,6 +173,10 @@ const List = forwardRef<ListType, ListProps>(
                 listFirstScrollRef.current = true
                 if (waitJumpListPositionRef.current) {
                   waitJumpListPositionRef.current = false
+                  // 这里**故意**用严格判定（不是 getJumpListId）：定位到这个下标的前提是
+                  // 「正在播的这首歌确实属于本列表」。若是「稍后播放」插播的歌（playMusicInfo
+                  // 没有来源列表、playIndex 仍指向上一次正常播放的曲目），按它滚动会停到
+                  // 一首不相干的歌上；此时只打开列表、回落到下方的位置恢复。
                   if (playerState.playMusicInfo.listId == id && playerState.playInfo.playIndex > -1) {
                     try {
                       flatListRef.current?.scrollToIndex({
@@ -227,8 +231,12 @@ const List = forwardRef<ListType, ListProps>(
         // 用 scheduleRaf 而不是裸 requestAnimationFrame，是为了吃到卸载护栏
         // （裸 rAF 会在组件卸载后照样回调，对已销毁的 FlatList 调滚动）。
         scheduleRaf(() => {
-          const listId = playerState.playMusicInfo.listId
+          const listId = getJumpListId()
           if (!listId) return
+          // 「这首歌是否真的属于这条列表」：正常情况两者相等；「稍后播放」插播的歌
+          // 没有来源列表（getJumpListId 回退成了播放器当前列表），此时 playIndex
+          // 指的是列表里**上一首**的位置，按它滚动会停到错的歌上 —— 只换列表、不定位。
+          const isMusicInList = playerState.playMusicInfo.listId == listId
           // 判据用 currentListIdRef（**实际装着哪条列表**）而不是 listState.activeListId：
           // 长按跳转有两个入口，NewListUI 会先把 activeListId 设成目标列表再打开覆盖层，
           // 若这里仍拿 activeListId 判定，会走进「同一条列表」分支、只对旧数据滚一下，
@@ -246,7 +254,10 @@ const List = forwardRef<ListType, ListProps>(
               // setActiveList 的「id 未变则早退」吞掉，这里直接换。
               updateList(listId)
             }
-          } else if (playerState.playInfo.playIndex > -1) {
+          } else if (isMusicInList && playerState.playInfo.playIndex > -1) {
+            // isMusicInList 守卫（本地增强）：「稍后播放」插播时 listId 是回退值，
+            // playIndex 指向的是**正在播的那首之外的歌**，此时只让列表露出来
+            // （上面分支已负责换列表），不按下标滚动。
             if (isUpdatingList) {
               // 数据还没落地，交给内层 rAF
               waitJumpListPositionRef.current = true
@@ -270,7 +281,10 @@ const List = forwardRef<ListType, ListProps>(
       // 2) 没传时退回持久化值。
       const initialListId = listId
       if (initialListId) {
-        waitJumpListPositionRef.current = playerState.playMusicInfo.listId === initialListId
+        // getJumpListId 而非 playMusicInfo.listId（本地增强）：与 handleJumpPosition
+        // 同一口径，「稍后播放」插播时也算「这首歌在这个列表里」，打开列表后由
+        // 挂载链里的严格判定决定要不要定位（插播歌不定位，见该处注释）。
+        waitJumpListPositionRef.current = getJumpListId() === initialListId
         updateList(initialListId)
       } else void getListPrevSelectId().then(updateList)
 

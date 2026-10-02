@@ -143,7 +143,8 @@ export default memo(() => {
       const heartbeatList = [mInfo, ...res.list].filter(Boolean)
 
       updateSetting({ 'player.togglePlayMethod': MUSIC_TOGGLE_MODE.heartbeat })
-      playOnlineList('heartbeat', heartbeatList, 0, false)
+      // 最后一个参数 true = 心动模式仍写临时列表（动态电台队列，不写进试听列表）
+      playOnlineList('heartbeat', heartbeatList, 0, false, true)
       toast('心动模式已开启')
     } catch (err: any) {
       toast(`开启心动模式失败: ${err.message}`)

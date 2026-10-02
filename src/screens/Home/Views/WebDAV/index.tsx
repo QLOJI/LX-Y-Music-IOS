@@ -20,10 +20,9 @@ import { useSettingValue } from '@/store/setting/hook'
 import { applyOpacity } from '@/utils/colorOpacity'
 import { useButtonRadius } from '@/utils/buttonRadius'
 import { confirmDialog, createStyle, toast, getRowInfo } from '@/utils/tools'
-import { LIST_IDS, LIST_ITEM_HEIGHT } from '@/config/constant'
+import { LIST_ITEM_HEIGHT } from '@/config/constant'
 import { scaleSizeH } from '@/utils/pixelRatio'
-import { overwriteListMusics } from '@/core/list'
-import { playList } from '@/core/player/player'
+import { stageOnlineListToDefault } from '@/core/playListToDefault'
 import { addTempPlayList } from '@/core/player/tempPlayList'
 import { useHorizontalMode } from '@/utils/hooks'
 import { usePlayMusicInfo } from '@/store/player/hook'
@@ -409,15 +408,14 @@ export default memo(() => {
     (musicInfo: LX.WebDAV.MusicInfo) => {
       const index = songs.findIndex(item => item.id === musicInfo.id)
       if (index < 0) return
-      void overwriteListMusics(LIST_IDS.TEMP, songs).then(() => {
-        void playList(LIST_IDS.TEMP, index).then(() => {
-          void (async() => {
-            const config = await getWebDAVConfig()
-            const updatedSongs = config.songs ?? []
-            setSongs(updatedSongs)
-            void syncSongsCover(updatedSongs)
-          })()
-        })
+      // WebDAV 列表整份写入试听列表(DEFAULT)，不再走临时列表（见 core/list.ts playOnlineList 的说明）
+      void stageOnlineListToDefault('webdav', [...songs], index).then(() => {
+        void (async() => {
+          const config = await getWebDAVConfig()
+          const updatedSongs = config.songs ?? []
+          setSongs(updatedSongs)
+          void syncSongsCover(updatedSongs)
+        })()
       })
     },
     [songs, syncSongsCover],

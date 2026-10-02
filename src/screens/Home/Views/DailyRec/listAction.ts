@@ -1,25 +1,20 @@
-import { LIST_IDS } from '@/config/constant'
 import {
-  setTempList,
-  setActiveList,
   createList,
   removeUserList,
   getListMusics,
   overwriteListMusics,
   updateUserList,
 } from '@/core/list'
-import { playList } from '@/core/player/player'
+import { stageOnlineListToDefault } from '@/core/playListToDefault'
 import listState from '@/store/list/state'
-import { clearPlayedList } from '@/core/player/playedList.ts'
 import settingState from '@/store/setting/state'
 import { toast } from '@/utils/tools.ts'
 
 export const handlePlay = async(list: LX.Music.MusicInfoOnline[], index = 0) => {
-  const listId = 'dailyrec_wy'
-  await setTempList(listId, [...list])
-  clearPlayedList()
-  setActiveList(LIST_IDS.TEMP)
-  void playList(LIST_IDS.TEMP, index)
+  // 每日推荐整份写入试听列表(DEFAULT)，不再走临时列表：勾选「自动清空已播放列表」时
+  // 整份覆盖旧内容，未勾选时整份置顶、旧内容保留（语义见 core/playListToDefault.ts）。
+  // 这样长按迷你播放器封面能落到「我的」页的试听列表卡片上。
+  await stageOnlineListToDefault('dailyrec_wy', [...list], index)
 }
 
 /**
