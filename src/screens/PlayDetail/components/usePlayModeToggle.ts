@@ -46,7 +46,9 @@ export const usePlayModeToggle = () => {
             : musicInfo
           const heartbeatList = [mInfo, ...res.list].filter(Boolean)
           const isCurrent = mInfo?.id === musicInfo?.id
-          playOnlineList('heartbeat', heartbeatList, 0, isCurrent)
+          // 心动模式是动态电台队列、不是歌单：最后一个参数 true = 仍写临时列表，
+          // 不写进试听列表（否则会把用户自己的试听列表顶掉，勾选自动清空时甚至直接清空）
+          playOnlineList('heartbeat', heartbeatList, 0, isCurrent, true)
         } else {
           toast('心动模式获取歌曲为空')
         }
