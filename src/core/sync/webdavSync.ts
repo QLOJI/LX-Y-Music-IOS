@@ -51,6 +51,24 @@ export const markListsChanged = () => {
   debouncedSync()
 }
 
+/**
+ * 冷启动补同步（第 19 轮第 5 条）：
+ * 启动时不再无条件跑一次 WebDAV 歌单同步 —— 用户原话「启用同步后，退出后，
+ * 每次返回软件都会马上同步一次」。只有本地确实攒着「没同步上去的歌单操作」
+ * （opQueue 非空，持久化在 storage 里、跨进程存活）才补一次；
+ * 其余情况等用户手动「立即同步歌单」，或运行中产生真实变更时由 debouncedSync 触发。
+ */
+export const syncPendingChangesOnStartup = async() => {
+  if (!settingState.setting['sync.webdav.enable'] || !settingState.setting['sync.webdav.url']) return
+  await loadOperationQueue()
+  if (getOperationQueue().length === 0) {
+    webDAVLog.info('[Sync] Startup: no pending local operations, skip auto sync.')
+    return
+  }
+  webDAVLog.info(`[Sync] Startup: ${getOperationQueue().length} pending local operations, sync now.`)
+  await triggerWebDAVSync()
+}
+
 function getRemoteListsFilePath(): string {
   const path = settingState.setting['sync.webdav.path'] || '/LX_Music/'
   const cleanPath = '/' + path.replace(/^\/|\/$/g, '')
