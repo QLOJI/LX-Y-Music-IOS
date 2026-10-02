@@ -119,7 +119,26 @@ public class LiquidGlassEffectView: UIView, AnyVisualEffectView {
     /// Metal band carries a render loop; the frosted backing has no such selector
     /// and the manager skips it via respondsToSelector.
     @objc public func setPaused(_ paused: Bool) {
+        // 恢复（true → false）时先做一次性复位再解除暂停（2026-10-02 用户第 2 条）：
+        // 暂停只是停 draw，CAMetalLayer 上仍留着暂停前那帧（折射的是上一次可见时刻的
+        // 背景）。不复位的话，恢复后第一次采景若被判「未就绪」就会把那一帧原样画出去
+        // ——用户看到的「返回主界面时玻璃里先是旧画面、过一会儿才跳回当前画面」。
+        // 判定「此前确实处于暂停态」用 isPaused 本身：首挂载/背衬重建时 isPaused 已是
+        // false，此时不需要也没有旧画面可丢（否则会白白多做一次同步采景）。
+        if !paused, liquidGlassView?.isPaused == true {
+            liquidGlassView?.handleResumeFromPause()
+        }
         liquidGlassView?.isPaused = paused
+    }
+
+    /// RN bridge entry: realtime capture session (RN prop `live`), see
+    /// LiquidGlassView.setRealtimeCapture(_:). 横向滑动 PagerView 的手势会话期间
+    /// 由 JS 置 true：采景从静止态基线 30fps 放宽到 60fps、渲染提到 120fps，
+    /// 解决「滑动时透过的画面延迟高、掉帧、像反向切入」。同一口径已被抬起的透镜
+    /// （LiquidLensView → beginLiveCapture）使用。仅 Metal 液态档实现该 selector，
+    /// 磨砂档由 manager 的 respondsToSelector 分流为 no-op。
+    @objc public func setRealtimeCapture(_ realtime: Bool) {
+        liquidGlassView?.setRealtimeCapture(realtime)
     }
 
     /// RN bridge entry: 手指位置驱动的眩光（玻璃坐标系）；越界/停止时调 clearTouchPoint 清除

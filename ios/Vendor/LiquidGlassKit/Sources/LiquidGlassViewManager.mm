@@ -71,6 +71,10 @@
 // 液态档实现——JS 在玻璃组件被压栈页完全覆盖（不可见）时置 true，期间停止逐帧
 // draw；恢复后下一帧自动重捕获背景，无残帧。磨砂档不实现（respondsToSelector 分流）。
 - (void)setPaused:(BOOL)paused;
+// 实时采景会话（2026-10-02 用户第 2/9 条）：RN prop `live`，横向滑动 PagerView 的
+// 手势会话期间置 true —— 采景从 30fps 基线放宽到 60fps、渲染提到 120fps，解决
+// 「滑动时透过的画面延迟高/掉帧/像反向切入」。同样仅 Metal 液态档实现。
+- (void)setRealtimeCapture:(BOOL)realtime;
 @end
 
 // 自研 LiquidLensView（液态透镜，LiquidGlassView(.lens) 引擎）的定制入口：
@@ -113,6 +117,8 @@
 - (void)applyTint:(UIColor *)tint;
 - (void)applyGlassOpacity:(CGFloat)opacity;
 - (void)applyDark:(BOOL)dark;
+/// 实时采景会话（RN prop `live`）：更新缓存并应用到当前背衬（respondsToSelector 分流）
+- (void)applyRealtimeCapture:(BOOL)realtime;
 @end
 
 @implementation LGLiquidGlassHostView {
@@ -127,6 +133,7 @@
   BOOL _liquid;
   BOOL _dark;
   BOOL _paused;
+  BOOL _realtime;
   CGFloat _glassOpacity;
   UIColor *_tint;
 }
@@ -208,6 +215,9 @@
   // 省电门不是 backing 持有的持久语义（MTKView 属性随背衬重建重置）：
   // 覆盖状态下切液态开关重建背衬，重放 _paused 让新背衬立即回到暂停态。
   [self applyPaused:_paused];
+  // 同理：实时采景会话（横滑进行中恰好切换液态开关重建背衬）也要重放，否则新背衬
+  // 会掉回 30fps 档、玻璃在剩余滑动里又是慢一拍（用户第 9 条）。
+  [self applyRealtimeCapture:_realtime];
 }
 
 // 切换磨砂 ↔ 液态背衬（liquid prop 驱动，全 iOS 版本实际切换；26.2+ 的液态档
@@ -248,6 +258,17 @@
   id<LGGlassBackingCustomizations> backing = (id<LGGlassBackingCustomizations>)_glassBacking;
   if ([backing respondsToSelector:@selector(setPaused:)]) {
     [backing setPaused:_paused];
+  }
+}
+
+// 实时采景会话（RN prop `live`）。仅 Metal 液态档实现 setRealtimeCapture:（磨砂档 /
+// 26.2+ 液态档是系统材质视图，respondsToSelector 分流后 no-op —— 系统材质的背景
+// 由系统自己实时处理，本就没有采景节流这回事）。
+- (void)applyRealtimeCapture:(BOOL)realtime {
+  _realtime = realtime;
+  id<LGGlassBackingCustomizations> backing = (id<LGGlassBackingCustomizations>)_glassBacking;
+  if ([backing respondsToSelector:@selector(setRealtimeCapture:)]) {
+    [backing setRealtimeCapture:_realtime];
   }
 }
 
@@ -363,10 +384,19 @@ RCT_CUSTOM_VIEW_PROPERTY(liquid, NSNumber, LGLiquidGlassHostView) {
 }
 
 // 省电门（JS 传「玻璃所在屏幕是否被压栈页覆盖」）：覆盖期间暂停 Metal 逐帧渲染，
-// 返回该屏时立即恢复（MTKView 下一帧重捕获背景，无残帧）。磨砂档 no-op。
+// 恢复时先做一次性复位（丢旧纹理 + 立刻重捕获，见 LiquidGlassView.handleResumeFromPause，
+// 2026-10-02 用户第 2 条「返回主界面时玻璃里先闪一帧旧画面」）再继续渲染。磨砂档 no-op。
 // json 为 nil（prop 未传/重置）时回 NO（渲染）。
 RCT_CUSTOM_VIEW_PROPERTY(paused, NSNumber, LGLiquidGlassHostView) {
   [view applyPaused:(json != nil ? [json boolValue] : NO)];
+}
+
+// 实时采景（JS 传「横向滑动 PagerView 的手势会话是否进行中」，2026-10-02 用户第 2/9 条）：
+// 会话期间采景从静止态基线 30fps 放宽到 60fps、渲染提到 120fps（见 LiquidGlassView
+// 的 setRealtimeCapture）。磨砂档 / 26.2+ no-op（系统材质无采景节流）。
+// json 为 nil（prop 未传/重置）时回 NO（回到静止态基线）。
+RCT_CUSTOM_VIEW_PROPERTY(live, NSNumber, LGLiquidGlassHostView) {
+  [view applyRealtimeCapture:(json != nil ? [json boolValue] : NO)];
 }
 
 @end
