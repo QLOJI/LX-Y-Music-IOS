@@ -26,6 +26,12 @@
 //     disabled in dark appearance; every in-window hold is hard-capped by wall clock
 //     so the glass can never stay permanently transparent nor keep a previous page.
 //     See commitCapturedTexture / analyzeCapture / beginCaptureSettleWindow.
+//  4b. Resume-from-pause settle window (2026-10-02): the pause→resume reset now opens the
+//     settle window too (a fourth anchor, see handleResumeFromPause). A resumed backdrop
+//     pipeline is as "just (re)built" as the other anchors; its first frames used to be
+//     committed as-is even when partially composited (non-uniform but with near-black
+//     bands), which the shader refracted into a black rim on the capsule edge — the
+//     user-visible flicker on the tab bar / mini player when returning to a tab page.
 //  Upstream: Copyright © 2025 DnV1eX, https://github.com/DnV1eX/LiquidGlassKit
 //
 
@@ -397,11 +403,15 @@ final class LiquidGlassView: MTKView {
         return now - captureSettleStartedAt < limit
     }
 
-    /// 开启（或重置）沉降窗口。三个锚点（见各自调用点）：
+    /// 开启（或重置）沉降窗口。四个锚点（见各自调用点）：
     /// ① captureBackdrop：backdropView 插入层级——合成源刚建立，最初的捕获不可信；
     /// ② didMoveToWindow：26.2+ 走根视图捕获，没有 backdropView 插入点，视图进窗口
     ///    是同一件事（层级刚建立、页面与合成都还没就绪）；
-    /// ③ beginLiveCapture：透镜抬起/收起圆钮重新入层级，纹理已重置、重新采景。
+    /// ③ beginLiveCapture：透镜抬起/收起圆钮重新入层级，纹理已重置、重新采景；
+    /// ④ handleResumeFromPause（2026-10-02，用户第 16 轮第 1 条）：暂停恢复 = 合成源
+    ///    刚重新建立。此前本复位路径重置了纹理却没重置窗口（captureSettleStartedAt 还是
+    ///    上一次的过期值 → 窗口判据恒 false），恢复后最初的半成品帧被原样接收、黑边被
+    ///    折射进胶囊边缘（tab 栏 / 迷你播放器黑边闪烁）。
     private func beginCaptureSettleWindow() {
         captureSettleStartedAt = CACurrentMediaTime()
     }
@@ -637,7 +647,10 @@ final class LiquidGlassView: MTKView {
     ///     等本次真实背景」，页面背景直接透出来 —— 用户要看的是**当前**画面；
     ///  ② 清掉「未就绪沿用」的全部痕迹（均匀帧计数、半成品标记、变化检测基准）；
     ///  ③ 立刻同步采一次（复位节流 + captureBackground），让恢复后的**第一帧** draw
-    ///     就用上当前背景，而不是等下一个 tick（30fps 档下最多 33ms 的旧画面）。
+    ///     就用上当前背景，而不是等下一个 tick（30fps 档下最多 33ms 的旧画面）；
+    ///  ④ 重开墙钟沉降窗口（beginCaptureSettleWindow，2026-10-02 用户第 16 轮第 1 条）——
+    ///     暂停恢复同样属于「合成源刚建立」，恢复后最初的半成品帧（非均匀但带近黑条带）
+    ///     必须按未就绪沿用（previous 刚被置 nil ⇒ 透明），否则黑边会被折射进胶囊边缘。
     ///
     /// 剩余代价：CAMetalLayer 上那一帧旧图像必然要显示到下一次 draw 为止（≤1 拍），
     /// 这是暂停式省电门的固有代价；本次复位把「多次沿用旧帧 / 等到下一 tick」压到
@@ -650,6 +663,19 @@ final class LiquidGlassView: MTKView {
         lastCaptureGrid = nil
         lastCaptureAt = 0
         preferredFramesPerSecond = Self.liveFramesPerSecond
+        // 2026-10-02（用户第 16 轮第 1 条：「底部 tab 栏和迷你播放器栏边缘又出现瞬间闪烁的
+        // 黑边，分别在进入软件时、从其他页面切回到有底部栏界面时」）：暂停恢复也是一次
+        // 「合成源刚建立」——暂停期间 render server 对这条 backdrop 链路的合成就停摆了，
+        // 恢复后最初几帧与冷启动/backdrop 插入同态：整幅均匀 or 半成品（非均匀但带近黑条带，
+        // 纯均匀判据看不见它），被 commitCapturedTexture 原样接收 → shader 把近黑条带折射到
+        // 胶囊边缘 = 用户看到的黑边闪一下。
+        // 上面三处锚点（backdrop 插入 / didMoveToWindow / beginLiveCapture）都会开沉降窗口，
+        // 唯独本复位路径漏了（它重置了纹理却不重置窗口，captureSettleStartedAt 还是上一次
+        // 早已过期的值 → isInsideCaptureSettleWindow 恒 false → 半成品判据与墙钟沿用全失效）。
+        // 这里补上与其余锚点同口径的开窗：窗口内未就绪帧沿用 previous，而 previous 刚被置 nil
+        // → 显示为透明（页面背景直出），等本次会话第一帧可信背景，绝不会把半成品折射进玻璃边缘。
+        // 顺序：先开窗再 captureBackground，采到的这一帧本身也在窗口覆盖内。
+        beginCaptureSettleWindow()
         captureBackground()
         // 复位之后还差最后一脚（2026-10-02，用户第 11 轮第 10 条：
         // 「还是存在返回主界面，底部玻璃显示瞬间闪烁……瞬间闪烁一下切换到实际透过的画面」）：
