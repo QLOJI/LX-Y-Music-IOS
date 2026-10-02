@@ -88,9 +88,10 @@ export default () => {
 
   const handlePlayProgressChanged: typeof global.state_event.playProgressChanged = (progress) => {
     const duration = progress.maxPlayTime
-    // 对齐上游触发阈值：剩余 < 20s（且总长 > 10s）时开始预取下一首——
-    // 为 URL 获取 + 可用性探测（含失败刷新重试）留足时间
-    if (duration > 10 && duration - progress.nowPlayTime < 20 && !preloadMusicInfo.info) {
+    // 触发时机（用户第 11 轮第 11 条）：播到最后 10 秒（剩余 < 10s）才开始预取下一首，
+    // 不再是此前的一进歌（剩余 < 20s 起）就抢带宽。总长 ≤ 10s 的极短音频不预取，
+    // 避免一开播就触发。preloadMusicInfo.info 有值即不再重复发起（一首歌只取一次）。
+    if (duration > 10 && duration - progress.nowPlayTime < 10 && !preloadMusicInfo.info) {
       void preloadNextMusicUrl(progress.nowPlayTime)
     }
   }
