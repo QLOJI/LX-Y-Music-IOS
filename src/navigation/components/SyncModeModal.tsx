@@ -10,6 +10,7 @@ import { useButtonRadius } from '@/utils/buttonRadius'
 import Text from '@/components/common/Text'
 import { useI18n } from '@/lang'
 import ModalContent from './ModalContent'
+import { dismissOverlay } from '../utils'
 import syncState from '@/store/sync/state'
 import CheckBox from '@/components/common/CheckBox'
 import { setSyncModeComponentId } from '@/core/sync'
@@ -378,7 +379,20 @@ const DislikeModeModal = () => {
 
 export default ({ componentId }: { componentId: string }) => {
   useEffect(() => {
+    // 「重复呈现」兜底：overlay 是 interceptTouchOutside: true 的全屏透明层，若因重试 /
+    // 竞态同时挂了两个，关掉一个后另一个会残留并拦截整页触摸（假死）。挂载时若 store 里
+    // 还记着另一个存活的选择框，先把旧的关掉，保证同一时刻只有一个。
+    if (syncState.syncModeComponentId && syncState.syncModeComponentId != componentId) {
+      void dismissOverlay(syncState.syncModeComponentId)
+    }
     setSyncModeComponentId(componentId)
+    console.log('[SyncMode] overlay mounted:', componentId)
+    return () => {
+      // 卸载即「不在屏幕上」：清掉挂载标记，作为 showSyncModeModal「挂载复查」的判据
+      // （真正的判据是「store 里的 id 指向一个还活着的选择框」）。用户作答时
+      // closeSyncModeModal 已先清过（清后 id 为 ''，此处不重复清）。
+      if (syncState.syncModeComponentId == componentId) setSyncModeComponentId('')
+    }
   }, [componentId])
 
   return (
