@@ -189,8 +189,17 @@ const UserApiItem = memo(({
             onDragCancel()
           }
         },
-        // 一旦接管手势就不再释放给 ScrollView，避免整页被滚动。
-        onPanResponderTerminationRequest: () => false,
+        // 只在长按激活后的拖动会话里拒绝让出 responder（P0，2026-10-02 用户第 4 条）。
+        // 与 NewListUI 同一处缺陷：原写法无条件 `() => false`（本行同样在 touch start 的
+        // capture 阶段就抢到 responder），release/terminate 一旦丢失，响应权被永久持有且
+        // 拒绝让出，RN 里之后每一次按压都拿不到 responder ⇒ 设置页乃至整屏「点击锁死」；
+        // 而列表滚动是原生 UIScrollView 平移、不经 responder，所以「还能滑，滑动后又
+        // 能点」。收紧到 isActivatedRef（长按已激活）后拖动期间语义不变；激活前的让出
+        // 也不会让整页随拖动滚动——那靠的是 grant 时就调用的 onDragGrant()（显式锁祖先
+        // 滚动）与 capture 阶段抢到 responder 本身，与 terminationRequest 无关。
+        // 极性（RN 语义）：onResponderTerminationRequest **返回 false = 拒绝让出**（true =
+        // 让出），因此取反 —— 激活时 false（拒绝被 ScrollView 抢），未激活时 true（让出）。
+        onPanResponderTerminationRequest: () => !isActivatedRef.current,
       }),
     [clearLongPressTimer, index, onDragGrant, onLongPressStart, onDragMove, onDragRelease, onDragCancel, onDragEnd],
   )
