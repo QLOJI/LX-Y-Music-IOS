@@ -14,6 +14,7 @@ import { navigations } from '@/navigation'
 import { PLAY_DETAIL_SCREEN } from '@/navigation/screenNames'
 import commonState from '@/store/common/state'
 import playerState from '@/store/player/state'
+import { getJumpListId } from '@/core/player/player'
 import { LIST_IDS } from '@/config/constant'
 import { useSafeAreaBottom, useScreenCovered, useSafeAreaReady, useNavTransitioning } from '@/store/common/hook'
 import { usePlayerMusicInfo } from '@/store/player/hook'
@@ -131,7 +132,9 @@ export default memo(({ componentId, isHome = false }: { componentId?: string, is
   // 复用实例的「我的」入口不在这一层，长按跳转会让用户莫名其妙换页。
   const handleLongPress = useCallback(() => {
     if (!isHome) return
-    const listId = playerState.playMusicInfo.listId
+    // getJumpListId 而不是直接读 playMusicInfo.listId：本地增强，让「稍后播放」队列里
+    // 那些没有来源列表（listId 为空）的歌也能回退到播放器当前所在列表，而不是毫无反应。
+    const listId = getJumpListId()
     // 没有正在播放的歌曲（空态）或来源是「下载」时无处可跳：下载列表不在「我的」页里。
     if (!listId || listId == LIST_IDS.DOWNLOAD) return
     global.app_event.jumpListPosition()
