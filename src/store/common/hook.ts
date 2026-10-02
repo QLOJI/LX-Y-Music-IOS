@@ -78,10 +78,11 @@ export const useSafeAreaReady = () => {
 }
 
 /**
- * 是否有进行中的页面转场（push / pop）。
- * 转场期间玻璃（Tab 栏 / 迷你播放器 / 透镜）必须暂停渲染：转场中途采到的背景是
+ * 是否处于 **push** 转场窗口内（pop 不再置位，见下）。
+ * push 期间玻璃（Tab 栏 / 迷你播放器）必须暂停渲染：转场中途采到的背景是
  * 「上一页正在滑走 + 新页正在盖上来」的中间态，采进胶囊就是每次切页闪的那一下。
- * 详见 navigation.beginNavTransitionWindow。
+ * 返回方向相反——玻璃正在被露出来，按住等于让用户多看一截陈旧画面，所以 pop
+ * 事件到达即释放。详见 navigation.beginNavTransitionWindow / endNavTransitionWindow。
  */
 export const useNavTransitioning = () => {
   const [value, update] = useState(state.navTransitioning)

@@ -11,8 +11,9 @@ export interface InitState {
   // 它俩的 bottom 完全由 safeAreaBottom 决定，先用 0 画出来、几十毫秒后拿到真实的
   // 34pt（iPhone）再整体上跳一次，就是用户看到的「启动时底部抽动」。
   safeAreaReady: boolean
-  // 是否有进行中的页面转场（push / pop）。转场期间所有玻璃暂停渲染，
-  // 见 useNavTransitioning（原因写在 navigation.beginNavTransitionWindow）。
+  // push 转场窗口：**发起 push** 到转场结束期间所有玻璃暂停渲染（pop 侧不置位，
+  // 返回时立即释放——原因写在 navigation.beginNavTransitionWindow /
+  // endNavTransitionWindow）。
   navTransitioning: boolean
   componentIds: Array<{ name: COMPONENT_IDS, id: string }>
   navActiveId: NAV_ID_Type
