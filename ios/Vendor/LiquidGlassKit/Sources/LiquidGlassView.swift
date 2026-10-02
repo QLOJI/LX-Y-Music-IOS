@@ -451,6 +451,16 @@ final class LiquidGlassView: MTKView {
     /// 用锁保护检查-设置。
     private static let globalCaptureLock = NSLock()
     private static var globalLastCaptureAt: TimeInterval = 0
+
+    /// 采景节流（**每实例**，2026-10-02，用户第 5 条）：两次采景之间的最小墙钟间隔。
+    /// 完整说明见 shouldThrottleCapture。取 30fps（= idleFramesPerSecond 的静止态基线）。
+    private static let captureMinInterval: TimeInterval = 0.0333
+    /// 显式高刷会话（liveCaptureRequested：透镜抬起/跟手、收起圆钮重新入层级）的采景
+    /// 间隔：60fps，比静止态基线宽一倍，但仍封顶——见 shouldThrottleCapture 的说明。
+    private static let liveCaptureMinInterval: TimeInterval = 0.0167
+    /// 本实例最近一次**被接受的**采景时刻（墙钟秒）。只由 shouldThrottleCapture 读写，
+    /// 都在渲染帧内（与 captureBackdrop 同一线程），不需要锁。
+    private var lastCaptureAt: TimeInterval = 0
     var touchPoint: CGPoint? = nil
 
     var frames: [CGRect] = []
@@ -688,6 +698,33 @@ final class LiquidGlassView: MTKView {
 
         blurTexture()
     }
+    /// 本帧是否因采景节流而跳过（每实例，2026-10-02，用户第 5 条）。
+    ///
+    /// 起因：「滑入推荐、歌单界面时，底部的 tab 和迷你播放器区域液态效果明显掉帧，
+    /// 而且滑动松手会自动切入的动画也很不流畅」。页面在滑动 = 背景每一帧都在变
+    /// ——正是 analyzeCapture 把帧率提到 liveFramesPerSecond(120) 的极端情形：
+    /// 一屏三块玻璃（Tab 栏 / 迷你播放器 / 抬起的透镜）各自以 120fps 调 drawHierarchy，
+    /// 合计 360 次/秒。而这条采景路径是**主线程同步**的（drawHierarchy 要等 render
+    /// server 交出 backdrop 内容，上游注释即写 "Noticeable rendering delay"），
+    /// 直接与 pager 动画抢主线程，表现为整条底部区域和吸附动画一起掉帧。
+    ///
+    /// 口径：把「采景」这一步压回静止态的基线——30fps/实例（三块合计 90 次/秒本就是
+    /// 工程既有的、可接受的稳态），显式高刷会话放宽到 60fps。**渲染帧率不动**：
+    /// preferredFramesPerSecond 照旧自适应升降档，玻璃自身的形变、跟手位置、透镜的
+    /// 挤压/拉伸仍是高刷；被限流的只有「重新采一次背景」这一步。代价是折射内容的
+    /// 更新率下降，而该内容本身就是 0.2x 降采样的模糊结果（透镜 0.8x，故给它更高的
+    /// 60fps），30fps 与 120fps 的观感差异远小于它让出的主线程时间。
+    ///
+    /// 首帧（backgroundTexture == nil）不节流：挂载后 / 抬起会话开始的第一帧必须立刻
+    /// 拿到纹理，否则 draw() 的「无纹理则跳过本帧」会让玻璃一直透明（见 beginLiveCapture）。
+    private func shouldThrottleCapture(_ now: TimeInterval) -> Bool {
+        guard backgroundTexture != nil else { return false }
+        let interval = liveCaptureRequested ? Self.liveCaptureMinInterval : Self.captureMinInterval
+        if now - lastCaptureAt < interval { return true }
+        lastCaptureAt = now
+        return false
+    }
+
     /// Captures the background content via CABackdropLayer using drawHierarchy.
     /// Noticeable rendering delay.
     func captureBackdrop() {
@@ -695,6 +732,12 @@ final class LiquidGlassView: MTKView {
         // 玻璃退化为透明（不崩溃，仅失去背后折射内容）。
         guard backdropView.isBackdropAvailable else { return }
         guard let superview else { return }
+
+        // 采景节流（2026-10-02，见 shouldThrottleCapture）：放在几何计算之前——被跳过的帧
+        // 不做任何采景相关的事。backdropView 的位置会在下一个被接受的帧里重算后再采，
+        // 采样矩形始终是当时的实际位置，不会采错区域；而该视图只比玻璃本体大 1 像素左右，
+        // 位置滞后至多 33ms 也不会在屏幕上露出来。
+        if shouldThrottleCapture(CACurrentMediaTime()) { return }
 
         let sizeCoefficient = liquidGlass.backgroundTextureSizeCoefficient
         let scaleCoefficient = layer.contentsScale * liquidGlass.backgroundTextureScaleCoefficient
