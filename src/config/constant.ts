@@ -144,13 +144,23 @@ export const getEffectiveFlatOrder = (
       : (Array.isArray(navOrder) && navOrder.length > 0 ? (navOrder as NAV_ID_Type[]) : NAV_MENUS.map(m => m.id))
   const allMenuIds = NAV_MENUS.map(m => m.id)
   // 过滤已废弃的菜单 id（如合并前的 nav_download_music / nav_local_music），
-  // 避免老用户持久化顺序里的残留项渲染成未知页面
-  const validBase: NAV_ID_Type[] = [
-    'nav_discovery',
-    ...base.filter(id => allMenuIds.includes(id) && id !== 'nav_discovery'),
-  ]
-  const set = new Set(validBase)
-  const extra = allMenuIds.filter(id => !set.has(id))
+  // 避免老用户持久化顺序里的残留项渲染成未知页面；同时**保序去重**（第 19 轮第 1 条）：
+  // 持久化顺序里同一个 id 出现两次时（排序设置写过的重复项 / 老版本迁移残留），
+  // Main.tsx 的 detailNavs 会拿同一 id 挂两层详情层 —— 数组里两个同 key 兄弟节点，
+  // 行为未定义（React 只警告不报错），页面可能被挂两遍（标题看上去就是「两个相同的标题」）。
+  // 第一次出现的位置为准，后出现的重复项丢弃。
+  const seen = new Set<NAV_ID_Type>()
+  const validBase: NAV_ID_Type[] = []
+  const push = (id: NAV_ID_Type) => {
+    if (seen.has(id)) return
+    seen.add(id)
+    validBase.push(id)
+  }
+  push('nav_discovery')
+  base.forEach(id => {
+    if (allMenuIds.includes(id)) push(id)
+  })
+  const extra = allMenuIds.filter(id => !seen.has(id))
   return extra.length ? [...validBase, ...extra] : validBase
 }
 
