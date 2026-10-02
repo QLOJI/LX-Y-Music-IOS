@@ -3,8 +3,9 @@ import { View } from 'react-native'
 import { usePlayMusicInfo } from '@/store/player/hook'
 import playerState from '@/store/player/state'
 import { useI18n } from '@/lang'
-import Badge, { type BadgeType } from '@/components/common/Badge'
+import Badge from '@/components/common/Badge'
 import { createStyle } from '@/utils/tools'
+import { getQualityBadgeByTier } from '@/utils/musicQualityBadge'
 
 // 【C-11-2 决策】徽标数据源改用 playerState.quality（实际达成档，src/plugins/player/utils.ts
 // setResource 每次资源加载完成时写入），不再用 getPlayQuality 反推。
@@ -42,30 +43,8 @@ const SOURCE_ABBR: Record<string, string> = {
   gitee: 'GITEE',
 }
 
-function getQualityBadge(quality: string, t: (k: string) => string): { label: string, type: BadgeType } {
-  switch (quality) {
-    case 'master':
-      return { label: t('quality_lossless_master'), type: 'vip' }
-    case 'atmos_plus':
-      return { label: t('quality_lossless_atmos_plus'), type: 'secondary' }
-    case 'atmos':
-      return { label: t('quality_lossless_atmos'), type: 'secondary' }
-    case 'hires':
-      return { label: t('quality_hires'), type: 'secondary' }
-    case 'flac24bit':
-      return { label: t('quality_lossless_24bit'), type: 'secondary' }
-    case 'flac':
-      return { label: t('quality_lossless'), type: 'sq' }
-    case '320k':
-      return { label: t('quality_high_quality'), type: 'hq' }
-    case '192k':
-      return { label: '192K', type: 'hq' }
-    case '128k':
-      return { label: '128K', type: 'tertiary' }
-    default:
-      return { label: quality.toUpperCase(), type: 'tertiary' }
-  }
-}
+// 档位 → 小标的映射已抽到 utils/musicQualityBadge.ts（2026-10-02 统一：
+// Master/Atmos/24bit/SQ/HQ/128K，未知档不再原样大写透出，统一落到 128K）。
 
 export default memo(() => {
   const t = useI18n()
@@ -83,15 +62,15 @@ export default memo(() => {
   const qualityBadge = useMemo(() => {
     // 尚无实际达成档（本地文件、资源未加载完成）时隐藏徽标：没有「正在播的音质」就不显示
     if (!musicInfo || musicInfo.source === 'local' || !quality) return null
-    return getQualityBadge(quality, t)
-  }, [musicInfo, quality, t])
+    return getQualityBadgeByTier(quality)
+  }, [musicInfo, quality])
 
   if (!musicInfo) return null
 
   return (
     <View style={styles.row}>
       <Badge type="tertiary">{abbr}</Badge>
-      {qualityBadge ? <Badge type={qualityBadge.type}>{qualityBadge.label}</Badge> : null}
+      {qualityBadge ? <Badge type={qualityBadge.type}>{t(qualityBadge.key)}</Badge> : null}
     </View>
   )
 })

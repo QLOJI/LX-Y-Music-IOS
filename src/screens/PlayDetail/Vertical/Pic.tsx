@@ -76,8 +76,10 @@ export const getCoverSize = (
  *   sizeCap（见该 prop）；与横屏 Pic.tsx 消费同一个设置键。
  * - 位置：本组件只产出固定尺寸的封面，居中由上层容器（VerticalNew 的 picContainer）负责。
  * - 自转启停门控：播放态（useIsPlay）× 可见性（active=封面页是 PagerView 当前页 ×
- *   本屏未被压栈页覆盖）同时成立才驱动；任一不满足立即取消动画（cancel，不是转速改 0），
- *   恢复驱动时按已播进度重新起算角度（见下方动画区）。
+ *   本屏未被压栈页覆盖）同时成立才驱动；任一不满足立即取消动画（cancel，不是转速改 0）。
+ *   恢复驱动时**优先从离开视线那一刻的角度无缝续转**（resumePhaseRef，2026-10-02 修复
+ *   「返回播放详情页封面短暂卡顿」）；没有记录（首次驱动 / 切歌 / 暂停恢复）时才按
+ *   已播进度重新起算角度（见下方动画区）。
  */
 export default memo(({ componentId, active = true, coverRegionHeight = 0, sizeCap = 0 }: { componentId: string, active?: boolean, coverRegionHeight?: number, sizeCap?: number }) => {
   const playerMusicInfo = usePlayerMusicInfo()
@@ -163,6 +165,24 @@ export default memo(({ componentId, active = true, coverRegionHeight = 0, sizeCa
   const animationRef = useRef<Animated.CompositeAnimation | null>(null)
   const isAnimating = useRef(false)
   const isUnmounted = useRef(false)
+  // 相位锚点（只在驱动中有效）：`{ phase, at }` = 「at 毫秒时刻，相位是 phase」。
+  // 自转是匀速线性动画（25s 一整圈），所以任何时刻的相位都能由它**同步**推算出来
+  //（readSpinPhase）。不用「回读原生动画值」那条路：那是异步的，会和「切歌 / 关自转时
+  // 同步清相位」抢时序 —— 回调晚一拍落地就会把陈旧的相位写回去，恢复时反而跳一下。
+  const phaseAnchorRef = useRef<{ phase: number, at: number } | null>(null)
+  // 「无缝续转」相位（0~1）：只由**临时不可见**那条停法写入（见 stopAnimation），
+  // 下一次恢复驱动时从该角度接着转，不再按播放位置重锚。
+  // 2026-10-02 修的 bug：进评论页 / 歌名 / 专辑页再返回播放详情页，封面会「短暂卡顿」。
+  // 成因正是恢复驱动时按播放位置重锚：在评论页待了 8 秒，位置相位前进了 8/25 圈 ≈ 115°，
+  // 返回的第一帧封面就从离开时的角度猛地跳到 115° 再继续转。改成续转后，
+  // 恢复的第一帧就是离开时的那个角度，肉眼无跳变（相位只在「不可见」期间被冻住，
+  // 回来接着转 —— 与用户看到的「静止画面」严格连续）。
+  const resumePhaseRef = useRef<number | null>(null)
+  // spinVisible 的 ref 镜像：stopAnimation 需要区分「这次停是不是因为不可见」，
+  // 但把 spinVisible 加进它的依赖数组会让下面卸载 effect 的 cleanup 每次可见性变化
+  // 都重跑一次（那里会把 isUnmounted 置 true，等于把自转永久关掉），所以只镜像读最新值。
+  const spinVisibleRef = useRef(spinVisible)
+  spinVisibleRef.current = spinVisible
 
   const createAnimation = useCallback((value: number) => {
     return Animated.timing(spinValue, {
@@ -186,17 +206,35 @@ export default memo(({ componentId, active = true, coverRegionHeight = 0, sizeCa
     return (position % cycle) / cycle
   }, [])
 
+  // 当前**实际**相位（0~1）：驱动中由相位锚点同步推算（匀速线性 ⇒ 相位 = 起点相位 +
+  // 已过时间/周期）；没有锚点（从未驱动过）时回落到按已播位置推导，与历史口径一致。
+  // 与 getSpinPhase 的区别：getSpinPhase 是「若此刻起转该从哪起步」（可与实际角度脱节，
+  // 例如封面临时不可见期间播放位置还在前进）；readSpinPhase 是「封面此刻转到哪儿了」。
+  const readSpinPhase = useCallback(() => {
+    const anchor = phaseAnchorRef.current
+    if (!anchor) return getSpinPhase()
+    const phase = anchor.phase + (Date.now() - anchor.at) / SPIN_CYCLE_DURATION
+    return phase - Math.floor(phase)
+  }, [getSpinPhase])
+
   const startAnimation = useCallback((reanchor = true) => {
     if (isAnimating.current || !allowSpin || isUnmounted.current) return
     isAnimating.current = true
     // 先确保在途动画已被取消（驱动只有「停/起」两态，不是把转速降为 0）。
     spinValue.stopAnimation(() => {
       if (isUnmounted.current || !isAnimating.current) return
-      // reanchor=true（恢复驱动 / 首次驱动）：按已播进度重新起算角度。
+      // reanchor=true（恢复驱动 / 首次驱动）：优先吃「离开视线前记下的相位」
+      //（resumePhaseRef，见 stopAnimation）—— 被压栈页盖住 / 滑到歌词页这条路径上，
+      // 回来的第一帧就是离开时的角度，不再按进页面期间前进的播放位置重锚（那会跳一下）；
+      // 没有记录（首次驱动 / 切歌 / 暂停恢复）时按已播进度重新起算，与历史口径一致。
       // reanchor=false（25s 周期到点的自然续转）：从 0 接上（0°≡360°，无缝）——
       // 接力点不重锚，避免进度更新的粒度（前台 4Hz，非前台更粗）在接力瞬间造成微小回跳。
-      const from = reanchor ? getSpinPhase() : 0
+      const recorded = resumePhaseRef.current
+      resumePhaseRef.current = null
+      const from = reanchor ? (recorded ?? getSpinPhase()) : 0
       spinValue.setValue(from)
+      // 相位锚点从这一帧起算：readSpinPhase 之后按「from + 已过时间/周期」推算
+      phaseAnchorRef.current = { phase: from, at: Date.now() }
       animationRef.current = createAnimation(from)
       animationRef.current.start(({ finished }) => {
         if (finished && isAnimating.current && !isUnmounted.current) {
@@ -210,10 +248,17 @@ export default memo(({ componentId, active = true, coverRegionHeight = 0, sizeCa
   const stopAnimation = useCallback(() => {
     if (!isAnimating.current) return
     isAnimating.current = false
+    // 「临时不可见」这条停法（spinVisible=false：被压栈页盖住 / 滑到歌词页）记下
+    // 离开视线那一刻的实际相位，供恢复可见时无缝续转（见 resumePhaseRef 的完整说明）。
+    // 其余停法（暂停、切歌、关自转、卸载）不记：它们各自的恢复语义是「按播放位置重锚」
+    // 或「归零」，吃了这份相位反而会破坏原有语义。
+    if (!spinVisibleRef.current) resumePhaseRef.current = readSpinPhase()
+    // 锚点作废：驱动停了相位不再推进，留着它会把「停住的这段时间」也算进相位里
+    phaseAnchorRef.current = null
     animationRef.current?.stop()
     animationRef.current = null
     spinValue.stopAnimation()
-  }, [spinValue])
+  }, [spinValue, readSpinPhase])
 
   // 启停门控：播放态 × 可见性，任一不满足即取消动画；恢复驱动时由 startAnimation
   // 按已播进度重锚起转角（见 getSpinPhase）。
@@ -237,6 +282,10 @@ export default memo(({ componentId, active = true, coverRegionHeight = 0, sizeCa
   useEffect(() => {
     if (allowSpin) return
     stopAnimation()
+    // 关自转 / 切方形：相位归零的同时把「续转相位」与锚点一并作废 ——
+    // 否则重新打开自转时封面会带着一个与当前角度不符的陈旧相位起转
+    resumePhaseRef.current = null
+    phaseAnchorRef.current = null
     spinValue.setValue(0)
   }, [allowSpin, stopAnimation, spinValue])
 
@@ -246,6 +295,10 @@ export default memo(({ componentId, active = true, coverRegionHeight = 0, sizeCa
   // 恢复播放时封面角度会肉眼可见地跳一下（本轮一并修掉）。
   useEffect(() => {
     stopAnimation()
+    // 切歌：把「续转相位」与锚点一并作废 —— 那是上一首歌的角度，新歌必须按它自己的
+    // 播放位置起算（下面 setValue(0) + startAnimation 会重锚）
+    resumePhaseRef.current = null
+    phaseAnchorRef.current = null
     spinValue.setValue(0)
     if (isPlay && allowSpin && spinVisible && musicId) {
       startAnimation()
