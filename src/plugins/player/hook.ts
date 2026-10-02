@@ -1,4 +1,5 @@
 import { useEffect, useState, useRef } from 'react'
+import { AppState } from 'react-native'
 import TrackPlayer, { State, Event } from 'react-native-track-player'
 import {
   getNativeFlacBufferedPosition,
@@ -8,6 +9,8 @@ import {
   onNativeFlacPlayerEvent,
 } from './nativeFlac'
 import { getUnifiedPlaybackState, onUnifiedPlayerEvent } from './engine'
+// 前台判定复用工具函数（全应用只有这一处的语义来源，避免各自写一遍 currentState 比较）
+import { isActive } from '@/utils/tools'
 
 /** Get current playback state and subsequent updatates  */
 export const usePlaybackState = () => {
@@ -185,6 +188,10 @@ export function useBufferProgress() {
     let preBuffered = 0
     let duration = 0
     let interval: ReturnType<typeof setInterval> | null = null
+    // 「该不该轮询」由播放状态机决定（Playing/Buffering 且还没缓冲完 → true）；
+    // 「现在能不能轮询」还要求 App 在前台。两个条件分开记，回前台时才不会破坏
+    // 「暂停不空转 / 缓冲满不空转」这两条既有口径（见下方 syncItv）。
+    let wantPolling = false
 
     const clearItv = () => {
       if (!interval) return
@@ -193,6 +200,7 @@ export function useBufferProgress() {
     }
     const resetBuffer = () => {
       clearItv()
+      wantPolling = false
       preBuffered = 0
       duration = 0
       if (!isUnmounted) setProgress(0)
@@ -212,10 +220,25 @@ export function useBufferProgress() {
           })))
       // console.log('updateBuffer', buffered, duration, buffered > 0, buffered == duration)
       // After the asynchronous code is executed, if the component has been uninstalled, do not update the status
-      if (buffered > 0 && buffered == duration) clearItv()
+      if (buffered > 0 && buffered == duration) {
+        // 整首缓冲完：停表，并把「该轮询」也置回 false ——
+        // 否则退后台再回前台时会被 syncItv 重新拉起来，白转一整首。
+        wantPolling = false
+        clearItv()
+      }
       if (buffered == preBuffered || isUnmounted) return
       preBuffered = buffered
       setProgress(duration ? (buffered / duration) : 0)
+    }
+    // 起表点**统一收敛到这一处**（2026-10-02 用户第 8 条）：以上所有「该轮询了」的
+    // 分支只负责置 wantPolling，真正的 setInterval 只此一处 —— 于是「App 不在前台
+    // 就不起表」只需要在这里判定一次，不需要在每个分支里各写一遍。
+    // 背景：缓冲进度只有在前台的播放详情页才看得见，但锁屏后进程仍常驻（音频后台播放），
+    // 此前是每秒一次原生桥往返 + setState 空转，原生 FLAC 路径还会一直轮询到整首歌缓冲完。
+    const syncItv = () => {
+      clearItv()
+      if (!wantPolling || !isActive()) return
+      interval = setInterval(updateBuffer, 1000)
     }
 
     const sub = TrackPlayer.addEventListener(Event.PlaybackState, data => {
@@ -234,23 +257,22 @@ export function useBufferProgress() {
         case State.Paused:
           // 暂停：缓冲不会自行推进，却仍每秒 getBufferedPosition + setProgress 空转（发热来源之一）。
           // 直接清掉轮询；恢复播放时由 Playing 分支按「还没缓冲完才轮询」重建。
-          clearItv()
+          wantPolling = false
+          syncItv()
           break
         case State.Playing:
           // 恢复播放：只有「还没缓冲完」才重建 1s 轮询——已缓冲到时长的曲目（本地/整文件就绪）
           // 不再每秒白唤醒一次 JS 线程；未缓冲完的会在缓冲完成时由 updateBuffer 内部自行停表。
           // duration 未知（<=0）时先轮询一次，等 updateBuffer 拿到时长后再判。
-          if (duration <= 0 || preBuffered < duration) {
-            clearItv()
-            interval = setInterval(updateBuffer, 1000)
-            void updateBuffer()
-          }
+          wantPolling = duration <= 0 || preBuffered < duration
+          syncItv()
+          void updateBuffer()
           break
         case State.Buffering:
           // console.log('state', 'Buffering')
-          clearItv()
           duration = 0
-          interval = setInterval(updateBuffer, 1000)
+          wantPolling = true
+          syncItv()
           void updateBuffer()
           break
         // case State.Connecting:
@@ -267,9 +289,9 @@ export function useBufferProgress() {
           switch (event.state) {
             case 'loading':
             case 'buffering':
-              clearItv()
               duration = event.duration ?? duration
-              interval = setInterval(updateBuffer, 1000)
+              wantPolling = true
+              syncItv()
               void updateBuffer()
               break
             case 'playing':
@@ -277,13 +299,14 @@ export function useBufferProgress() {
               // 而首个 updateBuffer 在 buffered 已到时长（本地 FLAC 常态）时又立刻把它清掉
               // ——每秒白唤醒一次 JS 线程。duration 未知时先按需轮询，拿到时长后再缩小到
               // 「buffered < duration」这一个条件。
-              clearItv()
               duration = event.duration ?? duration
-              if (duration <= 0 || preBuffered < duration) interval = setInterval(updateBuffer, 1000)
+              wantPolling = duration <= 0 || preBuffered < duration
+              syncItv()
               void updateBuffer()
               break
             case 'paused':
-              clearItv()
+              wantPolling = false
+              syncItv()
               void updateBuffer()
               break
             case 'idle':
@@ -296,21 +319,39 @@ export function useBufferProgress() {
           resetBuffer()
           break
         case 'error':
-          clearItv()
+          wantPolling = false
+          syncItv()
           void updateBuffer()
           break
+      }
+    })
+
+    // 前后台订阅（2026-10-02 用户第 8 条）：退到后台立即停表（省电）；回前台**补一次实测**
+    // 再按需恢复 —— 缓冲进度是实测值（getBufferedPosition），不存在需要保存的
+    // 「后台期间推算了多少」，所以回来只需重新测一次。
+    // 这里绝不无条件起表：syncItv 会同时检查 wantPolling（暂停中 / 已缓冲满都不重启）。
+    const appStateSubscription = AppState.addEventListener('change', (nextState) => {
+      if (nextState === 'active') {
+        void updateBuffer()
+        syncItv()
+      } else {
+        clearItv()
       }
     })
 
     void updateBuffer()
     if (isNativeFlacActive()) void updateBuffer()
     void TrackPlayer.getState().then((state) => {
-      if (!isNativeFlacActive() && state == State.Buffering) interval = setInterval(updateBuffer, 1000)
+      if (!isNativeFlacActive() && state == State.Buffering) {
+        wantPolling = true
+        syncItv()
+      }
     })
     return () => {
       isUnmounted = true
       sub.remove()
       removeNativeFlacListener()
+      appStateSubscription.remove()
       clearItv()
     }
   }, [])

@@ -27,6 +27,11 @@ const defaultSetting: LX.AppSetting = {
   'common.isEnableWebDAVLog': false,
   'common.isEnableSearchLog': false,
   'common.isEnablePlayerLog': false,
+  // 「日志显示阈值（条）」：错误日志查看器最多展示多少条（默认 2000）。
+  // 2026-10-02（用户第 7 条 (3)）新增：此前只是设置页内的 useState(2000)，
+  // 离开设置页再进来就回到 2000，改了不保存。放进 defaultSetting 后随
+  // updateSetting 落盘 + 参与设置同步，冷启动/换机都保持用户设的值。
+  'common.logMaxLines': 2000,
   'common.bilibili_multi_page': false,
   'common.quality_show_highest': false,
 
