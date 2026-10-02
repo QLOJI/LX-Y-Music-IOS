@@ -1,3 +1,4 @@
+import FastImage from '@d11/react-native-fast-image'
 import { useTheme } from '@/store/theme/hook'
 import { BorderRadius } from '@/theme'
 import { createStyle } from '@/utils/tools'
@@ -62,19 +63,53 @@ const Image = memo(({ url, resizeMode = 'cover', style, onError, nativeID }: Ima
       ? 'file://' + url
       : url
   const showDefault = useMemo(() => !uri || isError, [isError, uri])
+  // 只有 http(s) 远程封面走 FastImage（2026-10-02 需求：重复进入详情页时封面不再先消失再显示）。
+  // FastImage 底层是 SDWebImage，自带内存 + 磁盘二级缓存：同一 URL 第二次进入时命中内存缓存、
+  // 当帧就有图，不再像 RN Image 那样每次重新走一遍网络/磁盘解码（表现就是「短暂空白」）。
+  // 本地文件（file://）、require 资源（asset://）与 data: 一律仍走 RN Image ——
+  // 它们本来就是本地读取、不存在网络往返，没必要把它们也换掉去承担行为差异。
+  const isRemoteUri = typeof uri == 'string' && /^https?:\/\//i.test(uri)
+  // FastImage 只认 cover/contain/stretch/center 四种，RN 的 ImageResizeMode 还多一个 repeat；
+  // 全仓实际只用到 cover 与 contain，其余值统一退到 cover，避免把非法串透传给原生。
+  const fastResizeMode = resizeMode === 'contain'
+    ? 'contain'
+    : resizeMode === 'stretch'
+      ? 'stretch'
+      : resizeMode === 'center'
+        ? 'center'
+        : 'cover'
   return (
     showDefault ? <EmptyPic style={style} nativeID={nativeID} />
       : (
-        <_Image
-          style={style as StyleProp<ImageStyle>}
-          source={{
-            uri: uri!,
-            headers: defaultHeaders,
-          }}
-          onError={handleError}
-          resizeMode={resizeMode}
-          nativeID={nativeID}
-        />
+        isRemoteUri
+          ? (
+            <FastImage
+              style={style as StyleProp<ImageStyle>}
+              source={{
+                uri: uri!,
+                headers: defaultHeaders,
+                // immutable：按 URL 永久缓存、不再向服务器回验。封面 URL 是 CDN 固定串，
+                // 与播放详情页大封面（PlayDetail/Vertical/Pic.tsx）同一口径。
+                cache: 'immutable',
+                priority: 'normal',
+              }}
+              onError={handleError}
+              resizeMode={fastResizeMode}
+              nativeID={nativeID}
+            />
+            )
+          : (
+            <_Image
+              style={style as StyleProp<ImageStyle>}
+              source={{
+                uri: uri!,
+                headers: defaultHeaders,
+              }}
+              onError={handleError}
+              resizeMode={resizeMode}
+              nativeID={nativeID}
+            />
+            )
         )
   )
 }, (prevProps, nextProps) => {

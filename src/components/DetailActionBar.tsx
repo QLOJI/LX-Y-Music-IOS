@@ -31,16 +31,22 @@ export default memo(({ onPlayAll, onBack }: { onPlayAll: () => void, onBack: () 
         style={StyleSheet.compose(styles.controlBtn, {
           flexGrow: 1.45,
           // 按钮底色随「按钮透明度」设置淡出；图标/文字色不动（不用容器 style.opacity，否则内容会一起变淡）
-          backgroundColor: applyOpacity(theme['c-primary'], buttonOpacity),
+          //
+          // 2026-10-02：底色由「主色实底 c-primary」改为淡灰 c-primary-background、内容色改为
+          // c-primary-font（在主题表里就等于主色 c-primary），与歌单详情页
+          // SonglistDetail/ActionBar 的「播放全部」三件套逐字一致 ——
+          // 需求原文「所有歌单、专辑、歌手等界面的播放全部按钮都用其他颜色+灰色背景的样式
+          // （例如歌单界面的样式）」。主色文字压在原来的主色实底上会看不见，两个色必须一起改。
+          backgroundColor: applyOpacity(theme['c-primary-background'], buttonOpacity),
           // 静态高 44（styles.controlBtn.height），行内覆盖「按钮圆角」
           borderRadius: buttonRadius(44),
         })}
       >
         <View style={styles.primaryContent}>
-          <Icon name="play" size={15} color={theme['c-primary-light-1000']} />
+          <Icon name="play" size={15} color={theme['c-primary-font']} />
           {/* 图标与文字之间的 6pt 间距只属于这一颗（唯一带图标的按钮），从共用样式下沉到这里，
               避免「返回」的文字被一起右推、看起来不居中 */}
-          <Text style={{ ...styles.controlBtnText, marginLeft: 6, color: theme['c-primary-light-1000'] }}>
+          <Text style={{ ...styles.controlBtnText, marginLeft: 6, color: theme['c-primary-font'] }}>
             {t('play_all')}
           </Text>
           {/* 右侧补一块与「图标宽 + 6pt 间距」等宽的对称留白，见 SonglistDetail/ActionBar 的说明：

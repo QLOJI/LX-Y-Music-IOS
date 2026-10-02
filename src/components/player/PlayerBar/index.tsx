@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useMemo, useRef } from 'react'
 import { Animated, Easing, View, TouchableOpacity } from 'react-native'
-import { useHorizontalMode, useKeyboard } from '@/utils/hooks'
+import { useHorizontalMode } from '@/utils/hooks'
 import { scaleSizeH } from '@/utils/pixelRatio'
 import { useTabBarCollapsed, setMiniPlayerHeight, useCollapsedRowGeometry } from '@/utils/tabBarCollapse'
 import Pic from './components/Pic'
@@ -21,7 +21,6 @@ import { usePlayerMusicInfo } from '@/store/player/hook'
 import {
   designRadius,
   designSpacing,
-  designMotion,
   bottomFloatGap,
   tabBarBaseHeight,
   floatDistance,
@@ -33,17 +32,17 @@ export default memo(({ componentId, isHome = false }: { componentId?: string, is
   // PlayerBar 多屏复用（Home / 专辑页 / 歌手页…），按各自 componentId 判定；
   // 调用方未传 componentId 时恒不门控（行为同旧版）。
   const screenCovered = useScreenCovered(componentId)
-  // 转场门（2026-10-01）：整段 push/pop 转场期间也暂停玻璃——省电门只看账本，
-  // 盖不住转场本身（转场中间态被采进胶囊 = 每次切换画面闪一下），见
-  // navigation.beginNavTransitionWindow。
+  // 转场门（2026-10-01 开窗；2026-10-02 只保留 push 侧）：整段 **push** 转场期间
+  // 也暂停玻璃——省电门只看账本，盖不住转场本身（转场中间态被采进胶囊 =
+  // 每次切换画面闪一下）。返回（pop）不再置位：玻璃正在被露出来，按住等于让用户
+  // 多看一截陈旧画面（用户第 5 条），pop 事件到达即释放。见
+  // navigation.beginNavTransitionWindow / endNavTransitionWindow。
   const navTransitioning = useNavTransitioning()
   // 安全区就绪门（仅首页实例用得上，见下方 return）：首页播放器的底边 =
   // 安全区 + 底缝 + Tab 栏高 + 滑块距离，安全区没回来之前不下发，
   // 否则先用 0 画出来、再跳到 34pt = 「启动时抽动」。
   const safeAreaReady = useSafeAreaReady()
-  // 键盘订阅（willShow: true → keyboardWillShow 起跑，与键盘动画同时）：
-  // 迷你播放器**不隐藏**，改为随键盘上浮（见下方 keyboardLift）。
-  const { keyboardShown, keyboardHeight } = useKeyboard({ willShow: true })
+  // 键盘：本组件**不再订阅**（2026-10-02 需求被推翻的那一半，见下方「键盘不再抬升」）。
   const isHorizontalMode = useHorizontalMode()
   const theme = useTheme()
   const musicInfo = usePlayerMusicInfo()
@@ -88,29 +87,14 @@ export default memo(({ componentId, isHome = false }: { componentId?: string, is
     }).start()
   }, [effectiveCollapsed, collapseAnim])
 
-  // 键盘上浮量（pt）：键盘是**浮层**，不挤压页面布局 —— 迷你播放器绝对定位在屏幕底部
-  // （bottom = 安全区 + …），键盘一升起来就正好盖住它（键盘 ~300pt 高，播放器只占底部
-  // ~114pt），用户看到的现象就是「一点输入框播放器就没了」。它其实一直在，只是被挡住了；
-  // 需求同样是「不隐藏、要一直显示」，所以这里把播放器整体抬到键盘顶边之上。
-  //
-  // 为什么减 safeAreaBottom：键盘高度**已经包含**底部安全区（键盘视图一直铺到屏幕底边），
-  // 而播放器的 bottom 里也已经加过一次 safeAreaBottom；不减就会多抬 34pt
-  // （观感是「播放器浮在键盘上方一大截」）。减完播放器底边恰好落在键盘顶边上。
-  // Math.max(0) 兜住外接键盘 / 中文候选栏等 height < 安全区的边角情况，避免把播放器往下推。
-  const keyboardLift = keyboardShown ? Math.max(keyboardHeight - safeAreaBottom, 0) : 0
-  // 上浮走独立 Animated.Value 并**与键盘同时长**（designMotion.standard = 250 ≈ iOS 键盘动画
-  // 0.25s）：一次性 Set 值会先于键盘到位，看起来是播放器「先跳上去、键盘再升上来」。
-  // 与收起动画是两路相加（Animated.add）：键盘弹着的时候 Tab 栏仍可收起/展开，两者互不干扰。
-  const keyboardAnim = useRef(new Animated.Value(0)).current
-  useEffect(() => {
-    Animated.timing(keyboardAnim, {
-      toValue: keyboardLift,
-      duration: designMotion.standard,
-      easing: Easing.out(Easing.quad),
-      // bottom 属布局属性，原生驱动不支持，与收起动画同为 JS 驱动
-      useNativeDriver: false,
-    }).start()
-  }, [keyboardLift, keyboardAnim])
+  // 键盘不再抬升（2026-10-02 需求）：
+  //   上一轮（见 改动清单-20261001.md 第 5 条）为了让播放器「输入法弹出时也看得见」，
+  //   在键盘升起时把它整体抬到键盘顶边之上（keyboardLift = 键盘高 - 安全区）。
+  //   本次用户明确否决了这个位置：「迷你播放器目前始终显示了，但是位置不对，应该始终挂在
+  //   底部 tab，不会向上移动」。所以上浮量、keyboardAnim 及其 Animated.add 全部删除 ——
+  //   bottom 只由「收起/展开」一条动画决定，键盘弹出时它原地不动（键盘是系统浮层，
+  //   会把它盖住；这是用户接受的代价，换来的是「位置恒定挂在底部 tab」）。
+  //   注意：组件仍不隐藏、仍然挂载，只是不再移动；useKeyboard 在 Popup/Dialog 里继续使用。
 
   const handleNavigate = useCallback(() => {
     if (!musicInfo.id) return
@@ -166,15 +150,11 @@ export default memo(({ componentId, isHome = false }: { componentId?: string, is
           style={[
             styles.wrapper,
             {
-              // 键盘上浮量与收起位移**相加**（不是二选一）：键盘升起时播放器仍在
-              // bottomExpanded / bottomCollapsed 之间做收起动画，只是整体又高了 keyboardAnim。
-              bottom: Animated.add(
-                collapseAnim.interpolate({
-                  inputRange: [0, 1],
-                  outputRange: [bottomExpanded, bottomCollapsed],
-                }),
-                keyboardAnim,
-              ),
+              // bottom 只有「收起/展开」一个来源：键盘不再参与（见上方「键盘不再抬升」）
+              bottom: collapseAnim.interpolate({
+                inputRange: [0, 1],
+                outputRange: [bottomExpanded, bottomCollapsed],
+              }),
               paddingLeft: collapseAnim.interpolate({
                 inputRange: [0, 1],
                 // 展开端取 collapsedRow.roundLeft（= scaleSizeW(24)，与圆钮左缘、
@@ -225,7 +205,7 @@ export default memo(({ componentId, isHome = false }: { componentId?: string, is
         </Animated.View>
       )
     },
-    [glassOpacity, liquidGlassOn, screenCovered, navTransitioning, theme.isDark, isHome, handleNavigate, handleLongPress, safeAreaBottom, isHorizontalMode, collapseAnim, keyboardAnim, pillSize, collapsedRow, tabBarDistance, tabBarCollapsed],
+    [glassOpacity, liquidGlassOn, screenCovered, navTransitioning, theme.isDark, isHome, handleNavigate, handleLongPress, safeAreaBottom, isHorizontalMode, collapseAnim, pillSize, collapsedRow, tabBarDistance, tabBarCollapsed],
   )
 
   // 首页实例在安全区就绪前不下发（见 useSafeAreaReady）：它的 bottom 含 safeAreaBottom，
@@ -233,12 +213,12 @@ export default memo(({ componentId, isHome = false }: { componentId?: string, is
   // 不含安全区（bottomFloatGap 裸值），不受影响、也不需要等。
   if (isHome && !safeAreaReady) return null
 
-  // 键盘门已移除（用户要求：tab 栏在，迷你播放器就不该消失）：底部 tab 栏
-  // （ModernTabBar）无任何键盘逻辑、键盘弹出时照旧挂载，播放器也须常驻，否则会出现
-  // 「tab 栏还在、播放器没了」的不对称。
-  // 2026-10-01 追加：只有「常驻」还不够 —— 键盘是浮层，常驻的播放器会被它整个盖住，
-  // 用户看到的仍是「一点输入框就没了」。所以键盘升起时用 keyboardAnim 把播放器抬到
-  // 键盘顶边之上（见上文 keyboardLift），既没隐藏也没被遮挡。
+  // 键盘与播放器的最终口径（2026-10-02）：
+  //   · 不隐藏 —— 底部 tab 栏（ModernTabBar）键盘弹出时照旧挂载，播放器也须常驻，
+  //     否则会出现「tab 栏还在、播放器没了」的不对称（2026-10-01 已定）。
+  //   · 不上浮 —— 它始终挂在底部 tab 上（bottom 只由收起/展开决定）。键盘弹出时
+  //     播放器被系统键盘浮层盖住是**预期行为**：用户要的是「位置恒定」，不是「永远可见」。
+  //     上一轮的上浮实现（keyboardLift/keyboardAnim）已按本次需求删除。
   return playerComponent
 })
 

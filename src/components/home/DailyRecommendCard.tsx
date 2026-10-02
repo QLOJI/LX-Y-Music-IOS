@@ -56,9 +56,13 @@ const DailyRecommendCard = memo(({ title, subtitle, onPress }: DailyRecommendCar
     [theme, buttonOpacity],
   )
 
+  // 2026-10-02：图标底框由「主色实底 c-primary」改为淡灰 c-primary-background、图标改为
+  // c-primary-font（主题里就等于主色 c-primary），与歌单详情页「播放全部」同一套配色 ——
+  // 需求原文「推荐界面每日推荐左边的图标也改为其他颜色和灰色背景的样式」。
+  // 主色图标压在原来的主色实底上会看不见，两个色必须一起改。
   const iconContentStyle = useMemo(
     () => StyleSheet.compose(styles.iconContent, {
-      backgroundColor: applyOpacity(theme['c-primary'], buttonOpacity),
+      backgroundColor: applyOpacity(theme['c-primary-background'], buttonOpacity),
     }),
     [theme, buttonOpacity],
   )
@@ -73,7 +77,7 @@ const DailyRecommendCard = memo(({ title, subtitle, onPress }: DailyRecommendCar
       onPress={onPress}
     >
       <View style={iconContentStyle}>
-        <SvgIcon name="calendar" size={22} color={theme['c-primary-light-1000']} />
+        <SvgIcon name="calendar" size={22} color={theme['c-primary-font']} />
       </View>
       <View style={styles.content}>
         <Text style={styles.title} size={designTypography.title} color={theme['c-font']}>

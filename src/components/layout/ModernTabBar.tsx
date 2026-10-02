@@ -180,9 +180,12 @@ export default memo(() => {
   // 省电门：Home 被压栈页（播放详情等）完全覆盖时暂停玻璃的 Metal 渲染循环
   // （不可见期间零逐帧 draw；返回 Home 即恢复，原生重捕获背景无残帧）
   const homeCovered = useHomeCovered()
-  // 转场门（2026-10-01）：整段 push/pop 转场期间同样暂停——账本驱动的省电门盖不住
-  // 转场本身（push 时新页 setComponentId 晚于转场开始、pop 事件早于转场结束），
-  // 转场中间态被采进玻璃就是「每次切换画面闪一下」。见 navigation.beginNavTransitionWindow。
+  // 转场门（2026-10-01 开窗；2026-10-02 只保留 push 侧）：整段 **push** 转场期间
+  // 同样暂停——账本驱动的省电门盖不住转场本身（push 时新页 setComponentId 晚于
+  // 转场开始），转场中间态被采进玻璃就是「每次切换画面闪一下」。
+  // 返回（pop）不再置位：玻璃正在被露出来，按住只会让用户多看一截陈旧画面
+  // （用户第 5 条），pop 事件到达即释放。见 navigation.beginNavTransitionWindow /
+  // endNavTransitionWindow。
   const navTransitioning = useNavTransitioning()
   // 安全区就绪门：底部安全区（bottom 的唯一来源）拿到真实值之前不下发，
   // 否则先用 0 画、再跳到 34pt = 「启动时底部抽动」。见 useSafeAreaReady。

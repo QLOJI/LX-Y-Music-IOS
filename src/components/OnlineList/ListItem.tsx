@@ -1,7 +1,7 @@
 import { memo, useRef } from 'react'
 import { View, TouchableOpacity } from 'react-native'
 import Text from '@/components/common/Text'
-import Badge, { type BadgeType } from '@/components/common/Badge'
+import Badge from '@/components/common/Badge'
 import { Icon } from '@/components/common/Icon'
 import { useI18n } from '@/lang'
 import { useTheme } from '@/store/theme/hook'
@@ -17,6 +17,7 @@ import PlayingIcon from '@/components/common/PlayingIcon'
 import { useIsWyLiked, useIsTxLiked, useIsKgLiked } from '@/store/user/hook'
 import { handleLikeMusic, handleTxLikeMusic, handleKgLikeMusic } from './listAction'
 import useCoverUrl from '@/utils/hooks/useCoverUrl'
+import { getQualityBadge } from '@/utils/musicQualityBadge'
 
 // 列表项封面：优先用自带 meta.picUrl；为空时按需动态获取（在线接口/本地内嵌/
 // 网盘封面/qs 跨平台匹配），解决 cookie 歌单、WebDAV 同步、备份导入的歌单
@@ -29,51 +30,10 @@ export const ITEM_HEIGHT = scaleSizeH(LIST_ITEM_HEIGHT)
 // props，hook 订阅值必须走 prop 才能参与比较，保证开关切换时行会重渲染。
 const useQualityTag = (musicInfo: LX.Music.MusicInfoOnline, showHighest: boolean) => {
   const t = useI18n()
-  let info: { type: BadgeType | null, text: string } = { type: null, text: '' }
-  const qualitys = (musicInfo.meta as LX.Music.MusicInfoMeta_online)?._qualitys ?? {}
-
-  if (showHighest) {
-    if (qualitys.master) {
-      info.type = 'secondary'
-      info.text = t('quality_lossless_master')
-    } else if (qualitys.atmos_plus) {
-      info.type = 'secondary'
-      info.text = t('quality_lossless_atmos_plus')
-    } else if (qualitys.atmos) {
-      info.type = 'secondary'
-      info.text = t('quality_lossless_atmos')
-    } else if (qualitys.hires) {
-      info.type = 'secondary'
-      // hires 档文案统一为 Hi-Res，此前误映射成 24bit（对齐 SourceQualityBadge 的权威映射）
-      info.text = t('quality_hires')
-    } else if (qualitys.flac24bit) {
-      info.type = 'secondary'
-      // 补上此前缺失的 flac24bit 档（tx/kg 等源会产出），否则这一档一颗标都不显示
-      info.text = t('quality_lossless_24bit')
-    } else if (qualitys.flac) {
-      info.type = 'sq'
-      info.text = t('quality_lossless')
-    } else if (qualitys['320k']) {
-      info.type = 'hq'
-      info.text = t('quality_high_quality')
-    }
-  } else {
-    if (qualitys.hires) {
-      info.type = 'secondary'
-      info.text = t('quality_hires')
-    } else if (qualitys.flac24bit) {
-      info.type = 'secondary'
-      info.text = t('quality_lossless_24bit')
-    } else if (qualitys.flac) {
-      info.type = 'sq'
-      info.text = t('quality_lossless')
-    } else if (qualitys['320k']) {
-      info.type = 'hq'
-      info.text = t('quality_high_quality')
-    }
-  }
-
-  return info
+  // 天梯只有一份：utils/musicQualityBadge.ts（2026-10-02 统一六档 Master/Atmos/24bit/SQ/HQ/128K，
+  // 取不到标注时兜底 128K —— 以前这一档什么标都不显示，正是需求点名的「没有小标」）。
+  const info = getQualityBadge((musicInfo.meta as LX.Music.MusicInfoMeta_online)?._qualitys, showHighest)
+  return { type: info.type, text: t(info.key) }
 }
 
 type ListItemProps = {
