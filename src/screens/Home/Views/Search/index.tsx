@@ -41,13 +41,26 @@ export default () => {
   const [searchBarRect, setSearchBarRect] = useState<{
     x: number, y: number, width: number, height: number
   } | null>(null)
+  // 筛选浮层容器「上端」的页面 y：有搜索框测量值时 = 搜索框下端，否则退回整块 header 下端。
+  // 这个值既是浮层的定位基准，也是展开动画的高度基准 —— components/SearchTipList 的
+  // 展开/收起动画用 translateY(∓height/2) 抵消「以中心缩放」带来的位移，height 必须等于
+  // 浮层容器的真实高度（页面底部 − 上端），盒子才不会在动画期间越过这个上端。
+  // 此前传的是「容器高 − 整块 header 高」，比真实高度小 (header 高 − 搜索框下端)/2，
+  // 展开时盒子从搜索框上端附近一路往下滑、遮住搜索输入框（用户第 15 轮第 2 条）。
+  const tipListTopRef = useRef(0)
+  const syncTipListHeight = useCallback(() => {
+    const top = tipListTopRef.current || headerHeightRef.current
+    layoutHeightRef.current = Math.max(0, containerHeightRef.current - top)
+  }, [])
   const handleSearchBarLayout = useCallback((rect: { x: number, y: number, width: number, height: number }) => {
+    tipListTopRef.current = rect.y + rect.height
+    syncTipListHeight()
     setSearchBarRect(prev => (
       prev && prev.x == rect.x && prev.y == rect.y && prev.width == rect.width && prev.height == rect.height
         ? prev
         : rect
     ))
-  }, [])
+  }, [syncTipListHeight])
   const [source, setSource] = useState<SearchInfo['source']>(searchInfo.current.source)
   const [sourceType, setSourceType] = useState<SearchInfo['searchType']>(searchInfo.current.searchType)
   const selectedListRef = useRef(selectedList)
@@ -200,7 +213,7 @@ export default () => {
 
   const handleLayout = (e: LayoutChangeEvent) => {
     containerHeightRef.current = e.nativeEvent.layout.height
-    layoutHeightRef.current = Math.max(0, e.nativeEvent.layout.height - headerHeightRef.current)
+    syncTipListHeight()
   }
   const handleSourceChange: HeaderBarProps['onSourceChange'] = (source) => {
     setSelectedList(null)
@@ -248,7 +261,7 @@ export default () => {
     <View onLayout={({ nativeEvent }) => {
       headerHeightRef.current = nativeEvent.layout.height
       setHeaderHeight(nativeEvent.layout.height)
-      layoutHeightRef.current = Math.max(0, containerHeightRef.current - headerHeightRef.current)
+      syncTipListHeight()
     }}>
       <HeaderBar
         key={headerKey}
@@ -272,6 +285,8 @@ export default () => {
 
   // 筛选建议浮层几何：搜索框下方贴边 + 与搜索框等宽（用户第 11 轮第 8 条）。
   // 搜索框几何来自 HeaderBar 的 onLayout；首帧（还没测量到）退回旧的「整块 header 下方 + 整宽」。
+  // 注意：浮层高度与这里同源（见 syncTipListHeight），改定位基准时两处必须一起改，
+  // 否则展开动画的位移补偿会与真实几何错位（用户第 15 轮第 2 条）。
   const tipListContainerStyle = useMemo(
     () => searchBarRect
       ? {

@@ -3,7 +3,7 @@
  */
 
 import { memo, useEffect, useState, useCallback, useRef } from 'react'
-import { View, FlatList, RefreshControl, BackHandler, StyleSheet, Keyboard, TouchableOpacity } from 'react-native'
+import { View, FlatList, RefreshControl, BackHandler, StyleSheet, Keyboard, TouchableOpacity, ActivityIndicator } from 'react-native'
 import ListItem from './ListItem'
 import txUserApi from '@/utils/musicSdk/tx/user'
 import { useI18n } from '@/lang'
@@ -17,8 +17,8 @@ import ConfirmAlert, { type ConfirmAlertType } from '@/components/common/Confirm
 import Input from '@/components/common/Input'
 import { useHorizontalMode } from '@/utils/hooks'
 import { useButtonRadius } from '@/utils/buttonRadius'
-import { designSpacing, pageTitleLineHeight } from '@/theme/DesignTokens'
 import PageTopInset from '@/components/common/PageTopInset'
+import DetailPageTitle from '@/components/common/DetailPageTitle'
 import { useBottomOverlayInset } from '@/store/common/hook'
 
 interface PlaylistInfo {
@@ -45,6 +45,14 @@ export default memo(() => {
   const [collectedPlaylists, setCollectedPlaylists] = useState<PlaylistInfo[]>([])
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
+  // 首载闸门（用户第 15 轮第 3 条）：FlatList 必须等首次加载结束再挂载，**不能**先以
+  // data=[] 挂出来、数据到了再补进去 —— 空列表里只有页头那一格（tab 文案里的数量也还是
+  // 0），数据到达后整块内容按最终高度重排/复位，用户看到的就是「第一次进入歌单页时整体
+  // 向上跳一下再落下来」。对照「我的」页（Mylist/NewListUI）：同一套 ListHeaderComponent
+  // 结构，它的 FlatList 挂在 isLoading 之后（转圈 → 有数据才挂列表），从来没有这个跳动 ——
+  // 这里照抄那条口径。闸门只认「首次加载是否结束」，不认 loading：下拉刷新（refreshing）
+  // 时列表必须留在原地不动。
+  const [listReady, setListReady] = useState(false)
   const [selectedPlaylist, setSelectedPlaylist] = useState<any>(null)
   const selectedPlaylistRef = useRef(selectedPlaylist)
   selectedPlaylistRef.current = selectedPlaylist
@@ -120,8 +128,10 @@ export default memo(() => {
     } catch (err: any) {
       console.error('获取歌单失败:', err)
     } finally {
+      // 闸门与 loading 同批落位：列表挂载那一帧 loading 已经是 false。
       setLoading(false)
       setRefreshing(false)
+      setListReady(true)
     }
   }, [fetchCreatedPlaylists, fetchCollectedPlaylists])
 
@@ -251,56 +261,71 @@ export default memo(() => {
     )
   }, [activeTab, theme, buttonRadius])
 
+  // 页头（状态栏占位 + 标题行 + 同行 tab）在「首载中」与「已就绪」两条分支里必须是同一份、
+  // 同一几何：加载分支把它当普通兄弟节点渲染，就绪分支把它当 ListHeaderComponent —— 两处
+  // 都在容器顶部、同样的 paddingTop/marginBottom，所以从转圈切到列表时标题一动不动
+  // （用户第 15 轮第 3 条）。
+  const pageHeader = (
+    <>
+      <PageTopInset />
+      {/* 标题行与 tab 同行：位置/行高/字重与「我的」标题同源，字号取 WebDAV 页标题
+          （共享页头）的字号。此前用裸 StyleSheet.create 写死 lineHeight 42、
+          字号却随「字体大小」设置放大，字体调大后标题上下笔画被裁
+          —— 用户第 14 轮第 1 条的「显示不全」。详见组件注释。 */}
+      <DetailPageTitle title={t('nav_tx_playlist')}>
+        <View style={[styles.tabBar]}>
+          {renderTab('created', `自建歌单 (${createdPlaylists.length})`)}
+          {renderTab('collected', `收藏歌单 (${collectedPlaylists.length})`)}
+        </View>
+      </DetailPageTitle>
+    </>
+  )
   return (
     <View style={{ flex: 1 }}>
       <View
         style={[{ flex: 1, overflow: 'hidden' }, selectedPlaylist ? { opacity: 0 } : null]}
         pointerEvents={selectedPlaylist ? 'none' : 'auto'}
       >
-        <FlatList
-          key={`cols-${numColumns}`}
-          onScrollBeginDrag={Keyboard.dismiss}
-          data={playlists}
-          ListHeaderComponent={
-            <>
-              <PageTopInset />
-              <View style={styles.titleRow}>
-                <Text style={styles.titleText} size={34} color={theme['c-font']}>
-                  {t('nav_tx_playlist')}
-                </Text>
-                <View style={[styles.tabBar]}>
-                  {renderTab('created', `自建歌单 (${createdPlaylists.length})`)}
-                  {renderTab('collected', `收藏歌单 (${collectedPlaylists.length})`)}
+        {listReady ? (
+          <FlatList
+            key={`cols-${numColumns}`}
+            onScrollBeginDrag={Keyboard.dismiss}
+            data={playlists}
+            ListHeaderComponent={pageHeader}
+            contentContainerStyle={{ paddingBottom: bottomInset, paddingRight: 0 }}
+            numColumns={numColumns}
+            renderItem={({ item }) => (
+              <View style={numColumns > 1 ? styles.itemWrapper : undefined}>
+                <ListItem item={item} onPress={handleItemPress} onMenuPress={handleMenuPress} />
+              </View>
+            )}
+            keyExtractor={item => `${item.id}-${item.isCollected ? 'collected' : 'created'}`}
+            showsVerticalScrollIndicator={false}
+            refreshControl={
+              <RefreshControl
+                colors={[theme['c-primary']]}
+                refreshing={refreshing}
+                onRefresh={onRefresh}
+              />
+            }
+            ListEmptyComponent={
+              loading ? null : (
+                <View style={styles.emptyContainer}>
+                  <Text style={styles.emptyText}>
+                    {playlists.length === 0 ? t('list_empty') : ''}
+                  </Text>
                 </View>
-              </View>
-            </>
-          }
-          contentContainerStyle={{ paddingBottom: bottomInset, paddingRight: 0 }}
-          numColumns={numColumns}
-          renderItem={({ item }) => (
-            <View style={numColumns > 1 ? styles.itemWrapper : undefined}>
-              <ListItem item={item} onPress={handleItemPress} onMenuPress={handleMenuPress} />
+              )
+            }
+          />
+        ) : (
+          <>
+            {pageHeader}
+            <View style={styles.loadingContainer}>
+              <ActivityIndicator color={theme['c-primary-font']} size="large" />
             </View>
-          )}
-          keyExtractor={item => `${item.id}-${item.isCollected ? 'collected' : 'created'}`}
-          showsVerticalScrollIndicator={false}
-          refreshControl={
-            <RefreshControl
-              colors={[theme['c-primary']]}
-              refreshing={refreshing}
-              onRefresh={onRefresh}
-            />
-          }
-          ListEmptyComponent={
-            loading ? null : (
-              <View style={styles.emptyContainer}>
-                <Text style={styles.emptyText}>
-                  {playlists.length === 0 ? t('list_empty') : ''}
-                </Text>
-              </View>
-            )
-          }
-        />
+          </>
+        )}
       </View>
       {selectedPlaylist && (
         <View style={[StyleSheet.absoluteFill]}>
@@ -339,18 +364,6 @@ const styles = StyleSheet.create({
     flex: 1,
     maxWidth: '50%',
   },
-  titleRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-end',
-    // 与歌单卡片的 marginHorizontal(md=16) 对齐，标题与列表左右缩进一致
-    paddingHorizontal: designSpacing.md,
-    marginBottom: designSpacing.sm,
-  },
-  titleText: {
-    fontWeight: '800',
-    // 34pt 页面大标题统一行高（原写死 36，与推荐/歌单页的 42 差 6pt）
-    lineHeight: pageTitleLineHeight,
-  },
   tabBar: {
     flexDirection: 'row',
     flex: 1,
@@ -364,6 +377,11 @@ const styles = StyleSheet.create({
   tabText: {
     paddingBottom: 3,
     borderBottomWidth: 2,
+  },
+  loadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   emptyContainer: {
     flex: 1,
