@@ -1,4 +1,4 @@
-import { useRef, forwardRef, useImperativeHandle, useMemo } from 'react'
+import { useRef, forwardRef, useImperativeHandle, useMemo, useCallback } from 'react'
 import { ScrollView, TouchableOpacity, View } from 'react-native'
 
 // import music from '@/utils/musicSdk'
@@ -29,8 +29,11 @@ export interface HeaderBarProps {
   onOpenSearch: SearchInputProps['onFocus']
   onCancelSearch: () => void
   onShowTipList: SearchInputProps['onTouchStart']
-  // 上报搜索框自身几何（相对页面坐标），供筛选建议浮层「贴搜索框下端 + 等宽」定位
-  // （用户第 11 轮第 8 条）
+  // 上报搜索框行自身几何（**窗口坐标**，供筛选建议浮层「贴搜索框下端 + 等宽」定位）。
+  // 第 17 轮改窗口坐标：搜索框行挂在结果列表的 header 里，iOS 上列表被全局 swizzle 强制
+  // contentInsetAdjustmentBehavior，安全区顶部插图（以及滚动偏移）只体现在 measureInWindow
+  // 的窗口坐标里；第 16 轮拿 header 内部 onLayout 的 layout 坐标当页面坐标用，恰好少了一个
+  // 安全区（实测 ≈59pt），联想浮层从搜索框上方起画、把输入框整个盖住。
   onSearchBarLayout?: (rect: { x: number, y: number, width: number, height: number }) => void
 }
 
@@ -38,6 +41,8 @@ export interface HeaderBarType {
   setText: SearchInputType['setText']
   focus: SearchInputType['focus']
   blur: SearchInputType['blur']
+  // 浮层显示前刷新实测（点输入框 / 输入内容 / show 之前调用；第 17 轮）
+  measureSearchBar: () => void
 }
 
 export default forwardRef<HeaderBarType, HeaderBarProps>(
@@ -54,13 +59,14 @@ export default forwardRef<HeaderBarType, HeaderBarProps>(
     onSearchBarLayout,
   }, ref) => {
     const searchInputRef = useRef<SearchInputType>(null)
+    const searchBarRowRef = useRef<View>(null)
     const theme = useTheme()
     const buttonOpacity = useSettingValue('theme.buttonOpacity')
     const statusBarHeight = useStatusbarHeight()
     const t = useI18n()
     const buttonRadius = useButtonRadius()
-    // 容器上内边距：既是 styles.container 的 paddingTop，也是「搜索框 onLayout 相对
-    // openHeader 的 y」换算成页面坐标时要补的偏移（openHeader 是容器的第一个子元素）
+    // 容器上内边距：styles.container 的 paddingTop（第 17 轮起不再用于任何坐标换算 ——
+    // 浮层锚点只用 measureInWindow 的窗口坐标，见 measureSearchBar）
     const containerPaddingTop = Math.max(designSpacing.sm, statusBarHeight - designSpacing.md)
 
     // 搜索平台胶囊：底色随「按钮透明度」淡出，文字色不动。只改颜色 alpha，
@@ -81,6 +87,15 @@ export default forwardRef<HeaderBarType, HeaderBarProps>(
       [theme, buttonOpacity],
     )
 
+    // 搜索框行的窗口坐标实测（y + height 即行的屏幕底边）：measureInWindow 的坐标天然包含
+    // 列表的安全区插图与滚动偏移，这正是第 16 轮「header 内部 layout 坐标」缺的那一项
+    // （第 17 轮：浮层锚点坐标空间错位、少一个安全区，联想浮层盖住搜索框）。
+    const measureSearchBar = useCallback(() => {
+      searchBarRowRef.current?.measureInWindow((x, y, width, height) => {
+        onSearchBarLayout?.({ x, y, width, height })
+      })
+    }, [onSearchBarLayout])
+
     useImperativeHandle(
       ref,
       () => ({
@@ -93,8 +108,9 @@ export default forwardRef<HeaderBarType, HeaderBarProps>(
         blur() {
           searchInputRef.current?.blur()
         },
+        measureSearchBar,
       }),
-      [],
+      [measureSearchBar],
     )
 
     return (
@@ -102,13 +118,9 @@ export default forwardRef<HeaderBarType, HeaderBarProps>(
         <View style={styles.openHeader}>
           {/* 搜索框容器是输入控件（不是按钮），不随「按钮透明度」变化 */}
           <View
-            onLayout={({ nativeEvent }) => {
-              if (!onSearchBarLayout) return
-              const { x, y, width, height } = nativeEvent.layout
-              // y 是相对 openHeader 的（该行无上下内边距，搜索框是行内最高元素），
-              // 加上容器上内边距才是页面坐标
-              onSearchBarLayout({ x, y: containerPaddingTop + y, width, height })
-            }}
+            ref={searchBarRowRef}
+            collapsable={false}
+            onLayout={measureSearchBar}
             style={{
               ...styles.searchBar,
               flexShrink: 1,

@@ -30,35 +30,68 @@ export default () => {
   const listRef = useRef<ListType>(null)
   const layoutHeightRef = useRef<number>(0)
   const containerHeightRef = useRef(0)
+  // 【第 17 轮】浮层锚点只用窗口坐标，不再依赖任何坐标系假设：
+  // - 搜索框行底边的窗口 y 由 HeaderBar 的 measureInWindow 上报 —— 搜索框行挂在结果列表的
+  //   header 里，列表的安全区顶部插图（和滚动偏移）只体现在窗口坐标里；第 16 轮直接拿
+  //   header 内部 onLayout 的 layout 坐标当页面坐标用，恰好少了一个安全区（实测 ≈59pt），
+  //   联想浮层从搜索框上方起画、把输入框整个盖住（用户截图实锤）。
+  // - 浮层所在容器（本页根 View）的窗口 y 由根 View 的 measureInWindow 得到；
+  //   top = 搜索框底边窗口 y − 容器窗口 y，换算成本层坐标后再设 tipList 的 top。
+  const pageRootRef = useRef<View>(null)
+  const searchBarWindowRectRef = useRef<{ x: number, y: number, width: number, height: number } | null>(null)
+  const overlayContainerWindowPosRef = useRef<{ x: number, y: number } | null>(null)
   const searchInfo = useRef<SearchInfo>({ temp_source: 'kw', source: 'kw', searchType: 'music' })
   const timeoutRef = useRef<NodeJS.Timeout | null>(null)
   const [selectedList, setSelectedList] = useState<ListInfoItem | null>(null)
-  // 搜索框自身的几何（相对页面）。联想浮层要「上边界与搜索框下边界齐平、左右与搜索框等宽」，
-  // 不能再拿整块 header 的高度当上边距（那会落到平台胶囊/类型选择器下面），也不能
-  // 铺满整页宽（用户第 11 轮第 8 条）。由 HeaderBar 的 onSearchBarLayout 上报。
-  const [searchBarRect, setSearchBarRect] = useState<{
-    x: number, y: number, width: number, height: number
+  // 换算后的浮层几何（本层坐标）：top / left / width（等宽于搜索框行）。首帧还没测量到时
+  // 给 null → 容器给 0 高：既不参与任何显示（SearchTipList 的高度门控同样是 0），也不会
+  // 拿错几何先闪一下。
+  const [tipListGeometry, setTipListGeometry] = useState<{
+    top: number, left: number, width: number
   } | null>(null)
-  // 筛选浮层容器「上端」的页面 y：有搜索框测量值时 = 搜索框下端，否则退回整块 header 下端。
-  // 这个值既是浮层的定位基准，也是展开动画的高度基准 —— components/SearchTipList 的
-  // 展开/收起动画用 translateY(∓height/2) 抵消「以中心缩放」带来的位移，height 必须等于
-  // 浮层容器的真实高度（页面底部 − 上端），盒子才不会在动画期间越过这个上端。
-  // 此前传的是「容器高 − 整块 header 高」，比真实高度小 (header 高 − 搜索框下端)/2，
-  // 展开时盒子从搜索框上端附近一路往下滑、遮住搜索输入框（用户第 15 轮第 2 条）。
+  // 浮层容器「上端」的本层 y（换算值）。这个值既是浮层的定位基准，也是展开动画的高度基准
+  // —— components/SearchTipList 的展开/收起动画用 translateY(∓height/2) 抵消「以中心缩放」
+  // 带来的位移，height 必须等于浮层容器的真实高度（容器高 − 上端），盒子才不会在动画期间
+  // 越过这个上端（用户第 15 轮第 2 条）。
   const tipListTopRef = useRef(0)
   const syncTipListHeight = useCallback(() => {
     const top = tipListTopRef.current
     layoutHeightRef.current = Math.max(0, containerHeightRef.current - top)
   }, [])
-  const handleSearchBarLayout = useCallback((rect: { x: number, y: number, width: number, height: number }) => {
-    tipListTopRef.current = rect.y + rect.height
+  // 测量齐了才算几何：top = 搜索框底边窗口 y − 容器窗口 y（同一窗口坐标系里相减，
+  // 得到的正是浮层定位所在这一层的坐标）。
+  const applyTipListGeometry = useCallback(() => {
+    const bar = searchBarWindowRectRef.current
+    const box = overlayContainerWindowPosRef.current
+    if (!bar || !box) return
+    const top = bar.y + bar.height - box.y
+    const left = bar.x - box.x
+    tipListTopRef.current = top
     syncTipListHeight()
-    setSearchBarRect(prev => (
-      prev && prev.x == rect.x && prev.y == rect.y && prev.width == rect.width && prev.height == rect.height
+    setTipListGeometry(prev => (
+      prev && prev.top == top && prev.left == left && prev.width == bar.width
         ? prev
-        : rect
+        : { top, left, width: bar.width }
     ))
   }, [syncTipListHeight])
+  // 浮层所在容器（本页根 View，collapsable={false}）的窗口坐标；容器一动
+  // （导航转场 / 旋转 / 分屏）也要重测。
+  const measureOverlayContainer = useCallback(() => {
+    pageRootRef.current?.measureInWindow((x, y) => {
+      overlayContainerWindowPosRef.current = { x, y }
+      applyTipListGeometry()
+    })
+  }, [applyTipListGeometry])
+  // 浮层显示前刷新实测：列表能否滚动会让安全区插图出现 / 消失（搜索框在屏上的位置会变），
+  // 点输入框 / 输入内容 / 真正 show 之前各测一次（第 17 轮）。
+  const refreshTipListAnchor = useCallback(() => {
+    headerBarRef.current?.measureSearchBar()
+    measureOverlayContainer()
+  }, [measureOverlayContainer])
+  const handleSearchBarWindowLayout = useCallback((rect: { x: number, y: number, width: number, height: number }) => {
+    searchBarWindowRectRef.current = rect
+    applyTipListGeometry()
+  }, [applyTipListGeometry])
   const [source, setSource] = useState<SearchInfo['source']>(searchInfo.current.source)
   const [sourceType, setSourceType] = useState<SearchInfo['searchType']>(searchInfo.current.searchType)
   const selectedListRef = useRef(selectedList)
@@ -212,6 +245,7 @@ export default () => {
   const handleLayout = (e: LayoutChangeEvent) => {
     containerHeightRef.current = e.nativeEvent.layout.height
     syncTipListHeight()
+    measureOverlayContainer()
   }
   const handleSourceChange: HeaderBarProps['onSourceChange'] = (source) => {
     setSelectedList(null)
@@ -224,7 +258,9 @@ export default () => {
   }
 
   const handleTipSearch: HeaderBarProps['onTipSearch'] = (text) => {
+    refreshTipListAnchor()
     setTimeout(() => {
+      refreshTipListAnchor()
       searchTipListRef.current?.search(text, layoutHeightRef.current)
     }, 500)
   }
@@ -245,7 +281,9 @@ export default () => {
   }, [])
   const handleShowTipList: HeaderBarProps['onShowTipList'] = () => {
     if (timeoutRef.current) clearTimeout(timeoutRef.current)
+    refreshTipListAnchor()
     timeoutRef.current = setTimeout(() => {
+      refreshTipListAnchor()
       searchTipListRef.current?.show(layoutHeightRef.current)
     }, 500)
   }
@@ -255,9 +293,10 @@ export default () => {
   }, [])
 
   const searchHeader = selectedList ? null : (
-    // 【第 16 轮第 5 条】这里不再挂 onLayout 记录「整块 header 高度」：
+    // 【第 16 轮第 5 条 + 第 17 轮】这里不挂 onLayout 记录「整块 header 高度」：
     // 联想浮层的定位/动画高度一律以搜索框实测底边为唯一基准（HeaderBar 的
-    // onSearchBarLayout → tipListTopRef / layoutHeightRef），旧的整块 header 锚点已删。
+    // onSearchBarLayout → 窗口坐标换算 → tipListTopRef / layoutHeightRef），
+    // 换算见 applyTipListGeometry（窗口坐标 − 容器窗口坐标），旧锚点已删。
     <View>
       <HeaderBar
         key={headerKey}
@@ -271,7 +310,7 @@ export default () => {
         onOpenSearch={() => {}}
         onCancelSearch={handleCancelSearch}
         onShowTipList={handleShowTipList}
-        onSearchBarLayout={handleSearchBarLayout}
+        onSearchBarLayout={handleSearchBarWindowLayout}
       />
       <View style={styles.typeRow}>
         <SearchTypeSelector />
@@ -279,20 +318,20 @@ export default () => {
     </View>
   )
 
-  // 联想浮层几何：上边界与搜索框下边界齐平 + 与搜索框等宽（第 11 轮第 8 条、第 16 轮第 5 条）。
-  // 搜索框几何来自 HeaderBar 的 onSearchBarLayout；首帧（尚未测量到）容器给 0 高 ——
-  // 既不参与任何显示（SearchTipList 的高度门控同样是 0），也不会以错误几何先闪一下。
-  // 注意：浮层高度与这里同源（见 syncTipListHeight），改定位基准时两处必须一起改，
-  // 否则展开动画的位移补偿会与真实几何错位（用户第 15 轮第 2 条）。
+  // 联想浮层几何：上边界与搜索框行下边界齐平 + 与搜索框行等宽（第 11 轮第 8 条、
+  // 第 16 轮第 5 条、第 17 轮窗口坐标换算）。几何来自 applyTipListGeometry 的换算值；
+  // 首帧（尚未测量到）容器给 0 高 —— 既不参与任何显示（SearchTipList 的高度门控同样是 0），
+  // 也不会以错误几何先闪一下。注意：浮层高度与这里同源（见 syncTipListHeight），
+  // 改定位基准时两处必须一起改，否则展开动画的位移补偿会与真实几何错位（用户第 15 轮第 2 条）。
   const tipListContainerStyle = useMemo(
-    () => searchBarRect
+    () => tipListGeometry
       ? {
-          top: searchBarRect.y + searchBarRect.height,
-          left: searchBarRect.x,
-          width: searchBarRect.width,
+          top: tipListGeometry.top,
+          left: tipListGeometry.left,
+          width: tipListGeometry.width,
         }
       : { top: 0, height: 0, left: 0, right: 0 },
-    [searchBarRect],
+    [tipListGeometry],
   )
 
   return (
@@ -301,7 +340,11 @@ export default () => {
     // 就是这个「整页下移再上移」的抽动来源，点「取消」时（先 blur 再换页）叠在一起看就是
     // 整屏闪一下。代价：键盘弹着时结果列表的底部被键盘盖住（可先收键盘或上滑列表），
     // 换来的是键盘进出完全不改变布局。
+    // collapsable={false}：浮层锚点要拿本页根 View 的窗口坐标（measureInWindow），
+    // 必须保留这个原生节点（也是浮层绝对定位的所在层，坐标换算需要它是可测量的一层）。
     <View
+      ref={pageRootRef}
+      collapsable={false}
       style={styles.container}
       onLayout={handleLayout}
     >
