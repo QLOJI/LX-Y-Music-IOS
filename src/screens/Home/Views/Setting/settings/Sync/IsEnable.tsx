@@ -159,9 +159,20 @@ export default memo(({ host, setHost }: { host: string, setHost: (host: string) 
   const handleSetCode = useCallback(() => {
     // const code = authCode.trim()
     // if (code.length != 6) return
-    void connectServer(host, authCode)
+    const code = authCode
     setAuthCode('')
     confirmAlertRef.current?.setVisible(false)
+    // 先让连接码输入框（RN 原生 Modal）彻底走完淡出并卸载，再发起连接。
+    // 本连接会触发服务端在握手后立刻回问「列表同步方式」，而那个选择框同样走 RNN overlay：
+    // 若在原生 Modal 还在关闭时就呈现，iOS 上 overlay 会被挂到正在消失的宿主上、随其一起
+    // 消失（Promise 仍 resolve，不会触发重试），表现为「验证成功后选择框不弹出」（用户第 15
+    // 轮第 1 条）。RN 原生 Modal 的 fade ≈ 250ms + 卸载冗余 300ms（见 components/common/
+    // Modal.tsx 的挂载规避），故延时 400ms —— 与 UserApiEditModal「先卸载 Dialog 再调起
+    // 原生面板」的既有延时同口径。
+    setTimeout(() => {
+      if (isUnmountedRef.current) return
+      void connectServer(host, code)
+    }, 400)
   }, [host, authCode])
 
   return (
