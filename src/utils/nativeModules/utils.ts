@@ -34,6 +34,25 @@ export const screenUnkeepAwake = () => {
   UtilsModule.screenUnkeepAwake?.()
 }
 
+/**
+ * 把 RNN 的 Toast 浮层窗口提到 App 主窗口之上（2026-10-02 用户第 6 条）。
+ *
+ * 背景：RNN 的 overlay 不是普通视图，而是独立 UIWindow（RNNOverlayManager →
+ * RNNOverlayWindow），windowLevel 与 App 主窗口**同为 UIWindowLevelNormal**。
+ * 同级窗口按「后建者在上」排序，因此只要主窗口被 makeKeyAndVisible（例如原生文件面板
+ * 关闭后的 LXEnsureKeyWindow），或出现后建的原生面板窗口，浮层就被压到下面 ——
+ * 现象是「播放详情页等位置的下载按钮点了没有任何反馈（浮层其实已创建，只是看不见）」。
+ *
+ * 原生侧 LXRaiseOverlayWindows 把浮层统一提到 UIWindowLevelAlert + 1。
+ * 旧构建里没有这个方法：这里用 typeof 判定安全降级，调用方无需 try/catch，
+ * 也不会在未更新的包上抛错（注意：该方法必须用包含本次原生改动的新构建才生效）。
+ */
+export const raiseToastOverlay = (): void => {
+  if (!isIOS) return
+  if (typeof UtilsModule?.raiseOverlayWindows != 'function') return
+  UtilsModule.raiseOverlayWindows()
+}
+
 export const getWIFIIPV4Address = isIOS
   ? async(): Promise<string> => ''
   : (UtilsModule.getWIFIIPV4Address as () => Promise<string>)

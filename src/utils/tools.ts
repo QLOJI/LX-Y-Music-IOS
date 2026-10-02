@@ -26,6 +26,7 @@ import {
   getSystemLocales,
   isIgnoringBatteryOptimization,
   isNotificationsEnabled,
+  raiseToastOverlay,
   requestNotificationPermission,
   requestIgnoreBatteryOptimization,
   shareText,
@@ -206,6 +207,12 @@ export const toast = (
       },
     }).then((componentId: string) => {
       currentToastId = componentId
+      // 2026-10-02（用户第 6 条）：浮层是独立 UIWindow（RNNOverlayWindow），
+      // windowLevel 与 App 主窗口同为 UIWindowLevelNormal —— 同级窗口按后建者在上，
+      // 主窗口被 makeKeyAndVisible（原生文件面板关闭后的 LXEnsureKeyWindow）或出现
+      // 后建的原生面板窗口时，浮层就被压到下面，表现为「点了没有任何反馈」。
+      // 浮层创建成功后立刻提层一次（原生侧提到 UIWindowLevelAlert + 1，旧包上安全降级）。
+      raiseToastOverlay()
     })
   }
 

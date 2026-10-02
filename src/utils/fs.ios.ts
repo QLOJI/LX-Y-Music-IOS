@@ -160,6 +160,21 @@ export const writeFile = async(path: string, data: string, encoding: Encoding = 
 
 export const appendFile = async(path: string, data: string, encoding: Encoding = 'utf8') => RNFS.appendFile(normalizePath(path), data, encoding)
 
+/**
+ * 下载进度回调限流间隔（毫秒）—— 2026-10-02 用户第 8 条 (3)。
+ *
+ * RNFS 的 progressInterval / progressDivider 默认都是 0，即**逐数据块**回调；
+ * 每次回调都会串起 store 事件 + React 渲染（悬浮下载球、下载管理列表的进度条），
+ * 一首歌下来就是几百上千次 JS 唤醒 —— 本 App 又有音频后台播放能力，进程常驻，
+ * 锁屏后这些渲染工作照跑一整夜。统一限流到 250ms（≥250ms 回调一次）：
+ * 进度/速度观感不变（速度本就按时间差算，限流后反而是更稳的平均值），
+ * JS 唤醒次数降到 1/10 量级。
+ *
+ * 收敛在 downloadFile 这一个封装里，所有调用点（core/download.ts、
+ * MetadataForm、Mylist/listAction、WebDAV 相关等 10 处）自动生效。
+ */
+const DOWNLOAD_PROGRESS_INTERVAL = 250
+
 export const downloadFile = (url: string, path: string, options: Omit<RNFS.DownloadFileOptions, 'fromUrl' | 'toFile'> = {}) => {
   if (!options.headers) {
     options.headers = {
@@ -169,6 +184,8 @@ export const downloadFile = (url: string, path: string, options: Omit<RNFS.Downl
   return RNFS.downloadFile({
     fromUrl: url,
     toFile: normalizePath(path),
+    // 默认限流；调用点显式传 progressInterval 时由 options 覆盖（展开在后，同名键后写者胜）
+    progressInterval: DOWNLOAD_PROGRESS_INTERVAL,
     ...options,
   })
 }
