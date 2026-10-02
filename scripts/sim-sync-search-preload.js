@@ -17,22 +17,36 @@
  *         全屏透明层，叠两个会拦整页触摸（假死），所以 SyncModeModal 挂载时若 store 里还
  *         记着另一个活的选择框，先关旧的；卸载时只清「自己那一个」。
  *
- * ② 搜索筛选下拉框要「上贴搜索框下端」（第 2 条 → 第 16 轮第 5 条重钉）
- *    浮层容器的 top 来自 HeaderBar 里搜索框 View 的 onLayout（y + height；y 要先加上容器
- *    上内边距才是页面坐标）。**高度必须与这个 top 同源**（containerHeight − top）：展开 /
- *    收起动画用 translateY(∓height/2) 抵消「以中心缩放」的位移，height 若还按整块 header
- *    算（旧实现 containerHeight − headerHeight，比真实高度小），补偿量就偏小，盒子会在动画
- *    期间从搜索框上端附近一路往下滑、遮住输入框 —— 就是「下拉框和搜索框底部没对齐」。
- *    本脚本钉住 tipListTopRef（top）与 syncTipListHeight（height）同源、三处调用都传
- *    这个高度、搜索框 onLayout 上报的坐标是页面坐标。
+ * ② 搜索筛选下拉框要「上贴搜索框下端」（第 2 条 → 第 16 轮第 5 条 → 第 17 轮改窗口坐标）
+ *    浮层容器的 top 与展开动画的高度必须同源（containerHeight − top）：展开 / 收起动画用
+ *    translateY(∓height/2) 抵消「以中心缩放」的位移，height 若还按整块 header 算
+ *    （旧实现 containerHeight − headerHeight，比真实高度小），补偿量就偏小，盒子会在动画
+ *    期间越过这个上端 —— 就是「下拉框和搜索框底部没对齐」。本脚本钉住 tipListTopRef（top）
+ *    与 syncTipListHeight（height）同源、三处调用都传这个高度、锚点上报的是窗口坐标。
  *
  *    第 16 轮第 5 条（用户：「筛选清单位置还是不对，它完全遮住了搜索输入框，修改为显示在
  *    搜索框整体下面，筛选清单上边界和搜索输入框下边界齐平」）：搜索页除输入框外还有
  *    「搜索平台」标题行 + 平台胶囊横滑行 + 类型选择行（≈116pt）。旧实现的 top 只有一处
  *    来源（整块 header 实测高），联想/筛选浮层因此隔着这三行才出现 —— 展开后正好盖住
  *    输入框。修法：**删掉整块 header 这条锚点**，top 只认搜索框实测底边；首帧还没测到
- *    几何时容器给 0 高（不是「先按整宽铺一屏」），既不显示也不会拿错几何闪一下。
- *    本脚本同时钉住「旧锚点不得复活」：headerHeightRef 一旦被写回，两套基准就会再次漂移。
+ *    几何时容器给 0 高（不是「先按整宽铺一屏」）。本脚本同时钉住「旧锚点不得复活」：
+ *    headerHeightRef 一旦被写回，两套基准就会再次漂移。
+ *
+ *    第 17 轮（用户截图：联想浮层从屏幕顶部起画、把输入框整个盖住）：搜索框行挂在结果列表
+ *    的 header 里，iOS 上列表被全局 swizzle 强制 contentInsetAdjustmentBehavior，系统会给
+ *    列表内容叠加一份安全区顶部插图 —— **列表内部 onLayout 量到的 layout.y 不含这份插图**，
+ *    第 16 轮把它直接当页面坐标写进 tipListTopRef，浮层因此比搜索框高出一个安全区
+ *    （iPhone 16 Pro Max 实测 ≈59pt，浮层从列表顶部起画、正好压住搜索框）。修法：坐标
+ *    全部走窗口坐标系，不再依赖任何坐标系假设：
+ *      a. HeaderBar 用 searchBarRowRef.measureInWindow 上报「搜索框行底边」的窗口 y
+ *         （y + height；天然含安全区插图与滚动偏移），并把 measureSearchBar() 挂到 ref 上
+ *         供浮层显示前刷新；
+ *      b. 搜索页量根 View（浮层定位所在层，collapsable={false}）的窗口 y，
+ *         top = 搜索框底边窗口 y − 容器窗口 y，换算成本层坐标后再设 tipList 的 top；
+ *      c. 点输入框 / 输入内容时各刷新一次实测，真正 search / show 之前（500ms 定时器内）
+ *         再测一次 —— 列表能否滚动会让插图出现 / 消失，搜索框在屏上的位置跟着变。
+ *    本脚本只钉这条链的接线与同源关系；**第 17 轮锚点的完整契约（源码不变量 9 条 + 距离
+ *    模型 4 条 + 反例 5 条）在 scripts/sim-search-tip-anchor.js**。
  *
  * ③ 音频预加载只在当前歌曲「播到最后 10 秒」才开始（第 4 条）
  *    两条调用路径都要过这道闸：
@@ -165,42 +179,58 @@ const GROUP_A = [
 
 // ==================== B. 搜索筛选浮层 ====================
 const GROUP_B = [
-  ['search：tipListTopRef 记录浮层上端（页面坐标）',
+  ['search：tipListTopRef 记录浮层上端（本层坐标）',
     (s) => /const tipListTopRef = useRef\(0\)/.test(s.search)],
   ['search：浮层高度以「搜索框下端」为唯一基准（containerHeight − top），且无整块 header 回退',
     (s) => /const top = tipListTopRef\.current\r?\n/.test(stripComments(s.search)) &&
       /layoutHeightRef\.current = Math\.max\(0, containerHeightRef\.current - top\)/.test(s.search) &&
       !/headerHeightRef\.current\s*=/.test(stripComments(s.search))],
-  ['search：搜索框 onLayout 回调写入「搜索框下端」并同步高度',
+  ['search：换算函数写入「窗口坐标 − 容器窗口 y」的 top 再同步高度（先定位后定高）',
     (s) => {
-      const body = sliceBy(s.search, 'const handleSearchBarLayout', '}, [syncTipListHeight])')
-      const iTop = body.indexOf('tipListTopRef.current = rect.y + rect.height')
+      const body = sliceBy(s.search, 'const applyTipListGeometry = useCallback', '}, [syncTipListHeight])')
+      const iTop = body.indexOf('const top = bar.y + bar.height - box.y')
+      const iWrite = body.indexOf('tipListTopRef.current = top')
       const iSync = body.indexOf('syncTipListHeight()')
-      return iTop >= 0 && iSync > iTop
+      return iTop >= 0 && iWrite > iTop && iSync > iWrite
     }],
-  ['search：容器 onLayout 与搜索框 onLayout 都重算高度，且旧的整块 header 锚点已彻底删除',
+  ['search：容器 onLayout 重算高度并重测容器窗口坐标；旧的整块 header 锚点不得复活',
     (s) => {
       const code = stripComments(s.search)
-      const container = /containerHeightRef\.current = e\.nativeEvent\.layout\.height[\s\S]{0,80}?syncTipListHeight\(\)/.test(code)
-      const bar = sliceBy(code, 'const handleSearchBarLayout', '}, [syncTipListHeight])')
-      const barSyncs = /tipListTopRef\.current = rect\.y \+ rect\.height\r?\n\s*syncTipListHeight\(\)/.test(bar)
+      const container = /containerHeightRef\.current = e\.nativeEvent\.layout\.height[\s\S]{0,120}?syncTipListHeight\(\)[\s\S]{0,120}?measureOverlayContainer\(\)/.test(code)
       // 旧锚点一旦复活（两套基准漂移）必须判红；注释里提到不算
-      return container && barSyncs && !/headerHeight/i.test(code)
+      return container && !/headerHeight/i.test(code)
     }],
-  ['search：浮层容器 top = 搜索框下端，left/width 与搜索框同宽，首帧给 0 高不铺一屏',
-    (s) => /top: searchBarRect\.y \+ searchBarRect\.height,/.test(s.search) &&
-      /left: searchBarRect\.x,/.test(s.search) &&
-      /width: searchBarRect\.width,/.test(s.search) &&
+  ['search：浮层容器 top/left/width 用换算值（tipListGeometry），首帧给 0 高不铺一屏',
+    (s) => /top: tipListGeometry\.top,/.test(s.search) &&
+      /left: tipListGeometry\.left,/.test(s.search) &&
+      /width: tipListGeometry\.width,/.test(s.search) &&
       /: \{ top: 0, height: 0, left: 0, right: 0 \}/.test(s.search)],
-  ['search：onSearchBarLayout 回写几何时同值保持原引用（不因测量抖动整页重渲染）',
-    (s) => /prev && prev\.x == rect\.x && prev\.y == rect\.y && prev\.width == rect\.width && prev\.height == rect\.height/.test(s.search) &&
-      /\? prev\r?\n\s*: rect/.test(s.search)],
+  ['search：换算回写几何时同值保持原引用（不因测量抖动整页重渲染）',
+    (s) => /prev && prev\.top == top && prev\.left == left && prev\.width == bar\.width/.test(s.search) &&
+      /\? prev\r?\n\s*: \{ top, left, width: bar\.width \}/.test(s.search)],
+  ['search：点输入框 / 输入内容 / 真正 search、show 之前都刷新实测（refreshTipListAnchor）',
+    (s) => {
+      const code = stripComments(s.search)
+      const refresh = sliceBy(code, 'const refreshTipListAnchor', '}, [measureOverlayContainer])')
+      const okRefresh = /headerBarRef\.current\?\.measureSearchBar\(\)/.test(refresh) &&
+        /measureOverlayContainer\(\)/.test(refresh)
+      const show = sliceBy(code, 'const handleShowTipList: HeaderBarProps', '}, 500)')
+      const tip = sliceBy(code, 'const handleTipSearch: HeaderBarProps', '}, 500)')
+      return okRefresh &&
+        (show.match(/refreshTipListAnchor\(\)/g) || []).length >= 2 &&
+        (tip.match(/refreshTipListAnchor\(\)/g) || []).length >= 2
+    }],
   ['search：三处调起浮层都传 layoutHeightRef（与定位同一份高度）',
     (s) => (s.search.match(/searchTipListRef\.current\?\.(?:search|show)\([^)]*layoutHeightRef\.current\)/g) || []).length >= 3],
-  ['search：把 handleSearchBarLayout 接到 HeaderBar 的 onSearchBarLayout',
-    (s) => /onSearchBarLayout=\{handleSearchBarLayout\}/.test(s.search)],
-  ['headerBar：搜索框 onLayout 上报页面坐标（y 加容器上内边距）',
-    (s) => /onSearchBarLayout\(\{ x, y: containerPaddingTop \+ y, width, height \}\)/.test(s.headerBar)],
+  ['search：把 handleSearchBarWindowLayout 接到 HeaderBar 的 onSearchBarLayout',
+    (s) => /onSearchBarLayout=\{handleSearchBarWindowLayout\}/.test(s.search)],
+  ['headerBar：搜索框用 measureInWindow 上报窗口坐标（不再退回 header 内部 layout 坐标）',
+    (s) => {
+      const code = stripComments(s.headerBar)
+      return /searchBarRowRef\.current\?\.measureInWindow\(/.test(code) &&
+        !/nativeEvent\.layout/.test(code) &&
+        !/containerPaddingTop \+ y/.test(code)
+    }],
 ]
 
 // ==================== C. 预加载「最后 10 秒」 ====================
@@ -321,18 +351,22 @@ const n5c = mutated(SRC_B, 'search',
 const n5d = mutated(SRC_B, 'search',
   '      : { top: 0, height: 0, left: 0, right: 0 },',
   '      : { top: 0, left: 0, right: 0 },')
-// n5e: 搜索框 onLayout 不再同步高度（top 变了 height 没变 → 展开动画位移补偿错位）
+// n5e: 换算后不再同步高度（top 变了 height 没变 → 展开动画位移补偿错位）
 const n5e = mutated(SRC_B, 'search',
-  '    tipListTopRef.current = rect.y + rect.height\n    syncTipListHeight()',
-  '    tipListTopRef.current = rect.y + rect.height')
-// n6: search 浮层 top 退回整块 header 下端
+  '    tipListTopRef.current = top\n    syncTipListHeight()',
+  '    tipListTopRef.current = top')
+// n5f: 真正 show 之前不再刷新实测（列表能否滚动让插图出现 / 消失，位置会变）
+const n5f = mutated(SRC_B, 'search',
+  '      refreshTipListAnchor()\n      searchTipListRef.current?.show(layoutHeightRef.current)',
+  '      searchTipListRef.current?.show(layoutHeightRef.current)')
+// n6: search 浮层 top 换回写死的页头高度（不再用换算值）
 const n6 = mutated(SRC_B, 'search',
-  'top: searchBarRect.y + searchBarRect.height,',
-  'top: headerHeight,')
-// n7: headerBar 上报相对坐标（漏掉容器上内边距，top 会整体上偏）
+  'top: tipListGeometry.top,',
+  'top: 96,')
+// n7: headerBar 上报改回 measure（给的是相对父级的布局坐标，不含安全区插图）
 const n7 = mutated(SRC_B, 'headerBar',
-  'onSearchBarLayout({ x, y: containerPaddingTop + y, width, height })',
-  'onSearchBarLayout({ x, y, width, height })')
+  'searchBarRowRef.current?.measureInWindow((x, y, width, height) => {',
+  'searchBarRowRef.current?.measure((x, y, width, height) => {')
 // n8: preload 把时间闸拆掉（起播就取下一首）
 const n8 = mutated(SRC_C, 'preload',
   'if (!(maxPlayTime > 10 && maxPlayTime - nowPlayTime < 10)) {',
@@ -390,7 +424,7 @@ console.log()
 
 console.log('—— A. 连接码验证成功后的「列表同步方式」选择框 ——')
 for (const r of aRes) check(r.label, r.ok)
-console.log('—— B. 搜索筛选下拉框上贴搜索框下端（top 与高度同源）——')
+console.log('—— B. 搜索筛选浮层上贴搜索框下端（窗口坐标换算，top 与高度同源）——')
 for (const r of bRes) check(r.label, r.ok)
 console.log('—— C. 音频预加载只在最后 10 秒开始（两条路径同口径）——')
 for (const r of cRes) check(r.label, r.ok)
@@ -405,9 +439,10 @@ neg('反例 n5：search 高度基准退回整块 header（不是搜索框实测�
 neg('反例 n5b：高度基准加了「没实测值就按容器高估一个」的回退，被 B 判红', n5b.changed && caught(GROUP_B, n5b.m))
 neg('反例 n5c：旧的整块 header 锚点复活（两套基准漂移），被 B 判红', n5c.changed && caught(GROUP_B, n5c.m))
 neg('反例 n5d：首帧回退改回整宽铺一屏（错位列表先闪一下），被 B 判红', n5d.changed && caught(GROUP_B, n5d.m))
-neg('反例 n5e：搜索框 onLayout 不再同步高度（top 与 height 脱钩），被 B 判红', n5e.changed && caught(GROUP_B, n5e.m))
-neg('反例 n6：search 浮层 top 退回整块 header 下端，被 B 判红', n6.changed && caught(GROUP_B, n6.m))
-neg('反例 n7：headerBar 上报相对坐标（top 上偏），被 B 判红', n7.changed && caught(GROUP_B, n7.m))
+neg('反例 n5e：换算后不再同步高度（top 与 height 脱钩），被 B 判红', n5e.changed && caught(GROUP_B, n5e.m))
+neg('反例 n5f：真正 show 之前不再刷新实测（位置已变仍用旧值），被 B 判红', n5f.changed && caught(GROUP_B, n5f.m))
+neg('反例 n6：search 浮层 top 换回写死的页头高度，被 B 判红', n6.changed && caught(GROUP_B, n6.m))
+neg('反例 n7：headerBar 上报改回 measure（布局坐标不含安全区插图），被 B 判红', n7.changed && caught(GROUP_B, n7.m))
 neg('反例 n8：preload 拆掉时间闸（起播就取下一首），被 C 判红', n8.changed && caught(GROUP_C, n8.m))
 neg('反例 n9：preload 把 isPreloading 抢到时间闸之前，被 C 判红', n9.changed && caught(GROUP_C, n9.m))
 neg('反例 n10：preloadNext 砍掉串行暖链，被 C 判红', n10.changed && caught(GROUP_C, n10.m))
