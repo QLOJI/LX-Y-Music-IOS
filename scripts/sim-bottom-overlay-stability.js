@@ -317,7 +317,9 @@ counterExamples.push(run('C6c endNavTransitionWindow 只清定时器不关标志
     '  if (navTransitionTimer) {\n    clearTimeout(navTransitionTimer)\n    navTransitionTimer = null\n  }') },
   '未关闭 navTransitioning'))
 counterExamples.push(run('C7 TabBar 玻璃的 paused 丢掉 navTransitioning', transitionInvariants,
-  { tabbar: REAL.tabbar.replace(/paused=\{homeCovered \|\| collapsed \|\| navTransitioning\}/, 'paused={homeCovered || collapsed}') },
+  // 2026-10-02：该绑定后来又并入了前台门（!appActive，用户第 8 条）与实时采景（live=），
+  // 反例的替换目标必须跟着当前的完整形态走，否则 replace 未命中、反例退化成永真。
+  { tabbar: REAL.tabbar.replace(/paused=\{homeCovered \|\| collapsed \|\| navTransitioning \|\| !appActive\}/, 'paused={homeCovered || collapsed || !appActive}') },
   '未并入 navTransitioning'))
 counterExamples.push(run('C8 均匀帧沿用又加回 previous 非空条件（旧实现）', captureInvariants,
   { glassSwift: REAL.glassSwift.replace('if consecutiveUniformFrames <= Self.maxUniformHoldFrames {', 'if consecutiveUniformFrames <= Self.maxUniformHoldFrames, let previous {') },

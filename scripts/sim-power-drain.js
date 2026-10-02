@@ -23,6 +23,12 @@
  * 本脚本把这些绑成不变量，并带反例自检（tsc/eslint 对「定时器未停」「日志未删」
  * 完全无感）。运行：node scripts/sim-power-drain.js
  * 退出码：不变量全过、且全部反例被拦下时为 0，否则 1。
+ *
+ * 第 4 段（2026-10-02 用户第 8 条）「后台不可见即停」：背景播放让进程锁屏后常驻，
+ * 于是三类**只有前台才需要**的工作会跟着跑一整夜 —— 液态玻璃 MTKView 连续渲染
+ * （Tab 栏 2 块 + 迷你播放器 1 块）、播放详情页的缓冲进度轮询（每秒一次原生桥往返
+ * + setState）、RNFS 下载进度的逐数据块回调（每次串起 store 事件 + React 渲染）。
+ * 共同口径：前台才做，退后台立即停，回前台再恢复。绑住：4 条不变量 + 7 条反例。
  */
 
 const fs = require('fs')
@@ -421,12 +427,118 @@ const runPausedCounterExamples = () => {
 }
 
 // ---------------------------------------------------------------------------
+// 「后台不可见即停」链路（2026-10-02 新增，用户第 8 条）：
+// 音频后台常驻时，只有前台才需要的工作必须随 App 退到后台而停，否则跑一整夜
+// ---------------------------------------------------------------------------
+
+const BG_FILES = {
+  tabbar: 'src/components/layout/ModernTabBar.tsx',
+  playerbar: 'src/components/player/PlayerBar/index.tsx',
+  hookCommon: 'src/store/common/hook.ts',
+  playerHook: 'src/plugins/player/hook.ts',
+  fsIos: 'src/utils/fs.ios.ts',
+}
+
+const readBg = (over = {}) => {
+  const files = {}
+  for (const [k, p] of Object.entries(BG_FILES)) {
+    files[k] = over[k] ?? read(p)
+  }
+  return files
+}
+
+const bgInvariants = (files) => {
+  const reasons = []
+  // ① 前台判定 hook 本体（响应式；不能只有 utils/tools 里那个非响应式的 isActive）
+  if (!/export const useAppActive/.test(files.hookCommon)) {
+    reasons.push('store/common/hook 缺 useAppActive（前台门无从派生）')
+  }
+  // ② Tab 栏两块玻璃（展开态衬底带 + 收起态圆钮）都必须接前台门
+  if (!/const appActive = useAppActive\(\)/.test(files.tabbar)) {
+    reasons.push('ModernTabBar 缺 useAppActive（Tab 栏玻璃前台门缺失）')
+  }
+  const tabPaused = files.tabbar.match(/paused=\{[^}]*\}/g) ?? []
+  const tabGated = tabPaused.filter(s => /!\s*appActive\b/.test(s)).length
+  if (tabGated < 2) {
+    reasons.push(`ModernTabBar 前台门未覆盖两块玻璃（paused 含 !appActive 的只有 ${tabGated} 处，应为 2）`)
+  }
+  // ③ 迷你播放器玻璃 + useMemo 依赖（漏依赖 = 前后台变化不重建节点，门形同虚设）
+  if (!/const appActive = useAppActive\(\)/.test(files.playerbar)) {
+    reasons.push('PlayerBar 缺 useAppActive（迷你条玻璃前台门缺失）')
+  }
+  const pbPaused = files.playerbar.match(/paused=\{[^}]*\}/g) ?? []
+  if (!pbPaused.some(s => /!\s*appActive\b/.test(s))) {
+    reasons.push('PlayerBar 前台门未接（paused 不含 !appActive）')
+  }
+  const deps = files.playerbar.match(/\n\s*\[glassOpacity,[^\]\n]*\]/)
+  if (!deps || !/\bappActive\b/.test(deps[0])) {
+    reasons.push('PlayerBar useMemo 依赖未含 appActive（前台门变化不会重建节点）')
+  }
+  // ④ 缓冲进度轮询：起表点收敛到一处 + 前台门 + 前后台订阅
+  const itvCount = (files.playerHook.match(/setInterval\(updateBuffer/g) ?? []).length
+  if (itvCount !== 1) {
+    reasons.push(`useBufferProgress 起表点未收敛（setInterval(updateBuffer 出现 ${itvCount} 次，应为 1 次、只在 syncItv 内）`)
+  }
+  if (!/if\s*\(!wantPolling\s*\|\|\s*!isActive\(\)\)\s*return/.test(files.playerHook)) {
+    reasons.push('缓冲轮询缺前台门（syncItv 里 !wantPolling || !isActive() 守卫缺失）')
+  }
+  if (!/AppState\.addEventListener\('change'/.test(files.playerHook) ||
+      !/appStateSubscription\.remove\(\)/.test(files.playerHook)) {
+    reasons.push('缓冲轮询缺前后台订阅（退后台不停表 / 回前台不补测）')
+  }
+  // ⑤ 下载进度限流（RNFS 默认 progressInterval=0 即逐块回调）
+  if (!/const DOWNLOAD_PROGRESS_INTERVAL = 250/.test(files.fsIos) ||
+      !/progressInterval:\s*DOWNLOAD_PROGRESS_INTERVAL/.test(files.fsIos)) {
+    reasons.push('downloadFile 未统一限流 progressInterval: 250（逐块回调照旧高频唤醒 JS）')
+  }
+  return reasons
+}
+
+const runBgCounterExamples = () => {
+  const results = []
+  const check = (name, files, expectSubstr) => {
+    const hits = bgInvariants(files)
+    results.push({ name, ok: hits.some(r => r.includes(expectSubstr)), detail: hits })
+  }
+  // B1 Tab 栏两块玻璃一起脱钩
+  check('B1 TabBar 抹掉前台门', readBg({
+    tabbar: read(BG_FILES.tabbar).replace(/paused=\{[^}]*!\s*appActive[^}]*\}/g, 'paused={homeCovered}'),
+  }), 'ModernTabBar 前台门未覆盖两块玻璃')
+  // B2 Tab 栏不订阅前台状态
+  check('B2 TabBar 抹掉 useAppActive', readBg({
+    tabbar: read(BG_FILES.tabbar).replace('const appActive = useAppActive()', 'const appActive = true'),
+  }), 'ModernTabBar 缺 useAppActive')
+  // B3 迷你条玻璃脱钩
+  check('B3 PlayerBar 抹掉前台门', readBg({
+    playerbar: read(BG_FILES.playerbar).replace(/paused=\{[^}]*!\s*appActive[^}]*\}/, 'paused={screenCovered}'),
+  }), 'PlayerBar 前台门未接')
+  // B4 迷你条漏依赖（门在、节点不重建）
+  check('B4 PlayerBar 依赖数组漏 appActive', readBg({
+    playerbar: read(BG_FILES.playerbar).replace(', appActive,', ', '),
+  }), 'PlayerBar useMemo 依赖未含 appActive')
+  // B5 缓冲轮询把前台门去掉（回到「只要该轮询就起表」）
+  check('B5 缓冲轮询去掉前台门', readBg({
+    playerHook: read(BG_FILES.playerHook).replace('if (!wantPolling || !isActive()) return', 'if (!wantPolling) return'),
+  }), '缓冲轮询缺前台门')
+  // B6 缓冲轮询不订阅前后台变化（退后台不停表）
+  check('B6 缓冲轮询抹掉 AppState 订阅', readBg({
+    playerHook: read(BG_FILES.playerHook).replace("AppState.addEventListener('change'", "NoopState.addEventListener('change'"),
+  }), '缓冲轮询缺前后台订阅')
+  // B7 下载进度回到逐块回调
+  check('B7 downloadFile 抹掉限流', readBg({
+    fsIos: read(BG_FILES.fsIos).replace('progressInterval: DOWNLOAD_PROGRESS_INTERVAL,', ''),
+  }), 'downloadFile 未统一限流')
+  return results
+}
+
+// ---------------------------------------------------------------------------
 // 主流程
 // ---------------------------------------------------------------------------
 
 const realNative = nativeInvariants(REAL.appdel)
 const realJs = jsInvariants(REAL.playProgress)
 const realPaused = pausedInvariants(readGlass())
+const realBg = bgInvariants(readBg())
 
 console.log('=== sim-power-drain ===')
 console.log('\n[原生 AppDelegate.mm]')
@@ -441,15 +553,25 @@ console.log('\n[玻璃覆盖暂停链路（前台省电）]')
 if (realPaused.length === 0) console.log('  PASS paused 链路 8 文件贯通（EffectView/manager/组件/消费点/hook/图标）')
 else realPaused.forEach(r => console.log('  FAIL ' + r))
 
+console.log('\n[后台不可见即停（2026-10-02 用户第 8 条）]')
+if (realBg.length === 0) {
+  console.log('  PASS Tab 栏两块玻璃前台门 + 迷你条玻璃与 useMemo 依赖 + 缓冲轮询起表收敛/前后台订阅 + 下载进度限流')
+} else {
+  realBg.forEach(r => console.log('  FAIL ' + r))
+}
+
 console.log('\n[反例自检]')
 const ceResults = runCounterExamples()
 const peResults = runPausedCounterExamples()
+const beResults = runBgCounterExamples()
 let ceAllOk = true
-for (const r of [...ceResults, ...peResults]) {
+const allResults = [...ceResults, ...peResults, ...beResults]
+for (const r of allResults) {
   console.log(`  ${r.ok ? 'PASS' : 'FAIL'} ${r.name} —— ${r.ok ? '已拦下' : `未拦下（reasons=${JSON.stringify(r.detail)}）`}`)
   if (!r.ok) ceAllOk = false
 }
 
-const allOk = realNative.ok && realJs.ok && realPaused.length === 0 && ceAllOk
-console.log(`\n结果：${allOk ? 'ALL PASS' : '有失败项'}（不变量 ${realNative.ok && realJs.ok && realPaused.length === 0 ? '3/3' : '有失败'}；反例 ${[...ceResults, ...peResults].filter(r => r.ok).length}/${ceResults.length + peResults.length}）`)
+const invCount = [realNative.ok, realJs.ok, realPaused.length === 0, realBg.length === 0].filter(Boolean).length
+const allOk = invCount === 4 && ceAllOk
+console.log(`\n结果：${allOk ? 'ALL PASS' : '有失败项'}（不变量 ${allOk || invCount > 0 ? `${invCount}/4` : '0/4'}；反例 ${allResults.filter(r => r.ok).length}/${allResults.length}）`)
 process.exit(allOk ? 0 : 1)
