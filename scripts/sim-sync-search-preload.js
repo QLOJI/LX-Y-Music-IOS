@@ -17,7 +17,7 @@
  *         全屏透明层，叠两个会拦整页触摸（假死），所以 SyncModeModal 挂载时若 store 里还
  *         记着另一个活的选择框，先关旧的；卸载时只清「自己那一个」。
  *
- * ② 搜索筛选下拉框要「上贴搜索框下端」（第 2 条）
+ * ② 搜索筛选下拉框要「上贴搜索框下端」（第 2 条 → 第 16 轮第 5 条重钉）
  *    浮层容器的 top 来自 HeaderBar 里搜索框 View 的 onLayout（y + height；y 要先加上容器
  *    上内边距才是页面坐标）。**高度必须与这个 top 同源**（containerHeight − top）：展开 /
  *    收起动画用 translateY(∓height/2) 抵消「以中心缩放」的位移，height 若还按整块 header
@@ -25,6 +25,14 @@
  *    期间从搜索框上端附近一路往下滑、遮住输入框 —— 就是「下拉框和搜索框底部没对齐」。
  *    本脚本钉住 tipListTopRef（top）与 syncTipListHeight（height）同源、三处调用都传
  *    这个高度、搜索框 onLayout 上报的坐标是页面坐标。
+ *
+ *    第 16 轮第 5 条（用户：「筛选清单位置还是不对，它完全遮住了搜索输入框，修改为显示在
+ *    搜索框整体下面，筛选清单上边界和搜索输入框下边界齐平」）：搜索页除输入框外还有
+ *    「搜索平台」标题行 + 平台胶囊横滑行 + 类型选择行（≈116pt）。旧实现的 top 只有一处
+ *    来源（整块 header 实测高），联想/筛选浮层因此隔着这三行才出现 —— 展开后正好盖住
+ *    输入框。修法：**删掉整块 header 这条锚点**，top 只认搜索框实测底边；首帧还没测到
+ *    几何时容器给 0 高（不是「先按整宽铺一屏」），既不显示也不会拿错几何闪一下。
+ *    本脚本同时钉住「旧锚点不得复活」：headerHeightRef 一旦被写回，两套基准就会再次漂移。
  *
  * ③ 音频预加载只在当前歌曲「播到最后 10 秒」才开始（第 4 条）
  *    两条调用路径都要过这道闸：
@@ -35,6 +43,18 @@
  *         监听在暖链（nativeFlac 预启动 / URL 预热）完成后**串行**调 startPreload —— 串行是
  *         为了第二步命中第一步刚写入的 URL 缓存（core/music 按档位缓存），同一时刻不会对
  *         同一首歌发两次请求。
+ *
+ * ④【第 16 轮第 3 条】同一首歌不许取三次链接（用户：「在歌曲播放到最后 10 秒位置时，获取
+ *    下一首歌曲一次请求，目前会发 2 次，播放结束后，还会再获取一次请求，总共请求 3 次」）
+ *    取链固定天梯从用户偏好档（如 flac）起步降级，实际达成档常更低（如 320k）。URL 缓存
+ *    按「档位」为键（本档链接是诚实语义），而「最后一刻预取」写入的是**达成档**键、
+ *    切歌起播读的是**请求档**（天梯首档）键 —— 键不一致 → 缓存穿透 → 又发一次请求。
+ *    修法：写侧在 quality == null（天梯模式）且达成档 ≠ 请求档时，额外记一条
+ *    「请求档 → 达成档」映射；读侧（core/music 的 online.ts / utils.ts 两处缓存入口）
+ *    在请求档未命中时按映射回退到达成档，命中即原样复用（quality 仍报达成档，不撒谎）。
+ *    三处必须同时成立才闭环：① 预取的取链调 **不带** 显式档（走天梯才会写映射）；
+ *    ② 写侧映射的闸门（只在天梯模式 + 真的降级时写）；③ 读侧带回退。
+ *    映射键前缀沿用 storageDataPrefix.musicUrl、清理走 startsWith，不留孤儿键。
  *
  * 本脚本是**静态源码解析**（正则 + 位置比较），钉的是「结构还在不在」，证明不了真机行为。
  * 每条断言都配了一个「改回旧实现就该判红」的反例，反例全部用当前源码变异，防止断言写成
@@ -70,6 +90,9 @@ const F = {
   headerBar: 'src/screens/Home/Views/Search/HeaderBar/index.tsx',
   preload: 'src/core/player/preload.ts',
   preloadNext: 'src/core/init/player/preloadNextMusic.ts',
+  data: 'src/utils/data.ts',
+  online: 'src/core/music/online.ts',
+  musicUtils: 'src/core/music/utils.ts',
 }
 const readSet = (keys) => {
   const s = {}
@@ -84,6 +107,11 @@ const sliceBy = (code, from, to) => {
   return code.slice(a, b + to.length)
 }
 const runGroup = (group, src) => group.map(([label, fn]) => ({ label, ok: !!fn(src) }))
+/** 去掉行注释：断言只看代码，避免中文说明里提到 headerHeight 之类的旧名字造成假命中/假失败 */
+const stripComments = (s) => s.split('\n').map((line) => {
+  const at = line.indexOf('//')
+  return at < 0 ? line : line.slice(0, at)
+}).join('\n')
 
 // ==================== A. 同步方式选择框 ====================
 const GROUP_A = [
@@ -139,9 +167,10 @@ const GROUP_A = [
 const GROUP_B = [
   ['search：tipListTopRef 记录浮层上端（页面坐标）',
     (s) => /const tipListTopRef = useRef\(0\)/.test(s.search)],
-  ['search：浮层高度以「上端」为基准（containerHeight − top），且首帧回退整块 header',
-    (s) => /const top = tipListTopRef\.current \|\| headerHeightRef\.current/.test(s.search) &&
-      /layoutHeightRef\.current = Math\.max\(0, containerHeightRef\.current - top\)/.test(s.search)],
+  ['search：浮层高度以「搜索框下端」为唯一基准（containerHeight − top），且无整块 header 回退',
+    (s) => /const top = tipListTopRef\.current\r?\n/.test(stripComments(s.search)) &&
+      /layoutHeightRef\.current = Math\.max\(0, containerHeightRef\.current - top\)/.test(s.search) &&
+      !/headerHeightRef\.current\s*=/.test(stripComments(s.search))],
   ['search：搜索框 onLayout 回调写入「搜索框下端」并同步高度',
     (s) => {
       const body = sliceBy(s.search, 'const handleSearchBarLayout', '}, [syncTipListHeight])')
@@ -149,17 +178,23 @@ const GROUP_B = [
       const iSync = body.indexOf('syncTipListHeight()')
       return iTop >= 0 && iSync > iTop
     }],
-  ['search：容器 onLayout 与 header onLayout 都会重算高度（两处真实高度来源同一口径）',
+  ['search：容器 onLayout 与搜索框 onLayout 都重算高度，且旧的整块 header 锚点已彻底删除',
     (s) => {
-      const container = /containerHeightRef\.current = e\.nativeEvent\.layout\.height[\s\S]{0,80}?syncTipListHeight\(\)/.test(s.search)
-      const header = /headerHeightRef\.current = nativeEvent\.layout\.height[\s\S]{0,120}?syncTipListHeight\(\)/.test(s.search)
-      return container && header
+      const code = stripComments(s.search)
+      const container = /containerHeightRef\.current = e\.nativeEvent\.layout\.height[\s\S]{0,80}?syncTipListHeight\(\)/.test(code)
+      const bar = sliceBy(code, 'const handleSearchBarLayout', '}, [syncTipListHeight])')
+      const barSyncs = /tipListTopRef\.current = rect\.y \+ rect\.height\r?\n\s*syncTipListHeight\(\)/.test(bar)
+      // 旧锚点一旦复活（两套基准漂移）必须判红；注释里提到不算
+      return container && barSyncs && !/headerHeight/i.test(code)
     }],
-  ['search：浮层容器 top = 搜索框下端，left/width 与搜索框同宽，首帧回退整宽',
+  ['search：浮层容器 top = 搜索框下端，left/width 与搜索框同宽，首帧给 0 高不铺一屏',
     (s) => /top: searchBarRect\.y \+ searchBarRect\.height,/.test(s.search) &&
       /left: searchBarRect\.x,/.test(s.search) &&
       /width: searchBarRect\.width,/.test(s.search) &&
-      /top: headerHeight, left: 0, right: 0/.test(s.search)],
+      /: \{ top: 0, height: 0, left: 0, right: 0 \}/.test(s.search)],
+  ['search：onSearchBarLayout 回写几何时同值保持原引用（不因测量抖动整页重渲染）',
+    (s) => /prev && prev\.x == rect\.x && prev\.y == rect\.y && prev\.width == rect\.width && prev\.height == rect\.height/.test(s.search) &&
+      /\? prev\r?\n\s*: rect/.test(s.search)],
   ['search：三处调起浮层都传 layoutHeightRef（与定位同一份高度）',
     (s) => (s.search.match(/searchTipListRef\.current\?\.(?:search|show)\([^)]*layoutHeightRef\.current\)/g) || []).length >= 3],
   ['search：把 handleSearchBarLayout 接到 HeaderBar 的 onSearchBarLayout',
@@ -194,6 +229,49 @@ const GROUP_C = [
       /maxPlayTime > 10 && maxPlayTime - nowPlayTime < 10/.test(s.preload)],
 ]
 
+// ============ D.【第 16 轮第 3 条】预取写下的链接必须被切歌复用（一首歌不许取三次） ============
+const GROUP_D = [
+  ['preloadNext：预取取链不带显式档（走天梯才会写「请求档 → 达成档」映射，切歌起播才复用得上）',
+    (s) => /await getMusicUrlInfo\(\{ musicInfo: info\.musicInfo \}\)\.catch\(\(\) => null\)/.test(s.preloadNext) &&
+      !/getMusicUrlInfo\(\{ musicInfo: info\.musicInfo,[^}]*quality:/.test(s.preloadNext)],
+  ['data：读缓存带回退——先按请求档直读，命中即返回请求档',
+    (s) => {
+      const body = sliceBy(s.data, 'export const getMusicUrlResolved', '\n}')
+      const iDirect = body.indexOf('await getMusicUrl(musicInfo, type)')
+      const iMap = body.indexOf('await getMusicUrlRequestQuality(musicInfo, type)')
+      return iDirect >= 0 && iMap > iDirect && /if \(url\) return \{ url, quality: type \}/.test(body)
+    }],
+  ['data：请求档未命中查映射；映射缺失或等于请求档时返回 null（不猜、不拿请求档冒充）',
+    (s) => {
+      const body = sliceBy(s.data, 'export const getMusicUrlResolved', '\n}')
+      return /const achievedQuality = await getMusicUrlRequestQuality\(musicInfo, type\)/.test(body) &&
+        /if \(!achievedQuality \|\| achievedQuality === type\) return null/.test(body)
+    }],
+  ['data：按达成档再取一次链接，命中返回达成档（质量标不撒谎），未命中 null',
+    (s) => /const aliasedUrl = await getMusicUrl\(musicInfo, achievedQuality\)/.test(s.data) &&
+      /return aliasedUrl \? \{ url: aliasedUrl, quality: achievedQuality \} : null/.test(s.data)],
+  ['data：映射读写同键，且键前缀仍挂在 musicUrl 下（clearMusicUrl 的 startsWith 一并清掉，无孤儿键）',
+    (s) => {
+      const hits = [...s.data.matchAll(/export const (getMusicUrlRequestQuality|saveMusicUrlRequestQuality) = [\s\S]{0,200}?`\$\{storageDataPrefix\.(\w+)\}request_quality__\$\{musicInfo\.id\}_\$\{type\}`/g)]
+      return hits.length === 2 && hits.every((m) => m[2] === 'musicUrl') &&
+        /key\.startsWith\(storageDataPrefix\.musicUrl\)/.test(sliceBy(s.data, 'export const clearMusicUrl', '\n}'))
+    }],
+  ['online：天梯模式（未指定档）读缓存走映射回退；显式档只直读该档（低档链接不冒充指定档）',
+    (s) => /const cached = quality == null\s*\? await getStoreMusicUrlResolved\(currentMusicInfo, targetQuality\)\s*: await getStoreMusicUrl\(currentMusicInfo, targetQuality\)\.then\(url => url \? \{ url, quality: targetQuality \} : null\)/.test(s.online)],
+  ['online：缓存命中按达成档回报（setLastTryQuality 与返回的 quality 都是 cached.quality）',
+    (s) => /setLastTryQuality\(currentMusicInfo\.id, cached\.quality\)[\s\S]{0,600}?return \{ url: cached\.url, quality: cached\.quality \}/.test(s.online)],
+  ['online：天梯降级达成时补写映射，两处都在 quality == null 闸内（显式档不写）',
+    (s) => (s.online.match(/if \(quality == null && (?:result\.quality|achievedQuality) !== targetQuality\) \{/g) || []).length === 2],
+  ['online：换源分支连源歌 musicInfo 也写一份映射（切歌读的是源歌 id，只写当前 id 会穿透）',
+    (s) => /if \(currentMusicInfo\.id !== musicInfo\.id\) void saveMusicUrlRequestQuality\(musicInfo, targetQuality, achievedQuality\)/.test(s.online)],
+  ['musicUtils：起播 / 切歌这一侧同口径（天梯模式走映射回退，显式档只直读）',
+    (s) => /const cached = quality == null\s*\? await getStoreMusicUrlResolved\(musicInfo, targetQuality\)\s*: await getStoreMusicUrl\(musicInfo, targetQuality\)\.then\(url => url \? \{ url, quality: targetQuality \} : null\)/.test(s.musicUtils)],
+  ['musicUtils：命中缓存走「不再发请求」分支（isFromCache: true）且按达成档回报',
+    (s) => /if \(cached && !isRefresh\) \{[\s\S]{0,240}?return \{ url: cached\.url, musicInfo, quality: cached\.quality, isFromCache: true \}/.test(s.musicUtils)],
+]
+
+const SRC_D = readSet(['preloadNext', 'data', 'online', 'musicUtils'])
+
 const SRC_A = readSet(['utils', 'sync', 'modal', 'isEnable'])
 const SRC_B = readSet(['search', 'headerBar'])
 const SRC_C = readSet(['preload', 'preloadNext'])
@@ -201,6 +279,7 @@ const SRC_C = readSet(['preload', 'preloadNext'])
 const aRes = runGroup(GROUP_A, SRC_A)
 const bRes = runGroup(GROUP_B, SRC_B)
 const cRes = runGroup(GROUP_C, SRC_C)
+const dRes = runGroup(GROUP_D, SRC_D)
 
 // —— 反例（全部用当前源码变异，必须被对应分组判红）——
 const mutated = (src, key, from, to) => {
@@ -226,10 +305,26 @@ const n3 = mutated(SRC_A, 'isEnable',
 const n4 = mutated(SRC_A, 'modal',
   'if (syncState.syncModeComponentId && syncState.syncModeComponentId != componentId) {',
   'if (false) {')
-// n5: search 高度退回旧口径「容器高 − 整块 header 高」
+// n5: search 高度基准退回整块 header（不再是搜索框实测底边）
 const n5 = mutated(SRC_B, 'search',
-  '    const top = tipListTopRef.current || headerHeightRef.current\n    layoutHeightRef.current = Math.max(0, containerHeightRef.current - top)',
-  '    layoutHeightRef.current = Math.max(0, containerHeightRef.current - headerHeightRef.current)')
+  '    const top = tipListTopRef.current\n',
+  '    const top = headerHeightRef.current\n')
+// n5b: 高度基准上加「没有实测值就按容器高估一个」的回退（浮层又会落到平台行下面）
+const n5b = mutated(SRC_B, 'search',
+  '    const top = tipListTopRef.current\n',
+  '    const top = tipListTopRef.current || containerHeightRef.current * 0.3\n')
+// n5c: 旧的「整块 header 高度」锚点复活（两套基准漂移 = 本轮修掉的老 bug 源头）
+const n5c = mutated(SRC_B, 'search',
+  '    <View>\n      <HeaderBar',
+  '    <View onLayout={(e) => { headerHeightRef.current = e.nativeEvent.layout.height }}>\n      <HeaderBar')
+// n5d: 首帧回退改回「整宽铺一屏」（没有几何时先画出来，闪一下错位的列表）
+const n5d = mutated(SRC_B, 'search',
+  '      : { top: 0, height: 0, left: 0, right: 0 },',
+  '      : { top: 0, left: 0, right: 0 },')
+// n5e: 搜索框 onLayout 不再同步高度（top 变了 height 没变 → 展开动画位移补偿错位）
+const n5e = mutated(SRC_B, 'search',
+  '    tipListTopRef.current = rect.y + rect.height\n    syncTipListHeight()',
+  '    tipListTopRef.current = rect.y + rect.height')
 // n6: search 浮层 top 退回整块 header 下端
 const n6 = mutated(SRC_B, 'search',
   'top: searchBarRect.y + searchBarRect.height,',
@@ -254,6 +349,34 @@ const n10 = mutated(SRC_C, 'preloadNext',
 const n11 = mutated(SRC_A, 'utils',
   '      if (seq !== syncModeModalSeq) return\n      present(attempt + 1)',
   '      present(attempt + 1)')
+// n12: data 读侧把映射回退删掉（退回直读请求档 → 预取过的歌切歌又发一次请求）
+const n12 = mutated(SRC_D, 'data',
+  'const achievedQuality = await getMusicUrlRequestQuality(musicInfo, type)',
+  'const achievedQuality = null')
+// n13: data 砍掉「按达成档再取一次」（映射查了也不用，等于没回退）
+const n13 = mutated(SRC_D, 'data',
+  'const aliasedUrl = await getMusicUrl(musicInfo, achievedQuality)',
+  "const aliasedUrl = ''")
+// n14: online 写侧映射闸门拆掉（显式档也写 / 不判是否真降级）
+const n14 = mutated(SRC_D, 'online',
+  'if (quality == null && result.quality !== targetQuality) {',
+  'if (true) {')
+// n15: musicUtils 退回「一律直读请求档」（缓存再次穿透 → 起播又发一次请求）
+const n15 = mutated(SRC_D, 'musicUtils',
+  '? await getStoreMusicUrlResolved(musicInfo, targetQuality)',
+  '? await getStoreMusicUrl(musicInfo, targetQuality).then(url => url ? { url, quality: targetQuality } : null)')
+// n16: 缓存命中谎报请求档（320k 的链接被标成 flac）
+const n16 = mutated(SRC_D, 'musicUtils',
+  'quality: cached.quality, isFromCache: true',
+  'quality: targetQuality, isFromCache: true')
+// n17: 预取取链改带显式档（不走天梯 → 写侧永远不写映射 → 切歌读请求档仍穿透）
+const n17 = mutated(SRC_D, 'preloadNext',
+  'getMusicUrlInfo({ musicInfo: info.musicInfo })',
+  "getMusicUrlInfo({ musicInfo: info.musicInfo, quality: '320k' })")
+// n18: 映射键离开 musicUrl 前缀（孤儿键，清缓存清不掉，读侧也再查不到）
+const n18 = mutated(SRC_D, 'data',
+  '`${storageDataPrefix.musicUrl}request_quality__${musicInfo.id}_${type}`',
+  '`${storageDataPrefix.lyric}request_quality__${musicInfo.id}_${type}`')
 
 // —— 输出 ——
 console.log('='.repeat(92))
@@ -262,6 +385,7 @@ console.log('='.repeat(92))
 console.log(`  A 同步模式选择框：${aRes.filter((r) => r.ok).length}/${aRes.length} 通过`)
 console.log(`  B 搜索筛选浮层  ：${bRes.filter((r) => r.ok).length}/${bRes.length} 通过`)
 console.log(`  C 预加载 10 秒闸：${cRes.filter((r) => r.ok).length}/${cRes.length} 通过`)
+console.log(`  D 预取链接复用  ：${dRes.filter((r) => r.ok).length}/${dRes.length} 通过`)
 console.log()
 
 console.log('—— A. 连接码验证成功后的「列表同步方式」选择框 ——')
@@ -270,18 +394,31 @@ console.log('—— B. 搜索筛选下拉框上贴搜索框下端（top 与高�
 for (const r of bRes) check(r.label, r.ok)
 console.log('—— C. 音频预加载只在最后 10 秒开始（两条路径同口径）——')
 for (const r of cRes) check(r.label, r.ok)
+console.log('—— D. 最后 10 秒取到的链接被切歌复用（一首歌不再取三次）——')
+for (const r of dRes) check(r.label, r.ok)
 
 neg('反例 n1：utils 拿掉「已挂上就停手」判据（叠加 / 幽灵重试），被 A 判红', n1.changed && caught(GROUP_A, n1.m))
 neg('反例 n2：sync 删掉复查作废（用户回答后被再弹一次），被 A 判红', n2.changed && caught(GROUP_A, n2.m))
 neg('反例 n3：isEnable 退回「点确认立刻连接」（撞原生 Modal 淡出），被 A 判红', n3.changed && caught(GROUP_A, n3.m))
 neg('反例 n4：modal 拿掉重复呈现去重（两个透明层拦整页触摸），被 A 判红', n4.changed && caught(GROUP_A, n4.m))
-neg('反例 n5：search 高度退回「容器高 − 整块 header 高」（旧 bug），被 B 判红', n5.changed && caught(GROUP_B, n5.m))
+neg('反例 n5：search 高度基准退回整块 header（不是搜索框实测底边），被 B 判红', n5.changed && caught(GROUP_B, n5.m))
+neg('反例 n5b：高度基准加了「没实测值就按容器高估一个」的回退，被 B 判红', n5b.changed && caught(GROUP_B, n5b.m))
+neg('反例 n5c：旧的整块 header 锚点复活（两套基准漂移），被 B 判红', n5c.changed && caught(GROUP_B, n5c.m))
+neg('反例 n5d：首帧回退改回整宽铺一屏（错位列表先闪一下），被 B 判红', n5d.changed && caught(GROUP_B, n5d.m))
+neg('反例 n5e：搜索框 onLayout 不再同步高度（top 与 height 脱钩），被 B 判红', n5e.changed && caught(GROUP_B, n5e.m))
 neg('反例 n6：search 浮层 top 退回整块 header 下端，被 B 判红', n6.changed && caught(GROUP_B, n6.m))
 neg('反例 n7：headerBar 上报相对坐标（top 上偏），被 B 判红', n7.changed && caught(GROUP_B, n7.m))
 neg('反例 n8：preload 拆掉时间闸（起播就取下一首），被 C 判红', n8.changed && caught(GROUP_C, n8.m))
 neg('反例 n9：preload 把 isPreloading 抢到时间闸之前，被 C 判红', n9.changed && caught(GROUP_C, n9.m))
 neg('反例 n10：preloadNext 砍掉串行暖链，被 C 判红', n10.changed && caught(GROUP_C, n10.m))
 neg('反例 n11：utils 拿掉重试 tick 的代次复查（作废窗口内补弹幽灵框），被 A 判红', n11.changed && caught(GROUP_A, n11.m))
+neg('反例 n12：data 读侧删掉映射回退（预取过的歌切歌又发请求），被 D 判红', n12.changed && caught(GROUP_D, n12.m))
+neg('反例 n13：data 砍掉「按达成档再取一次」（回退形同虚设），被 D 判红', n13.changed && caught(GROUP_D, n13.m))
+neg('反例 n14：online 写侧映射闸门拆掉（显式档也写 / 不判降级），被 D 判红', n14.changed && caught(GROUP_D, n14.m))
+neg('反例 n15：musicUtils 退回一律直读请求档（缓存穿透），被 D 判红', n15.changed && caught(GROUP_D, n15.m))
+neg('反例 n16：缓存命中谎报请求档（低档链接标成 flac），被 D 判红', n16.changed && caught(GROUP_D, n16.m))
+neg('反例 n17：预取取链改带显式档（不走天梯 → 永不写映射），被 D 判红', n17.changed && caught(GROUP_D, n17.m))
+neg('反例 n18：映射键离开 musicUrl 前缀（孤儿键，清缓存清不掉），被 D 判红', n18.changed && caught(GROUP_D, n18.m))
 
 console.log()
 for (const r of results) {

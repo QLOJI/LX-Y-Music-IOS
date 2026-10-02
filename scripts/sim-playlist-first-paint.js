@@ -23,10 +23,16 @@
  *      loading 必为 false（刷新控件不可能在挂载帧被激活）。加载路径里每个 setLoading(false)
  *      都要有配对的 setListReady(true)，反向也一样 —— 删一个、或把它挪到加载开始处，
  *      都判红。
- *   C. 页头（PageTopInset + DetailPageTitle [+ tab]）抽成同一个 pageHeader 元素：加载分支
- *      当普通兄弟节点、就绪分支当 ListHeaderComponent，两处几何完全相同 —— 从转圈切到
- *      列表时标题一动不动。不允许再退回「内联写在 ListHeaderComponent 里」（那样加载期间
- *      标题会晚一帧才出现、切过去时页头要重新落位）。
+ *   C. 页头（PageTopInset + DetailPageTitle [+ tab]）抽成同一个 pageHeader 元素，并**固定
+ *      在列表之外**：加载分支与就绪分支都是它的兄弟节点，两处几何完全相同 —— 从转圈切到
+ *      列表时标题一动不动。
+ *      第 16 轮第 2 / 7 条后收紧（用户：「第一次进入时，整体刷新歌单标题和歌单内容都会向
+ *      上跳动并刷新，要求不向上刷新，去除这个动作并固定标题和内容」）：页头**不再**当
+ *      ListHeaderComponent —— 挂在 ListHeaderComponent 里就等于放进可滚动内容，列表挂载 /
+ *      换数据 / 下拉刷新时它会跟着内容一起位移，这正是「标题向上跳一下」的来源。现在它是
+ *      FlatList 的兄弟节点、渲染在 listReady 闸门之前，`{pageHeader}` 全页恰一处。
+ *      同时钉住第 2 条的三等分：有 tab 的平台页必须 equalColumns（标题 flex:1 + tabBar
+ *      flex:2 = 三等分）且 tab 与标题同一垂直中线（alignItems:'center'，不是 bottom）。
  *   D. 首载期间有居中占位（ActivityIndicator + loadingContainer），与「我的」页同一个口径。
  *
  * 本脚本是**静态源码解析**（正则 + 分片），钉住的是「结构还在不在」，证明不了真机上到底
@@ -55,6 +61,16 @@ const stripComments = (s) => s.split('\n').map((line) => {
   const at = line.indexOf('//')
   return at < 0 ? line : line.slice(0, at)
 }).join('\n')
+
+/** 取某个 StyleSheet 条目的块体（`name: { … }`，注释已由调用方剥掉）。
+ *  必须按块取，不能全文找「flex: 2 … alignItems: 'center'」—— 同一文件里 tabItem /
+ *  loadingContainer 等条目也带 alignItems: 'center'，全文匹配会把它们当成 tabBar。 */
+const styleBlock = (code, name) => {
+  const i = code.indexOf(name + ':')
+  if (i < 0) return ''
+  const j = code.indexOf('},', i)
+  return j < 0 ? '' : code.slice(i, j)
+}
 
 /** 首载路径分片：三个页面的「首次加载」代码块（不含下拉刷新 onRefresh） */
 const PAGES = [
@@ -112,15 +128,22 @@ const auditGatePair = (slice) => {
 }
 
 const pageSrc = {}
+// 三等分（第 16 轮第 2 条）的实现在共享组件里：equalColumns ⇒ 标题 flex:1。
+// 三个页面只是调用方，单独读一份钉住「title 那一份真的占满 1 份」。
+const detailTitleSrc = stripComments(read('src/components/common/DetailPageTitle.tsx'))
 const pageChecks = PAGES.map((p) => {
   const src = read(p.file)
   pageSrc[p.navId] = src
   const code = stripComments(src)
   const loadSlice = sliceBy(src, p.loadFrom, p.loadTo)
   const audit = loadSlice ? auditGatePair(loadSlice) : null
-  // pageHeader 分片：从 `const pageHeader = (` 到把它交给列表的那一行 ——
-  // 这段里必须同时有 PageTopInset 和 DetailPageTitle，才谈得上「两条分支同一几何」
-  const headerSlice = sliceBy(src, 'const pageHeader = (', 'ListHeaderComponent={pageHeader}')
+  // pageHeader 分片：`const pageHeader = (` 到该字面量收尾的 `)` ——
+  // 这段里必须同时有 PageTopInset 和 DetailPageTitle，才谈得上「两条分支同一份、同一几何」
+  const headerSlice = sliceBy(src, 'const pageHeader = (', '\n  )\n')
+  // 平台页（有 tab）：酷狗歌单 / 自建歌单 / 收藏歌单要三等分；网易歌单页没有 tab
+  const hasTabs = /renderTab\(/.test(code)
+  const iHeaderRef = code.indexOf('{pageHeader}')
+  const iGate = code.indexOf('{listReady ? (')
   return {
     page: p,
     src,
@@ -132,14 +155,23 @@ const pageChecks = PAGES.map((p) => {
     // B 组：闸门只在加载结束时开，且与 setLoading(false) 配对
     loadSlice: loadSlice,
     audit,
-    // C 组：页头抽成同一份元素
+    // C 组：页头抽成同一份元素，且固定在列表之外（第 16 轮第 2/7 条）
     headerConst: /const pageHeader = \(/.test(code),
-    headerInList: /ListHeaderComponent=\{pageHeader\}/.test(code),
     headerRefCount: (src.match(/\{pageHeader\}/g) || []).length,
+    headerOutsideGate: iHeaderRef >= 0 && iGate >= 0 && iHeaderRef < iGate,
+    headerNotInList: !/ListHeaderComponent=\{[^}]*pageHeader/.test(code),
     noInlineHeader: !/ListHeaderComponent=\{\s*<>/.test(code),
     headerGeometry: headerSlice != null &&
       /<PageTopInset \/>/.test(headerSlice) &&
       new RegExp(`<DetailPageTitle title=\\{t\\('${p.navId}'\\)\\}`).test(headerSlice),
+    hasTabs,
+    // 三等分：有 tab 的页面必须 equalColumns + tabBar 占 2 份 + 与标题同一垂直中线
+    columnsEqual: !hasTabs ||
+      new RegExp(`<DetailPageTitle title=\\{t\\('${p.navId}'\\)\\} equalColumns>`).test(headerSlice || ''),
+    tabBarEqual: !hasTabs || (() => {
+      const tb = styleBlock(code, 'tabBar')
+      return /flex:\s*2/.test(tb) && /alignItems:\s*'center'/.test(tb)
+    })(),
     // D 组：首载期间居中占位
     spinner: /<ActivityIndicator color=\{theme\['c-primary-font'\]\} size="large" \/>/.test(code),
     loadingContainer: /styles\.loadingContainer/.test(code),
@@ -184,12 +216,37 @@ const m2Caught = m2 !== pageOf('nav_tx_playlist') && m2Slice != null &&
 // m3: 闸门改挂在 loading 上（下拉刷新会整块换成转圈）
 const m3 = pageOf('nav_kg_playlist').replace('{listReady ? (', '{!loading ? (')
 const m3Caught = m3 !== pageOf('nav_kg_playlist') && /\{!loading\s*\?/.test(stripComments(m3))
-// m4: 加载分支把页头删掉（标题晚一帧才出现，切过去时页头要重新落位）
-const m4 = pageOf('nav_my_playlist').replace('{pageHeader}\n            <View style={styles.loadingContainer}>', '<View style={styles.loadingContainer}>')
-const m4Caught = m4 !== pageOf('nav_my_playlist') && (m4.match(/\{pageHeader\}/g) || []).length < 2
-// m5: 页头退回内联在 ListHeaderComponent 里（加载期间没有页头）
-const m5 = pageOf('nav_tx_playlist').replace('ListHeaderComponent={pageHeader}', 'ListHeaderComponent={<>\n              <PageTopInset />\n            </>}')
-const m5Caught = m5 !== pageOf('nav_tx_playlist') && !/ListHeaderComponent=\{pageHeader\}/.test(m5)
+// m4: 页头被搬回列表里（ListHeaderComponent）—— 页头重新落进可滚动内容，
+//     列表挂载 / 换数据 / 下拉刷新时标题跟着位移 = 本轮修掉的「向上跳一下」复发
+const m4 = pageOf('nav_my_playlist').replace(
+  '            data={playlists}',
+  '            ListHeaderComponent={pageHeader}\n            data={playlists}',
+)
+const m4Caught = m4 !== pageOf('nav_my_playlist') && /ListHeaderComponent=\{[^}]*pageHeader/.test(stripComments(m4))
+// m5: 顶层那份页头被删（加载分支重新变成「没有页头」，标题晚一帧才出现）
+const m5 = pageOf('nav_tx_playlist').replace('        {pageHeader}\n', '')
+const m5Caught = m5 !== pageOf('nav_tx_playlist') && (m5.match(/\{pageHeader\}/g) || []).length !== 1
+// m5b: 页头挪到闸门里面（就绪分支才渲染）—— 加载期间没有标题，切过去时页头重新落位
+const m5b = pageOf('nav_kg_playlist').replace(
+  '        {pageHeader}\n        {listReady ? (',
+  '        {listReady ? (\n          <>\n            {pageHeader}',
+)
+const m5bCaught = m5b !== pageOf('nav_kg_playlist') && (() => {
+  const code = stripComments(m5b)
+  const iHeaderRef = code.indexOf('{pageHeader}')
+  const iGate = code.indexOf('{listReady ? (')
+  return iHeaderRef >= 0 && iGate >= 0 && !(iHeaderRef < iGate)
+})()
+// m5c: tab 三等分被拆（标题不再占自己那一份，tab 行也不再对半分 → 三个栏目宽度不等）
+const m5c = pageOf('nav_tx_playlist').replace(' equalColumns>', '>')
+const m5cCaught = m5c !== pageOf('nav_tx_playlist') &&
+  !new RegExp(`<DetailPageTitle title=\\{t\\('nav_tx_playlist'\\)\\} equalColumns>`).test(m5c)
+// m5d: tab 与标题不再同一垂直中线（alignItems 退回 flex-end，tab 文字比标题低半行）
+const m5d = pageOf('nav_kg_playlist').replace(/tabBar:\s*\{([\s\S]{0,200}?)alignItems:\s*'center'/, "tabBar: {$1alignItems: 'flex-end'")
+const m5dCaught = m5d !== pageOf('nav_kg_playlist') && (() => {
+  const tb = styleBlock(stripComments(m5d), 'tabBar')
+  return !(/flex:\s*2/.test(tb) && /alignItems:\s*'center'/.test(tb))
+})()
 // m6: 首载占位去掉转圈（只剩页头，整块空白）
 const m6 = pageOf('nav_kg_playlist').replace(/<ActivityIndicator color=\{theme\['c-primary-font'\]\} size="large" \/>/, '')
 const m6Caught = m6 !== pageOf('nav_kg_playlist') && !/<ActivityIndicator color=\{theme\['c-primary-font'\]\} size="large" \/>/.test(stripComments(m6))
@@ -207,7 +264,8 @@ for (const c of pageChecks) {
     c.gateUsed ? '列表在闸门后✅' : '列表在闸门后❌',
     c.gateNotKeyedOnLoading ? '不挂loading✅' : '不挂loading❌',
     c.headerConst ? '页头常量化✅' : '页头常量化❌',
-    c.headerInList ? '页头入列✅' : '页头入列❌',
+    c.headerOutsideGate ? '页头固定在外✅' : '页头固定在外❌',
+    c.headerNotInList ? '不在列表内✅' : '不在列表内❌',
     c.headerGeometry ? '两分支同几何✅' : '两分支同几何❌',
     c.spinner ? '占位✅' : '占位❌',
     c.audit ? `闸门配对 ${c.audit.closes}/${c.audit.opens}` : '闸门配对 —',
@@ -232,11 +290,20 @@ for (const c of pageChecks) {
 }
 // C
 for (const c of pageChecks) {
-  check(`${c.page.name}：页头抽成同一个 pageHeader 元素`, c.headerConst && c.headerInList)
-  check(`${c.page.name}：加载分支与列表分支共用 pageHeader（引用 ≥ 2 处）`, c.headerRefCount >= 2, `引用 ${c.headerRefCount} 处`)
+  check(`${c.page.name}：页头抽成同一个 pageHeader 元素，且全页恰渲染一处`, c.headerConst && c.headerRefCount === 1, `引用 ${c.headerRefCount} 处`)
+  check(`${c.page.name}：页头固定在列表之外（{pageHeader} 在 listReady 闸门之前）`, c.headerOutsideGate)
+  check(`${c.page.name}：页头不再进列表（没有 ListHeaderComponent={pageHeader}）`, c.headerNotInList)
   check(`${c.page.name}：pageHeader 里同时有 PageTopInset 与 <DetailPageTitle title={t('${c.page.navId}')}`, c.headerGeometry)
   check(`${c.page.name}：不再内联 ListHeaderComponent={<>…</>}`, c.noInlineHeader)
 }
+// C 续：第 16 轮第 2 条三等分（只有带 tab 的平台页适用）
+for (const c of pageChecks) {
+  if (!c.hasTabs) continue
+  check(`${c.page.name}：标题与 tab 三等分（DetailPageTitle equalColumns + tabBar flex:2）`, c.columnsEqual && c.tabBarEqual,
+    `equalColumns=${c.columnsEqual} tabBar=${c.tabBarEqual}`)
+}
+check('共享组件 DetailPageTitle：equalColumns ⇒ 标题 flex:1（三等分里标题自己那一份）',
+  /titleEqual:\s*\{[\s\S]{0,40}?flex:\s*1/.test(detailTitleSrc))
 // D
 for (const c of pageChecks) {
   check(`${c.page.name}：首载占位是居中 ActivityIndicator`, c.spinner && c.loadingContainer)
@@ -251,8 +318,11 @@ console.log()
 neg('反例 m1：删掉网易歌单 finally 里的 setListReady(true)（闸门永不开），被 B 判红', m1Caught)
 neg('反例 m2：把闸门挪到加载开始处（列表又空挂），被 B 判红', m2Caught)
 neg('反例 m3：闸门改挂 loading（下拉刷新整块换转圈），被 A 判红', m3Caught)
-neg('反例 m4：加载分支删掉 {pageHeader}（标题晚一帧、页头重新落位），被 C 判红', m4Caught)
-neg('反例 m5：页头退回内联在 ListHeaderComponent 里，被 C 判红', m5Caught)
+neg('反例 m4：页头被搬回 ListHeaderComponent（又落进可滚动内容 = 向上跳复发），被 C 判红', m4Caught)
+neg('反例 m5：顶层那份页头被删（加载分支没有页头），被 C 判红', m5Caught)
+neg('反例 m5b：页头挪到 listReady 闸门里面（加载期间没有标题），被 C 判红', m5bCaught)
+neg('反例 m5c：去掉 equalColumns（标题与 tab 不再等分），被 C 判红', m5cCaught)
+neg('反例 m5d：tabBar 的 alignItems 退回 flex-end（tab 比标题低半行），被 C 判红', m5dCaught)
 neg('反例 m6：去掉首载占位的 ActivityIndicator，被 D 判红', m6Caught)
 neg('反例 m7：参照物「我的」页闸门被拆（本脚本的前提塌掉），被 E 判红', m7Caught)
 

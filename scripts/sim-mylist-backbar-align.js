@@ -4,7 +4,9 @@
  *   A) 返回栏固定在上方（不随歌曲列表滚动）；
  *   B) 返回栏位置参数对齐「设置 → 基本设置」的返回按钮；
  *   C) 点击搜索后搜索框落在返回栏的同一槽位、且不做位移（无 translateY）；
- *   D) 点击取消后回到原列表界面（隐藏搜索栏/搜索结果、恢复返回栏）。
+ *   D) 点击取消后回到原列表界面（隐藏搜索栏/搜索结果、恢复返回栏）；
+ *   E) 【第 16 轮第 4 条】返回态（从「我的」进入试听列表 / 我的收藏 / 同步列表等）
+ *      在栏的正中显示该列表名 —— 用户原话「不然我都不知道进哪个列表了」。
  *
  * 脚本从源码解析实际取值（不硬编码数字），复算「基本设置返回按钮」与「我的详情
  * 返回栏」两处的顶边 / 垂直中心 / 图标 glyph 左缘并比对；同时断言结构事实：
@@ -217,6 +219,90 @@ check('多选栏绝对铺满槽位（top:0 / height:100%）且无位移', absFil
 check('取消按钮 onPress 接到 onExitSearch', cancelWired, '')
 check('handleExitSearch 隐藏搜索结果与搜索栏、并恢复返回栏（原列表界面）',
   exitHidesSearch && exitRestoresBar, `hide=${exitHidesSearch} restore=${exitRestoresBar}`)
+
+// —— E) 【第 16 轮第 4 条】返回态在栏正中显示列表名 ——
+// 结构断言全部在去注释后的源码上做，且整组写成「源码 → 事实」的纯函数，
+// 反例用当前源码变异后重跑整组（任一条判红即算拦下）。
+const eFacts = (raw) => {
+  const code = stripComments(raw)
+  const nameBlock = styleBlock(code, 'currentListName')
+  const nameTextBlock = styleBlock(code, 'currentListNameText')
+  const btnBlock = styleBlock(code, 'currentListBtns')
+  return {
+    code,
+    nameBlock,
+    nameTextBlock,
+    btnBlock,
+    nameViewTag: (/<View style=\{styles\.currentListName\}([^>]*)>/.exec(code) || [])[1] || null,
+    // 返回态（onBack 分支）里才是居中名；非返回态仍是原来的行内文字
+    backWired: /\{onBack\s*\r?\n\s*\?\s*\([\s\S]{0,80}?<View style=\{styles\.currentListName\}/.test(code),
+    frontKept: /\r?\n\s*:\s*\([\s\S]{0,80}?<Text style=\{styles\.currentListText\}/.test(code),
+    idHook: /const currentListId = useActiveListId\(\)/.test(code),
+    nameMemo: /const currentListName = useMemo\(\(\) => \{[\s\S]{0,700}?\}, \[currentListId\]\)/.test(code),
+    nameI18n: /global\.i18n\.t\('list_name_temp'\)/.test(code) &&
+      /global\.i18n\.t\('list_name_default'\)/.test(code) &&
+      /global\.i18n\.t\('list_name_love'\)/.test(code),
+    nameFromAllList: /listState\.allList\.find\(\(l\) => l\.id === currentListId\)\?\.name/.test(code),
+    nameRendered: /style=\{styles\.currentListName\}[\s\S]{0,160}?\{currentListName\}/.test(code),
+    nameTextLines: /<Text style=\{styles\.currentListNameText\} numberOfLines=\{1\}/.test(code),
+    rowCenter: /alignItems:\s*'center'/.test(styleBlock(code, 'currentList') || ''),
+  }
+}
+const E_FACTS = eFacts(activeSrc)
+const eMinPad = (numIn(E_FACTS.btnBlock, 'width') || 0) * 2 + (numIn(styleBlock(activeCode, 'currentList'), 'paddingRight') || 0)
+
+const GROUP_E = [
+  ['E1 返回态才渲染居中名（onBack ? ( → styles.currentListName），非返回态保留原 currentListText',
+    (f) => f.backWired && f.frontKept],
+  ['E2 名称取自当前激活列表（useActiveListId + memo 依赖 currentListId），内置列表走 i18n、自建/收藏查 allList',
+    (f) => f.idHook && f.nameMemo && f.nameI18n && f.nameFromAllList],
+  ['E3 居中容器里真的渲染了 currentListName（不是空壳）', (f) => f.nameRendered],
+  ['E4 名称容器绝对定位横向铺满整栏（left/right: 0）+ alignItems: center（水平居中不靠两边留白凑）',
+    (f) => !!f.nameBlock && /position:\s*'absolute'/.test(f.nameBlock) &&
+      /left:\s*0/.test(f.nameBlock) && /right:\s*0/.test(f.nameBlock) &&
+      /alignItems:\s*'center'/.test(f.nameBlock)],
+  ['E5 垂直居中交给行（currentList 仍 alignItems: center），名称自身不写 top/bottom（两套居中不打架）',
+    (f) => f.rowCenter && !!f.nameBlock &&
+      !/(^|[^a-zA-Z])top:/.test(f.nameBlock) && !/(^|[^a-zA-Z])bottom:/.test(f.nameBlock)],
+  [`E6 左右内边距对称且 ≥ 两侧遮挡宽度（2×按钮 46 + 容器 2 = ${eMinPad}），名称不被按钮挤压、也不压按钮`,
+    (f) => {
+      const l = numIn(f.nameBlock, 'paddingLeft')
+      const r = numIn(f.nameBlock, 'paddingRight')
+      return l != null && l === r && l >= eMinPad
+    }],
+  ['E7 长名截断（numberOfLines={1}，容器 textAlign: center）',
+    (f) => f.nameTextLines && !!f.nameTextBlock && /textAlign:\s*'center'/.test(f.nameTextBlock)],
+  ['E8 名称容器不拦截触摸（pointerEvents="none"），点整行仍走返回',
+    (f) => !!f.nameViewTag && /pointerEvents="none"/.test(f.nameViewTag)],
+]
+const eRes = GROUP_E.map(([label, fn]) => ({ label, ok: !!fn(E_FACTS) }))
+
+const mutE = (from, to) => {
+  const out = activeSrc.replace(from, to)
+  return { src: out, changed: out !== activeSrc }
+}
+const caughtE = (src) => GROUP_E.some(([, fn]) => !fn(eFacts(src)))
+// m6: 返回态退回旧的「返回」文字位（居中名整块没了）
+const m6 = mutE('<View style={styles.currentListName} pointerEvents="none">', '<View style={styles.currentListText}>')
+// m7: 名称来源不查 allList（自建 / 收藏 / 同步列表名全空）
+const m7 = mutE("listState.allList.find((l) => l.id === currentListId)?.name ?? ''", "''")
+// m8: 左右内边距不对称（名称偏左压住返回箭头）
+const m8 = mutE('paddingLeft: 96,\n    paddingRight: 96,', 'paddingLeft: 12,\n    paddingRight: 96,')
+// m9: 名称容器改回参与 flex 布局（被两侧按钮挤压，长名把按钮推走）
+const m9 = mutE("position: 'absolute',\n    left: 0,\n    right: 0,", 'flex: 1,')
+// m10: 去掉截断（长名换行把 44 的行高撑变形）
+const m10 = mutE('<Text style={styles.currentListNameText} numberOfLines={1}', '<Text style={styles.currentListNameText}')
+// m11: 去掉 pointerEvents（点击被文本吞掉，返回失灵）
+const m11 = mutE('<View style={styles.currentListName} pointerEvents="none">', '<View style={styles.currentListName}>')
+
+// E 组断言用源码复算出的 barSlot 遮挡宽度，标签里已带 E1..E8 前缀，不再单独打分组标题
+for (const r of eRes) check(r.label, r.ok)
+check(`反例 m6：返回态退回旧「返回」文字位，被 E 判红`, m6.changed && caughtE(m6.src))
+check(`反例 m7：名称来源不查 allList（列表名空），被 E 判红`, m7.changed && caughtE(m7.src))
+check(`反例 m8：左右内边距不对称（名称偏左压箭头），被 E 判红`, m8.changed && caughtE(m8.src))
+check(`反例 m9：名称容器改回 flex 参与布局（被按钮挤压），被 E 判红`, m9.changed && caughtE(m9.src))
+check(`反例 m10：去掉 numberOfLines（长名换行撑变形），被 E 判红`, m10.changed && caughtE(m10.src))
+check(`反例 m11：去掉 pointerEvents（点名称不返回），被 E 判红`, m11.changed && caughtE(m11.src))
 
 console.log()
 const pad = Math.max(...results.map((r) => r.label.length))

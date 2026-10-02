@@ -5,8 +5,8 @@
  *
  * 背景（用户报的现象）：「封面图片区域跑到其他区域，占到歌名区域和大歌词区域」。
  * 成因是两个刚性量相加后超出容器：
- *   ① 小歌词**至少渲染一行**（MiniLyric 的 fitRows = max(1, …)，见 MiniLyric.tsx:181）——
- *      给它多少上限都不会少于一行；
+ *   ① 小歌词**至少渲染一行**（MiniLyric 的 fitRows = max(1, …)，分母是最坏行高
+ *      worstRowHeight）——给它多少上限都不会少于一行；
  *   ② 封面是 flexShrink:0 的居中块 —— 被挤不会自己缩小，只会顶出 picContainer。
  * 只调「小歌词上限」而不动「封面尺寸」，大字号 + 翻译行的机型上仍会越界
  * （实测口径：375×667、130% 字体、带翻译行，越界约 9~13pt）。
@@ -114,13 +114,19 @@ function sourceAssertions(src, label) {
 
   // A5 行高必须与 MiniLyric 内部**同源**（同一个 calcMetrics），且本脚本的档位模型
   //    必须与 MiniLyric 的 fitRows 逐字同形 —— 否则 B 段扫描的是另一个组件。
+  //    补注（2026-10-02，第 16 轮第 8 条）：行高从「整首歌一个常量」改成「逐行按内容算」之后，
+  //    块高与档位仍按**最坏情况**（worstRowHeight = 基础行高 + 有真翻译时的翻译槽）算，
+  //    所以 B 段的 rowH 参数仍等于 worstRowHeight，档位公式的分母必须写成 worstRowHeight；
+  //    若哪天有人把它改回 baseRowHeight（按非最坏行高定档），B 段扫描的就是另一个组件了，
+  //    这里必须拦住。
   {
     const exported = /export const getMiniLyricRowHeight = \(hasTranslation: boolean\)/.test(mini)
     const sameSource = /const metrics = useMemo\(\(\) => calcMetrics\(\), \[\]\)/.test(mini)
-    const fitRows = /Math\.max\(1, Math\.min\(MAX_WINDOW_ROWS, Math\.floor\(limit \/ rowHeight\)\)\)/.test(mini)
+    const worstRow = /const worstRowHeight = baseRowHeight \+ \(songHasTranslation \? translationSlot : 0\)/.test(mini)
+    const fitRows = /Math\.max\(1, Math\.min\(MAX_WINDOW_ROWS, Math\.floor\(limit \/ worstRowHeight\)\)\)/.test(mini)
     push('A5 行高与 MiniLyric 同源、档位公式与 fitRows 同形',
-      exported && sameSource && fitRows,
-      `导出=${exported} 同源=${sameSource} fitRows 同形=${fitRows}`)
+      exported && sameSource && worstRow && fitRows,
+      `导出=${exported} 同源=${sameSource} 最坏行高=${worstRow} fitRows 同形=${fitRows}`)
   }
 
   // A6 地板常量必须在 (0, 1) 内（0 = 不保护、≥1 = 地板反过来把封面撑爆）。
@@ -142,9 +148,10 @@ function tamperCases(src) {
     [/coverDiameter\s*\*\s*MIN_COVER_KEEP_RATIO/, '地板项'],
     [/available\s*-\s*Math\.min\(coverDiameter,\s*cap\)\s*-\s*songInfoOffset/, '按实际尺寸留白'],
     [/sizeCap > 0 \? Math\.min\(s, sizeCap\) : s/, 'Pic 侧的 sizeCap 应用'],
+    [/Math\.max\(1, Math\.min\(MAX_WINDOW_ROWS, Math\.floor\(limit \/ worstRowHeight\)\)\)/, 'MiniLyric 的 fitRows 档位公式'],
   ]
   for (const [re, what] of anchors) {
-    if (!re.test(src.verticalNew) && !re.test(src.verticalPic)) {
+    if (!re.test(src.verticalNew) && !re.test(src.verticalPic) && !re.test(src.mini)) {
       throw new Error(`反例锚点未命中（${what}）：源码已变，反例需同步`)
     }
   }
@@ -174,6 +181,10 @@ function tamperCases(src) {
       label: '④ Pic 忽略 sizeCap（上限算了也没用）',
       mutate: (s) => ({ ...s, verticalPic: s.verticalPic.replace('sizeCap > 0 ? Math.min(s, sizeCap) : s', 's') }),
     },
+    {
+      label: '⑤ 档位分母改回基础行高（按非最坏行定档 ⇒ 本脚本的 rowH 模型与实现脱钩）',
+      mutate: (s) => ({ ...s, mini: s.mini.replace('Math.floor(limit / worstRowHeight)', 'Math.floor(limit / baseRowHeight)') }),
+    },
   ]
 }
 
@@ -191,7 +202,9 @@ const limitNew = (M0, o, rowH, dia) => Math.max(0, M0 - sizeNew(M0, o, rowH, dia
 // 旧算式：小歌词上限按固定 R/2 预留，封面尺寸不受它约束
 const limitOld = (M0, o, R2) => Math.max(0, M0 - (R2 + o))
 
-// MiniLyric.tsx:181 的档位（A5 钉住同形）：至少一行、至多 MAX_WINDOW_ROWS 行
+// MiniLyric 的档位（A5 钉住同形）：至少一行、至多 MAX_WINDOW_ROWS 行。
+// 分母是**最坏行高** worstRowHeight（逐行行高改造后仍如此），所以这里传进来的 rowH 必须是
+// 最坏情况的那一行高（含翻译槽），与 A2 里的 getMiniLyricRowHeight(true) 同一个量。
 const rowsOf = (limit, rowH) => Math.max(1, Math.min(MAX_ROWS, Math.floor(limit / rowH + EPS)))
 const lyricHeight = (limit, rowH) => rowsOf(limit, rowH) * rowH
 

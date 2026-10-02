@@ -378,7 +378,12 @@ const tamper = [
   {
     label: 'TX RecPlaylists 依赖塞回 playlists.length',
     file: 'txPlaylists',
-    mutate: (s) => s.replace('      if (loadId === loadIdRef.current) setLoading(false)\n    }\n  }, [t])', '      if (loadId === loadIdRef.current) setLoading(false)\n    }\n  }, [playlists.length, t])'),
+    // 锚点随第 16 轮第 6 条的改动同步：finally 里除 setLoading(false) 外还复位了下拉刷新态
+    //（setRefreshing(false)），依赖数组仍是 [t]（不订阅自己产出的 playlists.length）。
+    mutate: (s) => s.replace(
+      '        setLoading(false)\n        setRefreshing(false)\n      }\n    }\n  }, [t])',
+      '        setLoading(false)\n        setRefreshing(false)\n      }\n    }\n  }, [playlists.length, t])'
+    ),
   },
   {
     label: 'TX RecPlaylists 打回无重试的裸调用',

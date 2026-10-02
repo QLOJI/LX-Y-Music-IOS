@@ -29,7 +29,8 @@
  *   A4 放行出口唯一：非 hold 分支恰一处 backgroundTexture = texture，且不在 shouldHold
  *      分支内（删掉/挪进 hold 分支都必须被拦下——beginLiveCapture 已置 nil，出口缺失
  *      = 玻璃永久透明，正是本轮设计约束禁止的最坏形态）；
- *   A5 开窗点（beginCaptureSettleWindow）恰 3 处调用、起点（captureSettleStartedAt）
+ *   A5 开窗点（beginCaptureSettleWindow）恰 4 处调用（三条锚点 + 暂停恢复复位，
+ *      2026-10-02 第 16 轮第 1 条补上 handleResumeFromPause）、起点（captureSettleStartedAt）
  *      写入唯一：每帧路径再塞一处开窗/重置必须被拦下（否则窗口永不关闭、永久 hold）；
  *   B  既有事实未被改坏：自适应刷新率三常量（30/120/0.4）、采样基准锁定语义、
  *      均匀沿用修复（previous 非空条件不得再出现）、采景几何与 drawHierarchy 调用方式、
@@ -295,24 +296,38 @@ const releaseExitInvariants = (f) => {
 }
 
 // ---------------------------------------------------------------------------
-// A5 开窗点计数（恰 3 处调用）与起点写入唯一（只在 beginCaptureSettleWindow 内）
+// A5 开窗点计数（恰 4 处调用）与起点写入唯一（只在 beginCaptureSettleWindow 内）
 // ---------------------------------------------------------------------------
 // 为什么：A3 只断言「三个锚点函数体里含 beginCaptureSettleWindow()」，不查调用总数。
 // 若在 captureBackground / commitCapturedTexture / draw 等每帧路径里多加一处，
 // 窗口就每帧重开、永不到点 → 均匀帧永远被 hold（永久挡住），而旧断言照样通过。
 // 起点写入同理：只有 beginCaptureSettleWindow 能写 captureSettleStartedAt。
+// 4 处的构成（缺一处都必须是失败）：
+//   ① captureBackdrop 的 backdropView 插入点；② didMoveToWindow；③ beginLiveCapture；
+//   ④ handleResumeFromPause（2026-10-02 第 16 轮第 1 条：暂停恢复 = 合成源刚建立，
+//      漏开窗时 captureSettleStartedAt 还是上一次早已过期的值 → 半成品判据与墙钟沿用全失效，
+//      切回底部栏的瞬间黑边就是这么漏出来的）。
 const settleReopenInvariants = (f) => {
   const reasons = []
   const glass = f.glass
 
-  // 定义行本身含 `beginCaptureSettleWindow()`，计数时先剔除（否则 3 次调用被数成 4）
+  // 定义行本身含 `beginCaptureSettleWindow()`，计数时先剔除（否则 4 次调用被数成 5）
   const defs = countOf(glass, 'func beginCaptureSettleWindow()')
   if (defs !== 1) {
     reasons.push('beginCaptureSettleWindow 定义不是恰一处（实际 ' + defs + '）')
   }
   const calls = countOf(glass, 'beginCaptureSettleWindow()') - defs
-  if (calls !== 3) {
-    reasons.push('beginCaptureSettleWindow() 调用不是恰 3 处（实际 ' + calls + '）——多一处（尤其每帧路径）= 窗口反复重开永不到点、均匀帧被永久挡住；少一处 = 某条路径首帧没人保护')
+  if (calls !== 4) {
+    reasons.push('beginCaptureSettleWindow() 调用不是恰 4 处（实际 ' + calls + '）——多一处（尤其每帧路径）= 窗口反复重开永不到点、均匀帧被永久挡住；少一处 = 某条路径首帧没人保护')
+  }
+
+  // 第 4 处必须在暂停恢复复位里（本轮修复本体）：只数总数会被「把某处的调用挪到别处」
+  // 蒙混过去——总数不变，但恢复路径重新变成没人保护。
+  const resumeBody = fnBody(glass, /func handleResumeFromPause\(\)\s*\{/)
+  if (!resumeBody) {
+    reasons.push('缺 handleResumeFromPause 函数体（暂停恢复复位的开窗点无法确定）')
+  } else if (!/beginCaptureSettleWindow\(\)/.test(resumeBody)) {
+    reasons.push('handleResumeFromPause 未开沉降窗口（暂停恢复 = 合成源刚建立，漏开窗时半成品判据与墙钟沿用全失效 → 切回底部栏瞬间闪黑边）')
   }
 
   const beginBody = fnBody(glass, /private func beginCaptureSettleWindow\(\)\s*\{/)
@@ -516,7 +531,7 @@ const assertions = [
   { name: 'A2 半成品判据（近黑占比）+ 深色外观逃逸', hits: partialFrameInvariants(REAL) },
   { name: 'A3 三条窗口锚点 + draw() 无纹理 guard', hits: anchorInvariants(REAL) },
   { name: 'A4 放行出口：非 hold 分支恰一处 backgroundTexture = texture（不在 shouldHold 内）', hits: releaseExitInvariants(REAL) },
-  { name: 'A5 开窗点恰 3 处调用 + 起点写入唯一（beginCaptureSettleWindow 内）', hits: settleReopenInvariants(REAL) },
+  { name: 'A5 开窗点恰 4 处调用（含暂停恢复）+ 起点写入唯一（beginCaptureSettleWindow 内）', hits: settleReopenInvariants(REAL) },
   { name: 'B 既有结构未改坏（刷新率/采样基准/均匀沿用/采景几何/透镜链路/采景节流/实时会话/暂停复位）', hits: existingStructureInvariants(REAL) },
 ]
 
@@ -666,7 +681,7 @@ CE('C15 放行赋值被挪进 shouldHold 分支（未就绪帧会被当成背景
 CE('C16 每帧路径（captureBackground）里多加一处开窗（窗口每帧重开、永不关闭）', settleReopenInvariants, tamperGlass(
   '    func captureBackground() {',
   '    func captureBackground() {\n        beginCaptureSettleWindow()'
-), '恰 3 处')
+), '恰 4 处')
 
 CE('C17 每帧路径（commitCapturedTexture）里多加一处起点写入（窗口每帧重置）', settleReopenInvariants, tamperGlass(
   '        let now = CACurrentMediaTime()\n        var shouldHold = false',
@@ -717,6 +732,29 @@ CE('C23 恢复复位不再丢旧纹理（沿用分支仍能把暂停前那一帧
   '    func handleResumeFromPause() {\n        consecutiveUniformFrames = 0'
 ), '未丢弃暂停前的旧纹理')
 
+// —— 2026-10-02 契约加固：第 16 轮第 1 条（暂停恢复补开窗，C24 / C24b）——
+
+CE('C24 恢复路径的开窗被删（切回底部栏时半成品判据与墙钟沿用全失效 → 边缘闪黑边复发）', settleReopenInvariants, tamperGlass(
+  '        beginCaptureSettleWindow()\n        captureBackground()',
+  '        captureBackground()'
+), 'handleResumeFromPause 未开沉降窗口')
+
+{
+  // 比 C24 更苛刻：把恢复路径的调用「挪」到别处，调用总数仍是 4 ——
+  // 只数总数的旧断言会放行，新增的「第 4 处必须在 handleResumeFromPause 内」必须拦下。
+  const dropped = REAL.glass.replace(
+    '        beginCaptureSettleWindow()\n        captureBackground()',
+    '        captureBackground()'
+  )
+  const moved = dropped.replace(
+    '    func endLiveCapture() {',
+    '    func endLiveCapture() {\n        beginCaptureSettleWindow()'
+  )
+  CE('C24b 恢复路径的开窗被挪到别处（总数仍是 4，恢复路径重新没人保护）', settleReopenInvariants,
+    { file: 'glass', text: moved, miss: moved === REAL.glass || moved === dropped },
+    'handleResumeFromPause 未开沉降窗口')
+}
+
 // ---------------------------------------------------------------------------
 // 输出
 // ---------------------------------------------------------------------------
@@ -730,7 +768,7 @@ console.log('  A1 沉降窗口 = 墙钟口径（不是帧数）+ 墙钟硬上限
 console.log('  A2 半成品（近黑格子占比）判据 + 深色外观逃逸（阈值须低于 1 格边环下限）')
 console.log('  A3 三条窗口锚点（backdrop 插入 / didMoveToWindow / beginLiveCapture）+ draw guard')
 console.log('  A4 放行出口唯一：非 hold 分支恰一处 backgroundTexture = texture（缺 = 玻璃永久透明）')
-console.log('  A5 开窗点恰 3 处 + 起点写入唯一（每帧路径不得开窗/重置）')
+console.log('  A5 开窗点恰 4 处（三条锚点 + 暂停恢复复位）+ 起点写入唯一（每帧路径不得开窗/重置）')
 console.log('  B  既有事实未改坏（刷新率 30/120/0.4、采样基准锁定、均匀沿用修复、采景几何、透镜链路、实时会话、暂停复位）')
 console.log('  B7 采景节流：每实例最小采景间隔（常驻 30fps / 实时 60fps），首帧放行、按会话分档（2026-10-02）')
 console.log('  B8 实时采景会话（两路标志分开 + OR 判据 + 会话起止放行采景 + 退会话避让）+ 暂停恢复复位（2026-10-02）')

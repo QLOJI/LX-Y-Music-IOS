@@ -233,6 +233,9 @@ const SHOT_MARGIN_TOP = 8
 // 「三行行盒流式堆叠 + 每个间隙一份 marginTop」结构（旧值 120pt；本轮行距减半后重算为 108pt）。新版 MiniLyric 已改为
 // 定高窗口：行高 rowHeight = 主行行盒 + gap（+ 翻译槽），行块高 = 行数 × rowHeight，
 // 与这里的模型不再对应（该模型块不读 MiniLyric 源码，故不受影响）。
+// 补注（2026-10-02，第 16 轮第 8 条）：新版行高再逐行化 —— 翻译槽只挂在当前行，其余行
+// 只占行盒 + gap；块高仍是「行数 × 最坏行高」（与逐行化之前完全一致），故本节页面级
+// 数字（108pt / 各 paddingBottom 档位）全部不变。
 // 下方「源码契约」节已按新结构断言同一不变量（相邻行净间距恒等）。模型是否重算见报告。
 {
   const PV = 4 // MiniLyric container paddingVertical
@@ -299,18 +302,26 @@ const SHOT_MARGIN_TOP = 8
     const trans = blockOf(miniSrc, 'translationStyle')
     const gapImpl = Number(/const LINE_GAP_NORMAL = (\d+)/.exec(miniSrc)?.[1])
     // ① 行高公式：净间距由「行高 − 行盒高」推出，而不再由 marginTop 挂在哪一行决定
-    out.push({ name: '行高 = 主行行盒 + 一份间距（间距由行高推出，不靠 marginTop 挂对行）', ok: /const rowHeight = metrics\.lineHeight \+ metrics\.gap/.test(miniSrc) })
+    out.push({ name: '行高 = 主行行盒 + 一份间距（间距由行高推出，不靠 marginTop 挂对行）', ok: /const baseRowHeight = metrics\.lineHeight \+ metrics\.gap/.test(miniSrc) })
+    // ①b 【第 16 轮第 8 条】行高逐行算：翻译槽只挂在**当前行且该行真有翻译**上，
+    //    其余行只占行盒 + 净间距 —— 还原重写前「翻译只跟当前行走」的密度
+    out.push({ name: '翻译槽逐行计算：只有当前行且该行有真翻译才加一截（还原重写前的密度）', ok: /index === activeLine && hasRealTranslation\(line\) \? translationSlot : 0/.test(miniSrc) })
+    // ①c 窗口高度 / 档位仍按最坏情况算：块高与页面级布局不随歌词内容变化（不引回整块跳动）
+    out.push({ name: '窗口高按最坏情况恒定（worstRowHeight / containerHeight），块高不随内容变', ok: /worstRowHeight = baseRowHeight \+ \(songHasTranslation \? translationSlot : 0\)/.test(miniSrc) && /const containerHeight = rowCount \* worstRowHeight/.test(miniSrc) })
+    // ①d 空串 / 纯空白翻译不算「有翻译」：看不见的翻译槽不得把行距撑大（用户报的「间距太大」）
+    out.push({ name: '空串 / 纯空白翻译不算有翻译（看不见的翻译槽不得撑大行距）', ok: /trim\(\)\.length > 0/.test(miniSrc) })
+    // ①e 翻译只在当前行渲染，与逐行行高一一对应
+    out.push({ name: '翻译只在当前行渲染（与逐行行高一一对应）', ok: /isActive && hasRealTranslation\(item\) && \(/.test(miniSrc) })
     // ② 行盒高必须是常量：交给字体自然行高就会随字体/字号漂移，中缝随之不等
     out.push({ name: '主行行盒样式写死 lineHeight（行盒高确定，中缝才可推导）', ok: /lineHeight: metrics\.lineHeight/.test(text) })
     // ③ 行内居中：上下余量各一半，净间距才与行号无关
     out.push({ name: '行内垂直居中（上下余量各一半 ⇒ 净间距与行号无关）', ok: /justifyContent: 'center'/.test(miniSrc) })
     // ④ 激活行（逐字高亮分支）与普通行必须共用同一行盒样式与字号，否则激活行比邻行高/矮 ⇒ 中缝不等
     out.push({ name: '主行两条渲染分支（普通 / 逐字高亮）共用 textStyle 与同一字号（≥2 处）', ok: countOf(miniSrc, 'style={textStyle}') >= 2 && countOf(miniSrc, 'size={BASE_FONT_SIZE}') >= 2 })
-    // ⑤ 翻译行同理：行盒高确定，且全首歌统一留槽（缺翻译的行用非空占位撑住，空 Text 高度为 0）
+    // ⑤ 翻译行同理：行盒高确定；缺内容时仍渲染非空占位（空 Text 高度为 0，会破坏该行高度）
     out.push({ name: '翻译行样式写死行盒高', ok: /lineHeight: metrics\.translationHeight/.test(trans) })
     out.push({ name: '翻译行样式被 JSX 实际使用', ok: /style=\{translationStyle\}/.test(miniSrc) })
     out.push({ name: '缺翻译的行渲染非空占位（空 Text 高度 0 ⇒ 该行内容塌缩、与别的行不等高）', ok: /item\.extendedLyrics\?\.\[0\] \|\| BLANK/.test(miniSrc) })
-    out.push({ name: '翻译档位是整首歌词的统一决定（逐行判断 ⇒ 有/无翻译的行不等高）', ok: /lyricLines\.some\(/.test(miniSrc) })
     out.push({ name: `模型行距与实现一致（实现 ${gapImpl} / 模型 ${LINE_GAP}）`, ok: gapImpl === LINE_GAP })
     out.push({ name: 'SongInfo 歌名块已上移（marginBottom 18）且小屏仍有独立 override', ok: /marginBottom: 18,/.test(songSrc) && /isSmallWindow && \{ marginTop: 8, marginBottom: 4 \}/.test(songSrc) })
     return out
@@ -318,14 +329,17 @@ const SHOT_MARGIN_TOP = 8
   for (const r of contract(MINI, SONG)) check(r.name, r.ok)
 
   const tampers = [
-    { label: '① 行高里丢掉一份间距（三行贴在一起，间距不再由行高推出）', file: 'mini', from: 'const rowHeight = metrics.lineHeight + metrics.gap', to: 'const rowHeight = metrics.lineHeight' },
+    { label: '① 行高里丢掉一份间距（三行贴在一起，间距不再由行高推出）', file: 'mini', from: 'const baseRowHeight = metrics.lineHeight + metrics.gap', to: 'const baseRowHeight = metrics.lineHeight' },
+    { label: '①b 翻译槽退回「整首歌有翻译 ⇒ 每一行都留槽」（第 16 轮修掉的「间距太大」复发）', file: 'mini', from: 'index === activeLine && hasRealTranslation(line) ? translationSlot : 0', to: 'songHasTranslation ? translationSlot : 0' },
+    { label: '①c 窗口高改成跟着逐行基础高度走（块高随内容变化 ⇒ 整块跳动）', file: 'mini', from: 'const containerHeight = rowCount * worstRowHeight', to: 'const containerHeight = rowCount * baseRowHeight' },
+    { label: '①d 空白翻译重新被当成「有翻译」（看不见的翻译槽把行距撑大）', file: 'mini', from: "((line?.extendedLyrics?.[0] ?? '').trim().length > 0)", to: "((line?.extendedLyrics?.[0] ?? '').length >= 0)" },
+    { label: '①e 翻译改成整首渲染（不再只跟当前行走，与逐行行高脱钩）', file: 'mini', from: 'isActive && hasRealTranslation(item) && (', to: 'hasRealTranslation(item) && (' },
     { label: '② 主行行盒不再写死 lineHeight（行盒高交给字体自然行高，中缝随字体漂移）', file: 'mini', from: '({ textAlign, lineHeight: metrics.lineHeight })', to: '({ textAlign })' },
     { label: '③ 激活行改用另一套行盒样式（激活行与邻行不等高 ⇒ 中缝不等，本次修的 bug 复发）', file: 'mini', from: '                style={textStyle}\n                isActive', to: '                style={translationStyle}\n                isActive' },
     { label: '④ 行内改为顶部对齐（余量全跑到下面 ⇒ 上下中缝不等）', file: 'mini', from: "justifyContent: 'center',", to: "justifyContent: 'flex-start'," },
     { label: '⑤ 缺翻译的行不再留占位（该行内容塌缩 ⇒ 有/无翻译的行间距不等）', file: 'mini', from: '{item.extendedLyrics?.[0] || BLANK}', to: '{item.extendedLyrics?.[0]}' },
-    { label: '⑥ 翻译档位改成逐行判断（翻译行比别的行多一截 ⇒ 中缝不等）', file: 'mini', from: '() => lyricLines.some(line => (line.extendedLyrics?.length ?? 0) > 0),', to: '() => false,' },
     { label: '⑦ 实现行距改成 12 而模型没跟（模型与实现脱钩）', file: 'mini', from: 'const LINE_GAP_NORMAL = 4', to: 'const LINE_GAP_NORMAL = 12' },
-    { label: '⑧ 歌名块 marginBottom 退回 10（本次需求被回滚）', file: 'song', from: 'marginBottom: 18,', to: 'marginBottom: 10,' },
+    { label: '⑧ 歌名块 marginBottom 退回 10（上次需求被回滚）', file: 'song', from: 'marginBottom: 18,', to: 'marginBottom: 10,' },
   ]
   for (const t of tampers) {
     const base = t.file === 'mini' ? MINI : SONG
