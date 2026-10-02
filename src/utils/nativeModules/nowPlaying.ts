@@ -31,7 +31,12 @@ interface NativeNowPlayingModule {
   pauseNowPlaying?: (options?: NowPlayingStateOptions) => Promise<void>
   stopNowPlaying?: (options?: NowPlayingStateOptions) => Promise<void>
   clearNowPlayingInfo?: () => Promise<void>
-  setNowPlayingLyrics?: (lines: NowPlayingLyricLine[]) => Promise<void>
+  setNowPlayingLyrics?: (
+    lines: NowPlayingLyricLine[],
+    positionMs?: number,
+    snapshotAtMs?: number,
+    ageMs?: number,
+  ) => Promise<void>
   /** 引擎真实位置回传，重锚原生歌词/位置时钟（AppDelegate.mm 的 RCT_REMAP_METHOD 同名导出）。
    * snapshotAtMs：快照的原生时钟戳（CACurrentMediaTime 毫秒，精确回放锚点时刻）；
    * ageMs：快照墙钟年龄（无原生戳时原生以「now − 年龄」回放）。两者都缺省 = 旧行为。 */
@@ -69,10 +74,18 @@ export const clearNowPlayingInfo = async() => {
   return NowPlayingModule?.clearNowPlayingInfo?.()
 }
 
-/** 歌词时间轴交给原生：原生 NSTimer 直接驱动控制中心歌词（不依赖 JS 定时器） */
-export const setNowPlayingLyrics = async(lines: NowPlayingLyricLine[]) => {
+/** 歌词时间轴交给原生：原生 GCD 时钟直接驱动控制中心歌词（不依赖 JS 定时器）。
+ * positionMs / snapshotAtMs / ageMs（可选）：装载同刻的引擎位置快照，原生在
+ * 同一次调用内重锚 + 仲裁出当前行，锁屏/灵动岛不会先显示旧行再跳 —— 缺省时
+ * 原生退回按缓存位置重锚（老调用兼容）。 */
+export const setNowPlayingLyrics = async(
+  lines: NowPlayingLyricLine[],
+  positionMs?: number,
+  snapshotAtMs?: number,
+  ageMs?: number,
+) => {
   if (!hasMethod('setNowPlayingLyrics')) return
-  return NowPlayingModule?.setNowPlayingLyrics?.(lines)
+  return NowPlayingModule?.setNowPlayingLyrics?.(lines, positionMs, snapshotAtMs, ageMs)
 }
 
 /** 引擎真实位置回传：重锚原生歌词/位置时钟（慢速校准 tick 调用）。
