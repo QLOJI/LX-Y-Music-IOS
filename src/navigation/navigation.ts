@@ -41,16 +41,22 @@ interface StartPushOptions {
    */
   recoverStaleTop?: boolean
 }
-// ---- 转场窗口（2026-10-01）：让底部玻璃在整段页面转场期间保持暂停 ----
+// ---- 转场窗口（2026-10-01 开窗；2026-10-02 拆成「push 开 / pop 关」两端）----
 // 现象：每次切换画面（进详情页 / 返回），底部 tab 栏和迷你播放器都会短暂闪一下。
 // 原因：玻璃每帧都在采「自己背后那一块屏幕」当折射源，而转场期间那块背景是
 // 「旧页正在滑走 + 新页正在盖上来」的中间态——采进胶囊就是那一下。省电门
 // （useHomeCovered / useScreenCovered）只在**账本变化**时暂停：push 时新页
 // setComponentId 发生在它自己 mount 之后（转场已经开始若干帧），pop 时
 // screenPopped 事件也早于转场结束，两头都盖不住整段转场。
-// 这里在**发起 push 的那一刻**就把玻璃按住，并按 RNN 系统默认转场时长（iOS 默认
-// 0.35s）留一段窗口；pop 事件再续一次窗口（该事件无论落在转场头还是尾，这个窗口
-// 都能把整段转场罩住）。窗口结束后玻璃恢复，下一帧重捕获的是已定格的背景。
+// 2026-10-02（用户第 5 条）按方向拆开——两个方向上玻璃的处境相反：
+//   · push：玻璃正在被盖住。在**发起的那一刻**按住（beginNavTransitionWindow），
+//     按 RNN 系统默认转场时长（iOS 默认 0.35s）留一段窗口罩住整段转场。
+//     此时按住的代价不可见（玻璃本来就在滑出视野）。
+//   · pop：玻璃正在被露出来。事件到达时**立即释放**（endNavTransitionWindow），
+//     不再续期。续期等于让 Home 的 tab 栏/迷你播放器在整段返回动画之外再多显示
+//     420ms 的陈旧纹理（push 之前采到的那一帧），窗口到点才整体跳到当前画面——
+//     用户原话「底部透过的画面短暂刷新，突然变了一下」。立即释放后，玻璃在返回
+//     动画期间就按当前画面重新采样，露出多少就是多少实时。
 const NAV_TRANSITION_SETTLE_MS = 420
 let navTransitionTimer: ReturnType<typeof setTimeout> | null = null
 function beginNavTransitionWindow() {
@@ -60,6 +66,19 @@ function beginNavTransitionWindow() {
     navTransitionTimer = null
     commonActions.setNavTransitioning(false)
   }, NAV_TRANSITION_SETTLE_MS)
+}
+// 返回（pop）路径：立即关窗（清掉在途定时器 + 置 false）。
+// screenPopped 事件可能落在返回转场的开头——越早释放，玻璃越早开始按当前画面重采，
+// 整段返回动画都是实时画面；也可能落在结尾——此时立即恢复，不再多等一整个 420ms。
+// 只影响「何时恢复渲染」，不削弱 push 侧需要罩住的那一段。
+// 注：账本（useScreenCovered / useHomeCovered）与这条窗口是两个独立来源，且同一个
+// screenPopped 处理里先后释放——两者都置 false 之后玻璃才真正恢复渲染。
+function endNavTransitionWindow() {
+  if (navTransitionTimer) {
+    clearTimeout(navTransitionTimer)
+    navTransitionTimer = null
+  }
+  commonActions.setNavTransitioning(false)
 }
 
 const startPush = (id: COMPONENT_IDS, options: StartPushOptions = {}) => {
@@ -85,10 +104,10 @@ const endPush = (id: COMPONENT_IDS) => { pendingPushes.delete(id) }
 export const handleScreenPopped = (componentId: string) => {
   const target = commonState.componentIds.find(item => item.id === componentId)
   commonActions.removeComponentId(componentId)
-  // 转场窗口续期：见 beginNavTransitionWindow。该事件可能落在返回转场的开头
-  // （此时正好罩住整段返回动画），也可能落在结尾（再晚 420ms 恢复，背景已定格，
-  // 代价只是这一小段继续暂停渲染）。
-  beginNavTransitionWindow()
+  // 2026-10-02（用户第 5 条）：返回不再**续期**转场窗口，改为**立即释放**——
+  // 续期会让底部玻璃在整段返回动画之外多显示 420ms 陈旧画面，返回完成后突然跳一下。
+  // 详见 endNavTransitionWindow 的说明。
+  endNavTransitionWindow()
   if (target) endPush(target.name)
 }
 const guardPush = async(promise: Promise<string> | undefined, id: COMPONENT_IDS): Promise<void> => {

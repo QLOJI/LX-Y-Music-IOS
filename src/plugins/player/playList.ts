@@ -140,8 +140,13 @@ const updateMetaInfo = async(mInfo: LX.Player.MusicInfo, lyric?: string, isPlayi
     album,
     artwork,
     duration: state.prevDuration || 0,
-    elapsedTime: stamped?.position ?? 0,
-    ...(stamped ? elapsedSnapshotFields(stamped) : {}),
+    // 位置快照取不到时**不带** elapsedTime 字段（而不是发 0）：原生把一次
+    // 「elapsedTime = 0」当作真实位置把歌词锚点钉回第 0 行（锁屏/灵动岛歌词
+    // 先跳回开头、下一拍才跳回来）。缺字段时原生退回按缓存里的 (elapsed, 戳)
+    // 重锚，不会动锚点。
+    ...(stamped
+      ? { elapsedTime: stamped.position, ...elapsedSnapshotFields(stamped) }
+      : {}),
     ...(Platform.OS == 'ios'
       ? { playbackRate: isPlaying ? settingState.setting['player.playbackRate'] : 0 }
       : {}),

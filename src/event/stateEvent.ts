@@ -77,7 +77,8 @@ export class StateEvent extends Event {
     this.emit('safeAreaReadyUpdated', ready)
   }
 
-  // 页面转场开始 / 结束（见 navigation.beginNavTransitionWindow）
+  // push 转场窗口开始 / 结束（pop 侧不置位，见 navigation.beginNavTransitionWindow /
+  // endNavTransitionWindow）
   navTransitioningUpdated(transitioning: boolean) {
     this.emit('navTransitioningUpdated', transitioning)
   }
