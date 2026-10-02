@@ -83,6 +83,21 @@ export const pageTitleLineHeight = 42
  *  四个主页共用；歌单页原本 12、我的页原本 8、推荐页 16，正是「有些太近有些太远」。 */
 export const pageTitleGap = designSpacing.md
 
+/** 「我的」页里那组二级列表页（网易/酷狗/QQ 歌单、网易关注歌手、网易收藏专辑、WebDAV、
+ *  本地与下载，即 core/common.ts 的 LOVE_SUBPAGE_IDS）页面标题的字号（pt）。
+ *
+ *  用户第 14 轮第 1 条：「…修改位置应该和"我的"标题位置一样，所有列表中的标题都显示在这个
+ *  位置，字体大小参考 WebDAV 界面上标题字体大小…」。WebDAV 页面上唯一一处标题就是 Home
+ *  共享页头（Vertical/Header.tsx）里的那一行，其字号取 designTypography.title —— 本 token
+ *  与它同源，两处不会再各写一个数字而分叉（契约脚本 scripts/sim-subpage-title-align.js 会
+ *  把「共享页头的 size」与「本 token」钉成同一个值，谁改单边都会判红）。
+ *
+ *  注意区分：位置 / 行高 / 字重 / 下间距走的是「我的」大标题那一套（见 common/DetailPageTitle
+ *  组件 + pageTitleLineHeight / pageTitleGap），**只有字号**取这里。也就是说这批页面标题是
+ *  「我的」标题的小一号版本，不是同级大标题；若哪天要改成同级的 34，只改这一行即可
+ *  （共享页头不会跟着变，因为它引用的是 designTypography.title）。 */
+export const subPageTitleSize = designTypography.title
+
 /** 同一页面内相邻两行控件、以及同一行内相邻两个按钮之间的统一间距（pt）。
  *  取代此前散落的 8 / 12 两套值（最典型的是歌单页标签胶囊用 8、同页排序胶囊用 12，
  *  且标签分组行与行之间完全没有间距）。 */
