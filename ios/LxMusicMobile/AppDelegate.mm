@@ -1103,9 +1103,17 @@ static void LXRegisterTrackPlayerLifecycleObserver(void) {
   if (LXNowPlayingApplicationObserver == nil) {
     LXNowPlayingApplicationObserver = [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidBecomeActiveNotification object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification * _Nonnull note) {
       if (LXNowPlayingInfoCache.count == 0) return;
-      // iOS 27 Beta 7 可能在应用切换/控制中心展开后丢弃当前媒体会话；
-      // 重新激活音频会话并重新提交缓存，可让 iPad 控制中心/锁屏恢复歌曲信息和播放按钮。
-      [[AVAudioSession sharedInstance] setActive:YES error:nil];
+      // 【用户第 16 轮第 9 条】只有**真的在播放**时才重新激活音频会话。
+      // 旧实现在这里无条件 setActive:YES：LX 手动暂停着（或已被其他音频打断、停着）时，
+      // 用户每次切回 LX 都会把会话抢回来 —— 后台还在播的其他音频当场被压成无声，
+      // 正是用户报的「其他音频没有声音，应该是没有卸载占用音频」。
+      // 暂停态不碰会话（会话在 pause / 打断 Began 时已经交还系统），只重新提交一次
+      // 歌曲信息，锁屏 / 控制中心的卡片与按钮照旧。
+      if (LXNowPlayingState == MPNowPlayingPlaybackStatePlaying) {
+        // iOS 27 Beta 7 可能在应用切换/控制中心展开后丢弃当前媒体会话；
+        // 重新激活音频会话并重新提交缓存，可让 iPad 控制中心/锁屏恢复歌曲信息和播放按钮。
+        [[AVAudioSession sharedInstance] setActive:YES error:nil];
+      }
       LXApplyNowPlayingInfo();
     }];
   }
@@ -3774,8 +3782,10 @@ RCT_EXPORT_MODULE();
       // 情况下（!shouldHandle || manualPause）直接 return，于是：
       //   ① 不置 interruptedBySystem —— 打断结束后 Ended 分支整单作废，表现为
       //      「手动暂停时，其他音频播放结束后不会自动开始播放」；
-      //   ② 不让出音频会话 —— 其他音频在播，我们还占着（暂停态由 pause 命令
-      //      prepareAudioSession 保持着激活），其他音频无法正常使用。
+      //   ② 不让出音频会话 —— 其他音频在播，我们还占着，其他音频无法正常使用。
+      // 【第 16 轮第 9 条】其中「暂停态占着会话」的来源已从根上拔掉：pause 命令改成
+      // 立刻 setActive:NO 让出会话（见 pauseStreamWithResolver），这里的兜底释放
+      // 对暂停态只是幂等的重复让出。
       self.interruptedBySystem = YES;
       if (canReleaseSession) {
         // 与 openStream 接管会话时的对手写法：NotifyOthersOnDeactivation 把会话
@@ -3788,12 +3798,14 @@ RCT_EXPORT_MODULE();
       break;
     }
     case AVAudioSessionInterruptionTypeEnded: {
-      // 【用户第 13 轮第 1 条】其他音频结束 → 马上抢回音频会话并自动续播：与「是不是
-      // 用户手动暂停」（manualPause）以及「打断方有没有给 ShouldResume」都无关。
-      // 旧实现把这两个当门槛，只会出现「手动暂停后不再自动开始播放」。
       // 标记由 Began 分支无条件置位（含手动暂停 / 未出声），这里只看它。
       if (!self.interruptedBySystem) return;
       self.interruptedBySystem = NO;
+      // 【用户第 16 轮第 9 条】手动暂停**不**续播、也**不**抢会话（本条按用户本轮反馈
+      // 反转第 13 轮的口径）：用户自己按的暂停就是用户意图 —— 其他音频结束后要保持安静，
+      // 音频会话继续留在系统 / 其他音频手里。只有「不是手动暂停」（播放中被系统打断）
+      // 才抢回会话并自动续播，不等打断方的 ShouldResume 标志。
+      if (self.manualPause) return;
       // 没有可续播的流（从未 open / 已 stop / 已 reset）就别抢会话，只清标记：
       // 那是用户明确结束播放，自动播放会变成误播。
       if (self.sourceNode == nil || [self.currentState isEqualToString:@"stopped"] || [self.currentState isEqualToString:@"idle"]) return;
@@ -4402,18 +4414,27 @@ RCT_REMAP_METHOD(resume, resumeStreamWithResolver:(RCTPromiseResolveBlock)resolv
 }
 
 RCT_REMAP_METHOD(pause, pauseStreamWithResolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
-  NSError *sessionError = nil;
-  [self prepareAudioSession:&sessionError];
+  __block BOOL canReleaseSession = NO;
   dispatch_sync(self.renderQueue, ^{
     self.lastKnownPosition = [self currentPlaybackPositionLocked];
     self.manualPause = YES;
-    // 【用户第 13 轮第 1 条】这里刻意**不**清 interruptedBySystem：其他音频正在播
-    // （打断进行中）时用户手动暂停，等它结束后仍要按需求自动续播；清掉标记就退化成
-    // 「手动暂停后不再自动开始播放」。真正取消自动续播的只有 stop / 切歌 / 复位。
+    // 【第 16 轮第 9 条】interruptedBySystem 仍然**不**在这里清：取消自动续播现在由
+    // Ended 分支的 manualPause 门槛本身完成（手动暂停 ⇒ 打断结束也不续播）；
+    // 而停止 / 切歌 / 复位照旧各自清标记。
     if (self.engine != nil && self.engine.isRunning) [self.engine pause];
     _sourceRenderingEnabled.store(false, std::memory_order_release);
     self.playbackStarted = NO;
+    // 与打断 Began / openStream 同一套口径：引擎已停（本行上面刚 pause）才允许让出会话。
+    canReleaseSession = self.sourceNode != nil && (self.engine == nil || !self.engine.isRunning);
   });
+  // 【用户第 16 轮第 9 条】手动暂停 = 用户把 LX 让出来：立刻卸载音频会话
+  //（NotifyOthersOnDeactivation 把它交还系统 / 其他音频），其他音频才能正常出声。
+  // 旧实现在这里 prepareAudioSession，等于**保持**会话激活 —— 用户暂停 LX 去听别的
+  // 音频时，别的音频被我们压着没声音，正是本条反馈的根因。恢复播放走 resume，
+  // 那里会重新 prepareAudioSession 抢回会话。
+  if (canReleaseSession) {
+    [[AVAudioSession sharedInstance] setActive:NO withOptions:AVAudioSessionSetActiveOptionNotifyOthersOnDeactivation error:nil];
+  }
   LXBeginReceivingRemoteControlEvents();
   [self emitState:@"paused" position:@(self.lastKnownPosition) duration:@(self.duration)];
   resolve(nil);
