@@ -2,7 +2,7 @@ import { memo, useState, useRef, useMemo, useEffect, useCallback } from 'react'
 import { View, AppState, type LayoutChangeEvent } from 'react-native'
 import PagerView, { type PagerViewOnPageSelectedEvent } from 'react-native-pager-view'
 import MiniLyric, { getMiniLyricRowHeight } from '../components/MiniLyric'
-import Pic, { getCoverSize } from './Pic'
+import Pic, { getCoverSize, getCoverNaturalSize } from './Pic'
 import Lyric from './Lyric'
 import SongInfo from './components/SongInfo'
 import Header, { HEADER_HEIGHT } from './components/Header'
@@ -29,8 +29,28 @@ const LyricPage = ({ pagerHeight = 0, isActive = false }: { pagerHeight?: number
 }
 
 // 封面尺寸的保留下限（占「自然尺寸」的比例）：布局空间极紧时算式会要求把封面缩得更小，
-// 这里定个地板，宁可残留一点点越界量、也不让封面缩到看不见（见下方 coverSizeCap 的注释）。
+// 这里定个地板，宁可残留一点点越界量、也不让封面缩到看不见（见下方 coverRegionHeight 的注释）。
 const MIN_COVER_KEEP_RATIO = 0.4
+
+/**
+ * SongInfo 内容高（不含上下 margin）的解析估算 —— **只在实测到位前的首帧用**
+ *（首帧封面必须马上定尺寸，而 onLayout 要等首帧 commit 之后才回来）。
+ *
+ * 逐项镜像 SongInfo.tsx / SourceQualityBadge.tsx / Badge.tsx 的现行实现（基准字号下）：
+ *   歌名行  max(round(setSpText(28)×1.15), 心形图标 28) + marginBottom 8
+ *   + 徽标行 marginTop 4 + round(setSpText(9)×1.15)（有播放数据时该行必在，质量徽标再多一个同样高）
+ *   + 歌手行 round(setSpText(16)×1.15) + marginBottom 4
+ *   + 专辑行 round(setSpText(14)×1.15)
+ * 三处文本都是 numberOfLines={1} ⇒ 各占一行、上限确定；Text 的默认行高 = round(setSpText(size)×1.15)
+ * 见 components/common/Text.tsx。这是**上界**（徽标行 / 专辑行缺数据时只会更矮）。
+ * 唯一会突破它的情形：歌手多到 artistRow 折行（flexWrap:'wrap'）—— 那种歌首帧封面会略大一两帧，
+ * 实测一到立即回落，属于可接受的取舍（宁可首帧略大，也不要首帧偏小再「长出来」）。
+ * 这些组件的字号 / 行高 / margin 任一改动，必须回来同步这里。
+ */
+const estimateSongInfoContentHeight = () => {
+  const row = (size: number) => Math.round(setSpText(size) * designTypography.lineHeightRatio)
+  return row(28) + 8 + (4 + row(9)) + (row(16) + 4) + row(14)
+}
 
 const VerticalNew = memo(({ componentId }: { componentId: string }) => {
   const [pageIndex, setPageIndex] = useState(0)
@@ -44,8 +64,8 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
   // （infoContainer 的 onLayout.y，「返回栏底边 → 信息栏顶边」）的原因：旧口径把小歌词
   // 自己的高度算了进去，小歌词变高 → 该区域变小 → 少显示一行 → 变矮 → 区域又变大 →
   // 多显示一行，环路增益恰好 −1，档位在阈值两侧 2 循环，观感就是封面页持续闪烁。
-  // R 有两个去向：Pic 的尺寸上限 R/2（实测到位前的首帧由 estimatedPageHeight 的解析估算
-  // 顶替，见下方；实测一到立即让位）；小歌词可用高度（见 miniLyricMaxHeight，不碰估算）。
+  // R 是下方那套布局算式（封面可用区间 + 小歌词可用高度，两者同一个式子）的输入之一；
+  // 实测到位前的首帧由 estimatedPageHeight 的解析估算顶替（见下方），实测一到立即让位。
   // 稳态仍用 onLayout 实测而不是按字号/行数估算——估算会随 global.lx.fontSize 与各组件
   // 常量漂移而失真，故估算只配当「首帧兜底」。
   const [pageHeight, setPageHeight] = useState(0)
@@ -68,7 +88,7 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
   // 必须实测而不是写死：小屏 override（8）、global.lx.fontSize 缩放都会改这个值。
   const [songInfoOffset, setSongInfoOffset] = useState(0)
   // SongInfo 自身的高度（不含上下 margin；上 margin 已由上面的 layout.y 实测，
-  // 下 margin 走常量镜像）。小歌词可用高度的输入之一，同样与 MiniLyric 自身无关。
+  // 下 margin 走常量镜像）。封面可用区间与小歌词可用高度共用的输入，同样与 MiniLyric 自身无关。
   const [songInfoContentHeight, setSongInfoContentHeight] = useState(0)
   const handleSongInfoLayout = useCallback(({ nativeEvent }: LayoutChangeEvent) => {
     const y = Math.round(nativeEvent.layout.y)
@@ -84,8 +104,9 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
   const statusBarHeight = useStatusbarHeight()
   const miniLyricAlign = useSettingValue('playDetail.style.miniLyricAlign')
   // 封面尺寸设置：与 Pic 消费的是同一个键（vertical/horizontal 两个 Pic 同源）。
-  // 这里读它只有一个用途 —— 推出「自然封面直径」，作为布局算式里 coverSizeCap 的比较基准；
-  // 真正的尺寸判定仍在 Pic 内部（getCoverSize），不在两处各抄一份。
+  // 这里读它只有一个用途 —— 推出「自然封面直径 = 只看屏幕与设置、不受布局挤压的尺寸」，
+  // 作为布局算式里封面保留下限（MIN_COVER_KEEP_RATIO 地板）的基准；与 Pic 共用同一个
+  // 导出（getCoverNaturalSize / getCoverSize 都在 Pic.tsx），不在两处各抄一份。
   const coverSize = useSettingValue('playDetail.style.coverSize')
   // 用 ref 追踪滑动方向，避免高频 onScroll 触发大量 setState 导致卡顿
   // 仅在首次变为 true 时触发一次 setState 通知子组件
@@ -268,62 +289,79 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
       featureBtnsHeight + progressHeight + infoRowHeight + controlRowHeight
     return Math.max(0, winHeight - (statusBarHeight + HEADER_HEIGHT) - playerBarHeight)
   }, [winHeight, winWidth, statusBarHeight, isSmallWindow])
-  // 下传给 Pic 的页面容器高（实测优先、首帧用解析估算，见 estimatedPageHeight 注释），
-  // 与「自然封面直径」一起算出来 —— 后者只用来判断布局算式给出的上限到底有没有真的压小封面。
-  const coverRegionHeight = pageHeight > 0 ? pageHeight : estimatedPageHeight
-  const coverDiameter = getCoverSize(winWidth, winHeight, statusBarHeight, coverSize, coverRegionHeight)
-  // 小歌词的可用高度上限 + 封面尺寸上限：这是**同一个约束的两面**，必须由同一套算式推出。
+  // 「自然封面直径」：只看屏幕与设置（屏宽/可用高/coverSize 设置），不受布局挤压 ——
+  // 封面在 50%~150% 档要涨到它才第一次碰到布局上限；它也是下面地板值的基准。
+  const coverNaturalSize = getCoverNaturalSize(winWidth, winHeight, statusBarHeight, coverSize)
+  // 封面可用区间（= 封面直径上限）与小歌词可用高度：**同一个约束的两面**，必须由同一套算式推出。
   // 原因：封面中心以下的空间里，小歌词至少会渲染一行（MiniLyric 内部 fitRows = max(1, …)），
   // 这一行的高度是刚性的；封面又是 flexShrink:0 的块，被挤时不会自己缩小，只会顶出 picContainer、
   // 压到歌名栏与大歌词上（用户报的「封面图片区域跑到其他区域，占到歌名区域和大歌词区域」）。
-  // 只调小歌词上限、不管封面大小，就会在大字号 + 翻译行的机型上重新越界（130% 字体的反例，
-  // 实测 375×667 越界约 9pt）—— 所以两个值一起算、一起给。
   //
-  // 可用空间 available 的表达式里不出现 MiniLyric 自己的任何高度 —— 这是根治闪烁的
-  // 结构条件（小歌词撑高自己不会反过来改变这个上限，反馈环断开，见上方 pageHeight 注释）。
-  // 逐项：页面容器实测高 R
-  //     − 容器 paddingTop 与 infoContainer marginTop（各一份 containerPaddingH）
-  //     − 容器 paddingBottom（大屏 12 / 小屏 0）
-  //     − SongInfo 整块：[marginTop（layout.y 实测）＋内容高（layout.height 实测）
-  //       ＋ marginBottom]。SongInfo 没导出样式，marginBottom 按 SongInfo.tsx 的
-  //       styles.container 及其 isSmallWindow 分支镜像：大屏走 createStyle 生成的
-  //       scaleSizeH(18)（**不是裸 18**：那份样式是缩放过的，写裸值会在非基准机型上对不上），
-  //       小屏 4 是那边内联覆盖、不缩放，故原样 —— 那边改了必须同步这里。
+  // ---- 几何与推导 ----
+  // picPageContainerNew（高 R，column，space-between，paddingTop = containerPaddingH，
+  // paddingBottom = pageBottomPadding）的两个孩子：
+  //   ① picContainer：flex:1，封面在其中垂直居中；paddingTop = songInfoOffset（实测）
+  //   ② infoContainer：flexShrink:0，marginTop = containerPaddingH，内含 SongInfo + MiniLyric
+  // SongInfo 自己还有 marginTop = songInfoOffset（实测，见 handleSongInfoLayout）与 marginBottom = mB。
+  // 记   M = R − 2×containerPaddingH − pageBottomPadding − (hInfo + mB)     …（hInfo = SongInfo 内容高实测）
+  //      L = 小歌词实际高度
+  // 则 picContainer 的高度 H = M − songInfoOffset − L。
+  // 封面在 picContainer 内居中于「扣掉 paddingTop 后的区间」⇒ 中心固定在 (H + songInfoOffset)/2
+  //（这正是 paddingTop = songInfoOffset 的作用：把中心下移 offset/2 对齐「返回栏底边 → 歌名栏视觉顶边」），
+  // 于是  封面顶端 = (H + songInfoOffset − d)/2，底端 = (H + songInfoOffset + d)/2（d = 直径）。
+  // 不越区的充要条件是顶端不越过返回栏底边（顶端 ≥ 0）：
+  //     d ≤ H + songInfoOffset
+  //   ⟺ d ≤ M − L            （songInfoOffset 在 H 里是 −offset、在这个不等式里是 +offset，两边抵消 ——
+  //                             这就是旧口径多扣一个 offset 的地方，见下）
+  // 小歌词至少渲染一行（行高取**带翻译行**的最坏情况 getMiniLyricRowHeight(true)，不必订阅歌词内容，
+  // 也保证切歌不改尺寸）⇒ 只要 d ≤ M − 一行高 就**一定**不越区。这就是下传的 coverRegionHeight。
+  // 反过来，L 的上限由同一个式子解出：L ≤ M − d（d 取实际生效的封面直径 min(自然, 上限)）。
   //
-  // coverSizeCap 的推导：封面在 picContainer 里按「扣掉 paddingTop = songInfoOffset 之后的区间」
-  // 居中，越界量 = size − (picContainer.height − songInfoOffset)，故不越界的充要条件是
-  //     size ≤ picContainer.height − songInfoOffset
-  //（这个 paddingTop 的用途就是让封面中心落在「返回栏底边 → 歌名栏视觉顶边」真正的中线）。
-  // 小歌词至少占一行 ⇒ picContainer.height ≤ available − 一行高 ⇒ 只要
-  //     size ≤ available − songInfoOffset − 一行高
-  // 就一定不越界。一行高取**带翻译行**的最坏情况（getMiniLyricRowHeight(true)）：这样不必
-  // 订阅歌词内容，常态机型上这条上限根本不生效（available 足够大），多算一点只是保守。
-  // MIN_COVER_KEEP_RATIO 是地板：极限机型（小屏 + 超大字号 + 多行长歌名）上算式可能要求
-  // 把封面缩得很小，宁可保留至少 40% 的封面、让越界量尽可能小，也不要出现「封面几乎消失」。
+  // 【2026-10-02 第 19 轮】旧口径是 available = M − songInfoOffset，再
+  //   cap           = available − songInfoOffset − 一行高   （= M − 2×offset − 一行高）
+  //   L上限         = available − d − songInfoOffset        （= M − d − 2×offset）
+  // 两处都多扣了一个 songInfoOffset（= 2×20pt，用户机型）：上面推导说明 offset 在两端都不该出现。
+  // 后果正是用户报的两条：
+  //   ① 封面滑块 100%~150% 被提前封顶（上限比自然尺寸只大 8pt，整段几乎无变化）；
+  //   ② 小歌词区域白白少 40pt（「小歌词下面还有很多空间」）。
+  // 一并删掉 Pic 里那条独立的 R/2 上限：封面尺寸从此只有一条口子（自然尺寸 × 布局区间），
+  // 不再「两条并列上限必然漂移」。
+  //
+  // 表达式里不出现 MiniLyric 自己的任何高度 —— 这是根治闪烁的结构条件
+  //（小歌词撑高自己不会反过来改变这个上限，反馈环断开，见上方 pageHeight 注释）。
+  // marginBottom 按 SongInfo.tsx 的 styles.container 及其 isSmallWindow 分支镜像：
+  // 大屏走 createStyle 生成的 scaleSizeH(18)（**不是裸 18**：那份样式是缩放过的，写裸值会在
+  // 非基准机型上对不上），小屏 4 是那边内联覆盖、不缩放，故原样 —— 那边改了必须同步这里。
+  //
+  // MIN_COVER_KEEP_RATIO 是地板：极限机型（小屏 + 超大字号 + 多行长歌名）上 M − 一行高
+  // 可能 ≤ 0，宁可保留至少 40% 的自然封面、让越界量尽可能小，也不要出现「封面几乎消失」。
   // 地板生效时小歌词仍会渲染一行、越界量可能残留一点点（有意取舍）。
   //
-  // 首帧任一实测未到（= 0）时小歌词上限返回 undefined：MiniLyric 内部按保守档兜底渲染；
-  // 不能返回 0 —— 那会被当作「可用高度 = 0」，整块先塌成一行再弹开。负值收回 0（宁可只显示一行）。
-  const { coverSizeCap, miniLyricMaxHeight } = useMemo<{
-    coverSizeCap: number
+  // 首帧（pageHeight / songInfoContentHeight 实测未到）封面仍按解析估算定尺寸（不产生入场跳变），
+  // 但小歌词上限返回 undefined：MiniLyric 内部按保守档兜底渲染；不能返回 0 ——
+  // 那会被当作「可用高度 = 0」，整块先塌成一行再弹开。负值收回 0（宁可只显示一行）。
+  const { coverRegionHeight, miniLyricMaxHeight } = useMemo<{
+    coverRegionHeight: number
     miniLyricMaxHeight: number | undefined
   }>(() => {
-    if (pageHeight <= 0 || songInfoContentHeight <= 0) return { coverSizeCap: 0, miniLyricMaxHeight: undefined }
+    const measured = pageHeight > 0 && songInfoContentHeight > 0
+    const containerHeight = measured ? pageHeight : estimatedPageHeight
+    const songInfoContent = measured ? songInfoContentHeight : estimateSongInfoContentHeight()
     const songInfoMarginBottom = isSmallWindow ? 4 : scaleSizeH(18)
-    const available = pageHeight - containerPaddingH * 2 - (isSmallWindow ? 0 : PAGE_BOTTOM_PADDING)
-      - (songInfoOffset + songInfoContentHeight + songInfoMarginBottom)
-    const cap = Math.max(
-      available - songInfoOffset - getMiniLyricRowHeight(true),
-      coverDiameter * MIN_COVER_KEEP_RATIO,
-    )
-    // 小歌词上限按**实际生效的封面尺寸**留白（min(自然直径, 上限)）：
-    // 旧实现固定按 R/2 预留，封面在 50% 档时白让出一大截（用户机型约 149pt ≈ 两行小歌词），
-    // 100% 档反而因为预留不足而少一行 —— 两种偏差都来自「预留量 ≠ 实际封面尺寸」。
+    const M = containerHeight - containerPaddingH * 2 - (isSmallWindow ? 0 : PAGE_BOTTOM_PADDING)
+      - (songInfoContent + songInfoMarginBottom)
+    const band = Math.max(M - getMiniLyricRowHeight(true), coverNaturalSize * MIN_COVER_KEEP_RATIO)
     return {
-      coverSizeCap: cap,
-      miniLyricMaxHeight: Math.max(0, available - Math.min(coverDiameter, cap) - songInfoOffset),
+      // 与 Pic 内部实际取的 min(getCoverNaturalSize(...), coverRegionHeight) 严格同一个数。
+      coverRegionHeight: band,
+      miniLyricMaxHeight: measured
+        ? Math.max(0, M - getCoverSize(winWidth, winHeight, statusBarHeight, coverSize, band))
+        : undefined,
     }
-  }, [pageHeight, songInfoContentHeight, songInfoOffset, isSmallWindow, containerPaddingH, coverDiameter])
+  }, [
+    pageHeight, songInfoContentHeight, isSmallWindow, containerPaddingH, coverNaturalSize,
+    estimatedPageHeight, winWidth, winHeight, statusBarHeight, coverSize,
+  ])
   // 小歌词的 style memo 化：内联对象每次渲染都是新引用，会让 memo(MiniLyric) 失效——
   // 滚动/切歌期父级重渲染会连带小歌词重渲染（抖动隔离的前提，见 W2 的小歌词重写）。
   // 这里只剩「水平对齐」一项：原先 miniLyricContainerNew 的 paddingHorizontal:10 已挪进
@@ -357,22 +395,20 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
             >
               {/* picContainer 是「返回栏底边 → 信息栏顶边」的居中区域（样式见 styles.picContainer）；
                   Pic 自己按设置决定尺寸与形状（playDetail.style.coverSize / coverShape），
-                  此处下传页面容器高 R：实测到位用实测（见上方 pageHeight 注释），未到位（首帧）
-                  用 estimatedPageHeight 的解析估算顶替，让封面首帧尺寸即接近稳态、不产生入场缩放
-                  （见 estimatedPageHeight 注释）。 */}
+                  此处下传封面可用区间（= 直径上限）：实测到位按实测推，未到位（首帧）用解析估算顶替，
+                  让封面首帧尺寸即接近稳态、不产生入场缩放（见上方 coverRegionHeight 注释）。 */}
               <View style={[styles.picContainer, songInfoOffset > 0 && { paddingTop: songInfoOffset }]}>
                 {/* active：封面自转的可见性门控之一——PagerView 会一直保持封面页挂载，
                     划到歌词页后必须让 Pic 停掉旋转动画（另一个门控是播放态和屏幕未被覆盖，见 Pic.tsx）。
                     isComingCoverRef：从歌词页滑回封面页的手势期间也保持 true，让旋转跨手势连续。
                     落页前后这个表达式的取值不变（手势期间 true，落到封面页后 pageIndex===0 仍为 true）
                     ⇒ Pic 的启停 effect 依赖不变化、根本不重跑 ⇒ 不会二次起停、也不会重锚跳角。
-                    sizeCap：布局侧给出的尺寸上限（只有「小歌词至少放得下一行」这一条），
-                    与 R/2 那条并列参与 min；0 = 不施加（首帧实测未到时不额外收紧，交给 R/2 与安全上限）。 */}
+                    coverRegionHeight：布局侧给出的封面可用区间（= 直径上限），由
+                    「封面 + 信息块 + 至少一行小歌词不越区」反推（见上方推导）；≤0 = 不施加。 */}
                 <Pic
                   componentId={componentId}
                   active={pageIndex === 0 || isComingCoverRef.current}
                   coverRegionHeight={coverRegionHeight}
-                  sizeCap={coverSizeCap}
                 />
               </View>
               <View
