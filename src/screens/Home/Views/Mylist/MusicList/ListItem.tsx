@@ -16,6 +16,7 @@ import { useI18n } from '@/lang'
 import { useIsWyLiked, useIsTxLiked, useIsKgLiked } from '@/store/user/hook'
 import { handleLikeMusic, handleTxLikeMusic, handleKgLikeMusic } from '@/components/OnlineList/listAction'
 import useCoverUrl from '@/utils/hooks/useCoverUrl'
+import { getQualityBadge } from '@/utils/musicQualityBadge'
 import { designRadius, designSpacing } from '@/theme/DesignTokens'
 import { useButtonRadius } from '@/utils/buttonRadius'
 
@@ -30,55 +31,13 @@ export const ITEM_HEIGHT = scaleSizeH(LIST_ITEM_HEIGHT)
 // props，hook 订阅值必须走 prop 才能参与比较，保证开关切换时行会重渲染。
 const useQualityTag = (musicInfo: LX.Music.MusicInfo, showHighest: boolean) => {
   const t = useI18n()
-  let info: { type: BadgeType | null, text: string } = { type: null, text: '' }
-  if (musicInfo.source === 'local') return info
-  const qualitys = (musicInfo.meta as LX.Music.MusicInfoMeta_online)?._qualitys ?? {}
-
-  if (showHighest) {
-    if (qualitys.master) {
-      info.type = 'secondary'
-      info.text = t('quality_lossless_master')
-    } else if (qualitys.atmos_plus) {
-      info.type = 'secondary'
-      info.text = t('quality_lossless_atmos_plus')
-    } else if (qualitys.atmos) {
-      info.type = 'secondary'
-      info.text = t('quality_lossless_atmos')
-    } else if (qualitys.hires) {
-      info.type = 'secondary'
-      // hires 档文案统一为 Hi-Res，此前误映射成 24bit（对齐 SourceQualityBadge 的权威映射）
-      info.text = t('quality_hires')
-    } else if (qualitys.flac24bit) {
-      info.type = 'secondary'
-      // 补上此前缺失的 flac24bit 档（tx/kg 等源会产出），否则这一档一颗标都不显示
-      info.text = t('quality_lossless_24bit')
-    } else if (qualitys.flac) {
-      info.type = 'sq'
-      info.text = t('quality_lossless')
-    } else if (qualitys['320k']) {
-      info.type = 'hq'
-      info.text = t('quality_high_quality')
-    }
-  } else {
-    if (qualitys.hires) {
-      info.type = 'secondary'
-      info.text = t('quality_hires')
-    } else if (qualitys.flac24bit) {
-      info.type = 'secondary'
-      info.text = t('quality_lossless_24bit')
-    } else if (qualitys.flac) {
-      info.type = 'sq'
-      info.text = t('quality_lossless')
-    } else if (qualitys['320k']) {
-      info.type = 'hq'
-      info.text = t('quality_high_quality')
-    } else if ((qualitys as any)['192k']) {
-      info.type = 'hq'
-      info.text = '192k'
-    }
-  }
-
-  return info
+  // 本地文件没有「在线音质档」可言：保持不显示小标，不参与下面的 128K 兜底
+  // （把本地无损文件标成 128K 比不标更糟；需求说的「没有小标统一改 128K」指的是在线曲目）
+  if (musicInfo.source === 'local') return { type: null as BadgeType | null, text: '' }
+  // 天梯只有一份：utils/musicQualityBadge.ts（2026-10-02 统一六档 Master/Atmos/24bit/SQ/HQ/128K，
+  // 取不到标注时兜底 128K；此前这里的 192k 会显示成小写 '192k' 的野串，现已归入 HQ）
+  const info = getQualityBadge((musicInfo.meta as LX.Music.MusicInfoMeta_online)?._qualitys, showHighest)
+  return { type: info.type as BadgeType | null, text: t(info.key) }
 }
 
 type ListItemProps = {

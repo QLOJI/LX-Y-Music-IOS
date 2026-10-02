@@ -38,6 +38,18 @@ export default forwardRef(({ header, searchType, source }: SearchResultListProps
     searchInfoRef.current.hasMore = true
   }, [searchType, source])
 
+  // 下拉刷新动画只认「用户真的下拉过」这一个来源（2026-10-02 需求：歌手/专辑去掉进入时
+  // 的下滑自动刷新，与歌曲一致）。
+  // 此前是 refreshing={loading && searchInfoRef.current.page === 1}：切到歌手/专辑 tab 时
+  // loadList 会走 handleLoad(text, 1, true)，page 恰好是 1、loading 同时翻成 true ——
+  // 于是「刚点完按钮」就自己播了一遍下拉刷新动画。歌曲 tab（OnlineList）用 status='refreshing'
+  // 表达同一件事，只有用户下拉才会置位，两边才一致。这里照抄同一口径：置位只发生在 onRefresh，
+  // loading 落回 false 时清除（含「源不支持」那条提前 return 的路径，它也 setLoading(false)）。
+  const [isRefreshing, setIsRefreshing] = useState(false)
+  useEffect(() => {
+    if (!loading) setIsRefreshing(false)
+  }, [loading])
+
   const handleLoad = useCallback((text: string, page: number, isRefresh = false) => {
     log.info('[SearchResultList] === handleLoad 被调用 ===', {
       text,
@@ -193,12 +205,13 @@ export default forwardRef(({ header, searchType, source }: SearchResultListProps
       refreshControl={
         <RefreshControl
           colors={[theme['c-primary']]}
-          refreshing={loading && searchInfoRef.current.page === 1}
+          refreshing={isRefreshing}
           onRefresh={() => {
             log.info('[SearchResultList] === 下拉刷新 ===', {
               text: searchInfoRef.current.text,
               currentPage: searchInfoRef.current.page,
             })
+            setIsRefreshing(true)
             handleLoad(searchInfoRef.current.text, 1, true)
           }}
         />

@@ -126,8 +126,9 @@ export default forwardRef<ListType, ListProps>(({ header, onRefresh, onLoadMore,
   const bottomInset = useBottomOverlayInset()
 
   const rowInfo = useMemo(() => {
-    // FlatList 框架自带左右 10pt 内边距，列宽必须按扣除后的可用宽度计算，
-    // 否则每列比实际槽位宽，相邻列会盖住标题末尾的字
+    // 网格行左右各 10pt 内边距（见下方 columnWrapperStyle.paddingHorizontal），
+    // 列宽必须按扣除后的可用宽度计算，否则每列比实际槽位宽，相邻列会盖住标题末尾的字。
+    // 注意这 20 不是「FlatList 框架自带」——它来自我们自己写的那对 padding，改一处必须改两处。
     const available = width - 20
     const minWidth = isHorizontal ? MIN_WIDTH_LANDSCAPE : MIN_WIDTH_PORTRAIT
     let w = available - GAP
@@ -168,7 +169,13 @@ export default forwardRef<ListType, ListProps>(({ header, onRefresh, onLoadMore,
           key={String(rowInfo.num)}
           ref={flatListRef}
           style={styles.list}
-          columnWrapperStyle={{ justifyContent: 'space-evenly' }}
+          // 左右 10pt 内边距写在**每一行**上，不再写在外层 style（2026-10-02 统一搜索页四个 tab 的
+          // 排列）：写在 style 上时整条列表一起内缩，连 ListHeaderComponent（搜索框、搜索平台、
+          // 酷我等、歌曲/歌单/歌手/专辑按钮行）也被推进去 10pt —— 与「歌曲」tab 的 OnlineList
+          // （内边距 0）、歌手/专辑 tab 的 SearchResultList（内边距 0）对不齐，切换 tab 时
+          // 搜索框和整排按钮会左右跳一下。挪到 columnWrapperStyle 后：头部回到 0 内边距，
+          // 网格行的可用宽度仍是 width-20（与 rowInfo 的 available 严格对应），列宽与间距不变。
+          columnWrapperStyle={{ justifyContent: 'space-evenly', paddingHorizontal: 10 }}
           numColumns={rowInfo.num}
           data={list}
           contentContainerStyle={{ paddingBottom: bottomInset }}
@@ -222,8 +229,8 @@ const styles = createStyle({
   },
   list: {
     flex: 1,
-    paddingLeft: 10,
-    paddingRight: 10,
+    // 左右 10pt 内边距不在这里：它已挪到 columnWrapperStyle，只作用在网格行上，
+    // 头部（排序/标签行、搜索页的搜索框与按钮行）才能与其他 tab 一样顶到 0。
   },
   footer: {
     textAlign: 'center',
