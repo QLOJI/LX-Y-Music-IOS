@@ -44,6 +44,15 @@ type LiquidGlassProps = ViewProps & {
    * 判定用 useHomeCovered / useScreenCovered（store/common/hook），不要手写。
    */
   paused?: boolean
+  /**
+   * 实时采景会话（2026-10-02 用户第 2/9 条）：首页横向滑动 PagerView 的手势会话期间传 true。
+   * 原生把「重新采一次背景」从静止态基线的 30fps 档放宽到 60fps、渲染帧率提到 120fps
+   * （与抬起的液态透镜同一档），解决「滑动时玻璃透过的画面延迟高、掉帧、像反向切入」。
+   * 只在**真实手势会话**内为真（由 Main 的 onPageScrollStateChanged 经 emitPagerDrag
+   * 驱动，见 usePagerDragging）：这一档会提高主线程采景开销，绝不能常开。
+   * 磨砂档（26.2+ / 开关关）原生 no-op——系统材质的背景由系统实时处理。
+   */
+  live?: boolean
 }
 
 /**
@@ -78,7 +87,7 @@ const DARK_OVERLAY_FLOOR_USER = 0.2 / 0.6
  * 父容器需设置 `borderRadius` + `overflow: 'hidden'` 裁出圆角形状，
  * 内容子元素渲染在其上层。原生的 userInteractionEnabled 已关闭，触摸全部穿透。
  */
-const LiquidGlass = memo(({ tint, glassOpacity = 0.4, dark = false, liquid = false, paused = false, style }: LiquidGlassProps) => {
+const LiquidGlass = memo(({ tint, glassOpacity = 0.4, dark = false, liquid = false, paused = false, live = false, style }: LiquidGlassProps) => {
   // 26.2+ 强制磨砂兜底（2026-09-30 定案）：UIGlassEffect(.regular) 在白底/图底
   // 页面切换瞬间闪烁，液态玻璃开关已在 26.2+ 从设置页隐藏。业务层已在各消费点
   // 门控（ModernTabBar / PlayerBar），此处兜底保证**任何**调用方漏门控（残留的
@@ -117,6 +126,7 @@ const LiquidGlass = memo(({ tint, glassOpacity = 0.4, dark = false, liquid = fal
       dark={dark}
       liquid={effectiveLiquid}
       paused={paused}
+      live={live}
       tint={nativeTint}
       pointerEvents="none"
     />

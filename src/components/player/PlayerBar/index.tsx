@@ -16,7 +16,7 @@ import commonState from '@/store/common/state'
 import playerState from '@/store/player/state'
 import { getJumpListId } from '@/core/player/player'
 import { LIST_IDS } from '@/config/constant'
-import { useSafeAreaBottom, useScreenCovered, useSafeAreaReady, useNavTransitioning } from '@/store/common/hook'
+import { useSafeAreaBottom, useScreenCovered, useSafeAreaReady, useNavTransitioning, useAppActive, usePagerDragging } from '@/store/common/hook'
 import { usePlayerMusicInfo } from '@/store/player/hook'
 import {
   designRadius,
@@ -38,6 +38,15 @@ export default memo(({ componentId, isHome = false }: { componentId?: string, is
   // 多看一截陈旧画面（用户第 5 条），pop 事件到达即释放。见
   // navigation.beginNavTransitionWindow / endNavTransitionWindow。
   const navTransitioning = useNavTransitioning()
+  // 前台门（2026-10-02 用户第 8 条）：迷你播放器的液态玻璃同样是 MTKView 连续渲染，
+  // 锁屏/退后台后音频还在放、进程还常驻，它会跟着跑一整夜（省电门只看「被不被压栈页
+  // 覆盖」，前台栈顶时恒为 false，盖不住这条）。接进前台门后 App 退后台即停渲染，
+  // 回前台自动恢复（原生恢复时重捕获背景，无残帧）。
+  const appActive = useAppActive()
+  // 实时采景门（2026-10-02 用户第 2/9 条）：与 ModernTabBar 同一个信号 —— 首页横滑
+  // 手势会话期间，迷你播放器的玻璃也按实时档（60fps 采景 / 120fps 渲染）跟手，否则
+  // 它就是「滑动时透过的画面延迟高、掉帧」的另一半（两块玻璃在同一个背景上）。
+  const pagerDragging = usePagerDragging()
   // 安全区就绪门（仅首页实例用得上，见下方 return）：首页播放器的底边 =
   // 安全区 + 底缝 + Tab 栏高 + 滑块距离，安全区没回来之前不下发，
   // 否则先用 0 画出来、再跳到 34pt = 「启动时抽动」。
@@ -190,7 +199,7 @@ export default memo(({ componentId, isHome = false }: { componentId?: string, is
               setMiniPlayerHeight(e.nativeEvent.layout.height)
             }}
           >
-            <LiquidGlass glassOpacity={glassOpacity} dark={theme.isDark} liquid={liquidGlassOn} paused={screenCovered || navTransitioning} style={{ borderRadius: designRadius.glass }} />
+            <LiquidGlass glassOpacity={glassOpacity} dark={theme.isDark} liquid={liquidGlassOn} paused={screenCovered || navTransitioning || !appActive} live={pagerDragging} style={{ borderRadius: designRadius.glass }} />
             <TouchableOpacity style={styles.left} onPress={handleNavigate} onLongPress={handleLongPress} activeOpacity={0.8}>
               <Pic />
               <View style={styles.center}>
@@ -205,7 +214,12 @@ export default memo(({ componentId, isHome = false }: { componentId?: string, is
         </Animated.View>
       )
     },
-    [glassOpacity, liquidGlassOn, screenCovered, navTransitioning, theme.isDark, isHome, handleNavigate, handleLongPress, safeAreaBottom, isHorizontalMode, collapseAnim, pillSize, collapsedRow, tabBarDistance, tabBarCollapsed],
+    // appActive 必须在依赖里（2026-10-02 用户第 8 条）：这一项是「App 前台」门，
+    // 漏掉它的话前后台切换时 useMemo 不会重建节点，paused 永远停在首次渲染的值
+    // （等价于前台门失效，锁屏后玻璃照样整夜渲染）。
+    // pagerDragging 同理（用户第 9 条）：它是 live 门，漏掉就永远停在 false，
+    // 横滑期间玻璃仍是 30fps 采景档 —— 表现就是这一个门完全没接上。
+    [glassOpacity, liquidGlassOn, screenCovered, navTransitioning, appActive, pagerDragging, theme.isDark, isHome, handleNavigate, handleLongPress, safeAreaBottom, isHorizontalMode, collapseAnim, pillSize, collapsedRow, tabBarDistance, tabBarCollapsed],
   )
 
   // 首页实例在安全区就绪前不下发（见 useSafeAreaReady）：它的 bottom 含 safeAreaBottom，

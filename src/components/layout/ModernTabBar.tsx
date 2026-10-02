@@ -2,7 +2,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Animated, Easing, PanResponder, Pressable, StyleSheet, View, type LayoutChangeEvent } from 'react-native'
 import { useTheme } from '@/store/theme/hook'
 import { useI18n } from '@/lang'
-import { useNavActiveId, useHomeCovered, useSafeAreaReady, useNavTransitioning } from '@/store/common/hook'
+import { useNavActiveId, useHomeCovered, useSafeAreaReady, useNavTransitioning, useAppActive, usePagerDragging } from '@/store/common/hook'
 import { setNavActiveId } from '@/core/common'
 import { useSettingValue } from '@/store/setting/hook'
 import { createStyle, isIOS26_2OrAbove } from '@/utils/tools'
@@ -187,6 +187,18 @@ export default memo(() => {
   // （用户第 5 条），pop 事件到达即释放。见 navigation.beginNavTransitionWindow /
   // endNavTransitionWindow。
   const navTransitioning = useNavTransitioning()
+  // 前台门（2026-10-02 用户第 8 条）：本 App 有音频后台播放能力，锁屏后进程仍常驻，
+  // 但 Tab 栏的液态玻璃是 MTKView **连续渲染**（isPaused=false 时每帧 draw），
+  // 不会随锁屏/退后台自动停 —— 于是整夜白烧电。账本驱动的省电门只看「被不被压栈页
+  // 覆盖」，盖不住这一条：Home 在前台栈顶时它恒为 false。
+  // 接进前台门后：App 退到后台（含 iOS 的 inactive）即停，回前台自动恢复
+  // （原生恢复时重捕获背景，无残帧）。
+  const appActive = useAppActive()
+  // 实时采景门（2026-10-02 用户第 2/9 条）：首页横滑（PagerView 真实手势会话）期间，
+  // 玻璃透过的画面此前被采景节流压在 30fps 档，而前景以 60~120fps 在动 —— 透过的
+  // 画面系统性落后 1~3 拍，快速滑动时还会因欠采样看起来「反向切入」。会话期间置
+  // live=true，原生按实时档（60fps 采景 / 120fps 渲染，与抬起的透镜同档）跟手。
+  const pagerDragging = usePagerDragging()
   // 安全区就绪门：底部安全区（bottom 的唯一来源）拿到真实值之前不下发，
   // 否则先用 0 画、再跳到 34pt = 「启动时底部抽动」。见 useSafeAreaReady。
   const safeAreaReady = useSafeAreaReady()
@@ -442,8 +454,25 @@ export default memo(() => {
     // 不抢普通触摸：点击仍由 Pressable 处理，只有长按 arm 过才在移动时接管
     onStartShouldSetPanResponder: () => false,
     onMoveShouldSetPanResponderCapture: () => dragArmedRef.current,
-    // 一旦接管就不再释放给外层（防被 PagerView/ScrollView 抢走）
-    onPanResponderTerminationRequest: () => false,
+    // 只在**真的处于拖动会话中**才拒绝让出 responder（P0，2026-10-02 用户第 4 条）。
+    // 原写法无条件 `() => false`：RN 的 responder 只由同一个触摸流的 end/cancel 释放，
+    // 而本仓多处注释都记录了「抬手事件被系统手势吃掉 / 抬手事件丢失」是常态（arm /
+    // drag 两道看门狗就是为此加的）。一旦 release 丢失，这个 responder 会被**永久**
+    // 持有并拒绝让出——RN 里每一次新的按压都必须先把 responder 从持有者手里拿过来
+    // （setResponder → onResponderTerminationRequest），被拒就整屏「点不动」；而
+    // UIScrollView 的平移是原生手势、根本不经过 responder，所以「列表还能滑」；
+    // 再滑一下会触发 UIKit 的 touch cancel → RN 释放 responder → 又能点了。
+    // 即用户报的「切回某个页面后点击锁死、但可以滑动、滑动后就可以点击」。
+    // 收紧成「拖动会话中」后，拖动期间语义完全不变（拖动时 draggingRef 恒 true，
+    // 依旧是拒绝被 PagerView/ScrollView 抢走），而任何泄漏的 responder 都会被下一次
+    // 按压立即顶掉——自愈不再需要用户先滑一下。注意不能写成 dragArmedRef：arm 只
+    // 表示「长按已触发、等待移动接管」，此时我们并不是 responder，让出条件用
+    // draggingRef（真被授予过）才是准确的那条边界。
+    // 极性（RN 语义，最容易写反的一处）：onResponderTerminationRequest **返回 false = 拒绝
+    // 让出**、返回 true = 同意交出去，所以「拖动会话中拒绝」必须取反写
+    // `!draggingRef.current`。写成 `() => draggingRef.current` 就整个反了：拖动期间主动
+    // 让出（横滑被 PagerView 抢走、拖动中断），不拖动时反而永久拒绝（泄漏后照旧点不动）。
+    onPanResponderTerminationRequest: () => !draggingRef.current,
     onPanResponderGrant: () => {
       draggingRef.current = true
       dragStartLensXRef.current = lensXRef.current
@@ -533,7 +562,7 @@ export default memo(() => {
           {/* 省电门扩展（C9 发热）：本栏在收起态是**完全不可见**的（opacity 0 + 下移 28），
               却仍在跑 Metal 逐帧渲染 —— 收起态是长时间驻留状态（只要列表不停在顶部），
               这是纯白烧的电。可见性一并纳入门控。 */}
-          <LiquidGlass glassOpacity={glassOpacity} dark={theme.isDark} liquid={liquidGlassOn} paused={homeCovered || collapsed || navTransitioning} style={{ borderRadius: designRadius.glass }} />
+          <LiquidGlass glassOpacity={glassOpacity} dark={theme.isDark} liquid={liquidGlassOn} paused={homeCovered || collapsed || navTransitioning || !appActive} live={pagerDragging} style={{ borderRadius: designRadius.glass }} />
           {/* 液态透镜药丸（tab 切换动画）：玻璃之上、tab 内容之下；快速点击走
               Pressable 切页（x prop 弹簧），横滑跟手 / 长按拖动走 ref 命令式
               followX（同一套通道，见组件上部注释） */}
@@ -613,7 +642,7 @@ export default memo(() => {
           pointerEvents={collapsed ? 'auto' : 'none'}
         >
           {/* 同上：圆钮在展开态完全不可见（opacity 0 + scale 0.5），可见性纳入省电门 */}
-          <LiquidGlass glassOpacity={glassOpacity} dark={theme.isDark} liquid={liquidGlassOn} paused={homeCovered || !collapsed || navTransitioning} style={{ borderRadius: designRadius.pill }} />
+          <LiquidGlass glassOpacity={glassOpacity} dark={theme.isDark} liquid={liquidGlassOn} paused={homeCovered || !collapsed || navTransitioning || !appActive} live={pagerDragging} style={{ borderRadius: designRadius.pill }} />
           <Pressable style={styles.pillInner} onPress={handlePillPress}>
             <View style={styles.pillIcon} pointerEvents="none">
               <Icon name="menu" size={20} color={theme['c-primary']} />

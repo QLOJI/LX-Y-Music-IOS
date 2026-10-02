@@ -34,7 +34,13 @@ const PlayNextBtn = () => {
 
   return (
     <TouchableOpacity style={[styles.cotrolBtn, { borderRadius: buttonRadius(40) }]} activeOpacity={0.5} onPress={handlePlayNext}>
-      <Icon name="nextMusic" color={theme['c-font']} size={BTN_SIZE} />
+      {/* 2026-10-02（用户第 5 条）：下一首图标由正文色 c-font 改为主色 c-primary-font，
+          与播放/暂停按钮的三角图标**同一个色值**（主题映射里
+          c-primary-font = themeColors['c-primary']，也正是设置页
+          「LX-Y Music 字体大小预览」用的那个颜色）。原先两枚图标一灰一主色，
+          在迷你播放器里「下一首」看上去像次要信息。
+          注：上一首（PlayPrevBtn）只在横屏出现，用户本次只点名「下一首」，故保持不变。 */}
+      <Icon name="nextMusic" color={theme['c-primary-font']} size={BTN_SIZE} />
     </TouchableOpacity>
   )
 }

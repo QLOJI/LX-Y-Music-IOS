@@ -227,10 +227,22 @@ export const ProgressTouchArea = memo(
           unlock()
           handlersRef.current.onDragEnd()
         },
-        // 关键修复：拒绝被父级（播放页纵向滑动切歌）手势抢占。
+        // 关键修复：拖动进度条期间拒绝被父级（播放页纵向滑动切歌）手势抢占，
         // 否则 onPanResponderRelease 不触发、onSetProgress(seek) 被丢弃，
         // 表现为「拖了进度条但歌曲不跳转」。
-        onPanResponderTerminationRequest: () => false,
+        // 但拒绝必须**只在拖动会话中**生效（P0，2026-10-02 用户第 4 条）：原写法无条件
+        // `() => false`，而本组件在 onStartShouldSetPanResponderCapture 里、手指刚落下
+        // 就抢到 responder，release/terminate 丢失时（看门狗注释里记录过「手势被系统吞掉」）
+        // 响应权会被永久持有且拒绝让出 ⇒ RN 之后每次按压都拿不到 responder，整屏点击锁死；
+        // 滚动是原生平移、不经 responder，所以「能滑不能点、滑一下又能点」。
+        // isLockedRef 在 grant 时置 true、unlock() 时置 false（含看门狗与卸载兜底），
+        // 因此拖动期间判断结果与原来完全一致。
+        // 极性务必注意：RN 的 onResponderTerminationRequest **返回 false 才表示「拒绝让出」**
+        // （true = 同意交出去），所以「仅拖动会话中拒绝」必须写成 `!isLockedRef.current`。
+        // 写成 `() => isLockedRef.current` 正好是反的：拖动期间让出（手势中途被父级
+        // 播放页纵向滑动抢走，release 不来、seek 被丢），不拖动时反而永久拒绝——泄漏后
+        // 照样整屏「点不动」。契约脚本 sim-tap-lock-responder.js 的 A2 段专门按行为验极性。
+        onPanResponderTerminationRequest: () => !isLockedRef.current,
       }),
     ).current
 
