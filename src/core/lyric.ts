@@ -12,7 +12,12 @@ import { getPosition } from '@/plugins/player/utils'
 import playerState from '@/store/player/state'
 // import settingState from '@/store/setting/state'
 
-const getReliableLyricPosition = async() => {
+/**
+ * 取一次「可信的引擎位置」（秒）。
+ * 供歌词装载链路复用：装载完成时把位置随原生时间轴一起提交，原生在同一次调用
+ * 里重锚 + 仲裁出当前行，锁屏/灵动岛不会先显示旧行再跳。
+ */
+export const getReliableLyricPosition = async() => {
   const progressPosition = Math.max(playerState.progress.nowPlayTime, 0)
   const playerPosition = await getPosition().catch(() => progressPosition)
 
@@ -109,10 +114,15 @@ export const toggleRoma = async(isShowLyricRoma: boolean) => {
   if (playerState.isPlay) play()
 }
 
-export const play = () => {
-  void getReliableLyricPosition().then((position) => {
-    handlePlay(position * 1000)
-  })
+/**
+ * 把歌词引擎推进到当前播放位置。
+ * 返回本次使用的位置（秒）：调用方（iOS 原生化歌词链路）随时间轴一起提交给原生，
+ * 让原生在同一次调用内完成重锚 + 行仲裁。
+ */
+export const play = async() => {
+  const position = await getReliableLyricPosition()
+  handlePlay(position * 1000)
+  return position
 }
 
 export const seek = (time: number) => {
@@ -125,8 +135,14 @@ export const seek = (time: number) => {
 }
 
 
+/**
+ * 装载歌词（解析 + 引擎对齐），并返回装载所用的引擎位置（秒，可能为 undefined）。
+ * iOS 原生化歌词链路（core/init/player/lyric.ts 的 lyricUpdated 处理）在
+ * `await setLyric()` 之后把该位置随整条时间轴一起提交，原生同调用内重锚 + 仲裁，
+ * 消除「时间轴已换、卡片还是旧行/空行」的错行窗口。
+ */
 export const setLyric = async() => {
-  if (!playerState.musicInfo.id) return
+  if (!playerState.musicInfo.id) return undefined
   const musicInfo = playerState.musicInfo
   const source = (musicInfo as { source?: string }).source ?? ''
   if (musicInfo.lrc) {
@@ -142,5 +158,8 @@ export const setLyric = async() => {
     await handleSetLyric(musicInfo.lrc, tlrc, rlrc, lxlrc)
   }
 
-  if (playerState.isPlay) play()
+  // 播放中：推进引擎时钟并返回它使用的位置；暂停中：只取位置、不动引擎
+  // （推进解析器会让暂停期间歌词行自行前进）。
+  if (playerState.isPlay) return play()
+  return getReliableLyricPosition().catch(() => undefined)
 }

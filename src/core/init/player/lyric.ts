@@ -2,7 +2,7 @@ import { init as initLyricPlayer, toggleTranslation, toggleRoma, play, pause, st
 import playerState from '@/store/player/state'
 import { updateMetaData } from '@/plugins/player'
 import { setLastLyric } from '@/core/player/playInfo'
-import { getCurrentLyricLines } from '@/plugins/lyric'
+import { getCurrentLyricLines, getLyricLineTextByTime } from '@/plugins/lyric'
 import { setNowPlayingLyrics } from '@/utils/nativeModules/nowPlaying'
 import settingState from '@/store/setting/state'
 import { Platform } from 'react-native'
@@ -17,6 +17,18 @@ const isShowBluetoothLyric = () => settingState.setting['player.isShowBluetoothL
 // 不能复用 playerState.lastLyric：关闭开关时它被有意写成 undefined（避免后续重发
 // 路径把旧行写回 artist），若拿它当「当前行」会丢失真实行号。
 let realCurrentLyric: string | undefined
+
+// 歌词装载窗口计数（>0 = 正在装载）。窗口内逐行回调一律丢弃：
+// setLyric() 会先让解析器触发 onSetLyric（hook(-1,'')，行文本为空），再用一次
+// **异步**的桥往返位置做重锚——这中间回调出的行要么是空、要么是按旧内部时钟算出
+// 的陈旧行。原样发布到 artist，锁屏/灵动岛会先显示错行、随后才被纠正（用户看到
+// 的「短暂不一致，然后跳转」）。窗口结束时由 setNowPlayingLyrics 携带引擎位置
+// 一次性把当前行仲裁到位（原生同调用内重锚 + 行仲裁），不需要中间那几帧。
+let lyricLoading = 0
+
+// 最近一次发布给系统媒体信息的歌词行（与 realCurrentLyric 的区别：受开关门控）。
+// 提升到模块级是因为装载窗口结束时要在 lyricUpdated 处理里把两侧状态对齐。
+let prevLyric: string | undefined
 
 /**
  * 应用「显示蓝牙歌词」开关（设置页切换时立即调用，无需等下一首/下一次歌词加载）。
@@ -55,8 +67,10 @@ export default async(setting: LX.AppSetting) => {
   ])
 
   if (Platform.OS == 'ios') {
-    let prevLyric: string | undefined
     onLyricPlay((line, text) => {
+      // 装载窗口内不发布：此时的行要么是 onSetLyric 的空行、要么是重锚前的陈旧行
+      // （见 lyricLoading 注释）。窗口结束时会按引擎位置把当前行仲裁到位。
+      if (lyricLoading > 0) return
       // 无论开关如何都记录真实当前行：关闭期间「音箱只显示歌名」不应导致
       // 重新打开后丢失行号（否则要等下一行变化才恢复歌词显示）。
       realCurrentLyric = text || undefined
@@ -81,9 +95,24 @@ export default async(setting: LX.AppSetting) => {
   // 只关 JS 一侧的话，原生时钟仍会把歌词写进 artist（车机照样显示歌词）。
   global.app_event.on('lyricUpdated', () => {
     if (Platform.OS == 'ios') {
-      void setLyric().then(() => {
+      // 打开装载窗口：窗口内的逐行回调一律丢弃（见 lyricLoading 注释）
+      lyricLoading += 1
+      void setLyric().then(async(position) => {
         const lines = playerState.musicInfo.lrc && isShowBluetoothLyric() ? getCurrentLyricLines() : []
-        void setNowPlayingLyrics(lines)
+        // 位置随行一起提交：原生在同一次调用内重锚 + 仲裁出当前行；无行时不必取位置
+        const lyricPosition = lines.length ? position : undefined
+        if (lyricPosition != null) {
+          // 与 JS 逐行状态对齐（窗口内丢弃的回调不会补发）：判据与原生侧一致
+          // （最后一个 time ≤ 位置的行）；早于首行视为无行——前奏不预告第一句。
+          const positionMs = lyricPosition * 1000
+          realCurrentLyric = positionMs >= (lines[0]?.time ?? 0)
+            ? (getLyricLineTextByTime(positionMs) || undefined)
+            : undefined
+          prevLyric = realCurrentLyric
+        }
+        await setNowPlayingLyrics(lines, lyricPosition)
+      }).catch(() => {}).finally(() => {
+        lyricLoading -= 1
       })
     } else {
       setLyric()

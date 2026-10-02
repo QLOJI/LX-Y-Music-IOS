@@ -66,7 +66,8 @@ export const setSafeAreaBottom = (size: number) => {
   commonActions.setSafeAreaBottom(size)
 }
 
-// 页面转场窗口（开始/结束）开关，只给 navigation 用；玻璃侧只读（useNavTransitioning）
+// push 转场窗口（开/关）开关，只给 navigation 用；玻璃侧只读（useNavTransitioning）。
+// pop 侧在 handleScreenPopped 里立即关窗（返回时玻璃正要露出来，不能继续按住）。
 export const setNavTransitioning = (transitioning: boolean) => {
   commonActions.setNavTransitioning(transitioning)
 }
