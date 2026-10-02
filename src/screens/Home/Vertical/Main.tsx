@@ -63,8 +63,12 @@ const PAGER_REBUILD_DEBOUNCE_MS = 3000
  * 任何真实拖动都会持续产生 onPageScroll 帧（每一帧都会重新布防），所以长时间收不到帧
  * 就只能是手势被取消/事件丢失——用于兜底复位跟手会话与 PagerView 的私有 isScrolling
  * （详见组件内 clearNativePagerScrolling 的注释）。
+ * 2026-10-02（用户第 11 轮第 9 条）：3s → 2s。闩锁卡住时「点击锁死」的最大持续时间
+ * 就是这个值；同时它也是 healPagerScrollLatch 判定「近期还有原生活动」的窗口。
+ * 代价：手指按住不动超过 2s 再继续拖，跟手会话会被判结束，tab 栏透镜在剩余行程里
+ * 不再跟手（此前 3s 也有同样的边界，只是更晚触发）。
  */
-const PAGER_DRAG_SILENCE_MS = 3000
+const PAGER_DRAG_SILENCE_MS = 2000
 
 /**
  * 横滑开关（pagerScrollEnabled）向原生重发的低频心跳周期（2026-10-01，P0）。
@@ -76,8 +80,10 @@ const PAGER_DRAG_SILENCE_MS = 3000
  * JS 这边却毫不知情，后续 render 也永远修不回来——用户侧就是「五页滑不动，
  * 点击与 tab 栏都正常，重启才好」。心跳按 JS 侧唯一真值周期重发（写入幂等），
  * 正常情况下是空操作；见组件内 resyncPagerScroll 的注释。
+ * 2026-10-02（用户第 11 轮第 9 条）：4s → 2s。心跳也是「抹平库私有闩锁」的兜底通道
+ * （见 healPagerScrollLatch），周期越长，闩锁卡住后的死点窗口越长。
  */
-const PAGER_SCROLL_RESYNC_MS = 4000
+const PAGER_SCROLL_RESYNC_MS = 2000
 
 const SearchPage = () => (
   useHomeLazyPage('nav_search', () => <Search />)
@@ -539,6 +545,10 @@ const Main = () => {
   // 每收到一帧进度就续期；3s 没有任何进度帧即判定手势已结束、主动收尾（现有
   // homePagerIdle 的 800ms 兜底只管它自己那个标志，不管这条会话）。
   const pagerDragFallbackRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // 最近一次「原生确实还在动」的时刻（收到 dragging 状态或任意一帧 onPageScroll 时刷新）。
+  // 自愈判定用真实活动时间，而不是会话标志：两者是独立生命周期，会话标志卡在 true 时
+  // 只看标志会把自愈永久跳过（用户第 11 轮第 9 条：点击锁死仍间歇复现）。
+  const pagerDragActivityAtRef = useRef(0)
   // PagerView 私有字段 isScrolling 的兜底清理（2026-10-01，P0：五页「滑不动、只能点 tab 栏」）
   // react-native-pager-view 6.7.1 的 JS 侧（node_modules/react-native-pager-view/src/PagerView.tsx
   // 的 private isScrolling / _onPageScrollStateChanged / _onMoveShouldSetResponderCapture）
@@ -562,6 +572,9 @@ const Main = () => {
     if (pager?.isScrolling) pager.isScrolling = false
   }, [])
   const endPagerDragSession = useCallback(() => {
+    // 收尾即「此刻没有手势」，刷新活动时间戳：随后 healPagerScrollLatch 的静默判定
+    // 从这次收尾起算，不会立刻又判成「静默超时」。
+    pagerDragActivityAtRef.current = Date.now()
     if (pagerDragFallbackRef.current) {
       clearTimeout(pagerDragFallbackRef.current)
       pagerDragFallbackRef.current = null
@@ -582,10 +595,19 @@ const Main = () => {
   // 而原生滚动照旧、滑一下（UIKit touch cancel → RN 释放 responder）又能点。
   // 调用点：① 每次 onPageSelected（手势/程序化切页的落点确定时刻）；② navActiveIdUpdated
   // 的切页路径；③ 4s 心跳；④ 会话收尾与回前台（各自直接调 clearNativePagerScrolling）。
+  // 2026-10-02（用户第 11 轮第 9 条：点击锁死仍间歇复现）改判定口径：
+  // 旧写法是「会话标志为 true 一律不碰」。但会话标志与原生事件是两条独立生命周期
+  // ——原生丢配对的 idle 时，标志和闩锁会一起卡在「拖动中」，而自愈被自己的守卫
+  // 永久挡住（只剩 3s 看门狗一条路，它又会被任何一帧 onPageScroll 续期），
+  // 于是「能滑不能点」能存活到下一次成功滑动为止。
+  // 现在改为按**静默时长**放行：只要最近 PAGER_DRAG_SILENCE_MS 内没有原生活动，
+  // 无论会话标志是什么都收尾并抹平闩锁。真实拖动每帧都在刷新活动时间戳，不会误伤。
   const healPagerScrollLatch = useCallback(() => {
-    if (pagerDragSessionRef.current) return
-    clearNativePagerScrolling()
-  }, [clearNativePagerScrolling])
+    if (pagerDragSessionRef.current && Date.now() - pagerDragActivityAtRef.current < PAGER_DRAG_SILENCE_MS) return
+    // endPagerDragSession 内部无条件调用 clearNativePagerScrolling（不依赖会话标志），
+    // 所以闩锁清理在这里是必然发生的，不再有「守卫把自己挡住」的路径。
+    endPagerDragSession()
+  }, [endPagerDragSession])
   // 后台恢复兜底（2026-10-01）：原生在后台可能重建子视图 / 丢事件（repairPager 注释
   // 记录过同类场景），回前台时把 JS 侧两条保险各收一次：
   // ① PagerView 私有 isScrolling 闩锁（卡住 = 五页列表拖不动，见 clearNativePagerScrolling）；
@@ -605,6 +627,7 @@ const Main = () => {
     // 帧级频率，setState 会让整条 tab 栏在 120Hz 下逐帧重渲染。
     // progress = position + offset 的约定无关取法见 ModernTabBar（订阅端 clamp）。
     if (!pagerDragSessionRef.current) return
+    pagerDragActivityAtRef.current = Date.now()
     if (pagerDragFallbackRef.current) clearTimeout(pagerDragFallbackRef.current)
     pagerDragFallbackRef.current = setTimeout(() => {
       pagerDragFallbackRef.current = null
@@ -619,6 +642,8 @@ const Main = () => {
       if (nativeEvent.pageScrollState == 'dragging') {
         // 真实手势开始：开跟手会话（tab 栏据此抬起透镜并开始跟随手指）
         pagerDragSessionRef.current = true
+        // 状态回调本身就是一次原生「还在动」的证据，刷新活动时间戳（见 healPagerScrollLatch）
+        pagerDragActivityAtRef.current = Date.now()
         emitPagerDrag(true)
         // 在此刻就布防，而不是等第一帧 onPageScroll：'dragging' 之后如果原生再没有
         // 任何状态回调（手势被取消，willEndDragging 不来）也没有任何进度帧，
@@ -864,6 +889,16 @@ const Main = () => {
       <View
         style={isTabPageCovered ? styles.pagerCellHidden : styles.pagerCell}
         pointerEvents={isTabPageCovered ? 'none' : 'auto'}
+        // 触摸起点的预防性清理（用户第 11 轮第 9 条：点击锁死仍间歇复现）。
+        // 库私有 isScrolling 卡在 true 时，落在页面上的**按压**会在 capture 阶段被 pager
+        // 抢走 responder，触摸目标拿不到 ⇒ 点点不动，而原生横滑照旧、滑一下（收到 idle）
+        // 又能点——与用户描述逐字吻合（机制见 clearNativePagerScrolling 注释）。
+        // 手指刚落下时一定还没有手势在跑，此刻无条件抹平闩锁不会打断任何东西，
+        // 却让紧随其后的移动判定不再抢触摸。返回 false = 不截胡，协商照常往下走。
+        onStartShouldSetResponderCapture={() => {
+          clearNativePagerScrolling()
+          return false
+        }}
       >
         <PagerView
           // pagerRebuild：兜底重建计数。原生实例在后台恢复后可能失效（见 repairPager 注释），
