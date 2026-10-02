@@ -7,14 +7,31 @@ import { fixNewMusicInfoQuality } from '@/utils'
 import { saveListPrevSelectId } from '@/utils/data'
 import { playList } from '@/core/player/player'
 import { clearPlayedList } from '@/core/player/playedList'
+import { getTopSourceInfo, refreshDefaultList, stageOnlineListToDefault } from '@/core/playListToDefault'
 
 /**
- * Play a temporary online song list
- * @param listId Unique identifier for the list, used to distinguish different temporary lists
- * @param list Array of songs to play
- * @param index Index of the song to start playing
+ * 播放一份「整份的来源列表」（搜索/榜单/歌单详情/专辑详情/歌手详情/相似歌曲/播放历史/
+ * 每日推荐/本地与下载/WebDAV/deeplink 都走这里）。
+ *
+ * 本地增强（按用户要求，与上游不同）：整份写入**试听列表(DEFAULT)**，不再写临时列表(TEMP)。
+ * 是否清空旧内容由「自动清空已播放列表」(player.isAutoCleanPlayedList) 决定，
+ * 语义与歌单详情页完全一致（见 core/playListToDefault.ts）。这样长按迷你播放器封面时，
+ * 跳转落点就是「我的」页里的试听列表卡片，而不是一个「我的」页里没有卡片的临时列表。
+ *
+ * @param listId 源列表标识（用于区分不同来源：同一份源在试听列表顶部不重复叠一份）
+ * @param list 歌曲数组
+ * @param index 从第几首开始播
+ * @param isSkipPlay 只准备列表、不开始播放（仅 keepAsTempList 通道有效）
+ * @param keepAsTempList 仍然写临时列表。目前只有「心动模式(heartbeat)」用它：那是会不断
+ *        重建的动态电台队列、不是歌单，写进试听列表会把用户自己的列表顶掉甚至清空。
  */
-export const playOnlineList = async(listId: string, list: LX.Music.MusicInfoOnline[], index: number, isSkipPlay: boolean = false) => {
+export const playOnlineList = async(
+  listId: string,
+  list: LX.Music.MusicInfoOnline[],
+  index: number,
+  isSkipPlay: boolean = false,
+  keepAsTempList: boolean = false,
+) => {
   const targetMusic = list[index]
   if (targetMusic) {
     console.log('[playOnlineList] === 播放歌曲信息诊断 ===', {
@@ -31,23 +48,26 @@ export const playOnlineList = async(listId: string, list: LX.Music.MusicInfoOnli
     })
   }
 
-  await overwriteListMusics(LIST_IDS.TEMP, [...list])
-  await setTempList(listId, list)
-  clearPlayedList()
-  setActiveList(LIST_IDS.TEMP)
-  if (!isSkipPlay) void playList(LIST_IDS.TEMP, index)
+  if (keepAsTempList) {
+    await setTempList(listId, list)
+    clearPlayedList()
+    setActiveList(LIST_IDS.TEMP)
+    if (!isSkipPlay) void playList(LIST_IDS.TEMP, index)
+    return
+  }
+  await stageOnlineListToDefault(listId, [...list], index)
 }
 
 /**
- * 播放一个「可能只加载了一部分」的在线列表，并在后台把临时列表补齐为完整列表。
+ * 播放一个「可能只加载了一部分」的在线列表，并在后台把试听列表顶部补齐为完整列表。
  *
  * 背景：详情类页面的歌曲列表是分页加载的（歌手详情每页 100 首），页面上只有已加载的
- * 那部分歌；直接把已加载部分写进临时列表，用户看到的「播放全部」就只有前 N 首。
+ * 那部分歌；直接把已加载部分写进试听列表，用户看到的「播放全部」就只有前 N 首。
  * 这里先用已有数据立即开播（不阻塞交互），随后调用 loadAll 拉完整列表，若确实更长
- * 且期间用户没有切到别的列表播放，就整体替换临时列表（当前播放歌曲按 id 在新列表里
- * 位置不变，播放下标由 watchList 的 updatePlayIndex 自动重算）。
+ * 且期间用户没有切到别的列表播放，就原位扩容试听列表顶部这一段（当前播放歌曲按 id
+ * 在新列表里位置不变，播放下标由 watchList 的 updatePlayIndex 自动重算）。
  *
- * @param listId 临时列表的来源标识（用于判断期间是否切走了）
+ * @param listId 源列表标识（用于判断期间是否切走了）
  * @param curList 页面上已加载的歌曲
  * @param index 从第几首开始播
  * @param loadAll 拉取完整列表；失败或为空时返回 null/空数组，静默跳过补齐（不影响已开始的播放）
@@ -62,12 +82,13 @@ export const playOnlineListEnsureAll = async(
   try {
     const fullList = await loadAll()
     if (!fullList?.length || fullList.length <= curList.length) return
-    // 期间用户可能已经点了别的列表的播放全部：只补齐仍是同一个临时列表的情况
-    if (listState.tempListMeta.id !== listId) return
+    // 期间用户可能已经点了别的列表的播放全部：只有试听列表顶部仍是这一份时才扩容
+    // （refreshDefaultList 内部还会再校验一次顶部这一段是否完好，双保险）
+    if (getTopSourceInfo().id !== listId) return
     const playingId = playerState.playMusicInfo.musicInfo?.id
     // 完整列表里必须还包含当前播放的歌曲，否则替换后 watchList 会判定“歌曲被移除”而自动切歌
     if (playingId && !fullList.some(m => m.id === playingId)) return
-    await setTempList(listId, [...fullList])
+    await refreshDefaultList(listId, [...fullList])
   } catch { /* 补齐失败不影响已开始的播放 */ }
 }
 

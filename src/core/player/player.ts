@@ -338,6 +338,23 @@ export const playList = async(listId: string, index: number) => {
   await handlePlay()
 }
 
+/**
+ * 长按迷你播放器封面时应该跳转到的「来源列表」id（本地增强，上游没有）。
+ *
+ * 正常情况下就是当前播放歌曲的来源列表（playMusicInfo.listId）。但「稍后播放」队列里的歌
+ * 在入队时写死 listId 为空（见 components/OnlineList/listAction.ts 的 handlePlayLater，
+ * 本地文件 / WebDAV 那几处写 null）——这类歌不在任何列表里，播放时 playMusicInfo.listId
+ * 是空值，上游在长按入口 `if (!listId) return` 直接早退，表现为「长按完全没反应」。
+ * 这里回退到播放器当前正在迭代的列表（playInfo.playerListId：「稍后播放」只是插播，
+ * 插播结束后下一曲仍然回到这条列表），跳到「我的」并打开它。
+ * 这首歌本身若不在该列表里，就只打开列表、不按下标定位（见 Mylist/MusicList/List.tsx 的守卫）。
+ */
+export const getJumpListId = (): string => {
+  const listId = playerState.playMusicInfo.listId
+  if (listId) return listId
+  return playerState.playInfo.playerListId ?? ''
+}
+
 const handleToggleStop = async() => {
   await stop()
   setTimeout(() => {

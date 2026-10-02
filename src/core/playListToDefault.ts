@@ -47,25 +47,28 @@ const claimStage = (stagedListId: string, list: LX.Music.MusicInfo[]) => {
 }
 
 /**
- * 把点击播放歌曲所在的在线源列表并入「试听列表(DEFAULT)」并从所选位置开始播放。
- * 搜索/排行榜/歌单详情页的点歌统一走这里（不使用临时列表）。
+ * 把点击播放歌曲所在的源列表并入「试听列表(DEFAULT)」并从所选位置开始播放。
+ * 搜索/排行榜/歌单详情/专辑详情/歌手详情/相似歌曲/播放历史/每日推荐/本地与下载/WebDAV/
+ * deeplink 的点歌统一走这里（不使用临时列表）——本地增强，见 core/list.ts 的 playOnlineList。
  * - 勾选「自动清空已播放列表」(player.isAutoCleanPlayedList)：每次都丢弃旧内容，
  *   把这份列表整份写入试听列表；
  * - 未勾选：不清空，试听列表顶部已是这份列表时仅切换播放；
  *   否则把这份列表整份按歌单顺序置于试听列表顶部，原有内容保留在其下。
+ *
+ * 列表元素只用到 id（顶部这一段的前缀比对），所以在线歌曲、本地文件、WebDAV 文件
+ * 都能走这里，参数类型取通用的 MusicInfo。
  */
 export const stageOnlineListToDefault = async(
   stagedListId: string,
-  list: LX.Music.MusicInfoOnline[],
+  list: LX.Music.MusicInfo[],
   index: number,
-  force = false,
 ) => {
   const isAutoClean = settingState.setting['player.isAutoCleanPlayedList']
   const curList = getListMusicSync(LIST_IDS.DEFAULT)
   let newList: LX.Music.MusicInfo[]
 
-  if (isAutoClean || force) {
-    // 勾选「自动清空已播放列表」（或强制）：整体覆盖，旧内容丢弃
+  if (isAutoClean) {
+    // 勾选「自动清空已播放列表」：整体覆盖，旧内容丢弃
     newList = [...list]
   } else if (topSourceId == stagedListId) {
     if (isListPrefix(list, curList)) {

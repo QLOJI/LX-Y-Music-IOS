@@ -1,8 +1,5 @@
-import { LIST_IDS } from '@/config/constant'
-import { setTempList } from '@/core/list'
-import { playList } from '@/core/player/player'
+import { refreshDefaultList, stageOnlineListToDefault } from '@/core/playListToDefault'
 import { getListDetail, getListDetailAll } from '@/core/songlist'
-import listState from '@/store/list/state'
 
 const getListPlayIndex = (list: LX.Music.MusicInfoOnline[], index?: number) => {
   if (index == null) {
@@ -21,17 +18,20 @@ const playSongListDetail = async(source: LX.OnlineSource, link: string, playInde
   const id = decodeURIComponent(link)
   const playListId = `${source}__${decodeURIComponent(link)}`
   let list = (await getListDetail(id, source, 1)).list
-  if (playIndex == null || list.length > playIndex) {
+  // 整份写入试听列表(DEFAULT)，不再走临时列表（见 core/list.ts playOnlineList 的说明）：
+  // 这样从外部链接起播后，长按迷你播放器封面能落到「我的」页的试听列表卡片上。
+  if (list.length && (playIndex == null || list.length > playIndex)) {
     isPlayingList = true
-    await setTempList(playListId, list)
-    await playList(LIST_IDS.TEMP, getListPlayIndex(list, playIndex))
+    await stageOnlineListToDefault(playListId, [...list], getListPlayIndex(list, playIndex))
   }
   list = await getListDetailAll(source, id)
   if (isPlayingList) {
-    if (listState.tempListMeta.id == id) await setTempList(playListId, list)
-  } else {
-    await setTempList(playListId, list)
-    await playList(LIST_IDS.TEMP, getListPlayIndex(list, playIndex))
+    // 播放中：只把试听列表顶部这一段原位扩容；顶部已不是这份歌单时 refreshDefaultList
+    // 内部会自行跳过（原实现比对的是 listState.tempListMeta.id == id，而 playListId 带
+    // `${source}__` 前缀，该判断永远不成立，等于没校验）。
+    await refreshDefaultList(playListId, [...list])
+  } else if (list.length) {
+    await stageOnlineListToDefault(playListId, [...list], getListPlayIndex(list, playIndex))
   }
 }
 export const playSonglist = async(source: LX.OnlineSource, link: string, playIndex?: number) => {
