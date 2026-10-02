@@ -691,6 +691,7 @@ static void LXBeginReceivingRemoteControlEvents(void);
 static void LXRefreshNowPlayingLyricAnchor(void);
 static void LXClearNowPlayingLyricLines(void);
 static void LXReanchorNowPlayingLyric(double elapsedMs, double snapshotAtMs, double ageMs);
+static void LXNowPlayingLyricStep(void);
 static void LXStartNowPlayingLyricTimer(void);
 static void LXSyncNowPlayingLyricTimer(void);
 static void LXQueueNowPlayingLyricRedraw(void);
@@ -1172,6 +1173,15 @@ static void LXSetNowPlayingInfo(NSDictionary *metadata) {
     // 但只在播放中运行——暂停/停止/空闲时停钟，避免 8.3Hz 净唤醒（锁屏后台耗电）。
     LXSyncNowPlayingLyricTimer();
 
+    // JS 逐行通路刚写下的 artist **同一次调用内就仲裁**（原生时钟是行权威）：
+    // 逐行回调可能带着空行（onSetLyric 的 (-1,'')）或装载窗口的旧行触发，原样留在
+    // 缓存里就会先画到卡片上、等下一个 0.12s 拍才纠正——即「锁屏/灵动岛歌词短暂
+    // 显示错行，随后才跳到当前行」。仲裁放在这里（而不是等 tick）有两层好处：
+    //   1) 纠正发生在 LXApplyNowPlayingInfo() 之前 → 系统一次都没看到过错的文本；
+    //   2) 不必等 0.12s 的拍，前台/后台都不会有中间帧。
+    // 无时间轴、暂停、与前一行一致等情形在 step 内自行早退，开销可忽略。
+    if (artist != nil) LXNowPlayingLyricStep();
+
     // 仅当调用方显式携带 artwork 字段时才更新封面。蓝牙歌词 / 逐行歌词更新只传
     // { artist: 歌词 }（不含 artwork 键），若仍触发 LXSetNowPlayingArtwork(@"") 会把
     // 控制中心 / 锁屏封面擦除，表现为“播放中封面闪烁/消失”。不携带时仅重应用信息即可。
@@ -1274,14 +1284,22 @@ static void LXNowPlayingLyricStep(void) {
     double rate = cachedRate.doubleValue;
     // 速率缓存为 0、但控制中心播放态是「播放中」：缓存被一次 pause 发布写成 0，
     // 而此前的逐行歌词元数据不带 playbackRate，缓存永远不会被恢复——此时若按
-    // 「暂停」直接 return，歌词时钟会永久冻结在锚点行，表现为控制中心歌词不再
-    // 实时同步。这里以播放态兜底恢复速率（LXDefaultNowPlayingRate 在 Playing 时
-    // 返回 1、否则返回 0），并把恢复值写回缓存，避免系统也按 rate=0 停止外推。
+    // 「暂停」处理，歌词时钟会永久冻结在锚点行，表现为控制中心歌词不再实时同步。
+    // 这里以播放态兜底恢复速率（LXDefaultNowPlayingRate 在 Playing 时返回 1、
+    // 否则返回 0），并把恢复值写回缓存，避免系统也按 rate=0 停止外推。
+    // 真·暂停/停止：时钟不外推（歌词不自行前进）。但**行仲裁仍要走完**——暂停中
+    // 切歌、或重新装载时间轴时，锁屏/灵动岛必须显示暂停点对应的那一行，而不是上一首
+    // 残留的句子（旧行为直接 return，卡片会一直留着旧行，直到恢复播放才跳过来）。
+    // 注意时钟本身在非 Playing 时已被 LXSyncNowPlayingLyricTimer 停掉，所以这里
+    // 只服务于显式调用（元数据发布 / 时间轴装载 / 下拉重绘），不产生净唤醒。
+    BOOL paused = NO;
     if (rate <= 0) {
       NSNumber *fallbackRate = LXDefaultNowPlayingRate();
-      if (fallbackRate.doubleValue <= 0) return; // 真·暂停/停止：歌词不推进
-      rate = fallbackRate.doubleValue;
-      LXNowPlayingInfoCache[MPNowPlayingInfoPropertyPlaybackRate] = fallbackRate;
+      if (fallbackRate.doubleValue <= 0) paused = YES;
+      else {
+        rate = fallbackRate.doubleValue;
+        LXNowPlayingInfoCache[MPNowPlayingInfoPropertyPlaybackRate] = fallbackRate;
+      }
     }
     BOOL appActive = [UIApplication sharedApplication].applicationState == UIApplicationStateActive;
 
@@ -1324,13 +1342,15 @@ static void LXNowPlayingLyricStep(void) {
     // 时钟冻结（缓冲/暂停等非播放态，由 RNTP state 事件置位）：停在最后已知的
     // 引擎位置，不随墙钟外推——音频微缓冲走走停停时，外推持续超前正是
     // "同步一句停一会、隔几句又同步"的根因
-    double positionMs = LXNowPlayingClockHold
-      ? LXNowPlayingLyricAnchorElapsedMs
-      : LXNowPlayingLyricAnchorElapsedMs + ((CACurrentMediaTime() * 1000.0) - LXNowPlayingLyricAnchorSystemMs) * rate;
+    double positionMs = paused
+      ? LXNowPlayingLyricAnchorElapsedMs // 暂停：停在锚点位置（不外推），仅用于行仲裁
+      : (LXNowPlayingClockHold
+        ? LXNowPlayingLyricAnchorElapsedMs
+        : LXNowPlayingLyricAnchorElapsedMs + ((CACurrentMediaTime() * 1000.0) - LXNowPlayingLyricAnchorSystemMs) * rate);
     // 位置事件枢纽：前台播放时把外推位置广播给 JS（4Hz 单向事件），驱动进度条等
     // UI，替代 JS 侧每 250ms 两次桥接查询（getPosition + 引擎状态）。后台/熄屏
-    // 不发（无 UI 需要更新）。
-    if ([UIApplication sharedApplication].applicationState == UIApplicationStateActive) {
+    // 不发（无 UI 需要更新）；暂停也不发（位置不变，JS 自己知道暂停点）。
+    if (!paused && [UIApplication sharedApplication].applicationState == UIApplicationStateActive) {
       [[NSNotificationCenter defaultCenter] postNotificationName:LXPlayerPositionNotificationName
                                                           object:nil
                                                           userInfo:@{ @"position": @(positionMs / 1000.0), @"rate": @(rate) }];
@@ -1345,15 +1365,55 @@ static void LXNowPlayingLyricStep(void) {
       if (lineTime <= positionMs) { found = (NSInteger)mid; lo = mid + 1; }
       else { if (mid == 0) break; hi = mid - 1; }
     }
-    if (found < 0 || found == LXNowPlayingLyricIndex) return;
-    NSString *text = LXNowPlayingLyricLines[(NSUInteger)found][@"text"];
-    if (![text isKindOfClass:[NSString class]] || text.length == 0) return;
-    LXNowPlayingLyricIndex = found;
-    // 前台 JS 路径可能已把同行写入 artist：一致则静默跳过，避免重复发布
+    // ---- 行仲裁（2026-10-02「锁屏/灵动岛歌词短暂显示错行，随后才跳到当前行」）----
+    // 游标 LXNowPlayingLyricIndex 只记录「原生时钟上次写入的行」，而前台 JS 逐行
+    // 通路（onLyricPlay → updateMetaData → artist）直接写缓存、不经过这里，两条
+    // 通路可能不同步。旧实现按「found == 游标」短路返回：JS 刚写下的错行（后台
+    // 期间排队的陈旧行事件、装载窗口的空行、debounce 合并后的错行）会一直留在
+    // 卡片上，直到下一次真实换行才被纠正——这正是「短暂不一致，然后跳转」。
+    // 现在改为**以 artist 实际文本为准**仲裁，目标只有一个：卡片文本在任何时刻
+    // 都等于当前外推位置（found）对应的行。
     NSString *currentArtist = [LXNowPlayingInfoCache[MPMediaItemPropertyArtist] isKindOfClass:[NSString class]]
       ? LXNowPlayingInfoCache[MPMediaItemPropertyArtist]
       : nil;
-    if ([currentArtist isEqualToString:text]) return;
+    // artist 命中时间轴的哪一行（-1 = 空 / 不是任何一行：上一首残留、歌手名…）
+    NSInteger artistLine = -1;
+    if (currentArtist.length > 0) {
+      for (NSUInteger i = 0; i < LXNowPlayingLyricLines.count; i++) {
+        NSString *lineText = LXNowPlayingLyricLines[i][@"text"];
+        if ([lineText isKindOfClass:[NSString class]] && [currentArtist isEqualToString:lineText]) {
+          artistLine = (NSInteger)i;
+          break;
+        }
+      }
+    }
+    // 时钟落后于 JS（artist 是更靠后的一行，含前奏窗口的 found < 0）：保留 JS 文本、
+    // 只把游标推上去。**绝不回退文本**——回退就是用户看到的「跳回上一句」。
+    // 典型来源：updateMetaData 有 500ms 发布冷却，JS 已换行而锚点尚未推进。
+    if (artistLine >= 0 && artistLine > found) {
+      LXNowPlayingLyricIndex = artistLine;
+      return;
+    }
+    if (found < 0) {
+      // 前奏：没有「当前行」。artist 本来就空（常态）、或已是前奏前写入的空串，都
+      // 无需动；只有「不是任何一行的残留文本」（上一首遗留）才清掉并重绘。
+      LXNowPlayingLyricIndex = -1;
+      if (artistLine >= 0 || currentArtist.length == 0) return;
+      LXNowPlayingInfoCache[MPMediaItemPropertyArtist] = @"";
+      LXApplyNowPlayingInfo();
+      LXForceNowPlayingCardRepaint();
+      return;
+    }
+    NSString *text = LXNowPlayingLyricLines[(NSUInteger)found][@"text"];
+    if (![text isKindOfClass:[NSString class]] || text.length == 0) return;
+    if (artistLine == found) {
+      // 已是当前行（JS 通路先写对）：只对齐游标，静默跳过，避免重复发布
+      LXNowPlayingLyricIndex = found;
+      return;
+    }
+    // 其余（空 / 上一首残留 / JS 落后于时钟的陈旧行）：立即改写为当前行 + 刷新
+    // 系统进度基线 + 重绘。陈旧行不能等下一拍——用户第一眼就会看到它。
+    LXNowPlayingLyricIndex = found;
     // 重发前刷新系统进度基线：缓存里的 ElapsedPlaybackTime 是上次发布时的值，
     // 直接重发会把系统进度外推基线拉回旧值（每次换行进度条后跳、左侧时间倒退）。
     // 改写为当前外推位置（行变化只在播放中发生，positionMs 即「现在」的位置），
@@ -1418,8 +1478,13 @@ static void LXSyncNowPlayingLyricTimer(void) {
   }
 }
 
-// 歌词时间轴变化（新歌加载 / 换行集）：整组替换并重置行游标
-static void LXSetNowPlayingLyricLines(NSArray<NSDictionary *> *lines) {
+// 歌词时间轴变化（新歌加载 / 换行集）：整组替换并重置行游标。
+// positionMs/snapshotAtMs/ageMs（可空，2026-10-02 装载原子化）：JS 在 setLyric
+// 完成时把当时的引擎位置快照随行一起回传，原生在**同一次调用内**重锚 + 仲裁出
+// 当前行，不留「时间轴已换、卡片仍是旧行/空行，要等下一拍（最坏 0.12s 时钟 +
+// 60ms 重绘翻转）」的窗口——锁屏/灵动岛在换歌、切歌词页面时会看到的那段错行。
+// 只传 lines 的老调用仍兼容：退回按缓存里的 (elapsed, 戳) 重锚。
+static void LXSetNowPlayingLyricLines(NSArray<NSDictionary *> *lines, NSNumber *positionMs, NSNumber *snapshotAtMs, NSNumber *ageMs) {
   NSMutableArray<NSDictionary<NSString *, id> *> *merged = [NSMutableArray array];
   for (NSDictionary *item in lines) {
     NSNumber *time = [item[@"time"] isKindOfClass:[NSNumber class]] ? item[@"time"] : nil;
@@ -1431,6 +1496,16 @@ static void LXSetNowPlayingLyricLines(NSArray<NSDictionary *> *lines) {
     LXNowPlayingLyricLines = merged.count ? merged : nil;
     LXNowPlayingLyricIndex = -1;
   }
+  if (positionMs != nil) {
+    LXReanchorNowPlayingLyric(positionMs.doubleValue,
+                             snapshotAtMs ? snapshotAtMs.doubleValue : 0,
+                             ageMs ? ageMs.doubleValue : 0);
+  } else {
+    LXRefreshNowPlayingLyricAnchor();
+  }
+  // 时间轴非空 → 装载同刻仲裁一次：卡片在第一帧就是当前位置对应的行。
+  // 无歌词不仲裁（step 内自行早退），时钟照旧交给下面的统一守卫。
+  if (LXNowPlayingLyricLines.count > 0) LXNowPlayingLyricStep();
   // 时钟生命周期交给统一守卫：仅播放中运行时（暂停/停止即停钟，避免 8.3Hz 净唤醒）。
   // 无歌词不影响时钟——时钟还承担前台 4Hz 位置事件（驱动 JS 进度条）。
   LXSyncNowPlayingLyricTimer();
@@ -1444,6 +1519,10 @@ static void LXQueueNowPlayingLyricRedraw(void) {
   @synchronized (LXLyricLock()) {
     if (LXNowPlayingLyricLines.count == 0) return;
   }
+  // 先仲裁到当前行、再重绘：卡片在下拉瞬间只渲染一次快照，若先重绘后仲裁，
+  // 用户第一眼看到的仍是旧行（要等下一拍才纠正）。（仲裁若改写了文本，
+  // LXNowPlayingLyricStep 内部已强制重绘一次。）
+  LXNowPlayingLyricStep();
   LXForceNowPlayingCardRepaint();
 }
 
@@ -5472,10 +5551,12 @@ RCT_REMAP_METHOD(clearNowPlayingInfo, clearNowPlayingInfoWithResolver:(RCTPromis
 }
 
 // JS 在歌词加载完成后把整条时间轴（[{time: ms, text}]）交给原生：
-// 原生 NSTimer 按锚点外推位置直接驱动控制中心歌词，不依赖 JS 定时器
-RCT_REMAP_METHOD(setNowPlayingLyrics, setNowPlayingLyrics:(NSArray *)lines resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
+// 原生 GCD 时钟按锚点外推位置直接驱动控制中心歌词，不依赖 JS 定时器。
+// positionMs / snapshotAtMs / ageMs（可选，2026-10-02）：装载同刻的引擎位置快照，
+// 原生同调用内重锚 + 仲裁出当前行；缺省（老调用）时退回按缓存里的位置重锚。
+RCT_REMAP_METHOD(setNowPlayingLyrics, setNowPlayingLyrics:(NSArray *)lines positionMs:(NSNumber *)positionMs snapshotAtMs:(NSNumber *)snapshotAtMs ageMs:(NSNumber *)ageMs resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
   dispatch_async(dispatch_get_main_queue(), ^{
-    LXSetNowPlayingLyricLines(lines ?: @[]);
+    LXSetNowPlayingLyricLines(lines ?: @[], positionMs, snapshotAtMs, ageMs);
     resolve(nil);
   });
 }
