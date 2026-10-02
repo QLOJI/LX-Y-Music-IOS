@@ -254,8 +254,21 @@ const PlaylistCard = memo(({
             onDragCancel()
           }
         },
-        // 一旦接管手势就不再释放给 ScrollView，避免整页被滚动。
-        onPanResponderTerminationRequest: () => false,
+        // 只在长按激活后的拖动会话里拒绝让出 responder（P0，2026-10-02 用户第 4 条）。
+        // 原写法无条件 `() => false`：本行在 touch start 的 capture 阶段就抢到 responder
+        // （见上面的 onStartShouldSetPanResponderCapture），一旦 release/terminate 丢失
+        // （本仓多处注释记录过这种丢失），这个 responder 会永久持有并拒绝让出，RN 里
+        // 之后每一次按压都拿不到 responder ⇒「我的」乃至整屏点击锁死；而列表滚动是原生
+        // UIScrollView 平移、不经过 responder，所以仍能滑，再滑一下触发 UIKit touch
+        // cancel ⇒ RN 释放 responder ⇒ 又能点了。
+        // 收紧到 isActivatedRef（长按已激活）后：拖动期间语义完全不变（激活后恒 true，
+        // 依旧不给 ScrollView 抢），激活前的让出也不会导致「整页随拖动滚动」——长按
+        // 窗口内锁住祖先滚动靠的是 capture 阶段抢到 responder 本身（RCTUIManager 据此
+        // 给祖先 ScrollView 置 touchesShouldCancelInContentView=NO），与
+        // terminationRequest 无关；而任何泄漏的 responder 都会被下一次按压立即顶掉。
+        // 极性（RN 语义）：onResponderTerminationRequest **返回 false = 拒绝让出**（true =
+        // 让出），所以要取反 —— 激活时返回 false（拒绝），未激活时返回 true（让出）。
+        onPanResponderTerminationRequest: () => !isActivatedRef.current,
       }),
     [userListIndex, onLongPressStart, onDragMove, onDragRelease, onDragCancel, onTouchStart, onTouchEnd],
   )

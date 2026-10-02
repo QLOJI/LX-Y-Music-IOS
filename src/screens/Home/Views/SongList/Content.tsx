@@ -151,19 +151,24 @@ export default () => {
       <View style={[styles.baseContent, selectedList ? { opacity: 0 } : null]} pointerEvents={selectedList ? 'none' : 'auto'}>
         <List
           ref={listRef}
+          // 2026-10-02（用户第 1 条「左对齐」）：这里原先套了一层 marginHorizontal:-10，
+          // 注释说是「抵消 Songlist 列表 FlatList 的 10pt 水平框架内边距」。但那对 10pt
+          // 已经从 FlatList 的 style 挪到了 columnWrapperStyle（只作用于网格行，
+          // 见 List.tsx 的说明），ListHeaderComponent 早就不再被内缩 —— 负边距于是
+          // 从「抵消」变成「净左移 10pt」：标题「发现」、平台胶囊（酷我音乐等）、
+          // 排序胶囊、标签胶囊全部落在 14pt，比推荐页 / 我的页 / 设置页的 24pt
+          // 整整左移 10pt，切 Tab 时整排文字会横向跳一下。
+          // 去掉这层包裹后头部回到 24pt，与本页网格首列（List.tsx 同步收口到 24pt）
+          // 以及其他四个主页的标题、胶囊行落在同一条左基准线上。
           header={(
-            // 负边距抵消 Songlist 列表 FlatList 的 10pt 水平框架内边距，
-            // 让平台/分类/标签横滑行的滚动范围直达屏幕左右两缘（与推荐页一致）
-            <View style={{ marginHorizontal: -10 }}>
-              <HeaderBar
-                key={headerKey}
-                ref={headerBarRef}
-                title={t('discovery_tab_discover')}
-                onSortChange={handleSortChange}
-                onTagChange={handleTagChange}
-                onSourceChange={handleSourceChange}
-              />
-            </View>
+            <HeaderBar
+              key={headerKey}
+              ref={headerBarRef}
+              title={t('discovery_tab_discover')}
+              onSortChange={handleSortChange}
+              onTagChange={handleTagChange}
+              onSourceChange={handleSourceChange}
+            />
           )}
           onOpenDetail={handleOpenDetail}
         />
