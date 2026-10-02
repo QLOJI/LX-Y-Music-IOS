@@ -11,7 +11,7 @@ import { useMyList } from '@/store/list/hook'
 import { LIST_IDS } from '@/config/constant'
 import Text from '@/components/common/Text'
 import { createStyle } from '@/utils/tools'
-import { designRadius, designSpacing } from '@/theme/DesignTokens'
+import { designSpacing } from '@/theme/DesignTokens'
 
 const PLATFORM_ITEM_IDS = [
   'nav_my_playlist',
@@ -56,7 +56,12 @@ export default memo(() => {
       <Text style={styles.tip} size={12} color={theme['c-font-label']}>
         {t('setting_list_my_list_visibility_tip')}
       </Text>
-      <View style={{ ...styles.content, borderColor: theme['c-border-background'] }}>
+      {/* 外框已去掉（用户第 11 轮第 11 条「设置里的勾选框要都在同一直线上」）：
+          此前是「带边框 + padding:12」的盒子套卡片式 CheckBoxItem 行（卡中卡），内层行
+          左缘 = 页面内容左缘 + 13（12 padding + 1 border），勾选框整列比设置页其它行
+          右移 13pt。每行本身就是圆角卡片、上方又有分组标题与说明文字，这层盒子没有
+          额外信息量；去掉后勾选框回到与其它设置行同一条左基准线。 */}
+      <View>
         {listItems.map((item) => (
           <CheckBoxItem
             key={item.id}
@@ -81,10 +86,5 @@ export default memo(() => {
 const styles = createStyle({
   tip: {
     marginBottom: designSpacing.sm,
-  },
-  content: {
-    borderWidth: 1,
-    borderRadius: designRadius.sm,
-    padding: designSpacing.sm,
   },
 })

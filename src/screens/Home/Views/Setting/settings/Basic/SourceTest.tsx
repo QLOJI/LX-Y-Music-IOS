@@ -1533,19 +1533,20 @@ export default memo(() => {
       </View>
 
       <View style={styles.checkboxRow}>
+        {/* size 用默认值（用户第 11 轮第 11 条「设置里的勾选框要都在同一直线上」）：
+            此前这两处写死 size={0.8}，图标 24×0.8=19.2、文字 15×0.8≈12，比设置页
+            其它勾选框小一圈、基线也不齐，是全工程唯一两处非 1 的取值，已去掉。 */}
         <CheckBox
           check={showErrors}
           onChange={setShowErrors}
           label="显示警告"
           disabled={isTesting}
-          size={0.8}
         />
         <CheckBox
           check={showDowngrades}
           onChange={setShowDowngrades}
           label="显示降级"
           disabled={isTesting}
-          size={0.8}
         />
         {/* 同「常见问题」：基元 Button 丢弃调用方的 style / ripple，原先的 logBtn 外层与
             c-button-background 底色都没生效，一并删除（避免误以为这里能改底色）。 */}
