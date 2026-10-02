@@ -454,6 +454,30 @@ export const getMusicUrl = async(musicInfo: LX.Music.MusicInfo, type: LX.Quality
   getData<string>(`${storageDataPrefix.musicUrl}${musicInfo.id}_${type}`).then((url) => url ?? '')
 export const saveMusicUrl = async(musicInfo: LX.Music.MusicInfo, type: LX.Quality, url: string) =>
   saveData(`${storageDataPrefix.musicUrl}${musicInfo.id}_${type}`, url)
+/*
+ * 【第 16 轮第 3 条】请求档 → 达成档 映射记录。
+ * 取链固定天梯从用户偏好档（如 flac）开始降级，实际达成档可能更低（如 320k）。
+ * URL 必须按「达成档」为键存（缓存值语义诚实：flac 键下的链接就是 flac），
+ * 但「最后一刻预取」写入后，切歌取链读的是请求档（天梯首档）→ 键不一致 →
+ * 预取过的歌在起播/预加载复用时又发请求（用户实测一首歌发 3 次）。
+ * 这里额外记一条「请求档 → 达成档」，读缓存时未命中就按映射再查达成档，
+ * 命中即原样复用（质量标仍报达成档，不撒谎）。key 前缀沿用 musicUrl，
+ * clearMusicUrl 的清空逻辑（startsWith）会连同映射一起清掉，不会留孤儿记录。
+ */
+export const getMusicUrlRequestQuality = async(musicInfo: LX.Music.MusicInfo, type: LX.Quality) =>
+  getData<LX.Quality>(`${storageDataPrefix.musicUrl}request_quality__${musicInfo.id}_${type}`).then((quality) => quality ?? null)
+export const saveMusicUrlRequestQuality = async(musicInfo: LX.Music.MusicInfo, type: LX.Quality, quality: LX.Quality) =>
+  saveData(`${storageDataPrefix.musicUrl}request_quality__${musicInfo.id}_${type}`, quality)
+// 读缓存（带达成档映射回退）：直接命中请求档返回 { url, quality: 请求档 }；
+// 未命中则查映射，按达成档再取一次，返回 { url, quality: 达成档 }；都没有返回 null。
+export const getMusicUrlResolved = async(musicInfo: LX.Music.MusicInfo, type: LX.Quality): Promise<{ url: string, quality: LX.Quality } | null> => {
+  const url = await getMusicUrl(musicInfo, type)
+  if (url) return { url, quality: type }
+  const achievedQuality = await getMusicUrlRequestQuality(musicInfo, type)
+  if (!achievedQuality || achievedQuality === type) return null
+  const aliasedUrl = await getMusicUrl(musicInfo, achievedQuality)
+  return aliasedUrl ? { url: aliasedUrl, quality: achievedQuality } : null
+}
 export const clearMusicUrl = async(keys?: string[]) => {
   if (!keys) keys = (await getAllKeys()).filter((key) => key.startsWith(storageDataPrefix.musicUrl))
   await removeDataMultiple(keys)
