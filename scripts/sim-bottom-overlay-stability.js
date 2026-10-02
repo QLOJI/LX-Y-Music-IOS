@@ -18,8 +18,12 @@
  *     转场里那块背景是「旧页正在滑走 + 新页正在盖上来」的中间态。省电门
  *     （useHomeCovered / useScreenCovered）只看账本：push 时新页 setComponentId 晚于
  *     转场开始、pop 事件早于转场结束，两头都盖不住。修法：navigation 里按转场时长留
- *     一段 navTransitioning 窗口（startPush 起手开、screenPopped 续期），两条栏的
- *     paused 都并入该条件。
+ *     一段 navTransitioning 窗口，两条栏的 paused 都并入该条件。
+ *     2026-10-02（用户第 5 条）按方向拆开：**push 侧照旧**（startPush 起手开窗，
+ *     玻璃此时正在被盖住，按住无害）；**pop 侧改为立即关窗**（handleScreenPopped
+ *     调 endNavTransitionWindow）——返回时玻璃正在被露出来，续期等于让 Home 的
+ *     tab 栏/迷你播放器多显示 420ms 的陈旧纹理（用户原话「底部透过的画面短暂刷新、
+ *     突然变了一下」）。断言随之从「pop 必须续期」改成「pop 必须关窗且不得再续期」。
  *
  *  ③ 出现瞬间闪很粗的黑边 —— 原生 LiquidGlassView 的 commitCapturedTexture：冷启动
  *     头几帧 backdrop 还没合成，drawHierarchy 采到的是**整幅均匀色**，原实现写成
@@ -194,14 +198,31 @@ const transitionInvariants = (f) => {
     reasons.push(`NAV_TRANSITION_SETTLE_MS=${settle[1]} 短于 iOS 默认 push 转场 0.35s，罩不住整段转场`)
   }
 
-  // 两个端点都要开窗：push 起手 + pop 事件
+  // 两个端点方向相反：push 起手**开窗**，pop 事件**立即关窗**（2026-10-02 用户第 5 条）
   const startPushBody = fnBody(f.nav, /const startPush = [\s\S]{0,120}?=>\s*\{/)
   if (!startPushBody || !/beginNavTransitionWindow\(\)/.test(startPushBody)) {
     reasons.push('startPush 未开转场窗口（push 全过程仍会采到中间态）')
   }
   const poppedBody = fnBody(f.nav, /export const handleScreenPopped = [\s\S]{0,120}?=>\s*\{/)
-  if (!poppedBody || !/beginNavTransitionWindow\(\)/.test(poppedBody)) {
-    reasons.push('handleScreenPopped 未续期转场窗口（返回转场仍会闪）')
+  if (!poppedBody || !/endNavTransitionWindow\(\)/.test(poppedBody)) {
+    reasons.push('handleScreenPopped 未立即关窗（返回后底部玻璃要等窗口到点才恢复，露出的是 push 之前的陈旧画面）')
+  }
+  if (poppedBody && /beginNavTransitionWindow\(\)/.test(poppedBody)) {
+    reasons.push('handleScreenPopped 又改回续期窗口（返回时玻璃正在被露出来，续期 = 多显示一截陈旧画面）')
+  }
+  // 关窗函数本体：清在途定时器 + 置 false。只清定时器不置 false = 窗口一直开着、
+  // 玻璃再也不恢复渲染（比续期更糟）；只置 false 不清定时器 = 定时器到点再关一次，
+  // 本身无害，但会掩盖「定时器管理」这层语义，故一并要求。
+  const endBody = fnBody(f.nav, /function endNavTransitionWindow\(\)\s*\{/)
+  if (!endBody) {
+    reasons.push('navigation 缺 endNavTransitionWindow（pop 无法提前释放转场窗口）')
+  } else {
+    if (!/clearTimeout\(navTransitionTimer\)/.test(endBody)) {
+      reasons.push('endNavTransitionWindow 未清在途定时器')
+    }
+    if (!/setNavTransitioning\(false\)/.test(endBody)) {
+      reasons.push('endNavTransitionWindow 未关闭 navTransitioning（玻璃不再恢复渲染）')
+    }
   }
 
   // 消费点：两条栏的每一块玻璃的 paused 都要并入 navTransitioning
@@ -265,7 +286,7 @@ const run = (name, fn, tamper, expectSubstr) => {
 
 const assertions = []
 assertions.push(run('① safeAreaReady 启动门链路贯通（state/event/action/hook/SizeView/两消费点）', startupInvariants))
-assertions.push(run('② 转场窗口链路贯通（state/action/event/hook/navigation 两端点/两消费点）', transitionInvariants))
+assertions.push(run('② 转场窗口链路贯通（state/action/event/hook/navigation：push 开窗 / pop 关窗 / 两消费点）', transitionInvariants))
 assertions.push(run('③ 原生均匀帧沿用不再要求 previous 非空、且上限仍在', captureInvariants))
 
 // --- 反例自检（每条修复拆掉一点点，必须被判不合格）---
@@ -285,9 +306,16 @@ counterExamples.push(run('C4 SizeView 拆掉兜底定时器（原生卡住则底
 counterExamples.push(run('C5 startPush 拆掉转场窗口', transitionInvariants,
   { nav: REAL.nav.replace(/const startPush = ([\s\S]*?)\n\}/, (m) => m.replace('beginNavTransitionWindow()', '')) },
   'startPush 未开转场窗口'))
-counterExamples.push(run('C6 handleScreenPopped 拆掉转场窗口续期', transitionInvariants,
-  { nav: REAL.nav.replace(/export const handleScreenPopped = ([\s\S]*?)\n\}/, (m) => m.replace('beginNavTransitionWindow()', '')) },
-  'handleScreenPopped 未续期'))
+counterExamples.push(run('C6 handleScreenPopped 拆掉关窗（返回不再释放窗口）', transitionInvariants,
+  { nav: REAL.nav.replace(/export const handleScreenPopped = ([\s\S]*?)\n\}/, (m) => m.replace('endNavTransitionWindow()', '')) },
+  '未立即关窗'))
+counterExamples.push(run('C6b handleScreenPopped 又改回续期（返回后多显示 420ms 陈旧画面）', transitionInvariants,
+  { nav: REAL.nav.replace(/export const handleScreenPopped = ([\s\S]*?)\n\}/, (m) => m.replace('  endNavTransitionWindow()', '  beginNavTransitionWindow()')) },
+  '又改回续期'))
+counterExamples.push(run('C6c endNavTransitionWindow 只清定时器不关标志（玻璃再也不恢复渲染）', transitionInvariants,
+  { nav: REAL.nav.replace('  if (navTransitionTimer) {\n    clearTimeout(navTransitionTimer)\n    navTransitionTimer = null\n  }\n  commonActions.setNavTransitioning(false)',
+    '  if (navTransitionTimer) {\n    clearTimeout(navTransitionTimer)\n    navTransitionTimer = null\n  }') },
+  '未关闭 navTransitioning'))
 counterExamples.push(run('C7 TabBar 玻璃的 paused 丢掉 navTransitioning', transitionInvariants,
   { tabbar: REAL.tabbar.replace(/paused=\{homeCovered \|\| collapsed \|\| navTransitioning\}/, 'paused={homeCovered || collapsed}') },
   '未并入 navTransitioning'))
@@ -312,7 +340,7 @@ console.log('='.repeat(92))
 console.log('底部悬浮层启动/转场稳定性（Tab 栏 + 迷你播放器）')
 console.log('='.repeat(92))
 console.log('  ① 启动抽动      → safeAreaReady 门（两条栏 ready 之前不下发）')
-console.log('  ② 切换画面闪一下 → navTransitioning 转场窗口（startPush 开、pop 续期）')
+console.log('  ② 切换画面闪一下 → navTransitioning 转场窗口（startPush 开窗、handleScreenPopped 立即关窗）')
 console.log('  ③ 出现瞬间黑边   → 原生均匀帧沿用（不再要求 previous 非空）')
 console.log()
 console.log('='.repeat(92))

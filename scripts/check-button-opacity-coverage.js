@@ -210,8 +210,11 @@ CE('C5 滑条轨道去掉按钮透明度（回到需求点名的缺陷）', tamp
   (t) => t.replace(/applyOpacity\(theme\['c-button-background'\]/, "String(theme['c-button-background'])")),
 checkRequired, '轨道底色未随按钮透明度')
 
+// 2026-10-02：「播放全部」底色由 c-primary 改为 c-primary-background（需求：改用歌单详情页
+// 那套「主色文字 + 淡灰底」），反例的替换目标同步跟着改——否则 replace 找不到匹配、静默失败，
+// 本反例会「没拦住」而脚本自己不知道。
 CE('C6 applyOpacity 第二参写死常量', tamperFiles('src/components/DetailActionBar.tsx',
-  (t) => t.replace(/applyOpacity\(theme\['c-primary'\], buttonOpacity\)/, "applyOpacity(theme['c-primary'], 100)")),
+  (t) => t.replace(/applyOpacity\(theme\['c-primary-background'\], buttonOpacity\)/, "applyOpacity(theme['c-primary-background'], 100)")),
 checkImports, '第二参写死为常量')
 
 // C7 对应「第三批才发现的形态」：三元分支里的按钮令牌退回裸用（属性名正则抓不到，按行判定能抓）

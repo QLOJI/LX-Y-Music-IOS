@@ -35,6 +35,9 @@
  *      均匀沿用修复（previous 非空条件不得再出现）、采景几何与 drawHierarchy 调用方式、
  *      透镜链路（liftUp → beginLiveCapture；「对透镜/收起圆钮同样生效」的前提是
  *      iOS 14~26.1 且 theme.liquidGlass 开（默认），26.2+ JS 已强制磨砂、透镜不渲染）；
+ *      B7 采景节流（2026-10-02，用户第 5 条）：每实例最小采景间隔（常驻 30fps /
+ *      live 会话 60fps），captureBackdrop 实际接入、首帧放行、按会话分档、回写时刻。
+ *      注意这只压「采景」频率，rendering 自适应升/降档（B1）不动；
  *   C  反例自检：任一条修复被拆掉一点，本脚本必须判不合格；替换未命中 = 失败
  *      （防止用例指向的代码被改名后脚本退化成永真）。
  *
@@ -397,6 +400,44 @@ const existingStructureInvariants = (f) => {
   if (!liveBody || !/liveCaptureRequested = true/.test(liveBody) || !/backgroundTexture = nil/.test(liveBody)) {
     reasons.push('beginLiveCapture 不再丢弃上一次会话的纹理/开启显式高刷')
   }
+
+  // B7 采景节流（2026-10-02，用户第 5 条）：滑动时三块玻璃一起被 analyzeCapture 提到
+  // 120fps，主线程同步的 drawHierarchy 合计 360 次/秒，与 pager 动画抢主线程。
+  // 钉住：两个间隔常量存在且 live 档更高；captureBackdrop 真的接了节流；节流里
+  // 首帧放行（backgroundTexture 为 nil 时不得拦）、按 liveCaptureRequested 分档、
+  // 且确实回写 lastCaptureAt（不回写 = 第一帧后永远拦，玻璃冻结）。
+  const capMin = swiftNumber(glass, 'captureMinInterval')
+  const liveMin = swiftNumber(glass, 'liveCaptureMinInterval')
+  if (capMin === null) {
+    reasons.push('缺 captureMinInterval（滑动时三块玻璃各自逐帧采景，主线程被采满）')
+  } else if (!(capMin > 0 && capMin <= 0.1)) {
+    reasons.push('captureMinInterval=' + capMin + ' 不在 (0, 0.1s] 内（静止态基线档位异常）')
+  }
+  if (liveMin === null) {
+    reasons.push('缺 liveCaptureMinInterval（透镜抬起/跟手的采景上限）')
+  } else if (!(liveMin > 0 && liveMin <= 0.1)) {
+    reasons.push('liveCaptureMinInterval=' + liveMin + ' 不在 (0, 0.1s] 内（显式高刷会话档位异常）')
+  }
+  if (capMin !== null && liveMin !== null && !(liveMin < capMin)) {
+    reasons.push('liveCaptureMinInterval ≥ captureMinInterval（抬起/跟手会话应比常驻玻璃更跟手）')
+  }
+  if (!/if shouldThrottleCapture\(CACurrentMediaTime\(\)\) \{ return \}/.test(glass)) {
+    reasons.push('captureBackdrop 未接采景节流（14~26.1 路径仍是逐帧采景，滑动掉帧会复发）')
+  }
+  const throttleBody = fnBody(glass, /private func shouldThrottleCapture\(_ now: TimeInterval\) -> Bool\s*\{/)
+  if (!throttleBody) {
+    reasons.push('缺 shouldThrottleCapture（采景节流只剩常量，没有判定）')
+  } else {
+    if (!/guard backgroundTexture != nil else \{ return false \}/.test(throttleBody)) {
+      reasons.push('采景节流拦住了首帧（backgroundTexture 为 nil 时应放行，否则玻璃一直透明）')
+    }
+    if (!/liveCaptureRequested \? Self\.liveCaptureMinInterval : Self\.captureMinInterval/.test(throttleBody)) {
+      reasons.push('采景节流未按 liveCaptureRequested 区分间隔（显式高刷会话被压到常驻档）')
+    }
+    if (!/lastCaptureAt = now/.test(throttleBody)) {
+      reasons.push('采景节流未记录本次采景时刻（首帧之后永远拦，玻璃画面冻结）')
+    }
+  }
   return reasons
 }
 
@@ -410,7 +451,7 @@ const assertions = [
   { name: 'A3 三条窗口锚点 + draw() 无纹理 guard', hits: anchorInvariants(REAL) },
   { name: 'A4 放行出口：非 hold 分支恰一处 backgroundTexture = texture（不在 shouldHold 内）', hits: releaseExitInvariants(REAL) },
   { name: 'A5 开窗点恰 3 处调用 + 起点写入唯一（beginCaptureSettleWindow 内）', hits: settleReopenInvariants(REAL) },
-  { name: 'B 既有结构未改坏（刷新率/采样基准/均匀沿用/采景几何/透镜链路）', hits: existingStructureInvariants(REAL) },
+  { name: 'B 既有结构未改坏（刷新率/采样基准/均匀沿用/采景几何/透镜链路/采景节流）', hits: existingStructureInvariants(REAL) },
 ]
 
 // ---------------------------------------------------------------------------
@@ -561,6 +602,23 @@ CE('C17 每帧路径（commitCapturedTexture）里多加一处起点写入（窗
   '        captureSettleStartedAt = CACurrentMediaTime()\n        let now = CACurrentMediaTime()\n        var shouldHold = false'
 ), '写入点不唯一')
 
+// —— 2026-10-02 契约加固：采景节流（C18~C18c）——
+
+CE('C18 captureBackdrop 的采景节流被拆掉（滑动时每帧三块玻璃齐采、主线程被占满）', existingStructureInvariants, tamperGlass(
+  '        if shouldThrottleCapture(CACurrentMediaTime()) { return }\n\n        let sizeCoefficient',
+  '        let sizeCoefficient'
+), '未接采景节流')
+
+CE('C18b 采景节流不再区分显式高刷会话（透镜抬起/跟手被压到常驻档）', existingStructureInvariants, tamperGlass(
+  '        let interval = liveCaptureRequested ? Self.liveCaptureMinInterval : Self.captureMinInterval',
+  '        let interval = Self.captureMinInterval'
+), '未按 liveCaptureRequested 区分间隔')
+
+CE('C18c 采景节流不再回写时刻（首帧之后永远拦，玻璃画面冻结）', existingStructureInvariants, tamperGlass(
+  '        if now - lastCaptureAt < interval { return true }\n        lastCaptureAt = now',
+  '        if now - lastCaptureAt < interval { return true }'
+), '未记录本次采景时刻')
+
 // ---------------------------------------------------------------------------
 // 输出
 // ---------------------------------------------------------------------------
@@ -576,6 +634,7 @@ console.log('  A3 三条窗口锚点（backdrop 插入 / didMoveToWindow / begin
 console.log('  A4 放行出口唯一：非 hold 分支恰一处 backgroundTexture = texture（缺 = 玻璃永久透明）')
 console.log('  A5 开窗点恰 3 处 + 起点写入唯一（每帧路径不得开窗/重置）')
 console.log('  B  既有事实未改坏（刷新率 30/120/0.4、采样基准锁定、均匀沿用修复、采景几何、透镜链路）')
+console.log('  B7 采景节流：每实例最小采景间隔（常驻 30fps / live 60fps），首帧放行、按会话分档（2026-10-02）')
 console.log('  C  反例自检：任一条修复拆掉一点都必须拦下（替换未命中 = 失败）')
 console.log()
 console.log('='.repeat(92))
