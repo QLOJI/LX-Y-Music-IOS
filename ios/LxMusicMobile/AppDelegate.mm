@@ -1621,6 +1621,48 @@ static BOOL LXAnotherRNModalWindowPresent(void) {
   return NO;
 }
 
+// 识别 react-native-navigation 的浮层窗口（Toast / 自定义 overlay）。
+//
+// 背景（2026-10-02 用户第 6 条）：RNN 的 Toast 浮层不是普通视图，而是独立 UIWindow
+// （RNNOverlayManager → RNNOverlayWindow），windowLevel 与 App 主窗口**同为
+// UIWindowLevelNormal**。同级窗口按「后建者在上」排序，因此只要主窗口被
+// makeKeyAndVisible（例如原生文件面板关闭后的 LXEnsureKeyWindow），或出现后建的原生
+// 面板窗口，浮层就被压到下面 —— 现象是「点了下载没有任何反馈（浮层其实已创建，只是看不见）」。
+//
+// 工程内没有 Pods 源码（node_modules / Pods 均不入库），无法引用 RNN 的类声明，
+// 只能按运行时类名字符串判定，与 LXAnotherRNModalWindowPresent 的做法一致。
+static BOOL LXWindowIsRNNOverlay(UIWindow *window) {
+  if (window == nil) return NO;
+  NSString *className = NSStringFromClass([window class]);
+  if (className == nil) return NO;
+  return [className containsString:@"RNNOverlayWindow"];
+}
+
+// 把所有 RNN 浮层窗口统一提到 UIWindowLevelAlert + 1，使其稳定压在主窗口与
+// 原生面板窗口之上（Toast 才看得见）。同一 level 下多个浮层的先后由创建顺序决定，
+// 天然稳定；这里仅在 level 不等于目标值时才写，避免每次提层都触发一次窗口重排。
+static void LXRaiseOverlayWindows(void) {
+  dispatch_async(dispatch_get_main_queue(), ^{
+    NSMutableArray<UIWindow *> *overlayWindows = [NSMutableArray array];
+    for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
+      if (![scene isKindOfClass:[UIWindowScene class]]) continue;
+      UIWindowScene *windowScene = (UIWindowScene *)scene;
+      for (UIWindow *win in windowScene.windows) {
+        if (LXWindowIsRNNOverlay(win)) [overlayWindows addObject:win];
+      }
+    }
+    // 与 LXTopViewController 同样的兜底：场景遍历取不到时退回 UIApplication.windows。
+    if (overlayWindows.count == 0) {
+      for (UIWindow *win in UIApplication.sharedApplication.windows) {
+        if (LXWindowIsRNNOverlay(win)) [overlayWindows addObject:win];
+      }
+    }
+    for (UIWindow *win in overlayWindows) {
+      if (win.windowLevel != UIWindowLevelAlert + 1) win.windowLevel = UIWindowLevelAlert + 1;
+    }
+  });
+}
+
 // UIDocumentPickerViewController 以独立进程运行。选中/取消并关闭后，应用主窗口可能
 // 不再是 keyWindow，或其 userInteractionEnabled 未被系统恢复，导致整屏无响应（只能重启）。
 // 在关闭完成后显式恢复主窗口为 key 并重新开启交互。
@@ -1639,13 +1681,20 @@ static void LXEnsureKeyWindow(void) {
           win.rootViewController.view.userInteractionEnabled = YES;
         }
         // 记录首个带 rootViewController 的窗口作为主窗口候选。
-        if (mainWindow == nil) mainWindow = win;
+        // 2026-10-02（用户第 6 条）：必须**跳过 RNN 浮层窗口**。它同样是带
+        // rootViewController 的独立 UIWindow，若被选成「主窗口」并 makeKey，
+        // 后果有两个：① 浮层窗口变成 keyWindow，后续背景捕获 / LXTopViewController
+        // 会取错窗口；② 浮层被 dismiss 之后主窗口不再是 keyWindow，整屏交互可能失效。
+        if (mainWindow == nil && !LXWindowIsRNNOverlay(win)) mainWindow = win;
       }
     }
     // 仅当主窗口当前不是 keyWindow 时才切换，避免不必要的 window 层级抖动。
     if (mainWindow != nil && !mainWindow.isKeyWindow) {
       [mainWindow makeKeyAndVisible];
     }
+    // 主窗口被重新 makeKey 的一瞬间会盖到同级浮层之上（用户第 6 条描述的
+    // 「原生文件面板关闭后 Toast 就看不见了」正是这条路径），顺手把浮层提回去。
+    LXRaiseOverlayWindows();
   });
 }
 
@@ -5785,6 +5834,14 @@ RCT_EXPORT_METHOD(endBackgroundTask:(nonnull NSNumber *)taskId) {
     [[UIApplication sharedApplication] endBackgroundTask:LXBackgroundTaskId];
     LXBackgroundTaskId = UIBackgroundTaskInvalid;
   });
+}
+
+// 把 RNN 的 Toast 浮层窗口提到主窗口之上（用户第 6 条）。
+// JS 侧 utils/tools.ts 的 toast() 在每次 showOverlay 成功回调里立刻调一次；
+// 方法缺失时 JS 侧安全降级（见 utils/nativeModules/utils.ts 的 raiseToastOverlay），
+// 老包上不会报错。
+RCT_EXPORT_METHOD(raiseOverlayWindows) {
+  LXRaiseOverlayWindows();
 }
 
 // 生成并缓存一张「已模糊的背景图」到本地，返回 file:// 地址；无需模糊 / 失败时返回 nil。
