@@ -301,11 +301,36 @@ console.log('\n[C] Main.tsx 的 pager 私有闩锁自愈点')
 const mainSrc = stripComments(read('src/screens/Home/Vertical/Main.tsx'))
 check('存在 clearNativePagerScrolling（唯一写入点，抹平库私有 isScrolling）',
   /clearNativePagerScrolling\s*=\s*useCallback/.test(mainSrc))
-check('存在受控入口 healPagerScrollLatch，且体内有「无手势会话」守卫',
+
+// 守卫形态在 2026-10-02（用户第 11 轮第 9 条）改过一次：
+//   旧：`if (pagerDragSessionRef.current) return` —— 只看会话标志。会话标志与库私有闩锁
+//       是**两条独立生命周期**，标志卡在 true 时自愈被自己永久跳过，于是「点击锁死」
+//       仍会间歇复现（正是用户第 9 条说的问题）。
+//   新：按**静默时长**放行 —— 最近 PAGER_DRAG_SILENCE_MS 内没有原生活动就收尾并抹平，
+//       无论会话标志是什么；真实拖动每帧刷新活动时间戳，不会误伤。
+const healBody = (mainSrc.match(/healPagerScrollLatch\s*=\s*useCallback\(\(\)\s*=>\s*\{[\s\S]*?\},\s*\[/) || [''])[0]
+check('存在受控入口 healPagerScrollLatch，守卫按「最近是否还有原生活动」判定',
   /healPagerScrollLatch\s*=\s*useCallback/.test(mainSrc) &&
-  /if\s*\(\s*pagerDragSessionRef\.current\s*\)\s*return/.test(
-    (mainSrc.match(/healPagerScrollLatch\s*=\s*useCallback\(\(\)\s*=>\s*\{[\s\S]*?\},\s*\[/) || [''])[0],
-  ))
+  /pagerDragSessionRef\.current\s*&&\s*Date\.now\(\)\s*-\s*pagerDragActivityAtRef\.current\s*<\s*PAGER_DRAG_SILENCE_MS/.test(healBody))
+check('healPagerScrollLatch 收尾走 endPagerDragSession（内部无条件抹平闩锁）',
+  /endPagerDragSession\(\)/.test(healBody))
+
+// 静默判定的前提：每个「原生确实还在动」的点都要刷新时间戳，否则真实拖动会被误判为静默
+// （打点：会话收尾 / onPageScroll 每帧 / pageScrollState=dragging）
+check('原生活动点都刷新活动时间戳（收尾 / onPageScroll / dragging 至少 3 处）',
+  (mainSrc.match(/pagerDragActivityAtRef\.current = Date\.now\(\)/g) || []).length >= 3,
+  `${(mainSrc.match(/pagerDragActivityAtRef\.current = Date\.now\(\)/g) || []).length} 处`)
+
+// 手指落下瞬间的兜底（2026-10-02，用户第 11 轮第 9 条）：库的私有闩锁在 capture 阶段抢触摸，
+// 而 capture 发生在手势识别之前 —— 所以要在「手指刚落下」这一刻无条件抹平；
+// 返回 false = 不截胡，正常协商照旧往下走。
+{
+  const startCapture = (mainSrc.match(/onStartShouldSetResponderCapture=\{\(\)\s*=>\s*\{[\s\S]*?\n\s*\}\}/) || [''])[0]
+  check('pager 外层挂了「手指落下即抹平闩锁」的 capture 入口，且 return false 不截胡',
+    /clearNativePagerScrolling\(\)/.test(startCapture) && /return false/.test(startCapture),
+    startCapture ? 'onStartShouldSetResponderCapture → clearNativePagerScrolling() + return false' : '未找到 capture 入口')
+}
+
 check('会话收尾（endPagerDragSession）里保留无条件清理',
   /endPagerDragSession\s*=\s*useCallback/.test(mainSrc) &&
   /endPagerDragSession[\s\S]{0,700}clearNativePagerScrolling\(\)/.test(mainSrc))
@@ -322,14 +347,20 @@ check('回前台（AppState → active）仍兜底清理', /state !== 'active'[\
 check(`healPagerScrollLatch 至少 3 个调用点（当前 ${countCalls('healPagerScrollLatch')} 处，含定义外调用）`,
   countCalls('healPagerScrollLatch') >= 3)
 
-// 反例自检：没有守卫的版本必须被判为不安全（会话中抹平会让横滑被列表抢走）
+// 反例自检：三种守卫形态在同一组判定下的结果必须互不相同，否则说明判定没有区分力
 {
-  const unsafe = read('src/screens/Home/Vertical/Main.tsx').includes('__never__')
-  const guardOk = /if\s*\(\s*pagerDragSessionRef\.current\s*\)\s*return/.test(
-    (mainSrc.match(/healPagerScrollLatch\s*=\s*useCallback\(\(\)\s*=>\s*\{[\s\S]*?\},\s*\[/) || [''])[0],
-  )
-  check('反例自检：无守卫的 healPagerScrollLatch 会被判为不安全（受控入口不是摆设）',
-    guardOk && !unsafe)
+  const GUARD_RE = /pagerDragSessionRef\.current\s*&&\s*Date\.now\(\)\s*-\s*pagerDragActivityAtRef\.current\s*<\s*PAGER_DRAG_SILENCE_MS/
+  const legacyGuard = 'healPagerScrollLatch = useCallback(() => {\n' +
+    '  if (pagerDragSessionRef.current) return\n' +
+    '  endPagerDragSession()\n' +
+    '}, [endPagerDragSession])'
+  const noGuard = 'healPagerScrollLatch = useCallback(() => {\n' +
+    '  endPagerDragSession()\n' +
+    '}, [endPagerDragSession])'
+  check('反例自检：旧版「只看会话标志」的守卫必须判不合格（标志卡死时自愈被永久跳过）',
+    !GUARD_RE.test(legacyGuard))
+  check('反例自检：无守卫版本必须判不合格（真实拖动中抹平闩锁 = 横滑被抢走）',
+    !GUARD_RE.test(noGuard))
 }
 
 // ---------------------------------------------------------------------------
