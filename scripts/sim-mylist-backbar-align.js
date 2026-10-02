@@ -5,8 +5,11 @@
  *   B) 返回栏位置参数对齐「设置 → 基本设置」的返回按钮；
  *   C) 点击搜索后搜索框落在返回栏的同一槽位、且不做位移（无 translateY）；
  *   D) 点击取消后回到原列表界面（隐藏搜索栏/搜索结果、恢复返回栏）；
- *   E) 【第 16 轮第 4 条】返回态（从「我的」进入试听列表 / 我的收藏 / 同步列表等）
- *      在栏的正中显示该列表名 —— 用户原话「不然我都不知道进哪个列表了」。
+ *   E) 【第 16 轮第 4 条 + 第 19 轮第 3 条】返回栏里显示当前列表名，且两种状态共用同一处
+ *      标题实现：返回按钮（箭头）在左端、搜索与封面开关两个按钮在右端、标题恒在栏正中。
+ *      第 16 轮只在返回态显示（用户原话「不然我都不知道进哪个列表了」）；第 19 轮第 3 条把
+ *      非返回态也并过来 —— 用户原话「搜索和显示/关闭封面显示按钮应该在右端，返回按钮在
+ *      左端，中心是标题」。
  *
  * 脚本从源码解析实际取值（不硬编码数字），复算「基本设置返回按钮」与「我的详情
  * 返回栏」两处的顶边 / 垂直中心 / 图标 glyph 左缘并比对；同时断言结构事实：
@@ -220,7 +223,7 @@ check('取消按钮 onPress 接到 onExitSearch', cancelWired, '')
 check('handleExitSearch 隐藏搜索结果与搜索栏、并恢复返回栏（原列表界面）',
   exitHidesSearch && exitRestoresBar, `hide=${exitHidesSearch} restore=${exitRestoresBar}`)
 
-// —— E) 【第 16 轮第 4 条】返回态在栏正中显示列表名 ——
+// —— E) 【第 16 轮第 4 条 + 第 19 轮第 3 条】栏正中显示列表名；左端箭头、右端两个按钮 ——
 // 结构断言全部在去注释后的源码上做，且整组写成「源码 → 事实」的纯函数，
 // 反例用当前源码变异后重跑整组（任一条判红即算拦下）。
 const eFacts = (raw) => {
@@ -228,15 +231,38 @@ const eFacts = (raw) => {
   const nameBlock = styleBlock(code, 'currentListName')
   const nameTextBlock = styleBlock(code, 'currentListNameText')
   const btnBlock = styleBlock(code, 'currentListBtns')
+  const spacerBlock = styleBlock(code, 'currentListSpacer')
+  // 返回栏那一行的 JSX：三段定位（左箭头 / 中标题 / 右按钮）的先后顺序都在这段里看。
+  // 起止不能各取「第一个 <TouchableOpacity …>」：行里还嵌着两个按钮自己的标签，
+  // 非贪婪匹配到第一个 </TouchableOpacity> 就断了（只圈进一个按钮）。
+  // 起 = 行首那个带 onPress={onBack || showList} 的标签，止 = 文件里最后一个 </TouchableOpacity>（本行自己的）。
+  const rowStartMatch = /<TouchableOpacity\s+onPress=\{onBack \|\| showList\}/.exec(code)
+  const iRowStart = rowStartMatch ? rowStartMatch.index : -1
+  const iRowEnd = code.lastIndexOf('</TouchableOpacity>')
+  const rowJsx = iRowStart > -1 && iRowEnd > iRowStart ? code.slice(iRowStart, iRowEnd) : null
+  const iIcon = rowJsx ? rowJsx.indexOf('styles.currentListIcon') : -1
+  const iName = rowJsx ? rowJsx.indexOf('styles.currentListName') : -1
+  const iSpacer = rowJsx ? rowJsx.indexOf('styles.currentListSpacer') : -1
+  const iBtn = rowJsx ? rowJsx.indexOf('styles.currentListBtns') : -1
   return {
     code,
+    rowJsx,
     nameBlock,
     nameTextBlock,
     btnBlock,
+    spacerBlock,
+    btnCount: rowJsx ? (rowJsx.match(/styles\.currentListBtns/g) || []).length : 0,
     nameViewTag: (/<View style=\{styles\.currentListName\}([^>]*)>/.exec(code) || [])[1] || null,
-    // 返回态（onBack 分支）里才是居中名；非返回态仍是原来的行内文字
-    backWired: /\{onBack\s*\r?\n\s*\?\s*\([\s\S]{0,80}?<View style=\{styles\.currentListName\}/.test(code),
-    frontKept: /\r?\n\s*:\s*\([\s\S]{0,80}?<Text style=\{styles\.currentListText\}/.test(code),
+    // 两种状态共用同一处标题实现（第 19 轮第 3 条）：居中名无条件渲染 —— 行内没有
+    // 「onBack ? (…)」这种把标题切成分叉的写法（箭头方向/尺寸是值三元，不带括号不分叉），
+    // 旧的非返回态行内文字 currentListText 在全文件里已不存在。
+    titleAlwaysRendered: !!rowJsx && iName > -1 && !/currentListText/.test(code) &&
+      !/onBack\s*\?[\s\S]{0,80}?\(/.test(rowJsx),
+    // 左端箭头：图标槽排在标题容器之前（行内第一个元素）
+    iconLeft: iIcon > -1 && iIcon < iName,
+    // 右端按钮：两个按钮都排在标题容器之后，且中间有 flex:1 弹性占位把按钮顶到栏尾
+    btnsRight: iName > -1 && iBtn > iName && iSpacer > iName && iSpacer < iBtn && !!spacerBlock &&
+      /flex:\s*1/.test(spacerBlock),
     idHook: /const currentListId = useActiveListId\(\)/.test(code),
     nameMemo: /const currentListName = useMemo\(\(\) => \{[\s\S]{0,700}?\}, \[currentListId\]\)/.test(code),
     nameI18n: /global\.i18n\.t\('list_name_temp'\)/.test(code) &&
@@ -252,8 +278,8 @@ const E_FACTS = eFacts(activeSrc)
 const eMinPad = (numIn(E_FACTS.btnBlock, 'width') || 0) * 2 + (numIn(styleBlock(activeCode, 'currentList'), 'paddingRight') || 0)
 
 const GROUP_E = [
-  ['E1 返回态才渲染居中名（onBack ? ( → styles.currentListName），非返回态保留原 currentListText',
-    (f) => f.backWired && f.frontKept],
+  ['E1 两种状态共用同一处标题实现（居中名无条件渲染；旧的行内文字 currentListText 已删）',
+    (f) => f.titleAlwaysRendered],
   ['E2 名称取自当前激活列表（useActiveListId + memo 依赖 currentListId），内置列表走 i18n、自建/收藏查 allList',
     (f) => f.idHook && f.nameMemo && f.nameI18n && f.nameFromAllList],
   ['E3 居中容器里真的渲染了 currentListName（不是空壳）', (f) => f.nameRendered],
@@ -274,6 +300,10 @@ const GROUP_E = [
     (f) => f.nameTextLines && !!f.nameTextBlock && /textAlign:\s*'center'/.test(f.nameTextBlock)],
   ['E8 名称容器不拦截触摸（pointerEvents="none"），点整行仍走返回',
     (f) => !!f.nameViewTag && /pointerEvents="none"/.test(f.nameViewTag)],
+  ['E9 左端箭头：图标槽是行内第一个元素、排在标题容器之前（返回态 chevron-left / 非返回态 chevron-right，位置不动）',
+    (f) => f.iconLeft],
+  ['E10 右端按钮：两个 46pt 图标按钮都排在标题容器之后，中间隔一个 flex:1 弹性占位顶到栏尾',
+    (f) => f.btnsRight && f.btnCount === 2],
 ]
 const eRes = GROUP_E.map(([label, fn]) => ({ label, ok: !!fn(E_FACTS) }))
 
@@ -282,8 +312,9 @@ const mutE = (from, to) => {
   return { src: out, changed: out !== activeSrc }
 }
 const caughtE = (src) => GROUP_E.some(([, fn]) => !fn(eFacts(src)))
-// m6: 返回态退回旧的「返回」文字位（居中名整块没了）
-const m6 = mutE('<View style={styles.currentListName} pointerEvents="none">', '<View style={styles.currentListText}>')
+// m6: 退回第 16 轮的旧写法（标题分叉：返回态居中名、非返回态行内文字）
+const m6 = mutE('<View style={styles.currentListName} pointerEvents="none">',
+  '{onBack ? (<View style={styles.currentListName} pointerEvents="none">) : (<Text style={styles.currentListText}>{currentListName}</Text>)}')
 // m7: 名称来源不查 allList（自建 / 收藏 / 同步列表名全空）
 const m7 = mutE("listState.allList.find((l) => l.id === currentListId)?.name ?? ''", "''")
 // m8: 左右内边距不对称（名称偏左压住返回箭头）
@@ -294,15 +325,18 @@ const m9 = mutE("position: 'absolute',\n    left: 0,\n    right: 0,", 'flex: 1,'
 const m10 = mutE('<Text style={styles.currentListNameText} numberOfLines={1}', '<Text style={styles.currentListNameText}')
 // m11: 去掉 pointerEvents（点击被文本吞掉，返回失灵）
 const m11 = mutE('<View style={styles.currentListName} pointerEvents="none">', '<View style={styles.currentListName}>')
+// m12: 拿掉弹性占位（两个按钮跟着箭头挤到左边，「按钮在右端」没了）
+const m12 = mutE('        <View style={styles.currentListSpacer} />\n', '')
 
-// E 组断言用源码复算出的 barSlot 遮挡宽度，标签里已带 E1..E8 前缀，不再单独打分组标题
+// E 组断言用源码复算出的 barSlot 遮挡宽度，标签里已带 E1..E10 前缀，不再单独打分组标题
 for (const r of eRes) check(r.label, r.ok)
-check(`反例 m6：返回态退回旧「返回」文字位，被 E 判红`, m6.changed && caughtE(m6.src))
+check(`反例 m6：退回旧的分叉写法（非返回态改行内文字），被 E 判红`, m6.changed && caughtE(m6.src))
 check(`反例 m7：名称来源不查 allList（列表名空），被 E 判红`, m7.changed && caughtE(m7.src))
 check(`反例 m8：左右内边距不对称（名称偏左压箭头），被 E 判红`, m8.changed && caughtE(m8.src))
 check(`反例 m9：名称容器改回 flex 参与布局（被按钮挤压），被 E 判红`, m9.changed && caughtE(m9.src))
 check(`反例 m10：去掉 numberOfLines（长名换行撑变形），被 E 判红`, m10.changed && caughtE(m10.src))
 check(`反例 m11：去掉 pointerEvents（点名称不返回），被 E 判红`, m11.changed && caughtE(m11.src))
+check(`反例 m12：拿掉弹性占位（按钮挤到左边，不在右端），被 E 判红`, m12.changed && caughtE(m12.src))
 
 console.log()
 const pad = Math.max(...results.map((r) => r.label.length))

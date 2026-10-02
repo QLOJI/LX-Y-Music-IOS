@@ -16,6 +16,9 @@
  *      设置 PageHeader）都通过 token 取行高与下间距，且**没有**硬编码的数字行高；
  *   C. 42 这个取值本身的两个约束：等于推荐页 42pt 圆钮（它是基准）、≥ 34 × 1.15（不裁笔画）；
  *   D. 三页共用的 PlatformChips 走 controlGap，搜索页各行也走 controlGap；
+ *   D2（第 19 轮第 2 条）：搜索页三处「标题 → 自己的内容」间距同源同值 ——
+ *      搜索平台（HeaderBar.platformContent.paddingVertical）、热门搜索（HotSearch.title.marginBottom）、
+ *      历史搜索（HistorySearch.titleContent.marginBottom）都走 controlGap(12)，各自不得再有硬编码数字；
  *   E. 反例自检：把上述任一消费点改回硬编码数字、或把 token 值改掉，必须被判不合格
  *      （证明断言真的在盯源码，而不是把当前值抄了一遍）。
  *
@@ -145,6 +148,33 @@ const searchTypeSrc = read('src/screens/Home/Views/Search/SearchTypeSelector.tsx
 const searchGapHits = (searchHeaderSrc.match(/(?:marginBottom|paddingVertical|marginRight):\s*controlGap\b/g) || []).length
 const searchTypeGapOk = /marginRight:\s*controlGap\b/.test(searchTypeSrc)
 
+// --- D2. 搜索页三处「标题 → 自己的内容」间距（第 19 轮第 2 条） ---
+// 源码事实：「搜索平台」标题行（platformHeader）自身无下间距，标题→胶囊的间距由
+// platformScroll 的 contentContainerStyle paddingVertical 承担（同一值也充当
+// 「胶囊行 → 类型按钮行」的间距）。热门/历史搜索的对应位置是标题样式块自身的 marginBottom。
+const hotSearchSrc = read('src/screens/Home/Views/Search/BlankView/HotSearch.tsx')
+const historySearchSrc = read('src/screens/Home/Views/Search/BlankView/HistorySearch.tsx')
+
+const titleGapSites = [
+  { name: '搜索平台', file: 'Search/HeaderBar', src: searchHeaderSrc, styleName: 'platformContent', prop: 'paddingVertical' },
+  { name: '热门搜索', file: 'Search/BlankView/HotSearch', src: hotSearchSrc, styleName: 'title', prop: 'marginBottom' },
+  { name: '历史搜索', file: 'Search/BlankView/HistorySearch', src: historySearchSrc, styleName: 'titleContent', prop: 'marginBottom' },
+]
+/** 某样式块的某属性是否**只**由 controlGap 提供（有 token 引用、且无数字字面量） */
+const gapViaControlGap = (site) => {
+  const block = styleBlock(site.src, site.styleName)
+  if (!block) return { ok: false, why: `找不到 ${site.styleName} 样式块` }
+  const hasToken = new RegExp(`${site.prop}:\\s*controlGap\\b`).test(block)
+  const hasNumber = new RegExp(`${site.prop}:\\s*[\\d.]+`).test(block)
+  if (!hasToken) return { ok: false, why: `${site.styleName}.${site.prop} 没有引用 controlGap` }
+  if (hasNumber) return { ok: false, why: `${site.styleName}.${site.prop} 同时存在硬编码数字（第二真值）` }
+  return { ok: true, why: `${site.prop}: controlGap` }
+}
+const titleGapChecks = titleGapSites.map((site) => ({ site, check: gapViaControlGap(site) }))
+// 三处是否真的同值：都解析到 controlGap，因此等于同一个 token 的数值（同源 ⇒ 同值）。
+const titleGapSameSource = titleGapChecks.every((t) => t.check.ok)
+const titleGapValue = titleGapSameSource ? controlGapValue : NaN
+
 // --- E. 反例自检 ---
 // 把某个消费点的 token 引用换成硬编码数字，同一套断言必须判不合格。
 const breakTitleLineHeight = (src, styleName) => {
@@ -161,6 +191,20 @@ const negTokenLineHeight = Number(/^(\d+)$/.exec(tokenExpr(negTokenSrc, 'pageTit
 // 值被改小到裁笔画线以下：C 组约束必须能判红
 const clippedLineHeight = 34 * lineHeightRatio - 2
 
+// D2 反例：把任一处「标题 → 内容」间距改回硬编码数字（A-4 时期的 4 / 8），同一套断言必须判不合格。
+const negHotGapSrc = hotSearchSrc.replace('marginBottom: controlGap', 'marginBottom: 4')
+const negHistoryGapSrc = historySearchSrc.replace('marginBottom: controlGap', 'marginBottom: 4')
+const negPlatformGapSrc = searchHeaderSrc.replace('paddingVertical: controlGap', 'paddingVertical: 8')
+const negHotGapCheck = gapViaControlGap({ ...titleGapSites[1], src: negHotGapSrc })
+const negHistoryGapCheck = gapViaControlGap({ ...titleGapSites[2], src: negHistoryGapSrc })
+const negPlatformGapCheck = gapViaControlGap({ ...titleGapSites[0], src: negPlatformGapSrc })
+// 替换必须真的命中原文，否则上面三条「判红」是空转
+const negGapHits = [
+  negHotGapSrc !== hotSearchSrc,
+  negHistoryGapSrc !== historySearchSrc,
+  negPlatformGapSrc !== searchHeaderSrc,
+]
+
 console.log('='.repeat(92))
 console.log('「四页标题共线」契约模型（摘自源码，单位 pt）')
 console.log('='.repeat(92))
@@ -175,6 +219,10 @@ for (const t of titleChecks) {
 }
 console.log(`  共享 PlatformChips.marginRight → controlGap: ${platformChipsOk ? '✅' : '❌'}`)
 console.log(`  搜索页 controlGap 引用数（HeaderBar）= ${searchGapHits}，SearchTypeSelector = ${searchTypeGapOk ? '✅' : '❌'}`)
+for (const t of titleGapChecks) {
+  console.log(`  搜索页「${t.site.name}」标题 → 自己的内容：${t.check.ok ? '✅' : '❌'} ${t.check.why}   [${t.site.file} ${t.site.styleName}]`)
+}
+console.log(`  三处同源 ⇒ 同值 ${titleGapValue} pt（第 19 轮第 2 条；改 controlGap 一处，三处一起动）`)
 console.log(`  推荐页 42pt 圆钮 width = ${historyBtnSize}`)
 console.log()
 
@@ -205,6 +253,19 @@ check(`行高 ≥ 34 × ${lineHeightRatio} = ${minLineHeight}（大标题顶部�
 check('PlatformChips（推荐/歌单/搜索三页共用）行距走 controlGap', platformChipsOk, 'marginRight: controlGap')
 check('搜索页 HeaderBar 的相邻行间距走 controlGap', searchGapHits >= 3, `命中 ${searchGapHits} 处`)
 check('搜索页类型按钮行距走 controlGap', searchTypeGapOk, 'marginRight: controlGap')
+
+// D2（第 19 轮第 2 条）：三处「标题 → 自己的内容」间距同源（⇒ 同值 controlGap）
+for (const t of titleGapChecks) {
+  check(`搜索页「${t.site.name}」标题 → 内容间距走 controlGap = ${controlGapValue}`, t.check.ok, t.check.why)
+}
+check(`三处同源 ⇒ 同值（搜索平台 = 热门搜索 = 历史搜索 = ${titleGapValue}）`, titleGapSameSource, `controlGap = ${controlGapValue}`)
+
+check('反例：热门搜索标题下间距改回硬编码 4，必须判不合格',
+  negGapHits[0] && !negHotGapCheck.ok, negGapHits[0] ? negHotGapCheck.why : '替换未命中原文')
+check('反例：历史搜索标题下间距改回硬编码 4，必须判不合格',
+  negGapHits[1] && !negHistoryGapCheck.ok, negGapHits[1] ? negHistoryGapCheck.why : '替换未命中原文')
+check('反例：搜索平台标题→胶囊间距改成硬编码 8，必须判不合格',
+  negGapHits[2] && !negPlatformGapCheck.ok, negGapHits[2] ? negPlatformGapCheck.why : '替换未命中原文')
 
 // E. 反例自检
 check('反例：把推荐页标题改回硬编码 lineHeight: 36，必须判不合格',

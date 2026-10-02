@@ -23,6 +23,18 @@
  *   四、七个页面（= core/common.ts 的 LOVE_SUBPAGE_IDS）都接管页头（PAGE_OWNED_HEADER_IDS），
  *       标题紧跟 PageTopInset 渲染，不再与共享页头那一行重复。
  *
+ * 【第 19 轮增量（2026-10-02）】
+ *   F1 「网易收藏专辑 / WebDAV 上方出现两个相同标题」的防复发（用户第 19 轮第 1 条）：
+ *      getEffectiveFlatOrder 保序去重 —— 持久化顺序里同一 id 出现两次时，Main.tsx 的
+ *      detailNavs 会拿同一 id 挂两层详情层（同 key 兄弟节点），页面被挂两遍。
+ *   F2 竖屏 / 横屏 PAGE_OWNED_HEADER_IDS 都覆盖全部 NAV_MENUS id：任何一页都不会
+ *      出现「共享页头 + 页面标题」两个标题。
+ *   F3 七个「我的」二级页标题到顶距离 = 推荐页的：唯一来源是共享组件
+ *      DetailPageTitle.row.paddingTop = designSpacing.sm；三个每日推荐页不得再写
+ *      headerExtraTop（此前只有它们垫这一下，其余七个页面标题离顶部近 12pt）。
+ *   F4 「我的」歌单详情标题栏三段式：左端返回箭头 / 正中标题（绝对定位 + 左右对称
+ *      内边距 + textAlign center）/ 右端「封面开关 + 搜索」（靠弹性占位顶到栏尾）。
+ *
  * 本脚本从源码解析结构（不硬编码行号），每条关键断言配一个「改回旧实现就该判不合格」的反例。
  *
  * 运行：node scripts/sim-subpage-title-align.js
@@ -83,6 +95,14 @@ const headerSrc = read('src/screens/Home/Vertical/Header.tsx')
 const loveIdsSrc = read('src/core/common.ts')
 const verticalSetSrc = read('src/screens/Home/Vertical/Content.tsx')
 const horizontalSetSrc = read('src/screens/Home/Horizontal/index.tsx')
+// —— 第 19 轮增量 ——
+const constantSrc = read('src/config/constant.ts')
+const activeListSrc = read('src/screens/Home/Views/Mylist/MusicList/ActiveList.tsx')
+const dailyRecSrcs = [
+  { name: '网易每日推荐', file: 'src/screens/Home/Views/DailyRec/index.tsx' },
+  { name: '酷狗每日推荐', file: 'src/screens/Home/Views/KgDailyRec/index.tsx' },
+  { name: 'QQ每日推荐', file: 'src/screens/Home/Views/DailyRec/TXDailyRec/index.tsx' },
+].map((p) => ({ ...p, src: read(p.file) }))
 
 // —— A. 字号参照物：subPageTitleSize ≡ 共享页头标题的字号 ——
 const subExpr = tokenExpr(tokensSrc, 'subPageTitleSize')
@@ -101,9 +121,13 @@ const headerViaDesignTitle = /size=\{designTypography\.title\}/.test(stripCommen
 const headerHasLiteral20 = /size=\{20\}/.test(stripComments(headerSrc))
 
 // —— B. DetailPageTitle 的几何 ——
-const rowDir = propVia(detailSrc, 'row', 'flexDirection', "'row'")
-const rowAlign = propVia(detailSrc, 'row', 'alignItems', "'center'")
-const rowJustify = propVia(detailSrc, 'row', 'justifyContent', "'space-between'")
+// 【第 18 轮】等分列模式要给 tab 下发「行内容区实测宽 / 列数」，共享组件的标题行因此分成两层：
+//   row   = 带左右内边距的外壳（paddingHorizontal: designSpacing.lg + marginBottom: pageTitleGap）
+//   inner = 行内容区（无内边距，onLayout 量它的宽度当列宽分母）—— 水平行/垂直居中/space-between
+//           这三条布局属性搬到了这一层，断言语义不变，只是改钉真正承载它们的元素。
+const rowDir = propVia(detailSrc, 'inner', 'flexDirection', "'row'")
+const rowAlign = propVia(detailSrc, 'inner', 'alignItems', "'center'")
+const rowJustify = propVia(detailSrc, 'inner', 'justifyContent', "'space-between'")
 const rowLeft = propVia(detailSrc, 'row', 'paddingHorizontal', 'designSpacing.lg')
 const rowGap = propVia(detailSrc, 'row', 'marginBottom', 'pageTitleGap')
 const titleWeight = propVia(detailSrc, 'title', 'fontWeight', "'800'")
@@ -195,6 +219,123 @@ const m7Caught = m7 !== pageSrc['nav_my_playlist'] && /size=\{34\}/.test(m7)
 const m8 = pageSrc['nav_followed_artists'].replace('<PageTopInset />', '')
 const m8Caught = m8 !== pageSrc['nav_followed_artists'] && !/<PageTopInset \/>/.test(m8)
 
+// m9 行内容区（inner）不再是水平行（改成 column 就是个普通竖排容器，标题与按钮不再同一中线）被拦下
+const m9 = detailSrc.replace("inner: {\n    flexDirection: 'row',", "inner: {\n    flexDirection: 'column',")
+const m9Caught = m9 !== detailSrc && !propVia(m9, 'inner', 'flexDirection', "'row'").ok
+
+// m11 共享组件去掉 paddingTop（七个「我的」二级页标题又比推荐页近 12pt）被拦下
+const m11 = detailSrc.replace('    paddingTop: designSpacing.sm,\n', '')
+const m11Caught = m11 !== detailSrc && !propVia(m11, 'row', 'paddingTop', 'designSpacing.sm').ok
+
+// m12 某个推荐页把 headerExtraTop 塞回来（到顶间距出现第二个真值）被拦下
+const m12 = dailyRecSrcs[0].src.replace(
+  'const styles = createStyle({',
+  'const styles = createStyle({\n  headerExtraTop: { paddingTop: 12 },',
+)
+const m12Caught = m12 !== dailyRecSrcs[0].src && /headerExtraTop/.test(stripComments(m12))
+
+// —— F. 第 19 轮增量 ——
+// F1 「两个相同标题」的防复发（用户第 19 轮第 1 条）：getEffectiveFlatOrder 保序去重。
+// 因果：持久化顺序里同一 id 出现两次时，Main.tsx 的 detailNavs 会拿同一 id 挂两层详情层
+// （数组里两个同 key 兄弟），页面被挂两遍 —— 看上去就是「上方出现两个相同的标题」。
+const flatOrderReasons = (src) => {
+  const reasons = []
+  const m = /export const getEffectiveFlatOrder = \(([\s\S]*?)\n\}/.exec(src)
+  if (!m) return ['找不到 getEffectiveFlatOrder（扁平顺序没有去重）']
+  const body = stripComments(m[0])
+  if (!/const seen = new Set<NAV_ID_Type>\(\)/.test(body)) {
+    reasons.push('没有 seen 集合（持久化顺序里的重复 id 会原样进有效顺序）')
+  }
+  if (!/if \(seen\.has\(id\)\) return/.test(body)) {
+    reasons.push('push 未按 seen 跳过重复项（去重缺失 → 同一 id 挂两层详情层 = 两个相同的标题）')
+  }
+  if (!/allMenuIds\.filter\(id => !seen\.has\(id\)\)/.test(body)) {
+    reasons.push('末尾补齐未按 seen 过滤（已出现过的菜单会被再追加一次）')
+  }
+  return reasons
+}
+const flatOrderHits = flatOrderReasons(constantSrc)
+
+// F2 每个导航页都接管页头（PAGE_OWNED_HEADER_IDS ⊇ 全部 NAV_MENUS id）：
+// 共享页头与页面自带标题只允许存在一个，不会再叠出「两个标题」。
+const navIds = (() => {
+  const m = /export const NAV_MENUS = \[([\s\S]*?)\] as const/.exec(constantSrc)
+  return m ? [...m[1].matchAll(/\{ id: '([^']+)'/g)].map((x) => x[1]) : []
+})()
+const setIds = (src) => {
+  const m = /PAGE_OWNED_HEADER_IDS = new Set\(\[([\s\S]*?)\]\)/.exec(stripComments(src))
+  return m ? [...m[1].matchAll(/'([^']+)'/g)].map((x) => x[1]) : []
+}
+const verticalSetIds = setIds(verticalSetSrc)
+const horizontalSetIds = setIds(horizontalSetSrc)
+const missingIn = (ids, set) => ids.filter((id) => !set.includes(id))
+const verticalMissing = missingIn(navIds, verticalSetIds)
+const horizontalMissing = missingIn(navIds, horizontalSetIds)
+
+// F3 七个「我的」二级页标题到顶距离 = 三个推荐页的（用户第 19 轮第 2 条）：
+// 唯一来源是共享组件 DetailPageTitle.row.paddingTop；三个推荐页不得再各自垫。
+const rowTop = propVia(detailSrc, 'row', 'paddingTop', 'designSpacing.sm')
+const dailyRecExtraTop = dailyRecSrcs
+  .map((p) => ({ ...p, extraTop: /headerExtraTop/.test(stripComments(p.src)) }))
+  .filter((p) => p.extraTop)
+  .map((p) => p.name)
+
+// F4 「我的」歌单详情标题栏三段式（用户第 19 轮第 3 条）：
+// 左端返回箭头 / 正中标题（绝对定位 + 左右对称内边距 + 居中）/ 右端「封面开关 + 搜索」。
+const activeListReasons = (src) => {
+  const reasons = []
+  const code = stripComments(src)
+  const spacerIdx = code.indexOf('styles.currentListSpacer')
+  const btnsIdx = code.indexOf('styles.currentListBtns')
+  if (spacerIdx < 0) {
+    reasons.push('缺弹性占位 currentListSpacer（右端两个图标按钮会紧贴左端箭头挤在左边，按钮不在右端）')
+  } else if (btnsIdx < 0 || btnsIdx < spacerIdx) {
+    reasons.push('图标按钮不在弹性占位之后（按钮不在右端）')
+  }
+  const toggleAt = code.indexOf("name={showCover ? 'menu' : 'album'}")
+  const searchAt = code.indexOf('name="search-2"')
+  if (toggleAt < 0 || searchAt < 0 || searchAt < toggleAt) {
+    reasons.push('右端按钮顺序不是「封面开关，再搜索」')
+  }
+  if (!/name=\{onBack \? 'chevron-left' : 'chevron-right'\}/.test(code)) {
+    reasons.push('左端不是返回箭头（chevron-left / chevron-right）')
+  }
+  const nameBlock = block(code, 'currentListName')
+  if (!nameBlock) {
+    reasons.push('缺标题容器 currentListName')
+  } else {
+    if (!/position:\s*'absolute'/.test(nameBlock)) {
+      reasons.push('标题容器不再绝对定位（返回态/非返回态标题会横跳、被按钮挤压）')
+    }
+    const pl = /paddingLeft:\s*(\d+)/.exec(nameBlock)
+    const pr = /paddingRight:\s*(\d+)/.exec(nameBlock)
+    if (!pl || !pr || pl[1] !== pr[1]) reasons.push('标题容器左右内边距不对称（标题不在正中）')
+  }
+  const nameTextBlock = block(code, 'currentListNameText')
+  if (!nameTextBlock || !/textAlign:\s*'center'/.test(nameTextBlock)) {
+    reasons.push('标题文字未居中（currentListNameText.textAlign: center 缺失）')
+  }
+  return reasons
+}
+const activeListHits = activeListReasons(activeListSrc)
+
+// F 的反例（定义必须在使用之前：本脚本自上而下执行，const 有 TDZ）
+// m10 扁平顺序去重被拆掉（重复 id 又能挂两层详情层 = 两个相同标题）被拦下
+const m10 = constantSrc.replace('    if (seen.has(id)) return\n', '')
+const m10Caught = m10 !== constantSrc && flatOrderReasons(m10).length > 0
+
+// m13 弹性占位被删（右端按钮挤回左端）被拦下
+const m13 = activeListSrc.replace('        <View style={styles.currentListSpacer} />\n', '')
+const m13Caught = m13 !== activeListSrc && activeListReasons(m13).length > 0
+
+// m14 标题容器左右内边距不对称（标题不在正中）被拦下
+const m14 = activeListSrc.replace('    paddingLeft: 96,', '    paddingLeft: 12,')
+const m14Caught = m14 !== activeListSrc && activeListReasons(m14).length > 0
+
+// m15 标题容器不再绝对定位（两种状态标题横跳）被拦下
+const m15 = activeListSrc.replace("  currentListName: {\n    position: 'absolute',", '  currentListName: {')
+const m15Caught = m15 !== activeListSrc && activeListReasons(m15).length > 0
+
 // —— 输出 ——
 console.log('='.repeat(92))
 console.log('「我的页二级列表标题位置 / 字号」契约模型（摘自源码，单位 pt）')
@@ -232,9 +373,9 @@ check('共享页头 Vertical/Header.tsx 的标题字号同样引用 designTypogr
 check('共享页头不再出现 size={20} 字面量（否则就是第二个真值）', !headerHasLiteral20, headerHasLiteral20 ? '仍有 size={20}' : '')
 
 // B
-check('DetailPageTitle.row：flexDirection: row', rowDir.ok, rowDir.why)
-check('DetailPageTitle.row：alignItems: center', rowAlign.ok, rowAlign.why)
-check('DetailPageTitle.row：justifyContent: space-between', rowJustify.ok, rowJustify.why)
+check('DetailPageTitle.inner（行内容区）：flexDirection: row', rowDir.ok, rowDir.why)
+check('DetailPageTitle.inner（行内容区）：alignItems: center', rowAlign.ok, rowAlign.why)
+check('DetailPageTitle.inner（行内容区）：justifyContent: space-between', rowJustify.ok, rowJustify.why)
 check(`DetailPageTitle.row：左缩进走 designSpacing.lg(${spacing.lg})，与「我的」标题同一条竖线`, rowLeft.ok, rowLeft.why)
 check('DetailPageTitle.row：下间距走 pageTitleGap，与「我的」标题一致', rowGap.ok, rowGap.why)
 check('DetailPageTitle.title：fontWeight 800（与「我的」标题一致）', titleWeight.ok, titleWeight.why)
@@ -260,6 +401,14 @@ check('竖屏 Content.tsx 的 PAGE_OWNED_HEADER_IDS 含全部 7 个二级页（�
 check('横屏 index.tsx 的 PAGE_OWNED_HEADER_IDS 含全部 7 个二级页（口径一致）', horizontalAll)
 check(`7 个页面 = core/common.ts 的 LOVE_SUBPAGE_IDS 名单（${(loveIds || []).length} 个）`, loveIdsMatch)
 
+// F（第 19 轮增量）
+check('F1 扁平顺序保序去重：seen 集合 + push 跳过重复项 + 末尾补齐也按 seen 过滤', flatOrderHits.length === 0, flatOrderHits[0] || '第一次出现的位置为准，重复项丢弃')
+check(`F2 竖屏接管名单含全部 ${navIds.length} 个导航页（共享页头不再叠标题）`, navIds.length > 0 && verticalMissing.length === 0, verticalMissing.length ? '缺 ' + verticalMissing.join('/') : `${verticalSetIds.length} 项`)
+check('F2 横屏接管名单与竖屏口径一致（含全部导航页）', navIds.length > 0 && horizontalMissing.length === 0, horizontalMissing.length ? '缺 ' + horizontalMissing.join('/') : `${horizontalSetIds.length} 项`)
+check(`F3 DetailPageTitle.row.paddingTop 走 designSpacing.sm（${spacing.sm}，到顶间距唯一来源）`, rowTop.ok, rowTop.why)
+check('F3 三个每日推荐页不再各自写 headerExtraTop（唯一来源，注释提到不算）', dailyRecExtraTop.length === 0, dailyRecExtraTop.length ? '仍有 ' + dailyRecExtraTop.join('/') : '')
+check('F4 歌单详情标题栏：弹性占位在按钮之前（按钮顶到右端）', activeListHits.length === 0, activeListHits[0] || '左端箭头 / 正中标题 / 右端封面开关 + 搜索')
+
 // E
 neg('反例 m1：subPageTitleSize 改成 34，解析结果跟着变（不是抄的当前值）', m1Changed)
 neg('反例 m2：共享页头改回 size={20} 字面量，被 A 组判红', m2Caught)
@@ -269,6 +418,13 @@ neg(`反例 m5：行高若降到 ${m5LineHeight}（< ${designTitle} × ${control
 neg('反例 m6：从竖屏接管名单里去掉 nav_webdav，被 D 组判红', m6Caught)
 neg('反例 m7：页面里塞回旧的 34pt 标题，被 C 组判红', m7Caught)
 neg('反例 m8：标题前拆掉 PageTopInset，被 C 组判红', m8Caught)
+neg('反例 m9：行内容区 inner 改成 column（标题与按钮不再同一水平行 / 同一中线），被 B 组判红', m9Caught)
+neg('反例 m10：扁平顺序去掉保序去重（重复 id 又挂两层详情层 = 两个相同标题），被 F1 判红', m10Caught)
+neg('反例 m11：共享组件删掉 paddingTop（标题到顶又比推荐页近 12pt），被 F3 判红', m11Caught)
+neg('反例 m12：每日推荐页塞回 headerExtraTop（到顶间距出现第二个真值），被 F3 判红', m12Caught)
+neg('反例 m13：删掉弹性占位（右端按钮挤回左端），被 F4 判红', m13Caught)
+neg('反例 m14：标题容器左右内边距不对称（标题不在正中），被 F4 判红', m14Caught)
+neg('反例 m15：标题容器拿掉绝对定位（两种状态标题横跳），被 F4 判红', m15Caught)
 
 console.log()
 for (const r of results) {

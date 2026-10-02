@@ -5,25 +5,42 @@
  *   「不论是首次进入软件，还是加载弹出迷你播放器栏和底部 tab 栏，都会显示一瞬间
  *     的黑边阴影，我怀疑是它的加载 bug」
  *
- * 本轮修复关掉 commitCapturedTexture 的两个残留窗口：
+ * 第 15/16 轮修复关掉 commitCapturedTexture 的两个残留窗口：
  *  ① 沿用上限是**帧数**（maxUniformHoldFrames = 4）：冷启动掉帧时 4 帧可能横跨几百 ms，
  *     与「backdrop 合成需要多久」没有对应关系；合成慢于 4 帧时第 5 帧就把整幅均匀黑
  *     无条件提交。修法：新增**墙钟**沉降窗口（captureSettleStartedAt +
- *     CACurrentMediaTime），窗口内均匀帧继续沿用；窗口本身最迟 captureSettleMaxHold
- *     关闭，但关闭后均匀帧仍走 maxUniformHoldFrames ≤ 4 的统一帧数上限——最坏
- *     ≈0.6s + 4 帧，不是「到点即接受」。
+ *     CACurrentMediaTime），窗口内均匀帧继续沿用；窗口关闭后均匀帧仍走
+ *     maxUniformHoldFrames ≤ 4 的统一帧数上限。
  *  ② 判据只挡「整幅均匀」：**半成品**帧（一半真实背景、一半黑条）是非均匀的
  *     → isUniform=false → 直接提交。修法：窗口内新增近黑格子占比判据
- *     （partialBlackValueThreshold / partialBlackRatioThreshold），深色外观下停用
- *     （isDarkAppearance 逃逸：深色外观下真实背景本来就接近黑，占比判据没有区分度）。
+ *     （partialBlackValueThreshold / partialBlackRatioThreshold）。
  *     占比阈值标定（2026-10-01 复核）：用户实测形态是「边缘一圈黑、中间正常」，
  *     最外 1 格厚的边环 = 2N+2M-4 格（16×16 ≈ 23.4%；最差实际网格 17×22 ≈ 19.8%），
  *     阈值必须低于该下限才接得住；0.35 会整类漏过 → 已下调为 0.18（A2 钉住上界）。
  *
+ * 2026-10-02（用户第 19 轮第 1 条）「老 bug 又出现了……第一次进入软件时就会发生，
+ * 是瞬间发生的包裹边缘很粗的黑边」——第 15/16 轮的代码形态原样健在，坏的是**覆盖面**，
+ * 三个漏口逐一补上（A 段断言随之扩写）：
+ *  ③ 形态判据与均匀沿用各用一条时限（0.35s 形态 / 0.6s 沿用）：0.35~0.6s 之间到达的
+ *     带状半成品帧（非均匀，均匀判据看不见）被无条件提交 → **合并为单一时限**
+ *     （captureSettleDuration），窗口一关两条判据同时放行，不留缝；
+ *  ④ 窗口从**锚点墙钟**起算，而锚点（挂载/入窗口/抬起/暂停恢复）与第一帧真实采景之间
+ *     可能隔着冷启动的主线程长任务，窗口在首帧到达前就过期 → 新增**首帧重锚**
+ *     （captureSettlePendingReanchor + reanchorCaptureSettleWindowIfNeeded），
+ *     窗口覆盖的是真实帧流；
+ *  ⑤ 形态判据原先只有全网格口径，标定只覆盖「一整圈黑边」，单侧/双侧黑带占全网格
+ *     仅 4.5%~11.8% 接不住 → 补**外圈**口径（partialBlackEdgeRatioThreshold +
+ *     partialBlackEdgeValueThreshold，门槛放宽到 24/255 认深灰黑带）；
+ *     同时删掉深色外观整条逃逸（Info.plist 无 UIUserInterfaceStyle，系统深色 +
+ *     应用浅色页面会把守卫整条关掉）。
+ *
  * 本脚本钉住：
- *   A1 沉降窗口是**墙钟口径**（不是帧数），且存在墙钟硬上限、上限被强制比较；
- *   A2 半成品判据存在（analyzeCapture 统计 + commitCapturedTexture 采信）、深色逃逸存在、
- *      占比阈值低于 1 格边环占比下限（「边缘一圈黑」的形态可被接住）；
+ *   A1 沉降窗口是**墙钟口径**（不是帧数）、**单一时限**（不得再有 captureSettleMaxHold
+ *      这类第二条时限常量）、且起算点是**首帧真实采景**（重锚只生效一次、只在采景入口接）；
+ *   A2 半成品判据存在（analyzeCapture 统计全网格 + 外圈两个口径、commitCapturedTexture
+ *      采信）、**无外观逃逸**（代码里不得出现 traitCollection / isDarkAppearance；
+ *      注释里解释「为什么删」不算）、全网格阈值低于 1 格边环占比下限、外圈阈值低于
+ *      单侧黑带占比下限、外圈像素门槛严格宽于全网格口径（防深灰黑带照漏）；
  *   A3 三条窗口锚点齐全（backdrop 插入 / didMoveToWindow / beginLiveCapture），
  *      且 draw() 的「backgroundTexture == nil 则跳过本帧」guard 仍在；
  *   A4 放行出口唯一：非 hold 分支恰一处 backgroundTexture = texture，且不在 shouldHold
@@ -101,6 +118,20 @@ const swiftNumber = (src, name) => {
 
 const countOf = (text, needle) => text.split(needle).length - 1
 
+/**
+ * 去掉行注释后的源码。只用于「外观逃逸标识符不得出现」这类检查：
+ * 注释里写「本轮删掉了 !isDarkAppearance、为什么删」是文档，不算逃逸；
+ * 只有**代码**里重新引用外观才必须判红（否则契约会把说明文字当成违规）。
+ */
+const stripLineComments = (src) =>
+  src
+    .split('\n')
+    .map((line) => {
+      const i = line.indexOf('//')
+      return i >= 0 ? line.slice(0, i) : line
+    })
+    .join('\n')
+
 const COMMIT_RE = /private func commitCapturedTexture\([^)]*\)\s*\{/
 
 // ---------------------------------------------------------------------------
@@ -113,47 +144,72 @@ const settleWindowInvariants = (f) => {
   if (!/captureSettleStartedAt\s*:\s*TimeInterval\s*=\s*0/.test(glass)) {
     reasons.push('缺 captureSettleStartedAt: TimeInterval 声明（沉降窗口没有墙钟起点）')
   }
+  // 单一时限（2026-10-02 第 19 轮）：形态判据与均匀沿用共用一条窗口。
+  // 旧的 captureSettleDuration(0.35) + captureSettleMaxHold(0.6) 双时限就是黑边漏口：
+  // 0.35~0.6s 之间到达的带状半成品帧，形态判据已过期、均匀判据看不见（非均匀）。
   const dur = swiftNumber(glass, 'captureSettleDuration')
-  const cap = swiftNumber(glass, 'captureSettleMaxHold')
   if (dur === null) {
-    reasons.push('缺 captureSettleDuration 常量（半成品判据没有有效期）')
-  } else if (!(dur > 0 && dur <= 1.0)) {
-    reasons.push('captureSettleDuration=' + dur + ' 不在 (0, 1s] 内')
+    reasons.push('缺 captureSettleDuration 常量（沉降窗口没有时限）')
+  } else if (!(dur > 0 && dur <= 3.0)) {
+    reasons.push('captureSettleDuration=' + dur + ' 不在 (0, 3s] 内（玻璃可能长时间不出画面）')
   }
-  if (cap === null) {
-    reasons.push('缺 captureSettleMaxHold 常量（沿用没有墙钟硬上限 → 可能永久透明/留住上一页）')
-  } else {
-    if (!(cap > 0)) reasons.push('captureSettleMaxHold=' + cap + ' ≤ 0，墙钟硬上限形同虚设')
-    if (dur !== null && !(cap > dur)) reasons.push('captureSettleMaxHold ≤ captureSettleDuration，形态判据有效期失去意义')
-    if (cap > 3.0) reasons.push('captureSettleMaxHold=' + cap + ' > 3s，玻璃可能长时间不出画面')
+  if (/captureSettleMaxHold/.test(glass)) {
+    reasons.push('又出现第二条时限常量 captureSettleMaxHold（形态判据有效期与沿用硬上限分离 → 两条时限之间的带状半成品会被无条件提交）')
   }
 
   const beginBody = fnBody(glass, /private func beginCaptureSettleWindow\(\)\s*\{/)
   if (!beginBody || !/captureSettleStartedAt\s*=\s*CACurrentMediaTime\(\)/.test(beginBody)) {
     reasons.push('beginCaptureSettleWindow 未用 CACurrentMediaTime 记录开启时刻（墙钟口径缺失）')
   }
+  if (!beginBody || !/captureSettlePendingReanchor\s*=\s*true/.test(beginBody)) {
+    reasons.push('beginCaptureSettleWindow 未标记「待重锚」（窗口从锚点墙钟起算，冷启动首帧到达时可能已过期）')
+  }
 
-  const winBody = fnBody(glass, /private func isInsideCaptureSettleWindow\(_ now: TimeInterval, extended: Bool\) -> Bool\s*\{/)
+  const winBody = fnBody(glass, /private func isInsideCaptureSettleWindow\(_ now: TimeInterval\) -> Bool\s*\{/)
   if (!winBody) {
     reasons.push('缺 isInsideCaptureSettleWindow（commit 无法按时间判定）')
   } else {
-    if (!/now\s*-\s*captureSettleStartedAt\s*<\s*limit/.test(winBody)) {
-      reasons.push('窗口判定没有用「当前墙钟 - 开启时刻 < limit」比较（帧数口径回来了？）')
-    }
-    if (!/extended \? Self\.captureSettleMaxHold : Self\.captureSettleDuration/.test(winBody)) {
-      reasons.push('窗口判定没有区分「硬上限 / 形态判据有效期」两条时限（相当于没有上限）')
+    if (!/now\s*-\s*captureSettleStartedAt\s*<\s*Self\.captureSettleDuration/.test(winBody)) {
+      reasons.push('窗口判定没有用「当前墙钟 - 开启时刻 < captureSettleDuration」比较（帧数口径回来了？）')
     }
     if (/consecutiveUniformFrames|maxUniformHoldFrames/.test(winBody)) {
       reasons.push('窗口判定里出现帧计数（沉降窗口必须是墙钟口径，不是帧数）')
     }
+    if (/\bextended\b/.test(winBody)) {
+      reasons.push('窗口判定又出现 extended 双时限分支（第 19 轮已合并为单一时限）')
+    }
+  }
+
+  // 首帧重锚（2026-10-02 第 19 轮③/④）：窗口起算点必须是「第一帧真实采景」。
+  // 锚点（挂载/入窗口/抬起/暂停恢复）与首帧之间可能隔着冷启动长任务，那段墙钟不算数。
+  const reanchorBody = fnBody(glass, /private func reanchorCaptureSettleWindowIfNeeded\(_ now: TimeInterval\)\s*\{/)
+  if (!reanchorBody) {
+    reasons.push('缺 reanchorCaptureSettleWindowIfNeeded（窗口仍从锚点墙钟起算 → 首帧到达时窗口可能已过期）')
+  } else {
+    if (!/guard captureSettlePendingReanchor else \{ return \}/.test(reanchorBody)) {
+      reasons.push('首帧重锚没有「只生效一次」的 guard（会把窗口无限后移）')
+    }
+    if (!/captureSettlePendingReanchor = false/.test(reanchorBody)) {
+      reasons.push('首帧重锚未清「待重锚」标记（等于每次采景都重锚）')
+    }
+    if (!/captureSettleStartedAt = now/.test(reanchorBody)) {
+      reasons.push('首帧重锚未把起算时刻改写到首帧（窗口仍按锚点墙钟走）')
+    }
+  }
+  const analyzeBody = fnBody(glass, /private func analyzeCapture\(_ buffer: CVPixelBuffer, now: TimeInterval\) -> Bool\s*\{/)
+  if (!analyzeBody || !/reanchorCaptureSettleWindowIfNeeded\(now\)/.test(analyzeBody)) {
+    reasons.push('analyzeCapture（唯一真实采景入口）未接首帧重锚（窗口起算点还是锚点墙钟）')
   }
 
   const commit = fnBody(glass, COMMIT_RE)
   if (!commit) {
     reasons.push('缺 commitCapturedTexture')
   } else {
-    if (!/isInsideCaptureSettleWindow\(now, extended: true\)/.test(commit)) {
-      reasons.push('均匀帧沿用没有并入墙钟沉降窗口（帧数上限漏掉的那几帧没有被接住）')
+    // 两条判据必须引用同一条窗口：均匀沿用（isUniform 分支）与形态判据（else 分支）。
+    // 计数恰好 2 处——少了 = 某条判据不看窗口（每帧都挡/都不挡），多了 = 又有别的时限。
+    const winUses = commit.match(/isInsideCaptureSettleWindow\(now\)/g) || []
+    if (winUses.length !== 2) {
+      reasons.push('commitCapturedTexture 引用沉降窗口 ' + winUses.length + ' 处（应恰 2 处：均匀沿用 + 形态判据同生共死）')
     }
     if (!/CACurrentMediaTime\(\)/.test(commit)) {
       reasons.push('commitCapturedTexture 未取当前墙钟（now 来源不明）')
@@ -163,7 +219,7 @@ const settleWindowInvariants = (f) => {
 }
 
 // ---------------------------------------------------------------------------
-// A2 半成品判据（近黑占比）+ 深色逃逸
+// A2 半成品判据（全网格 + 外圈两个口径，无外观逃逸）
 // ---------------------------------------------------------------------------
 const partialFrameInvariants = (f) => {
   const reasons = []
@@ -184,6 +240,31 @@ const partialFrameInvariants = (f) => {
     reasons.push('partialBlackRatioThreshold=' + ratio + ' ≥ 1 格边环占比下限 ' + RING_FLOOR + '（「边缘一圈黑」的形态会被漏掉）')
   }
 
+  // 外圈口径（2026-10-02 第 19 轮⑤）：单侧/双侧黑带只占全网格 4.5%~11.8%，全网格阈值
+  // 接不住；但占外圈 N/(2N+2M-4)：17×17 → 17/64 ≈ 0.266、最差实际网格 17×22 → 17/74 ≈ 0.230。
+  const edgeRatio = swiftNumber(glass, 'partialBlackEdgeRatioThreshold')
+  if (edgeRatio === null) reasons.push('缺 partialBlackEdgeRatioThreshold（单侧黑带没有判据：全网格口径接不住）')
+  else if (!(edgeRatio > 0 && edgeRatio < 1)) reasons.push('partialBlackEdgeRatioThreshold=' + edgeRatio + ' 不在 (0, 1) 内')
+  const EDGE_BAND_FLOOR = 17 / 74 // ≈ 0.2297：最差实际网格上一整条短边的占比
+  if (edgeRatio !== null && !(edgeRatio < EDGE_BAND_FLOOR)) {
+    reasons.push('partialBlackEdgeRatioThreshold=' + edgeRatio + ' ≥ 单侧黑带占比下限 ' + EDGE_BAND_FLOOR.toFixed(4) + '（「一条边黑」的形态会被漏掉）')
+  }
+  const edgeVal = swiftNumber(glass, 'partialBlackEdgeValueThreshold')
+  if (edgeVal === null) reasons.push('缺 partialBlackEdgeValueThreshold（外圈口径没有像素门槛）')
+  else {
+    if (!(edgeVal > 0 && edgeVal < 64)) reasons.push('partialBlackEdgeValueThreshold=' + edgeVal + ' 超出 (0, 64)')
+    // 必须**严格**比全网格口径宽：0.2x 降采样 + 钳边过滤会把未合成区域的纯黑抹成深灰，
+    // 门槛相等（24 → 8 这种回退）等于外圈口径没放宽，深灰黑带照漏。
+    if (val !== null && !(edgeVal > val)) {
+      reasons.push('partialBlackEdgeValueThreshold（' + edgeVal + '）未比全网格口径（' + val + '）更宽（深灰黑带照漏，外圈口径形同虚设）')
+    }
+  }
+
+  // sampleCapture 必须带回列数：外圈口径要把一维网格还原成行列
+  if (!/private static func sampleCapture\(_ buffer: CVPixelBuffer\) -> \(values: \[UInt8\], columns: Int\)/.test(glass)) {
+    reasons.push('sampleCapture 不再返回 columns（外圈口径无法定位最外一圈格子）')
+  }
+
   const analyze = fnBody(glass, /private func analyzeCapture\(_ buffer: CVPixelBuffer, now: TimeInterval\) -> Bool\s*\{/)
   if (!analyze) {
     reasons.push('缺 analyzeCapture')
@@ -191,8 +272,14 @@ const partialFrameInvariants = (f) => {
     if (!/nearBlackCount/.test(analyze) || !/partialBlackValueThreshold/.test(analyze)) {
       reasons.push('analyzeCapture 未统计近黑格子数（半成品判据没有数据源）')
     }
-    if (!/lastCaptureHadPartialBlack = Double\(nearBlackCount\) \/ Double\(grid\.count\) >= Self\.partialBlackRatioThreshold/.test(analyze)) {
-      reasons.push('analyzeCapture 未按「近黑占比 ≥ partialBlackRatioThreshold」写入 lastCaptureHadPartialBlack')
+    if (!/edgeNearBlackCount/.test(analyze) || !/partialBlackEdgeValueThreshold/.test(analyze)) {
+      reasons.push('analyzeCapture 未统计外圈近黑格子数（单侧黑带没有数据源）')
+    }
+    if (!/row == 0 \|\| row == rows - 1 \|\| col == 0 \|\| col == columns - 1/.test(analyze)) {
+      reasons.push('analyzeCapture 未按行列判定外圈（最外一圈格子定位缺失）')
+    }
+    if (!/lastCaptureHadPartialBlack = totalRatio >= Self\.partialBlackRatioThreshold \|\|\s*\n?\s*edgeRatio >= Self\.partialBlackEdgeRatioThreshold/.test(analyze)) {
+      reasons.push('analyzeCapture 未按「近黑占比：全网格 ≥ partialBlackRatioThreshold 或 外圈 ≥ partialBlackEdgeRatioThreshold」写入 lastCaptureHadPartialBlack（半成品判据没有数据源）')
     }
     // 帧间变化检测（自适应刷新率）必须仍在同一次扫描里，不许被顺手拆掉
     if (!/lastCaptureChangeAt = now/.test(analyze) || !/motionHoldDuration/.test(analyze)) {
@@ -207,17 +294,20 @@ const partialFrameInvariants = (f) => {
     if (!/if lastCaptureHadPartialBlack,/.test(commit)) {
       reasons.push('commitCapturedTexture 未采信半成品判据（半张没合成的黑条仍会被直接提交）')
     }
-    if (!/isInsideCaptureSettleWindow\(now, extended: false\)/.test(commit)) {
-      reasons.push('半成品判据没有限定在沉降窗口有效期内（窗外的暗色内容会被误挡）')
+    if (!/isInsideCaptureSettleWindow\(now\)/.test(commit)) {
+      reasons.push('半成品判据没有限定在沉降窗口内（窗外的暗色内容会被误挡）')
     }
-    if (!/!isDarkAppearance/.test(commit)) {
-      reasons.push('半成品判据没有深色逃逸（深色外观下真实暗背景会被误判成未就绪）')
+    // 外观逃逸必须缺席（2026-10-02 第 19 轮⑤）：Info.plist 无 UIUserInterfaceStyle，
+    // 系统深色 + 应用浅色页面是最常见组合，逃逸一开等于把守卫整条关掉。
+    // 只看代码——文档注释里解释「为什么删掉」不算逃逸（见 stripLineComments）。
+    if (/isDarkAppearance|traitCollection|userInterfaceStyle/.test(stripLineComments(commit))) {
+      reasons.push('commitCapturedTexture 又出现外观逃逸（深色外观下真实暗背景不再被挡，但「系统深色 + 应用浅色」的黑边也同样漏出）')
     }
   }
-
-  const dark = fnBody(glass, /private var isDarkAppearance: Bool\s*\{/)
-  if (!dark || !/traitCollection\.userInterfaceStyle == \.dark/.test(dark)) {
-    reasons.push('isDarkAppearance 未按 traitCollection.userInterfaceStyle == .dark 判定')
+  // 注意：文件里**允许**有 userInterfaceStyle 的既有用途（tintColor 按外观取色，第 150 行），
+  // 那不是逃逸；逃逸的唯一命名是 isDarkAppearance（判据分支读它）。旧属性复活必须判红。
+  if (/isDarkAppearance/.test(stripLineComments(glass))) {
+    reasons.push('文件里又出现 isDarkAppearance（第 19 轮已删除外观逃逸，判据必须与外观无关）')
   }
   return reasons
 }
@@ -301,7 +391,8 @@ const releaseExitInvariants = (f) => {
 // 为什么：A3 只断言「三个锚点函数体里含 beginCaptureSettleWindow()」，不查调用总数。
 // 若在 captureBackground / commitCapturedTexture / draw 等每帧路径里多加一处，
 // 窗口就每帧重开、永不到点 → 均匀帧永远被 hold（永久挡住），而旧断言照样通过。
-// 起点写入同理：只有 beginCaptureSettleWindow 能写 captureSettleStartedAt。
+// 起点写入同理：只允许两个写入点（beginCaptureSettleWindow 开窗 / 首帧重锚函数），
+// 且重锚调用恰 1 处——接到每帧路径上等于窗口每帧后移、永不到点（2026-10-02 第 19 轮）。
 // 4 处的构成（缺一处都必须是失败）：
 //   ① captureBackdrop 的 backdropView 插入点；② didMoveToWindow；③ beginLiveCapture；
 //   ④ handleResumeFromPause（2026-10-02 第 16 轮第 1 条：暂停恢复 = 合成源刚建立，
@@ -331,13 +422,26 @@ const settleReopenInvariants = (f) => {
   }
 
   const beginBody = fnBody(glass, /private func beginCaptureSettleWindow\(\)\s*\{/)
+  const reanchorBody = fnBody(glass, /private func reanchorCaptureSettleWindowIfNeeded\(_ now: TimeInterval\)\s*\{/)
   if (!beginBody) {
     reasons.push('缺 beginCaptureSettleWindow 函数体')
+  } else if (!reanchorBody) {
+    reasons.push('缺 reanchorCaptureSettleWindowIfNeeded 函数体（首帧重锚的写入点无法确定）')
   } else {
+    // 2026-10-02 第 19 轮起允许**两个**写入点，且只有这两个：
+    //   ① beginCaptureSettleWindow（锚点开窗）；
+    //   ② reanchorCaptureSettleWindowIfNeeded（首帧真实采景重锚，内部有「只生效一次」的 guard）。
+    // 其它任何位置（尤其每帧路径）出现写入 = 窗口可被随意重置，必须判红。
     const writesAll = countOf(glass, 'captureSettleStartedAt =')
     const writesInFn = countOf(beginBody, 'captureSettleStartedAt =')
-    if (writesAll !== 1 || writesInFn !== 1) {
-      reasons.push('captureSettleStartedAt 的写入点不唯一（全文件 ' + writesAll + ' 处、函数体内 ' + writesInFn + ' 处）——只允许在 beginCaptureSettleWindow 内写一次；写入点扩散 = 窗口可被任意路径（含每帧路径）随意重置')
+    const writesInReanchor = countOf(reanchorBody, 'captureSettleStartedAt =')
+    if (writesAll !== 2 || writesInFn !== 1 || writesInReanchor !== 1) {
+      reasons.push('captureSettleStartedAt 的写入点不是「恰 2 处（锚点开窗 1 + 首帧重锚 1）」（全文件 ' + writesAll + ' 处、开窗内 ' + writesInFn + ' 处、重锚内 ' + writesInReanchor + ' 处）——写入点扩散 = 窗口可被任意路径（含每帧路径）随意重置')
+    }
+    // 重锚只允许在 analyzeCapture（唯一真实采景入口）接一次：接到每帧路径上等于每帧重开窗
+    const reanchorCalls = countOf(glass, 'reanchorCaptureSettleWindowIfNeeded(') - countOf(glass, 'func reanchorCaptureSettleWindowIfNeeded(')
+    if (reanchorCalls !== 1) {
+      reasons.push('reanchorCaptureSettleWindowIfNeeded 调用不是恰 1 处（实际 ' + reanchorCalls + ' 处）——每帧路径再接一处 = 窗口每帧后移、永不到点')
     }
   }
   return reasons
@@ -528,7 +632,7 @@ const existingStructureInvariants = (f) => {
 
 const assertions = [
   { name: 'A1 沉降窗口：墙钟口径 + 墙钟硬上限（不是帧数）', hits: settleWindowInvariants(REAL) },
-  { name: 'A2 半成品判据（近黑占比）+ 深色外观逃逸', hits: partialFrameInvariants(REAL) },
+  { name: 'A2 半成品判据（全网格 + 外圈近黑占比，无外观逃逸）', hits: partialFrameInvariants(REAL) },
   { name: 'A3 三条窗口锚点 + draw() 无纹理 guard', hits: anchorInvariants(REAL) },
   { name: 'A4 放行出口：非 hold 分支恰一处 backgroundTexture = texture（不在 shouldHold 内）', hits: releaseExitInvariants(REAL) },
   { name: 'A5 开窗点恰 4 处调用（含暂停恢复）+ 起点写入唯一（beginCaptureSettleWindow 内）', hits: settleReopenInvariants(REAL) },
@@ -568,39 +672,79 @@ const CE = (name, invariantFn, mutation, expectSubstr) => {
 }
 
 CE('C1 沉降窗口判定退回帧数口径', settleWindowInvariants, tamperGlass(
-  'return now - captureSettleStartedAt < limit',
+  'return now - captureSettleStartedAt < Self.captureSettleDuration',
   'return consecutiveUniformFrames <= Self.maxUniformHoldFrames'
-), '墙钟')
+), '帧数口径')
 
-CE('C2 墙钟硬上限改成 0（等于没有上限）', settleWindowInvariants, tamperGlass(
-  'captureSettleMaxHold: TimeInterval = 0.6',
-  'captureSettleMaxHold: TimeInterval = 0'
-), '硬上限')
+CE('C2 沉降窗口时限改成 0（等于没有上限）', settleWindowInvariants, tamperGlass(
+  'captureSettleDuration: TimeInterval = 0.6',
+  'captureSettleDuration: TimeInterval = 0'
+), '不在 (0, 3s]')
 
-CE('C3 判定不再区分两条时限（extended 失效）', settleWindowInvariants, tamperGlass(
-  'let limit = extended ? Self.captureSettleMaxHold : Self.captureSettleDuration',
-  'let limit = Self.captureSettleDuration'
-), '两条时限')
+CE('C3 双时限常量被加回来（0.35~0.6s 之间的带状半成品又会被无条件提交）', settleWindowInvariants, tamperGlass(
+  'captureSettleDuration: TimeInterval = 0.6',
+  'captureSettleDuration: TimeInterval = 0.35\n    private static let captureSettleMaxHold: TimeInterval = 0.6'
+), '第二条时限')
+
+CE('C3b 两条判据不再同生共死（形态判据改回只看自己的时限）', settleWindowInvariants, tamperGlass(
+  '            if lastCaptureHadPartialBlack,\n               isInsideCaptureSettleWindow(now) {',
+  '            if lastCaptureHadPartialBlack,\n               isInsideCaptureSettleWindow(now, extended: false) {'
+), '引用沉降窗口')
+
+CE('C3c 首帧重锚的「只生效一次」guard 被拆掉（窗口每次采景都后移）', settleWindowInvariants, tamperGlass(
+  'guard captureSettlePendingReanchor else { return }',
+  'if false { return }'
+), '只生效一次')
+
+CE('C3d 采景入口不再接首帧重锚（窗口仍从锚点墙钟起算，冷启动首帧到达时可能已过期）', settleWindowInvariants, tamperGlass(
+  '        reanchorCaptureSettleWindowIfNeeded(now)\n',
+  ''
+), '首帧重锚')
 
 CE('C4 analyzeCapture 不再统计近黑占比（半成品判据失去数据源）', partialFrameInvariants, tamperGlass(
-  'lastCaptureHadPartialBlack = Double(nearBlackCount) / Double(grid.count) >= Self.partialBlackRatioThreshold',
+  'lastCaptureHadPartialBlack = totalRatio >= Self.partialBlackRatioThreshold ||\n            edgeRatio >= Self.partialBlackEdgeRatioThreshold',
   'lastCaptureHadPartialBlack = false'
 ), '近黑占比')
 
-CE('C4b 占比阈值被调回「半张黑条」口径（「边缘一圈黑」的形态又会被漏掉）', partialFrameInvariants, tamperGlass(
+CE('C4b 全网格占比阈值被调回「半张黑条」口径（「边缘一圈黑」的形态又会被漏掉）', partialFrameInvariants, tamperGlass(
   'partialBlackRatioThreshold: Double = 0.18',
   'partialBlackRatioThreshold: Double = 0.35'
 ), '边环占比下限')
+
+CE('C4c 外圈口径被拆掉（单侧黑带没有判据 → 「一条边黑」的形态照漏）', partialFrameInvariants, tamperGlass(
+  '            if row == 0 || row == rows - 1 || col == 0 || col == columns - 1 {',
+  '            if false {'
+), '外圈')
+
+CE('C4d 外圈阈值高过单侧黑带占比下限（「一条边黑」整类漏过）', partialFrameInvariants, tamperGlass(
+  'partialBlackEdgeRatioThreshold: Double = 0.20',
+  'partialBlackEdgeRatioThreshold: Double = 0.4'
+), '单侧黑带占比下限')
+
+CE('C4e 外圈像素门槛退回严格纯黑（深灰黑带照漏）', partialFrameInvariants, tamperGlass(
+  'partialBlackEdgeValueThreshold: UInt8 = 24',
+  'partialBlackEdgeValueThreshold: UInt8 = 8'
+), '深灰黑带照漏')
+
+CE('C4f sampleCapture 不再返回列数（外圈口径无法定位最外一圈格子）', partialFrameInvariants, tamperGlass(
+  'private static func sampleCapture(_ buffer: CVPixelBuffer) -> (values: [UInt8], columns: Int) {',
+  'private static func sampleCapture(_ buffer: CVPixelBuffer) -> [UInt8] {'
+), 'columns')
+
+CE('C4g 首帧重锚被接到每帧采景路径上（窗口每次采景都重开、永不到点）', settleReopenInvariants, tamperGlass(
+  '    func captureBackground() {',
+  '    func captureBackground() {\n        reanchorCaptureSettleWindowIfNeeded(CACurrentMediaTime())'
+), '恰 1 处')
 
 CE('C5 commit 不再采信半成品判据', partialFrameInvariants, tamperGlass(
   'if lastCaptureHadPartialBlack,',
   'if false,'
 ), '半成品判据')
 
-CE('C6 深色逃逸被拆掉（深色外观下暗背景会被误挡）', partialFrameInvariants, tamperGlass(
-  '!isDarkAppearance {',
-  'true {'
-), '深色逃逸')
+CE('C6 外观逃逸被加回来（系统深色 + 应用浅色页面时守卫整条关闭，黑边照闪）', partialFrameInvariants, tamperGlass(
+  'if lastCaptureHadPartialBlack,\n               isInsideCaptureSettleWindow(now) {',
+  'if lastCaptureHadPartialBlack,\n               isInsideCaptureSettleWindow(now),\n               !isDarkAppearance {'
+), '外观逃逸')
 
 CE('C7 draw() 的无纹理 guard 被拆掉', anchorInvariants, tamperGlass(
   'guard backgroundTexture != nil else { return }',
@@ -686,7 +830,7 @@ CE('C16 每帧路径（captureBackground）里多加一处开窗（窗口每帧�
 CE('C17 每帧路径（commitCapturedTexture）里多加一处起点写入（窗口每帧重置）', settleReopenInvariants, tamperGlass(
   '        let now = CACurrentMediaTime()\n        var shouldHold = false',
   '        captureSettleStartedAt = CACurrentMediaTime()\n        let now = CACurrentMediaTime()\n        var shouldHold = false'
-), '写入点不唯一')
+), '写入点不是')
 
 // —— 2026-10-02 契约加固：采景节流（C18~C18c）——
 
@@ -765,7 +909,7 @@ console.log('='.repeat(92))
 console.log('玻璃首次挂载/重新入层级提交门（LiquidGlassView.commitCapturedTexture，2026-10-01）')
 console.log('='.repeat(92))
 console.log('  A1 沉降窗口 = 墙钟口径（不是帧数）+ 墙钟硬上限（窗口关闭后均匀帧仍走 ≤4 帧的统一帧数上限，非到点即接受）')
-console.log('  A2 半成品（近黑格子占比）判据 + 深色外观逃逸（阈值须低于 1 格边环下限）')
+console.log('  A2 半成品判据：全网格 + 外圈近黑占比，无外观逃逸（阈值须低于对应形态占比下限）')
 console.log('  A3 三条窗口锚点（backdrop 插入 / didMoveToWindow / beginLiveCapture）+ draw guard')
 console.log('  A4 放行出口唯一：非 hold 分支恰一处 backgroundTexture = texture（缺 = 玻璃永久透明）')
 console.log('  A5 开窗点恰 4 处（三条锚点 + 暂停恢复复位）+ 起点写入唯一（每帧路径不得开窗/重置）')
