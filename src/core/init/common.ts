@@ -6,6 +6,8 @@ import txUserApi from '@/utils/musicSdk/tx/user'
 import { setWyFollowedArtists, setWyLikedSongs, setWySubscribedAlbums, setWyUid, setTxLikedSongs, setKgLikedSongs } from '@/store/user/action'
 import { getUserPlaylists, getPlaylistSongs } from '@/utils/musicSdk/kg/utils/api'
 import { toast } from '@/utils/tools'
+import { searchLog } from '@/utils/searchLog'
+import { playerLog } from '@/utils/playerLog'
 
 const formatUri = <T extends string | null>(url: T) => {
   return typeof url == 'string' && url.startsWith('/') ? `file://${url}` : url
@@ -157,17 +159,49 @@ export default async(setting: LX.AppSetting) => {
     }
   }
 
+  // 日志开关同步（用户第 7 条 (1) 的修复中心）。
+  // `global.lx` 上的这三个 + 搜索 / 播放器日志模块的 isEnabled 是**两套状态**：
+  //   · 记录日志 / 记录同步日志 / 记录自定义源日志 → global.lx.*（下游 plugins/sync/log、
+  //     core/userApi、core/webdavMusic/logger 直读 global）；
+  //   · 启用搜索日志 / 启用播放器日志 → searchLog.isEnabled / playerLog.isEnabled
+  //     （下游 searchLog.* / playerLog.* 自己判），此前**只在设置页里 updateEnabled**，
+  //     冷启动没有任何调用点，于是恒为 false —— 设置页显示已开启，实际一条都不写；
+  //     两个模块里的 init() 也从未被调用过。
+  // 现在两条链路都收进这一个函数，设置页改动 + 冷启动首同步走的是同一条代码。
   const handleLogSettingUpdate = (keys: Array<keyof LX.AppSetting>, setting: Partial<LX.AppSetting>) => {
     if (keys.includes('common.isEnableLog')) {
-      global.lx.isEnableLog = setting['common.isEnableLog']!
+      global.lx.isEnableLog = setting['common.isEnableLog'] ?? global.lx.isEnableLog
     }
     if (keys.includes('common.isEnableSyncLog')) {
-      global.lx.isEnableSyncLog = setting['common.isEnableSyncLog']!
+      global.lx.isEnableSyncLog = setting['common.isEnableSyncLog'] ?? global.lx.isEnableSyncLog
     }
     if (keys.includes('common.isEnableUserApiLog')) {
-      global.lx.isEnableUserApiLog = setting['common.isEnableUserApiLog']!
+      global.lx.isEnableUserApiLog = setting['common.isEnableUserApiLog'] ?? global.lx.isEnableUserApiLog
+    }
+    // 直接写显式值而不是调 searchLog.init() / playerLog.init()：那两个 init 从
+    // settingState 读，而冷启动这次同步发生在设置 state 之外的时序里，传值更可靠。
+    if (keys.includes('common.isEnableSearchLog')) {
+      searchLog.updateEnabled(setting['common.isEnableSearchLog'] ?? false)
+    }
+    if (keys.includes('common.isEnablePlayerLog')) {
+      playerLog.updateEnabled(setting['common.isEnablePlayerLog'] ?? false)
     }
   }
+
+  // 冷启动首同步（用户第 7 条 (1)）：init/index.ts 里 initSetting()（会广播
+  // configUpdated）跑在 initCommonState()（注册监听）**之前**，首次配置广播因此永远
+  // 被漏掉 —— global.lx 的三个开关恒为 globalData.ts 的硬编码默认值
+  // （isEnableLog=true，其余 false）。表现为「关掉『记录日志』重启后仍在记录 /
+  // 打开的子开关不记录 / 打开搜索·播放器日志重启后失效」。
+  // 这里用**包含全部日志开关的完整键集**手工补一次同步。
+  // （WebDAV / 同步 / 自定义源日志本就是调用时直读设置或 global，无需额外处理。）
+  const ALL_LOG_SETTING_KEYS: Array<keyof LX.AppSetting> = [
+    'common.isEnableLog',
+    'common.isEnableSyncLog',
+    'common.isEnableUserApiLog',
+    'common.isEnableSearchLog',
+    'common.isEnablePlayerLog',
+  ]
 
   handlePicUpdate()
   global.state_event.on('playerMusicInfoChanged', handlePicUpdate)
@@ -176,4 +210,8 @@ export default async(setting: LX.AppSetting) => {
   global.state_event.on('configUpdated', handleTxCookieUpdate)
   global.state_event.on('configUpdated', handleKgCookieUpdate)
   global.state_event.on('configUpdated', handleLogSettingUpdate)
+  // 冷启动补一次日志开关同步（见上方 ALL_LOG_SETTING_KEYS 的说明：
+  // initSetting 的首次广播早于本监听注册）。必须在 on(...) 之后，
+  // 这样同一份配置之后继续走监听这条常规路径。
+  handleLogSettingUpdate(ALL_LOG_SETTING_KEYS, setting)
 }
