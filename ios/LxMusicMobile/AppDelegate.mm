@@ -3250,6 +3250,15 @@ RCT_REMAP_METHOD(updateEqualizerConfig, updateEqualizerConfig:(NSDictionary *)co
 @property (nonatomic, assign) BOOL playbackStarted;
 @property (nonatomic, assign) BOOL manualPause;
 @property (nonatomic, assign) BOOL interruptedBySystem;
+// 【第 31 轮·追加】短暂系统音（电源键锁定音 / 系统提示音）忽略窗口的待决标记：
+// Began 收到通知立即置位，「停引擎 / 让出会话 / 对外呈现暂停」推迟到窗口到期再执行；
+// 窗口内 Ended 先到（见 handleAudioSessionInterruption: 的 Ended 忽略窗口分支）→
+// 撤销待决 = 当没发生（调度见 scheduleDeferredInterruptionBeganHandling）
+@property (nonatomic, assign) BOOL pendingShortInterruptionIgnore;
+// 【第 31 轮·条五】建图时的硬件输出采样率（扬声器 44.1k ↔ 蓝牙 A2DP 48k… 变了就要重挂输出）
+@property (nonatomic, assign) double configuredHardwareSampleRate;
+// 【第 31 轮·条五】IO 死检探针的已渲染帧数快照（引擎在跑却一帧都取不走 = IO 已被掐断）
+@property (nonatomic, assign) int64_t renderFramesAtLivenessProbe;
 @property (nonatomic, assign) NSUInteger readOffset;
 @property (nonatomic, assign) double duration;
 @property (nonatomic, assign) double sampleRate;
@@ -3349,6 +3358,17 @@ RCT_EXPORT_MODULE();
                                              selector:@selector(handleAudioSessionInterruption:)
                                                  name:AVAudioSessionInterruptionNotification
                                                object:[AVAudioSession sharedInstance]];
+    // 【第 31 轮·条五】蓝牙 / 耳机路由变化与引擎配置变化：恢复输出。此前完全没人监听 ——
+    // iOS 在路由变化时会把 AVAudioEngine 停掉、把会话重新协商，引擎停在旧路由上 / 会话被
+    // 系统收走，就是用户报的「连上蓝牙后播放时不时没声音、卡顿」。
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(handleAudioRouteChangeWhileStreaming:)
+                                                 name:AVAudioSessionRouteChangeNotification
+                                               object:[AVAudioSession sharedInstance]];
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(handleAudioEngineConfigurationChangeWhileStreaming:)
+                                                 name:AVAudioEngineConfigurationChangeNotification
+                                               object:nil];
     [[NSNotificationCenter defaultCenter] addObserver:self
                                              selector:@selector(handleApplicationWillResignActive:)
                                                  name:UIApplicationWillResignActiveNotification
@@ -3549,6 +3569,9 @@ RCT_EXPORT_MODULE();
   self.playbackStarted = NO;
   self.manualPause = NO;
   self.interruptedBySystem = NO;
+  // 【第 31 轮·追加】切歌 / 复位（openStream / reset 都会走到这里）：撤销短暂系统音窗口里的
+  // 待决暂停 —— 别让窗口到期去停一首刚打开 / 已复位的歌
+  self.pendingShortInterruptionIgnore = NO;
   self.duration = 0;
   self.sampleRate = 0;
   self.channels = 0;
@@ -3824,44 +3847,28 @@ RCT_EXPORT_MODULE();
   AVAudioSessionInterruptionType type = (AVAudioSessionInterruptionType)[userInfo[AVAudioSessionInterruptionTypeKey] unsignedIntegerValue];
   switch (type) {
     case AVAudioSessionInterruptionTypeBegan: {
-      __block BOOL shouldEmitPause = NO;
-      __block BOOL canReleaseSession = NO;
-      dispatch_sync(self.renderQueue, ^{
-        BOOL shouldHandle = self.sourceNode != nil && (self.playbackStarted || [self.currentState isEqualToString:@"buffering"]);
-        if (shouldHandle && !self.manualPause) {
-          self.lastKnownPosition = [self currentPlaybackPositionLocked];
-          if (self.engine != nil && self.engine.isRunning) [self.engine pause];
-          _sourceRenderingEnabled.store(false, std::memory_order_release);
-          self.playbackStarted = NO;
-          // 【第 24 轮】「与其他应用同时播放」下不对外呈现暂停：引擎照旧停摆（上面刚停，
-          // 系统已把我们的音频压住），但不发 paused、不改 currentState —— UI / 锁屏 /
-          // 灵动岛保持「在播」，interruptedBySystem 照置，结束分支会重启引擎并恢复输出。
-          shouldEmitPause = !LXPlayWithOthersEnabled;
-        }
-        // 【让出会话的前提】引擎必须先停下来：引擎还在跑时 setActive:NO 会把它的 IO 掐断，
-        // 之后 isRunning 仍为真、Ended 分支不会重启它 —— 表现为打断结束后无声。
-        canReleaseSession = self.sourceNode != nil && (self.engine == nil || !self.engine.isRunning);
-      });
-      // 【用户第 13 轮第 1 条】手动暂停 / 尚未出声时也必须走到这里。旧实现在这两种
-      // 情况下（!shouldHandle || manualPause）直接 return，于是：
-      //   ① 不置 interruptedBySystem —— 打断结束后 Ended 分支整单作废，表现为
-      //      「手动暂停时，其他音频播放结束后不会自动开始播放」；
-      //   ② 不让出音频会话 —— 其他音频在播，我们还占着，其他音频无法正常使用。
-      // 【第 16 轮第 9 条】其中「暂停态占着会话」的来源已从根上拔掉：pause 命令改成
-      // 立刻 setActive:NO 让出会话（见 pauseStreamWithResolver），这里的兜底释放
-      // 对暂停态只是幂等的重复让出。
+      // 【第 31 轮·追加】短暂系统音忽略窗口（用户报：按电源键 / 系统提示音时音乐会短暂
+      // 声音变化）：iOS 对「锁定音、提示音」这类短促系统音同样会发一对「打断开始 → 很快
+      // 结束」的通知 —— 立刻停引擎 / 让出会话会把一声 0.3s 的系统音放大成「音乐被切一下
+      // 再接回」。改为：标记照旧**立即、无条件**置位（第 13/16 轮口径：拿到打断通知就算数；
+      // 同时让路由自愈在窗口期不抢会话），停引擎 / 让出会话 / 对外呈现暂停整段推迟到
+      // LXShortInterruptionIgnoreMs 之后（见 scheduleDeferredInterruptionBeganHandling）；
+      // 窗口内 Ended 先到（见下方 Ended 分支的忽略窗口分支）就整单撤销 —— 播放全程不被
+      // 触碰。只有超过一定长度的打断才走完整处理。
       self.interruptedBySystem = YES;
-      if (canReleaseSession) {
-        // 与 openStream 接管会话时的对手写法：NotifyOthersOnDeactivation 把会话
-        // 干干净净地交还给系统 / 其他音频。
-        [[AVAudioSession sharedInstance] setActive:NO withOptions:AVAudioSessionSetActiveOptionNotifyOthersOnDeactivation error:nil];
-      }
-      if (!shouldEmitPause) return;
-      self.currentState = @"paused";
-      [self emitState:@"paused" position:@(self.lastKnownPosition) duration:@(self.duration)];
+      [self scheduleDeferredInterruptionBeganHandling];
       break;
     }
     case AVAudioSessionInterruptionTypeEnded: {
+      // 【第 31 轮·追加】忽略窗口内结束 = 电源键 / 系统提示音这类短暂系统音：「停引擎 /
+      // 让出会话 / 对外呈现暂停」都还没执行过 —— 撤销待决、回滚打断标记，当没发生；
+      // 只补一次输出自愈（系统在提示音期间可能已把会话掐过一下；全是幂等操作，无事零副作用）。
+      if (self.pendingShortInterruptionIgnore) {
+        self.pendingShortInterruptionIgnore = NO;
+        self.interruptedBySystem = NO;
+        [self restoreOutputAfterIgnoredShortInterruption];
+        return;
+      }
       // 标记由 Began 分支无条件置位（含手动暂停 / 未出声），这里只看它。
       if (!self.interruptedBySystem) return;
       self.interruptedBySystem = NO;
@@ -3908,6 +3915,201 @@ RCT_EXPORT_MODULE();
   }
 }
 
+// 【第 31 轮·追加】短暂系统音忽略窗口的毫秒数（与 JS 侧 SHORT_INTERRUPTION_IGNORE_MS 同值）：
+// 电源键锁定音 / 系统提示音基本都会在 1.5s 内走完「Began → Ended」，窗口内结束就当没发生；
+// 超过它的打断（导航播报、通话、其它音乐）照走 performInterruptionBeganHandling 的完整处理。
+static const int64_t LXShortInterruptionIgnoreMs = 1500;
+
+// 【第 31 轮·追加】Began 的推迟调度：立即置待决标记，窗口到期后若仍待决（没等到 Ended）
+// 才执行完整处理；窗口内 Ended 到达会清掉待决（见 handleAudioSessionInterruption: 的
+// Ended 忽略窗口分支）—— 待决期间播放不被触碰。
+- (void)scheduleDeferredInterruptionBeganHandling {
+  self.pendingShortInterruptionIgnore = YES;
+  __weak StreamingFlacPlayerModule *weakSelf = self;
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(LXShortInterruptionIgnoreMs * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
+    StreamingFlacPlayerModule *strongSelf = weakSelf;
+    if (strongSelf == nil) return;
+    // 窗口内 Ended 已到（短暂系统音；或用户已自行接管播放）→ 当没发生
+    if (!strongSelf.pendingShortInterruptionIgnore) return;
+    strongSelf.pendingShortInterruptionIgnore = NO;
+    [strongSelf performInterruptionBeganHandling];
+  });
+}
+
+// 【第 31 轮·追加】Began 的实际处理（原 Began 分支整段搬来）：判定（shouldHandle /
+// manualPause / canReleaseSession）全部在**执行时刻**求值 —— 窗口内用户手动暂停 /
+// 恢复播放都能被正确看见；只有超过忽略窗口的真实打断才会走到这里。
+- (void)performInterruptionBeganHandling {
+  __block BOOL shouldEmitPause = NO;
+  __block BOOL canReleaseSession = NO;
+  dispatch_sync(self.renderQueue, ^{
+    BOOL shouldHandle = self.sourceNode != nil && (self.playbackStarted || [self.currentState isEqualToString:@"buffering"]);
+    if (shouldHandle && !self.manualPause) {
+      self.lastKnownPosition = [self currentPlaybackPositionLocked];
+      if (self.engine != nil && self.engine.isRunning) [self.engine pause];
+      _sourceRenderingEnabled.store(false, std::memory_order_release);
+      self.playbackStarted = NO;
+      // 【第 24 轮】「与其他应用同时播放」下不对外呈现暂停：引擎照旧停摆（上面刚停，
+      // 系统已把我们的音频压住），但不发 paused、不改 currentState —— UI / 锁屏 /
+      // 灵动岛保持「在播」，interruptedBySystem 照置，结束分支会重启引擎并恢复输出。
+      shouldEmitPause = !LXPlayWithOthersEnabled;
+    }
+    // 【让出会话的前提】引擎必须先停下来：引擎还在跑时 setActive:NO 会把它的 IO 掐断，
+    // 之后 isRunning 仍为真、Ended 分支不会重启它 —— 表现为打断结束后无声。
+    canReleaseSession = self.sourceNode != nil && (self.engine == nil || !self.engine.isRunning);
+  });
+  // 【用户第 13 轮第 1 条】手动暂停 / 尚未出声时也必须走到这里。旧实现在这两种
+  // 情况下（!shouldHandle || manualPause）直接 return，于是：
+  //   ① 不置 interruptedBySystem —— 打断结束后 Ended 分支整单作废，表现为
+  //      「手动暂停时，其他音频播放结束后不会自动开始播放」；
+  //   ② 不让出音频会话 —— 其他音频在播，我们还占着，其他音频无法正常使用。
+  // 【第 16 轮第 9 条】其中「暂停态占着会话」的来源已从根上拔掉：pause 命令改成
+  // 立刻 setActive:NO 让出会话（见 pauseStreamWithResolver），这里的兜底释放
+  // 对暂停态只是幂等的重复让出。
+  self.interruptedBySystem = YES;
+  if (canReleaseSession) {
+    // 与 openStream 接管会话时的对手写法：NotifyOthersOnDeactivation 把会话
+    // 干干净净地交还给系统 / 其他音频。
+    [[AVAudioSession sharedInstance] setActive:NO withOptions:AVAudioSessionSetActiveOptionNotifyOthersOnDeactivation error:nil];
+  }
+  if (!shouldEmitPause) return;
+  self.currentState = @"paused";
+  [self emitState:@"paused" position:@(self.lastKnownPosition) duration:@(self.duration)];
+}
+
+// 【第 31 轮·追加】被忽略的短暂系统音结束后的轻量自愈：系统在提示音期间可能把会话掐过
+// 一下（或让引擎 IO 停摆），这里按 Ended 恢复分支的同一套顺序补一次 —— 重设会话 → 保证
+// 引擎在跑 → 重贴音量 / 音效。不启动播放、不发状态、不动播放位置（忽略窗口内播放本来
+// 就没被碰过）；全是幂等操作，什么都没发生过的正常播放零副作用。
+- (void)restoreOutputAfterIgnoredShortInterruption {
+  if (self.currentURL.length == 0 || self.manualPause || self.sourceNode == nil) return;
+  NSError *sessionError = nil;
+  if (![self prepareAudioSession:&sessionError]) return;
+  dispatch_async(self.renderQueue, ^{
+    NSError *engineError = nil;
+    [self ensureAudioEngineRunningLocked:&engineError];
+  });
+  [self schedulePlaybackOutputRestoreWithDelays:@[ @0.1, @0.5 ]];
+}
+
+// 【第 31 轮·条五】蓝牙 / 耳机路由变化后的输出自愈（用户报：连上蓝牙后播放时不时没声音、卡顿）。
+//
+// 为什么必须有这段：iOS 在路由变化时（蓝牙连上 / 断开、A2DP ↔ HFP 切换、硬件采样率变化）
+// 会把 AVAudioEngine 停掉、把音频会话重新协商；本模块此前只监听打断与前后台通知，路由变化
+// 完全没人管 —— 引擎停在旧路由上 / 会话被系统收走，表现就是「进度在走、没有声音」或断续卡顿。
+// 这正是第 13 轮打断里记过的同一个坑：引擎 isRunning 仍为真，但 IO 已经被掐断。
+//
+// 自愈三步（幂等、可重入；路由变化通知会成串来，靠延迟重试收敛）：
+//   ① 重设会话（playback + LongFormAudio + setActive:YES）：只在「有流、非手动暂停、
+//      非系统打断」时做 —— 绝不抢用户暂停 / 系统打断期间的会话（第 16 轮口径）；
+//   ② 引擎自愈：硬件格式变了（扬声器 44.1k ↔ 蓝牙 A2DP 48k）或 IO 已死（环里有数据却
+//      一帧都取不走）→ stop + start 重挂输出；只是被系统停了 → 直接 start；
+//   ③ 重贴音量 / 音效并把输出接回播放（restorePlaybackOutputLocked + maybeStartPlaybackLocked）。
+- (BOOL)currentRouteHasHeadphoneOutput {
+  AVAudioSessionRouteDescription *route = [AVAudioSession sharedInstance].currentRoute;
+  if (route == nil) return NO;
+  for (AVAudioSessionPortDescription *output in route.outputs) {
+    NSString *portType = output.portType;
+    if ([portType isEqualToString:AVAudioSessionPortHeadphones] ||
+        [portType isEqualToString:AVAudioSessionPortBluetoothA2DP] ||
+        [portType isEqualToString:AVAudioSessionPortBluetoothHFP] ||
+        [portType isEqualToString:AVAudioSessionPortBluetoothLE]) {
+      return YES;
+    }
+  }
+  return NO;
+}
+
+- (void)handleAudioRouteChangeWhileStreaming:(NSNotification *)notification {
+  if (self.currentURL.length == 0) return;
+  NSDictionary *userInfo = [notification.userInfo isKindOfClass:[NSDictionary class]] ? notification.userInfo : @{};
+  NSNumber *reasonValue = userInfo[AVAudioSessionRouteChangeReasonKey];
+  AVAudioSessionRouteChangeReason reason = reasonValue != nil
+    ? (AVAudioSessionRouteChangeReason)reasonValue.unsignedIntegerValue
+    : AVAudioSessionRouteChangeReasonUnknown;
+  // 真断连（耳机 / 蓝牙被拔掉、新路由退回扬声器）：JS 侧 headphones-disconnected 会暂停播放，
+  // 这里不恢复 —— 否则会在扬声器上抢放几百毫秒才被暂停（静音突然外放）。被抢占、切换设备
+  // （新路由仍是耳机类输出）与其它原因照常恢复输出。
+  BOOL isPhysicalDisconnect = reason == AVAudioSessionRouteChangeReasonOldDeviceUnavailable;
+  [self scheduleStreamingOutputRecoveryWithDelays:@[ @0.15, @0.6, @1.5 ] treatAsDisconnect:isPhysicalDisconnect];
+}
+
+- (void)handleAudioEngineConfigurationChangeWhileStreaming:(NSNotification *)notification {
+  if (self.currentURL.length == 0) return;
+  // 引擎配置变了（采样率 / 通道数 / 路由）：系统通常已把引擎停掉，尽快恢复输出
+  [self scheduleStreamingOutputRecoveryWithDelays:@[ @0, @0.3, @1.0 ] treatAsDisconnect:NO];
+}
+
+- (void)scheduleStreamingOutputRecoveryWithDelays:(NSArray<NSNumber *> *)delays treatAsDisconnect:(BOOL)treatAsDisconnect {
+  [self recoverStreamingOutputForRouteChange:treatAsDisconnect];
+  for (NSNumber *delay in delays) {
+    NSTimeInterval delaySeconds = MAX(delay.doubleValue, 0);
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delaySeconds * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+      [self recoverStreamingOutputForRouteChange:treatAsDisconnect];
+    });
+  }
+}
+
+- (void)recoverStreamingOutputForRouteChange:(BOOL)treatAsDisconnect {
+  if (self.currentURL.length == 0) return;
+  if (self.manualPause || self.interruptedBySystem) return;
+  if (self.sourceNode == nil || [self.currentState isEqualToString:@"idle"] || [self.currentState isEqualToString:@"stopped"]) return;
+  if (treatAsDisconnect && ![self currentRouteHasHeadphoneOutput]) return;
+
+  NSError *sessionError = nil;
+  if (![self prepareAudioSession:&sessionError]) return;
+
+  // 全部落在 renderQueue 上做（引擎 / 环 / 音量都归它管）；异步派发，避免在
+  // 「配置变化通知可能就来自渲染线程」的路径上同队列 dispatch_sync 死锁
+  dispatch_async(self.renderQueue, ^{
+    if (self.engine == nil) return;
+    double hardwareSampleRate = self.engine.outputNode.inputFormat(forBus:0).sampleRate;
+    BOOL hardwareFormatChanged = hardwareSampleRate > 0 && self.configuredHardwareSampleRate > 0 &&
+      fabs(hardwareSampleRate - self.configuredHardwareSampleRate) > 0.5;
+    if (self.engine.isRunning && hardwareFormatChanged) {
+      // 硬件输出格式变了：引擎的输出还挂在旧设备格式上，停下来按新格式重挂一次。
+      // 不重建整张图（重建会清空 PCM 环、与解码线程抢缓冲），位置由 anchor 守恒。
+      [self.engine stop];
+    }
+    if (!self.engine.isRunning) {
+      NSError *engineError = nil;
+      if (![self ensureAudioEngineRunningLocked:&engineError]) {
+        // 用 warning 而不是 error：JS 侧把 error 当「暂停」，会把可自愈的路由抖动变成停播
+        [self emitWarningMessage:engineError.localizedDescription ?: @"Failed to restart audio engine after route change" code:nil statusName:nil];
+        return;
+      }
+    }
+    if (hardwareSampleRate > 0) self.configuredHardwareSampleRate = hardwareSampleRate;
+    [self restorePlaybackOutputLocked];
+    [self maybeStartPlaybackLocked];
+    // IO 死检快照：引擎在跑、渲染开着、环里有数据，却一帧都没被取走 → 会话被收走 / IO 被掐断
+    self.renderFramesAtLivenessProbe = _renderedFrames.load(std::memory_order_acquire);
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)), self.renderQueue, ^{
+      [self checkStreamingOutputLivenessLocked];
+    });
+  });
+}
+
+- (void)checkStreamingOutputLivenessLocked {
+  if (![self shouldRestorePlaybackOutputLocked]) return;
+  if (self.engine == nil || !self.engine.isRunning) return;
+  if (!self.playbackStarted || !_sourceRenderingEnabled.load(std::memory_order_acquire)) return;
+  int64_t queuedFrames = _pcmBuffer != nullptr ? (int64_t)_pcmBuffer->availableToRead() : 0;
+  // 环里没数据 = 正在等缓冲，不是 IO 死（别在正常缓冲时误重启引擎）
+  if (queuedFrames <= 0) return;
+  int64_t renderedFrames = _renderedFrames.load(std::memory_order_acquire);
+  if (renderedFrames != self.renderFramesAtLivenessProbe) return;
+  // 引擎报告在跑、渲染开着、环里还有数据，却整整 350ms 一帧都没取走：IO 已经不在我们这条路由上
+  [self.engine stop];
+  NSError *engineError = nil;
+  if (![self ensureAudioEngineRunningLocked:&engineError]) {
+    [self emitWarningMessage:engineError.localizedDescription ?: @"Failed to restart audio engine after silent output" code:nil statusName:nil];
+    return;
+  }
+  [self restorePlaybackOutputLocked];
+  [self maybeStartPlaybackLocked];
+}
+
 - (void)cleanupAudioGraphLocked {
   [self stopPannerLocked];
   [self resetRealtimeRenderStateLocked];
@@ -3928,6 +4130,8 @@ RCT_EXPORT_MODULE();
   self.soundEffectMixerNode = nil;
   self.engine = nil;
   self.outputFormat = nil;
+  // 【第 31 轮·条五】图没了：硬件格式记录一并清零，下次建图重新记
+  self.configuredHardwareSampleRate = 0;
   std::atomic_store_explicit(&_realtimeEqualizerProcessor, std::shared_ptr<LXRealtimeEqualizerProcessor>(), std::memory_order_release);
   std::atomic_store_explicit(&_realtimeDynamicsProcessor, std::shared_ptr<LXRealtimeDynamicsProcessor>(), std::memory_order_release);
   std::atomic_store_explicit(&_realtimeConvolutionProcessor, std::shared_ptr<LXRealtimeConvolutionProcessor>(), std::memory_order_release);
@@ -4112,6 +4316,9 @@ RCT_EXPORT_MODULE();
     NSError *error = nil;
     if (![self.engine startAndReturnError:&error]) {
       self.streamError = error ?: LXError(@"streaming_flac_engine", @"Failed to start AVAudioEngine");
+    } else {
+      // 【第 31 轮·条五】记下建图时的硬件输出格式：路由变化后比对它判断要不要重挂输出
+      self.configuredHardwareSampleRate = self.engine.outputNode.inputFormat(forBus:0).sampleRate;
     }
   });
 
@@ -4458,6 +4665,8 @@ RCT_REMAP_METHOD(resume, resumeStreamWithResolver:(RCTPromiseResolveBlock)resolv
       if (![self ensureAudioEngineRunningLocked:&engineError]) return;
       self.manualPause = NO;
       self.interruptedBySystem = NO;
+      // 【第 31 轮·追加】用户主动恢复播放：撤销短暂系统音窗口里的待决暂停（用户要的音乐优先）
+      self.pendingShortInterruptionIgnore = NO;
       [self maybeStartPlaybackLocked];
       shouldEmitBuffering = !self.playbackStarted;
       if (shouldEmitBuffering) self.currentState = @"buffering";
@@ -4507,6 +4716,8 @@ RCT_REMAP_METHOD(pause, pauseStreamWithResolver:(RCTPromiseResolveBlock)resolve 
 RCT_REMAP_METHOD(stop, stopStreamWithResolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
   self.manualPause = YES;
   self.interruptedBySystem = NO;
+  // 【第 31 轮·追加】停止：短暂系统音窗口的待决暂停一并作废
+  self.pendingShortInterruptionIgnore = NO;
   [self stopStreamingInternal:YES];
   self.currentState = @"stopped";
   [self emitState:@"stopped" position:@0 duration:@(self.duration)];
@@ -5796,7 +6007,7 @@ RCT_EXPORT_MODULE();
 - (NSArray<NSString *> *)supportedEvents {
   // screen-size-changed 已移除：iOS 端从未发送该事件（窗口尺寸由 JS 侧 SizeView onLayout 同步），
   // 声明而不发送属于死事件，且避免误导后续接入
-  return @[ @"headphones-disconnected", @"remote-command", @"screen-state", @"tabBarCollapseChanged", @"player-position", @"player-seeked" ];
+  return @[ @"headphones-disconnected", @"remote-command", @"screen-state", @"tabBarCollapseChanged", @"player-position", @"player-seeked", @"bluetooth-device-changed" ];
 }
 
 // Tab 栏收起状态（原生跟踪器维护，JS 经 tabBarCollapseChanged 事件与 setTabBarExpanded 命令交互）
@@ -5866,11 +6077,46 @@ RCT_EXPORT_MODULE();
   return [self routeHasHeadphoneOutput:route];
 }
 
+// 【第 31 轮·条六】这条路由里有没有蓝牙音频输出（A2DP / HFP / BLE）。
+// 用途：前后两条路由的「有没有蓝牙」发生翻转 = 蓝牙音频设备接入或移除 —— 用户要求：
+// 连接或断开都暂停播放（见 handleAudioRouteChange:）。
+// 只看「有没有」，不比端口明细：同一台设备在通话时 A2DP ↔ HFP 切换不算接入/移除
+//（否则每通电话都会暂停且不自动续播，第 21 轮修好的车机蓝牙续播会被打回去）。
+// 有线耳机不在内 —— 有线插拔仍走 headphones-disconnected 那条老路。
+- (BOOL)routeHasBluetoothOutput:(AVAudioSessionRouteDescription *)route {
+  if (route == nil) return NO;
+  for (AVAudioSessionPortDescription *output in route.outputs) {
+    NSString *portType = output.portType;
+    if ([portType isEqualToString:AVAudioSessionPortBluetoothA2DP] ||
+        [portType isEqualToString:AVAudioSessionPortBluetoothHFP] ||
+        [portType isEqualToString:AVAudioSessionPortBluetoothLE]) {
+      return YES;
+    }
+  }
+  return NO;
+}
+
 - (void)handleAudioRouteChange:(NSNotification *)notification {
   if (!self.hasListeners) return;
 
   NSDictionary *userInfo = notification.userInfo;
   if (userInfo == nil) return;
+
+  // 【第 31 轮·条六】蓝牙音频设备接入 / 移除 → 通知 JS 暂停（用户要求：连接或断开都暂停播放）。
+  // 判定不看 reason（接入是 NewDeviceAvailable、移除是 OldDeviceUnavailable、耳机切车机还可能
+  // 是 RouteConfigurationChange），只看前后两条路由的「有没有蓝牙输出」是否翻转。
+  // previousRoute 为空（系统没给旧路由）时无法比较，宁可不发也不误暂停。
+  // 这段必须在下面 OldDeviceUnavailable 的 reason 闸门**之前**：接入根本不是那个 reason。
+  AVAudioSessionRouteDescription *previousRouteForBluetooth = userInfo[AVAudioSessionRouteChangePreviousRouteKey];
+  if (previousRouteForBluetooth != nil) {
+    BOOL hadBluetooth = [self routeHasBluetoothOutput:previousRouteForBluetooth];
+    BOOL hasBluetooth = [self routeHasBluetoothOutput:[AVAudioSession sharedInstance].currentRoute];
+    if (hadBluetooth != hasBluetooth) {
+      dispatch_async(dispatch_get_main_queue(), ^{
+        [self sendEventWithName:@"bluetooth-device-changed" body:nil];
+      });
+    }
+  }
 
   NSNumber *reasonValue = userInfo[AVAudioSessionRouteChangeReasonKey];
   if (reasonValue == nil || [reasonValue unsignedIntegerValue] != AVAudioSessionRouteChangeReasonOldDeviceUnavailable) return;
