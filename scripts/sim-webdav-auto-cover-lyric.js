@@ -398,15 +398,19 @@ const runCounterExamples = () => {
   '无条件')
 
   // c2 封面删掉搜索兜底
+  // 锚点不带缩进：第 28 轮给这段加了失败备忘 + 并发闸（多套了一层 if/else + try），
+  // `const matchedUrl = await getOtherSourceByLocal(` 整体缩进从 4 格变 8 格，锚进缩进会假失败。
   check('c2 封面删掉搜索兜底', webdavCoverFallbackInvariants(tamper(REAL.local,
-    '    const matchedUrl = await getOtherSourceByLocal(musicInfo, async(otherSource) => {',
-    '    const matchedUrl = await Promise.resolve(\'\') && await (async(otherSource: any) => {')),
+    'const matchedUrl = await getOtherSourceByLocal(musicInfo, async(otherSource) => {',
+    'const matchedUrl = await Promise.resolve(\'\') && await (async(otherSource: any) => {')),
   '缺少 getOtherSourceByLocal')
 
   // c3 封面兜底改成真的换源
+  // 同理，锚点只取「12 格缩进的 musicInfos/onToggleSource/isRefresh」这一小段：
+  // 歌词那段同样的三行是 10 格缩进，靠缩进区分，锚点不会串到歌词分支。
   check('c3 封面兜底换源', webdavCoverFallbackInvariants(tamper(REAL.local,
-    '        onToggleSource: () => {},\n        isRefresh,\n      })\n      // 空串当失败处理',
-    '        onToggleSource,\n        isRefresh,\n      })\n      // 空串当失败处理')),
+    '            musicInfos: [...otherSource],\n            onToggleSource: () => {},\n            isRefresh,\n          })',
+    '            musicInfos: [...otherSource],\n            onToggleSource,\n            isRefresh,\n          })')),
   '不是空函数')
 
   // c4 封面兜底不写回 meta
