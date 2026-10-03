@@ -8,6 +8,7 @@ import {
   togglePlay,
   uncollectMusic,
 } from '@/core/player/player'
+import { markManualPause } from '@/core/player/manualPause'
 
 export type PlayerAction =
   | 'play'
@@ -25,6 +26,9 @@ export const handlePlayerAction = async(action: PlayerAction) => {
       play()
       break
     case 'pause':
+      // 【第 22 轮】deeplink 的暂停同样是用户主动动作：落「手动暂停」闸门
+      //（core/player/manualPause.ts），防止之后被自动续播路径拉起。
+      markManualPause()
       void pause()
       break
     case 'skipNext':

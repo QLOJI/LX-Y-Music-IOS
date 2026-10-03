@@ -30,6 +30,7 @@ import { LIST_IDS } from '@/config/constant'
 import { addListMusics, removeListMusics } from '@/core/list'
 import { addDislikeInfo } from '@/core/dislikeList'
 import { markTimeoutExitInteraction } from './timeoutExit'
+import { markManualPause } from './manualPause'
 
 // import { checkMusicFileAvailable } from '@renderer/utils/music'
 
@@ -689,6 +690,9 @@ export const togglePlay = () => {
   markTimeoutExitInteraction()
   global.lx.isPlayedStop &&= false
   if (playerState.isPlay) {
+    // 【第 22 轮】用户主动按了暂停：落下「手动暂停」闸门（core/player/manualPause.ts），
+    // 在此之前系统抢占/回到前台等任何自动续播路径都不许再出声。复位只由「播放真正开始」触发。
+    markManualPause()
     void pause()
   } else {
     play()

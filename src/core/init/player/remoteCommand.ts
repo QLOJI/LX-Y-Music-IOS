@@ -7,6 +7,8 @@ import { markTimeoutExitInteraction } from '@/core/player/timeoutExit'
 // 一次按键两条通路各跑一遍 ⇒ 一次跳两首 / 播放暂停互相抵消 / 进度条重复 seek，
 // 那些监听已删除，用户手动播放/暂停所需的 cancelResumePending 改由这里调用。
 import { cancelResumePending } from '@/plugins/player/service'
+// 【第 22 轮】用户主动暂停要落「手动暂停」闸门（遥控 'pause' 分支），见 core/player/manualPause.ts
+import { markManualPause } from '@/core/player/manualPause'
 
 // 切歌在途去重（第 20 轮·遥控命令单一通路，2026-10-03）。
 // 车机侧对同一物理按键可能重复投递（一次按下送来多条 next/previous）——单通路之后
@@ -39,6 +41,9 @@ export default () => {
         break
       case 'pause':
         // 用户手动要求暂停：清除自动续播标记，避免之后被兜底逻辑误自动播放
+        // 【第 22 轮】再落一道「手动暂停」闸门：只清一次标记挡不住打断开始 / 回前台这类
+        // **重新**置位的途径（用户报的「手动暂停后，其它音频播完回软件又自己开始播放」）。
+        markManualPause()
         cancelResumePending()
         void pause()
         break
