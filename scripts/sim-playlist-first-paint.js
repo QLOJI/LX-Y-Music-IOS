@@ -31,8 +31,10 @@
  *      ListHeaderComponent —— 挂在 ListHeaderComponent 里就等于放进可滚动内容，列表挂载 /
  *      换数据 / 下拉刷新时它会跟着内容一起位移，这正是「标题向上跳一下」的来源。现在它是
  *      FlatList 的兄弟节点、渲染在 listReady 闸门之前，`{pageHeader}` 全页恰一处。
- *      同时钉住第 2 条的三等分：有 tab 的平台页必须 equalColumns（标题 flex:1 + tabBar
- *      flex:2 = 三等分）且 tab 与标题同一垂直中线（alignItems:'center'，不是 bottom）。
+ *      第 21 轮·图三/图四起，「tab 与标题同行三等分」（第 16 轮第 2 条）被用户的新要求取代：
+ *      标题在上面、按钮在标题**下面**单独一行（共享组件 PillTabs，几何与 WebDAV 逐字同源）、
+ *      按钮下面才是列表 —— 本脚本因此改钉「标题行不带 equalColumns + PillTabs 行在标题之后」，
+ *      tab 文字为下划线留位而整体偏高（「不和标题文字在同一直线上」）的旧结构不再允许出现。
  *   D. 首载期间有居中占位（ActivityIndicator + loadingContainer），与「我的」页同一个口径。
  *
  * 本脚本是**静态源码解析**（正则 + 分片），钉住的是「结构还在不在」，证明不了真机上到底
@@ -62,15 +64,8 @@ const stripComments = (s) => s.split('\n').map((line) => {
   return at < 0 ? line : line.slice(0, at)
 }).join('\n')
 
-/** 取某个 StyleSheet 条目的块体（`name: { … }`，注释已由调用方剥掉）。
- *  必须按块取，不能全文找「flex: 2 … alignItems: 'center'」—— 同一文件里 tabItem /
- *  loadingContainer 等条目也带 alignItems: 'center'，全文匹配会把它们当成 tabBar。 */
-const styleBlock = (code, name) => {
-  const i = code.indexOf(name + ':')
-  if (i < 0) return ''
-  const j = code.indexOf('},', i)
-  return j < 0 ? '' : code.slice(i, j)
-}
+// （第 21 轮删掉了 styleBlock(tabBar/tabItem) 块解析器：标题行内三等分的 tabBar/tabItem 样式
+//  已随「按钮移到标题下面」一起消失，本脚本不再需要按块取 StyleSheet 条目。）
 
 /** 首载路径分片：三个页面的「首次加载」代码块（不含下拉刷新 onRefresh） */
 const PAGES = [
@@ -103,6 +98,22 @@ const sliceBy = (code, from, to) => {
   const b = code.indexOf(to, a)
   if (b < 0) return null
   return code.slice(a, b + to.length)
+}
+
+/** 【第 21 轮·图三/图四】pageHeader 的排布审计（标题行 / 按钮行的相对位置与形态）。
+ *  WebDAV 布局 = 标题在上面（不带 equalColumns，tab 不再塞进标题行）、按钮（PillTabs）在
+ *  标题**下面**。返回三个布尔量，真实断言与反例共用同一份判据（反例变异后必须为假）。 */
+const headerLayout = (code, navId) => {
+  const header = sliceBy(code, 'const pageHeader = (', '\n  )\n')
+  if (header == null) return { title: false, noEqualColumns: false, pillsBelowTitle: false }
+  const iTitle = header.indexOf(`<DetailPageTitle title={t('${navId}')}`)
+  const iPills = header.indexOf('<PillTabs')
+  return {
+    title: iTitle >= 0,
+    noEqualColumns: iTitle >= 0 &&
+      !new RegExp(`<DetailPageTitle title=\\{t\\('${navId}'\\)\\}[^>]*equalColumns`).test(header),
+    pillsBelowTitle: iPills >= 0 && iTitle >= 0 && iPills > iTitle,
+  }
 }
 
 /**
@@ -140,8 +151,11 @@ const pageChecks = PAGES.map((p) => {
   // pageHeader 分片：`const pageHeader = (` 到该字面量收尾的 `)` ——
   // 这段里必须同时有 PageTopInset 和 DetailPageTitle，才谈得上「两条分支同一份、同一几何」
   const headerSlice = sliceBy(src, 'const pageHeader = (', '\n  )\n')
-  // 平台页（有 tab）：酷狗歌单 / 自建歌单 / 收藏歌单要三等分；网易歌单页没有 tab
-  const hasTabs = /renderTab\(/.test(code)
+  // 平台页（自带切换按钮）：酷狗歌单 / QQ歌单在标题下面挂一行 PillTabs；网易歌单页没有。
+  // 【第 21 轮·图三/图四】起 tab 不再塞进标题行（旧 renderTab / equalColumns 写法），改成
+  // 标题下面单独一行的共享组件 PillTabs —— WebDAV 布局「标题 → 按钮 → 列表」。
+  const hasTabs = /<PillTabs/.test(code)
+  const layout = headerLayout(code, p.navId)
   const iHeaderRef = code.indexOf('{pageHeader}')
   const iGate = code.indexOf('{listReady ? (')
   return {
@@ -165,13 +179,10 @@ const pageChecks = PAGES.map((p) => {
       /<PageTopInset \/>/.test(headerSlice) &&
       new RegExp(`<DetailPageTitle title=\\{t\\('${p.navId}'\\)\\}`).test(headerSlice),
     hasTabs,
-    // 三等分：有 tab 的页面必须 equalColumns + tabBar 占 2 份 + 与标题同一垂直中线
-    columnsEqual: !hasTabs ||
-      new RegExp(`<DetailPageTitle title=\\{t\\('${p.navId}'\\)\\} equalColumns>`).test(headerSlice || ''),
-    tabBarEqual: !hasTabs || (() => {
-      const tb = styleBlock(code, 'tabBar')
-      return /flex:\s*2/.test(tb) && /alignItems:\s*'center'/.test(tb)
-    })(),
+    // 【第 21 轮·图三/图四】排布：标题行不带 equalColumns（tab 不再塞回标题行）；
+    // 有按钮的页面 PillTabs 必须在标题**下面**（标题 → 按钮 → 列表）
+    titleNoEqualColumns: layout.noEqualColumns,
+    pillsBelowTitle: !hasTabs || layout.pillsBelowTitle,
     // D 组：首载期间居中占位
     spinner: /<ActivityIndicator color=\{theme\['c-primary-font'\]\} size="large" \/>/.test(code),
     loadingContainer: /styles\.loadingContainer/.test(code),
@@ -237,15 +248,20 @@ const m5bCaught = m5b !== pageOf('nav_kg_playlist') && (() => {
   const iGate = code.indexOf('{listReady ? (')
   return iHeaderRef >= 0 && iGate >= 0 && !(iHeaderRef < iGate)
 })()
-// m5c: tab 三等分被拆（标题不再占自己那一份，tab 行也不再对半分 → 三个栏目宽度不等）
-const m5c = pageOf('nav_tx_playlist').replace(' equalColumns>', '>')
+// m5c: 标题行又挂上 equalColumns（tab 塞回标题行 = 图三/图四那条老缺陷回潮）
+const m5c = pageOf('nav_tx_playlist').replace(
+  "<DetailPageTitle title={t('nav_tx_playlist')} />",
+  "<DetailPageTitle title={t('nav_tx_playlist')} equalColumns>",
+)
 const m5cCaught = m5c !== pageOf('nav_tx_playlist') &&
-  !new RegExp(`<DetailPageTitle title=\\{t\\('nav_tx_playlist'\\)\\} equalColumns>`).test(m5c)
-// m5d: tab 与标题不再同一垂直中线（alignItems 退回 flex-end，tab 文字比标题低半行）
-const m5d = pageOf('nav_kg_playlist').replace(/tabBar:\s*\{([\s\S]{0,200}?)alignItems:\s*'center'/, "tabBar: {$1alignItems: 'flex-end'")
+  !headerLayout(stripComments(m5c), 'nav_tx_playlist').noEqualColumns
+// m5d: PillTabs 行被搬到标题**上面**（顺序反了 —— 用户点名「标题在上面、按钮在标题栏下面」）
+const m5d = pageOf('nav_kg_playlist')
+  .replace("      <DetailPageTitle title={t('nav_kg_playlist')} />\n", '')
+  .replace('    </>\n  )\n  return (', "      <DetailPageTitle title={t('nav_kg_playlist')} />\n    </>\n  )\n  return (")
 const m5dCaught = m5d !== pageOf('nav_kg_playlist') && (() => {
-  const tb = styleBlock(stripComments(m5d), 'tabBar')
-  return !(/flex:\s*2/.test(tb) && /alignItems:\s*'center'/.test(tb))
+  const l = headerLayout(stripComments(m5d), 'nav_kg_playlist')
+  return !(l.title && l.pillsBelowTitle)
 })()
 // m6: 首载占位去掉转圈（只剩页头，整块空白）
 const m6 = pageOf('nav_kg_playlist').replace(/<ActivityIndicator color=\{theme\['c-primary-font'\]\} size="large" \/>/, '')
@@ -296,13 +312,16 @@ for (const c of pageChecks) {
   check(`${c.page.name}：pageHeader 里同时有 PageTopInset 与 <DetailPageTitle title={t('${c.page.navId}')}`, c.headerGeometry)
   check(`${c.page.name}：不再内联 ListHeaderComponent={<>…</>}`, c.noInlineHeader)
 }
-// C 续：第 16 轮第 2 条三等分（只有带 tab 的平台页适用）
+// C 续：【第 21 轮·图三/图四】按钮改到标题下面（WebDAV 布局）—— 只对带按钮的平台页适用。
+// 老的第 16 轮第 2 条「标题行内三等分」已被这一轮的用户要求取代：tab 文字为下划线留位而
+// 整体偏高，正是「标题右边的按钮中文字不和标题文字在同一直线上」的根因，故不再断言
+// equalColumns，改钉「标题行无 equalColumns + PillTabs 在标题之后」。
 for (const c of pageChecks) {
   if (!c.hasTabs) continue
-  check(`${c.page.name}：标题与 tab 三等分（DetailPageTitle equalColumns + tabBar flex:2）`, c.columnsEqual && c.tabBarEqual,
-    `equalColumns=${c.columnsEqual} tabBar=${c.tabBarEqual}`)
+  check(`${c.page.name}：标题行不带 equalColumns（tab 不再塞进标题行）`, c.titleNoEqualColumns)
+  check(`${c.page.name}：PillTabs 行在标题下面（标题 → 按钮 → 列表，WebDAV 布局）`, c.pillsBelowTitle)
 }
-check('共享组件 DetailPageTitle：equalColumns ⇒ 标题 flex:1（三等分里标题自己那一份）',
+check('共享组件 DetailPageTitle：titleEqual（弹性等分）仍在（其它页面的原行为不受影响）',
   /titleEqual:\s*\{[\s\S]{0,40}?flex:\s*1/.test(detailTitleSrc))
 // D
 for (const c of pageChecks) {
@@ -321,8 +340,8 @@ neg('反例 m3：闸门改挂 loading（下拉刷新整块换转圈），被 A �
 neg('反例 m4：页头被搬回 ListHeaderComponent（又落进可滚动内容 = 向上跳复发），被 C 判红', m4Caught)
 neg('反例 m5：顶层那份页头被删（加载分支没有页头），被 C 判红', m5Caught)
 neg('反例 m5b：页头挪到 listReady 闸门里面（加载期间没有标题），被 C 判红', m5bCaught)
-neg('反例 m5c：去掉 equalColumns（标题与 tab 不再等分），被 C 判红', m5cCaught)
-neg('反例 m5d：tabBar 的 alignItems 退回 flex-end（tab 比标题低半行），被 C 判红', m5dCaught)
+neg('反例 m5c：标题行又挂 equalColumns（tab 塞回标题行，图三/图四老缺陷回潮），被 C 判红', m5cCaught)
+neg('反例 m5d：PillTabs 行搬到标题上面（违反「标题在上面、按钮在标题下面」），被 C 判红', m5dCaught)
 neg('反例 m6：去掉首载占位的 ActivityIndicator，被 D 判红', m6Caught)
 neg('反例 m7：参照物「我的」页闸门被拆（本脚本的前提塌掉），被 E 判红', m7Caught)
 

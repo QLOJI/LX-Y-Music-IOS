@@ -30,9 +30,12 @@
  *      第 20 轮起标题按**自然宽**渲染（不设固定列宽 ⇒ 字号恒为 subPageTitleSize），只留
  *      titleMaxWidthFraction 一道长文案上限 —— 三页字号在常规屏 + 全字体档位下完全一致。
  *   六、「（图二）不在一条直线上，要文字底部对齐」= 标题字号 20、tab 字号 15，两个行盒在同一行
- *      内垂直居中时，大字号的字形底天然更低（用户截图实测 3.8pt @ 字体设置 1.0）——
- *      把 tab 整行（含下划线 / chip）下移「系数 × 字号差」即底部对齐；下移的是 tab 而不是
- *      上移标题，标题才能与「我的 / WebDAV」等非等分列页面同高。
+ *      内垂直居中时，大字号的字形底天然更低 —— 把 tab 整行（含下划线 / chip）下移
+ *      「系数 × 字号差」即底部对齐；下移的是 tab 而不是上移标题，标题才能与「我的 / WebDAV」
+ *      等非等分列页面同高。【第 21 轮·图十~图十二】用户复核「还没完全底部对齐」：本机截图
+ *      复测（1280×2781 = 440pt ⇒ 2.909px/pt）带着老系数 0.76（3.8pt）时 tab 字形底反而比
+ *      标题低 1.83pt（过冲），正确落差 = 3.8 − 1.83 = 1.97pt ⇒ 系数 0.39；本脚本的系数区间
+ *      与两条反例（欠移 / 老系数回潮）都按此收口。
  *   七、「显示高度位置和推荐文字到顶部之间间距一样」= 三页页头都是 PageTopInset + 同一份间距
  *      （paddingTop: designSpacing.sm），第 19 轮第 2 条起收进共享组件 DetailPageTitle 的
  *      row.paddingTop（本脚本断言三页里不再各留一份 headerExtraTop）。
@@ -318,9 +321,9 @@ A.push(['row.paddingTop = designSpacing.sm（到顶额外间距的唯一来源�
 A.push(['inner（量宽那一层）不含任何 padding（量到的宽度就是列宽分母）', D.innerHasNoPadding(detailSrc)])
 A.push(['titleEqual（弹性等分，歌单页在用）保留，未被列模式改写', /titleEqual:\s*\{[\s\S]{0,40}?flex:\s*1/.test(detailSrc)])
 
-// A2 组：共享组件 —— 底部对齐（图二「不在一条直线上」的修法）
+// A2 组：共享组件 —— 底部对齐（图二「不在一条直线上」的修法；第 21 轮图十~图十二复测收口）
 A.push([`【图二】底部对齐下移量 = 系数 × 字号差（subPageTitleSize − designTypography.body），随字体设置等比`, D.nudgeFormula(detailSrc)])
-A.push([`【图二】下移系数 = ${inkOffsetRatio}（0.4 < x < 1：字形底落差是字号差的固定比例，实测值）`, inkOffsetRatio > 0.4 && inkOffsetRatio < 1])
+A.push([`【图二 / 图十~图十二】下移系数 = ${inkOffsetRatio}（0.25 < x < 0.6：本机复测落差 1.97pt ÷ 字号差 5 ≈ 0.39；老系数 0.76 过冲 1.83pt，由 m5g2 拦下）`, inkOffsetRatio > 0.25 && inkOffsetRatio < 0.6])
 A.push(['【图二】translateY 只挂在 tab 行包装层上，标题不带 transform（标题与其它页面同高）', D.nudgeOnTabsOnly(detailSrc)])
 A.push(['【图二】tab 行包装层 flex:1（吃掉标题自然宽右侧的剩余宽度；transform 不参与布局）', D.tabWrapFlex(detailSrc)])
 
@@ -439,7 +442,7 @@ A.push(['【图二】各 tab 列等宽 ⇒ 相邻文字块中心差 ≡ tab 列�
 const offsets = FONT_SCALES.map(inkOffsetOf)
 A.push([`【图二】底部对齐下移量 = ${inkOffsetRatio} × ${TITLE_SIZE - TYPE.body} × F = ${offsets.map((v) => v.toFixed(2)).join(' / ')}pt（随字体设置等比）`,
   offsets.every((v, i) => i === 0 || v > offsets[i - 1]) && offsets[0] > 0,
-  `F=1.0 时 ${offsets[0].toFixed(2)}pt（用户截图实测 3.8pt）`])
+  `F=1.0 时 ${offsets[0].toFixed(2)}pt（第 21 轮图十~图十二复测；第 20 轮的 3.8pt 过冲 1.83pt）`])
 A.push([`【图二】下移后 tab 行不溢出标题行盒（剩余半格 ${(42 / 2 - tabBlockHeightDesign / 2).toFixed(2)}pt ≥ 下移量 ${offsets[FONT_SCALES.length - 1].toFixed(2)}pt @1.3×）`,
   offsets[FONT_SCALES.length - 1] <= 42 / 2 - tabBlockHeightDesign / 2,
   `${offsets[FONT_SCALES.length - 1].toFixed(2)} ≤ ${(42 / 2 - tabBlockHeightDesign / 2).toFixed(2)}`])
@@ -487,17 +490,23 @@ neg('反例 m5c2：列宽算式去掉 Math.max（下限算了不用，tab 照样
 
 const m5d = detailSrc.replace(
   'tabInkBottomOffsetRatio * (setSpText(subPageTitleSize) - setSpText(designTypography.body))', '0')
-neg('反例 m5d：下移量归零（tab 文字回到与标题中心对齐 ⇒ 字形底又差 3.8pt），A23 判红', m5d, detailSrc, D.nudgeFormula)
+neg('反例 m5d：下移量归零（tab 文字回到与标题中心对齐 ⇒ 字形底又差 1.97pt），A23 判红', m5d, detailSrc, D.nudgeFormula)
 
 const m5e = detailSrc.replace('styles.tabColumnWrap, { transform: [{ translateY: tabInkBottomOffset }] }', 'styles.tabColumnWrap')
 neg('反例 m5e：拆掉 tab 行的 translateY（底部对齐失效），A25 判红', m5e, detailSrc, D.nudgeOnTabsOnly)
 
 const m5f = detailSrc.replace('styles.title,', 'styles.title, { transform: [{ translateY: tabInkBottomOffset }] },')
-neg('反例 m5f：把下移挂到标题上（标题比其它十个页面高 3.8pt，「同一高度」被破坏），A25 判红', m5f, detailSrc, D.nudgeOnTabsOnly)
+neg('反例 m5f：把下移挂到标题上（标题比其它十个页面高 1.97pt，「同一高度」被破坏），A25 判红', m5f, detailSrc, D.nudgeOnTabsOnly)
 
-const m5g = detailSrc.replace('const tabInkBottomOffsetRatio = 0.76', 'const tabInkBottomOffsetRatio = 0.2')
-neg('反例 m5g：下移系数改 0.2（远小于实测落差），A24 判红', m5g, detailSrc,
-  (s) => { const r = Number(constExpr(s, 'tabInkBottomOffsetRatio')); return r > 0.4 && r < 1 })
+const m5g = detailSrc.replace('const tabInkBottomOffsetRatio = 0.39', 'const tabInkBottomOffsetRatio = 0.2')
+neg('反例 m5g：下移系数改 0.2（欠移：tab 字形底还比标题高 ~1pt），A24 判红', m5g, detailSrc,
+  (s) => { const r = Number(constExpr(s, 'tabInkBottomOffsetRatio')); return r > 0.25 && r < 0.6 })
+
+// 【第 21 轮·图十~图十二】老系数回潮必须判红：0.76 就是用户这次报的「还没完全底部对齐」
+// （过冲 1.83pt）。这条反例把「按本机复测收口」这件事钉死 —— 谁把 0.76 改回来，脚本立刻红。
+const m5g2 = detailSrc.replace('const tabInkBottomOffsetRatio = 0.39', 'const tabInkBottomOffsetRatio = 0.76')
+neg('反例 m5g2：把第 20 轮的老系数 0.76 改回来（过冲 1.83pt = 图十~图十二原缺陷），A24 判红', m5g2, detailSrc,
+  (s) => { const r = Number(constExpr(s, 'tabInkBottomOffsetRatio')); return r > 0.25 && r < 0.6 })
 
 const m5h = detailSrc.replace('const titleMaxWidthFraction = 0.6', 'const titleMaxWidthFraction = 0.2')
 neg('反例 m5h：标题上限砍到 0.2 行宽（常规屏最大字体档又开始缩字号），A30 判红', m5h, detailSrc,

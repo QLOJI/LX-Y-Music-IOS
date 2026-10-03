@@ -19,6 +19,8 @@
  *      topPercent = 0.4（参考工程大歌词的原值）作为反例——它会稳定偏一行。
  *   B. 结构不变量：三处挂载点的渲染门控、几何表达式、seek 收口、以及拖动生命周期
  *      （`dragStartOffsetRef` 的赋值与清空必须成对，因为它是「用户正在拖」的唯一判据）。
+ *   B2. 回位时长同速：小歌词（MiniLyric）停手回位与竖屏大歌词的回位滑动必须同值同源
+ *      （lyricAnimation.RETURN_TO_ACTIVE_MS）——用户报过「小歌词滑完返回播放进度比大歌词快」。
  *
  * 契约强度说明：B 部分是静态断言（源码文本级），通过 ≠ 能编译 ≠ 真机观感对；
  * A 部分是模型级证明，证明的是**公式之间**自洽，不含 RN 布局/原生事件时序。
@@ -326,6 +328,100 @@ for (const r of surfaceInvariants('小歌词', stripComments(REAL.mini))) {
     ok: m != null && Number(m[1]) === 0.4,
     detail: m ? `DEFAULT_TOP_PERCENT = ${m[1]}` : '未找到',
   })
+}
+
+// ---------------------------------------------------------------------------
+// B2. 回位时长同速（用户报的 bug：小歌词滑完返回播放进度时比大歌词快）
+// ---------------------------------------------------------------------------
+//
+// 竖屏大歌词的回位不是另起一套动画：停手后它往连续滚动循环里排一个 glide 任务，
+// 走自己的换行滑动轨迹（固定时长 + easeInOutQuad）。小歌词此前按距离取
+// getReturnDuration（[120,300]），同一屏对比就是「小歌词更快」——用户报的 bug。
+// 现在两边共同引用 lyricAnimation 的 RETURN_TO_ACTIVE_MS，只钉四件事：
+//   ① 共享常量存在且值为对齐参考工程的 600；② 大歌词侧不再写死字面量；
+//   ③ 小歌词侧不再出现按距离取值的旧路；④ 两侧曲线同为 easeInOutQuad
+//（时长相同 + 曲线相同才谈得上「同速」）。
+
+const ANIM_FILE = 'src/screens/PlayDetail/lyricAnimation.ts'
+
+/** 对 { anim, mini, vertical }（均已去注释）求值；反例可对篡改后的快照跑同一套判断。 */
+function returnDurationInvariants(srcs) {
+  const out = []
+  const add = (n, ok, detail = '') => out.push({ group: '不变量', name: n, ok, detail })
+  const { anim, mini, vertical } = srcs
+  const importsShared = (src) =>
+    /import\s*\{[^}]*RETURN_TO_ACTIVE_MS[^}]*\}\s*from\s*'@\/screens\/PlayDetail\/lyricAnimation'/.test(src)
+
+  const declared = /export const RETURN_TO_ACTIVE_MS = (\d+)/.exec(anim)
+  add('invariant 8: lyricAnimation 导出 RETURN_TO_ACTIVE_MS = 600（= 大歌词对齐参考工程的滑动时长）',
+    declared != null && Number(declared[1]) === 600,
+    declared ? `= ${declared[1]}` : '未找到')
+
+  const verticalShared = /LINE_CHANGE_GLIDE_REF_MS = RETURN_TO_ACTIVE_MS/.test(vertical)
+  add('invariant 9: 竖屏大歌词滑动时长 = RETURN_TO_ACTIVE_MS（不再各写一份字面量）',
+    importsShared(vertical) && verticalShared,
+    `导入=${importsShared(vertical)} 赋值同源=${verticalShared}`)
+
+  const miniShared = /duration \?\? RETURN_TO_ACTIVE_MS/.test(mini)
+  const miniNoDistance = !/getReturnDuration/.test(mini)
+  add('invariant 10: 小歌词回位 = RETURN_TO_ACTIVE_MS，且不再引用 getReturnDuration（按距离取值正是快慢不一致的来源）',
+    importsShared(mini) && miniShared && miniNoDistance,
+    `导入=${importsShared(mini)} 回位同源=${miniShared} 无按距离取值=${miniNoDistance}`)
+
+  const miniCurve = /eased = t < 0\.5 \? 2 \* t \* t/.test(mini)
+  const verticalCurve = /eased = p < 0\.5 \? 2 \* p \* p/.test(vertical)
+  add('invariant 11: 两侧回位曲线同为 easeInOutQuad（时长相同 + 曲线相同 = 完全同速）',
+    miniCurve && verticalCurve, `小歌词=${miniCurve} 大歌词=${verticalCurve}`)
+
+  return out
+}
+
+{
+  const srcs = {
+    anim: stripComments(read(ANIM_FILE)),
+    mini: stripComments(REAL.mini),
+    vertical: stripComments(REAL.vertical),
+  }
+  results.push(...returnDurationInvariants(srcs))
+
+  const tamperReturn = [
+    {
+      label: '⑧ 小歌词回位退回按距离取 getReturnDuration（复现用户报的「小歌词更快」）',
+      key: 'mini',
+      mutate: (s) => s
+        .replace(
+          'import { IDLE_RETURN_MS, LINE_CHANGE_GLIDE_MS, RETURN_TO_ACTIVE_MS }',
+          'import { getReturnDuration, IDLE_RETURN_MS, LINE_CHANGE_GLIDE_MS }',
+        )
+        .replace('duration ?? RETURN_TO_ACTIVE_MS', 'duration ?? getReturnDuration(distance)'),
+    },
+    {
+      label: '⑨ 大歌词把 600 写死回本地（两边各持一份，改一处不再同步）',
+      key: 'vertical',
+      mutate: (s) => s.replace('const LINE_CHANGE_GLIDE_REF_MS = RETURN_TO_ACTIVE_MS', 'const LINE_CHANGE_GLIDE_REF_MS = 600'),
+    },
+    {
+      label: '⑩ 共享常量被改成 designMotion.quick 的 200（回位整体变快、与参考工程定案脱钩）',
+      key: 'anim',
+      mutate: (s) => s.replace('export const RETURN_TO_ACTIVE_MS = 600', 'export const RETURN_TO_ACTIVE_MS = 200'),
+    },
+  ]
+  for (const c of tamperReturn) {
+    const patched = { ...srcs, [c.key]: c.mutate(srcs[c.key]) }
+    if (patched[c.key] === srcs[c.key]) {
+      results.push({ group: '反例', name: `反例 ${c.label}`, ok: false, detail: '替换未命中：源码已变，反例失效需同步' })
+      continue
+    }
+    const failed = returnDurationInvariants(patched).filter((r) => !r.ok)
+    results.push({
+      group: '反例',
+      name: `反例 ${c.label} 被拦下`,
+      ok: failed.length > 0,
+      detail: failed.length
+        ? `命中：${failed.map((r) => r.name.split(':')[0]).join('、')}`
+        : '未被任何不变量拦下（守卫无效）',
+    })
+  }
 }
 
 // ---------------------------------------------------------------------------

@@ -355,10 +355,10 @@ const n5d = mutated(SRC_B, 'search',
 const n5e = mutated(SRC_B, 'search',
   '    tipListTopRef.current = top\n    syncTipListHeight()',
   '    tipListTopRef.current = top')
-// n5f: 真正 show 之前不再刷新实测（列表能否滚动让插图出现 / 消失，位置会变）
+// n5f: 真正 show 之前不再刷新实测（列表能否滚动让插图出现 / 消失，位置会变）—— 拿掉定时器内那次实测
 const n5f = mutated(SRC_B, 'search',
-  '      refreshTipListAnchor()\n      searchTipListRef.current?.show(layoutHeightRef.current)',
-  '      searchTipListRef.current?.show(layoutHeightRef.current)')
+  'setTimeout(() => {\n      refreshTipListAnchor()\n      timeoutRef.current = null',
+  'setTimeout(() => {\n      timeoutRef.current = null')
 // n6: search 浮层 top 换回写死的页头高度（不再用换算值）
 const n6 = mutated(SRC_B, 'search',
   'top: tipListGeometry.top,',

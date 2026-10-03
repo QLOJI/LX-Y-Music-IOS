@@ -30,6 +30,8 @@
  * 源码不变量 9 条 + 距离模型 4 条 + 反例自检 5 条（去掉上报口 / 退回 layout 坐标 /
  * top 换回页头高度 / 不做坐标换算 / 显示前不刷新），反例全部用当前源码变异，
  * 替换未命中同样算失败 —— 断言写成永远为真的空壳在这里就会自己露馅。
+ * 第 21 轮（图九）在定时器里加了空输入兜底，refresh 不再紧贴 show/search：本脚本相应把
+ * 「显示前刷新」由「紧贴」改成「定时器内第一句 + 位置在 show/search 之前」（每函数 ≥2 次不变）。
  * 本脚本是**静态源码解析**（正则 + 位置比较），钉的是「结构还在不在」，证明不了真机行为。
  *
  * 运行：node scripts/sim-search-tip-anchor.js
@@ -109,10 +111,21 @@ const INVARIANTS = [
         /measureOverlayContainer\(\)/.test(refresh)
       const show = sliceBy(code, 'const handleShowTipList: HeaderBarProps', '}, 500)')
       const tip = sliceBy(code, 'const handleTipSearch: HeaderBarProps', '}, 500)')
-      const okShow = /setTimeout\(\(\) => \{\r?\n\s*refreshTipListAnchor\(\)\r?\n\s*searchTipListRef\.current\?\.show\(layoutHeightRef\.current\)/.test(show) &&
-        (show.match(/refreshTipListAnchor\(\)/g) || []).length >= 2
-      const okTip = /setTimeout\(\(\) => \{\r?\n\s*refreshTipListAnchor\(\)\r?\n\s*searchTipListRef\.current\?\.search\(text, layoutHeightRef\.current\)/.test(tip) &&
-        (tip.match(/refreshTipListAnchor\(\)/g) || []).length >= 2
+      // 第 21 轮图九在定时器里加了「空输入不弹旧词条」的兜底，refresh 后不再紧贴 show/search：
+      // 断言改成保住两件事 —— ①定时器里第一句就是再刷一次实测；②刷新位置在 show/search 之前。
+      const timerFirst = (fn) => /setTimeout\(\(\) => \{\r?\n\s*refreshTipListAnchor\(\)\r?\n/.test(fn)
+      const refreshBefore = (fn, callee) => {
+        const body = fn.slice(fn.indexOf('setTimeout(() => {'))
+        const r = body.indexOf('refreshTipListAnchor()')
+        const c = body.indexOf(callee)
+        return r >= 0 && c > r
+      }
+      const okShow = timerFirst(show) &&
+        (show.match(/refreshTipListAnchor\(\)/g) || []).length >= 2 &&
+        refreshBefore(show, 'searchTipListRef.current?.show(layoutHeightRef.current)')
+      const okTip = timerFirst(tip) &&
+        (tip.match(/refreshTipListAnchor\(\)/g) || []).length >= 2 &&
+        refreshBefore(tip, 'searchTipListRef.current?.search(text, layoutHeightRef.current)')
       return okRefresh && okShow && okTip
     }],
   ['search：旧的整块 header 锚点不得复活（headerHeight 不许回到代码里）',
@@ -182,10 +195,10 @@ const m3 = mutated('search',
 const m4 = mutated('search',
   'const top = bar.y + bar.height - box.y',
   'const top = bar.y + bar.height')
-// m5: 显示前不刷新（列表滚动让插图出现 / 消失后，仍用旧位置）
+// m5: 显示前不刷新（列表滚动让插图出现 / 消失后，仍用旧位置）—— 拿掉定时器内那次实测
 const m5 = mutated('search',
-  '      refreshTipListAnchor()\n      searchTipListRef.current?.show(layoutHeightRef.current)',
-  '      searchTipListRef.current?.show(layoutHeightRef.current)')
+  'setTimeout(() => {\n      refreshTipListAnchor()\n      timeoutRef.current = null',
+  'setTimeout(() => {\n      timeoutRef.current = null')
 
 // —— 输出 ——
 console.log('='.repeat(92))

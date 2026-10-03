@@ -96,7 +96,9 @@ const serviceInvariants = (rawFile) => {
     reasons.push('RemoteDuck 处理体缺失或抽取失败（锚点漂移）')
   } else {
     for (const [needle, label] of [
-      ['shouldResumeAfterDuck ||= playerState.isPlay', 'iOS 音量闪避的待恢复记录'],
+      // 第 21 轮·优化 1：待恢复记录的判据从「瞬间 isPlay 快照」换成「最近 3s 确实在播」
+      // 时间窗（车机蓝牙下导航播报会先触发路由暂停，isPlay 已被置 false；快照会漏记意图）
+      ['shouldResumeAfterDuck ||= wasPlayingRecently()', 'iOS 音量闪避的待恢复记录（最近 3s 在播时间窗）'],
       ['clearResumeTimer()', '打断开始清掉续播补试表'],
       ['restoreConfiguredVolume()', '打断结束恢复配置音量'],
       ['scheduleAutoResume()', '打断结束按需自动续播'],

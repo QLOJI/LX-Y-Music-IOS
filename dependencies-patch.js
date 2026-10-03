@@ -1183,6 +1183,29 @@ const patchTrackPlayerSoundEffectRefresh = async() => {
   })
 }
 
+// 【第 21 轮·优化 1】RNTP 中断结束分支：拿不到 AVAudioSessionInterruptionOptionKey 时
+// 不能直接 return。
+// RNTP（上游 lyswhut fork，commit d4a062f7）原样是：
+//     guard let optionsValue = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt else { return }
+// iOS 在不少抢占场景（车机蓝牙 + 导航播报，正是用户第 21 轮报的那条链）不带这个 key：
+// 于是原生侧既不发 remote-duck 的「打断结束」，JS 也就永远等不到恢复时机 —— 表现为
+// 「播报结束后不恢复播放」。这里改成缺省 0（等价于「没有 shouldResume」），事件照发；
+// 中断本身没结束的判定（began 分支）与「要不要恢复」的决策都交给 JS（service.ts：
+// permanent 且超过 30s 才保持暂停，短暂中断照旧恢复）。
+const patchTrackPlayerInterruptionEndAlwaysEmit = async() => {
+  const filePath = 'node_modules/react-native-track-player/ios/RNTrackPlayer/RNTrackPlayer.swift'
+
+  await patchFileByRegex({
+    filePath,
+    pattern: /guard let optionsValue =\s*\n\s*userInfo\[AVAudioSessionInterruptionOptionKey\] as\? UInt else \{\s*\n\s*return\s*\n\s*\}/,
+    replacement: `// 【LX 第 21 轮·优化 1】缺 AVAudioSessionInterruptionOptionKey 时按 0 处理，
+            // 不再直接 return 把「打断结束」这件事整个吞掉：iOS 在车机蓝牙 + 导航播报
+            // 等抢占场景不带这个 key，吞掉事件会让 JS 永远收不到结束通知、播报结束后不恢复。
+            // 事件照发（permanent=true），是否恢复播放交给 JS 判定。
+            let optionsValue = (userInfo[AVAudioSessionInterruptionOptionKey] as? UInt) ?? 0`,
+  })
+}
+
 ;(async() => {
   for (const target of patchTargets) {
     try {
@@ -1200,6 +1223,11 @@ const patchTrackPlayerSoundEffectRefresh = async() => {
     await patchTrackPlayerSoundEffectRefresh()
   } catch (err) {
     console.error(`Patch TrackPlayer sound effect refresh failed: ${err.message}`)
+  }
+  try {
+    await patchTrackPlayerInterruptionEndAlwaysEmit()
+  } catch (err) {
+    console.error(`Patch TrackPlayer interruption end failed: ${err.message}`)
   }
   try {
     await ensureFileContent({
