@@ -44,6 +44,14 @@
  *     ④ WebDAVListAction.handleWebDAVDownload：入口日志提到函数第一行，整段「下载前的准备」
  *        套 try/catch（meta 缺字段时不再第一行就抛且无人接），半截文件先删再下。
  *
+ * 第 30 轮补记（用户图五「下载按钮点了没反应，扫描并下载也没效果」）：
+ *   两个头部下载按钮的 disabled 由 `loading || !!batchLoadingText` 收紧成 `loading`，页面
+ *   不再调用 handleWebDAVBatchDownload / handleWebDAVDownloadAndImport —— 两个入口（⋮ 菜单
+ *   的「下载」与头部「扫描并下载」）改走下载管理器（downloadMusicAsync / batchDownload）。
+ *   于是本轮把不变量②的锚点换成 `disabled={loading}`，并新加一条「页面不许再出现
+ *   batchLoadingText」的守卫（几百首的批量任务期间按钮长期灰着同样属于「按了没反应」）。
+ *   老函数本体保留未删，其内部形状仍由 sim-webdav-menu-download-ladder.js 守着。
+ *
  * 为什么必须靠契约脚本：「整表分批 / 先探活再当缺失 / 每轮清备忘 / 刷新带 isRefresh /
  * onError 只重试一次 / 按钮不再被 disabled 吞掉 / 失败一定有日志和提示」全是形状与顺序，
  * 不是类型 —— 把 file:// 校验删掉、把清备忘删掉、把分批换回前 20 首、把 isRefresh 去掉、
@@ -251,10 +259,17 @@ const downloadButtonInvariants = (files) => {
     reasons.push('列表页还在直接读 settingState（挂载时读一次的快照，配置变化不会跟上）')
   }
 
-  // ② 两个下载按钮不能被 !hasConfig 禁用吞掉点击
-  const disabledCount = countOf(page, 'disabled={loading || !!batchLoadingText}')
+  // ② 两个下载按钮不能被禁用条件吞掉点击
+  // 【第 30 轮】禁用条件从 `loading || !!batchLoadingText` 收紧成 `loading`：下载动作整段
+  // 交给下载管理器了（见 sim-webdav-download-manager.js），页面不再持有「批量下载中」这个
+  // 可以持续几分钟的状态 —— 拿它禁用按钮，几百首的批量任务期间两个按钮会一直灰着点不动，
+  // 那同样属于「按了没反应」。这里同时把「未配置被禁用」和「又被批量状态长期禁用」两条堵上。
+  const disabledCount = countOf(page, 'disabled={loading}')
   if (disabledCount !== 2) {
-    reasons.push(`两个下载按钮的 disabled={loading || !!batchLoadingText} 只出现 ${disabledCount} 次（未配置时按钮被禁用，按下去会被静默吞掉）`)
+    reasons.push(`两个下载按钮的 disabled={loading} 只出现 ${disabledCount} 次（未配置时按钮被禁用、按下去被静默吞掉，或又被某个批量状态长期禁用）`)
+  }
+  if (page.includes('batchLoadingText')) {
+    reasons.push('列表页又出现 batchLoadingText（第 30 轮起下载走下载管理器，页面不再持有批量下载状态；它一旦重新进 disabled，按钮会被长期灰掉）')
   }
 
   // ③ ⋮ 菜单下载：入口日志 + catch 落日志/toast
@@ -494,15 +509,23 @@ const runCounterExamples = () => {
   // c19 两个按钮又把 !hasConfig 放回 disabled
   check('c19 未配置时按钮被禁用', downloadButtonInvariants({
     ...REAL,
-    page: tamper(REAL.page, 'disabled={loading || !!batchLoadingText}', 'disabled={!hasConfig || loading || !!batchLoadingText}'),
+    page: tamper(REAL.page, 'disabled={loading}', 'disabled={!hasConfig || loading}'),
   }),
   '只出现 1 次')
+
+  // c26 页面又拿批量状态（batchLoadingText 这类）长期禁用按钮
+  check('c26 又被批量状态禁用', downloadButtonInvariants({
+    ...REAL,
+    page: tamper(REAL.page, 'disabled={loading}', 'disabled={loading || !!batchLoadingText}'),
+  }),
+  'batchLoadingText')
 
   // c20 ⋮ 菜单下载的 catch 被删（静默 reject）
   check('c20 菜单下载没有 catch', downloadButtonInvariants({
     ...REAL,
-    page: tamper(REAL.page, '    }).catch((err: any) => {\n      // 【第 29 轮】原来这里没有 catch',
-      '    })\n    if (false) { void (err: any)\n      // 原来这里没有 catch'),
+    page: tamper(REAL.page,
+      '    void downloadMusicAsync(info.musicInfo).catch((err: any) => {',
+      '    void downloadMusicAsync(info.musicInfo)\n    if (false) {'),
   }),
   '没有 catch')
 

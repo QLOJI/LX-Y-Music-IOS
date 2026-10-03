@@ -7,14 +7,16 @@
  * 机制（从源码里推出来的两条路径，本脚本把两条防线都钉住）：
  *   一、列表**先以 data=[] 挂载**、数据到了再补进去：空列表里只有页头那一格（QQ/酷狗
  *       的 tab 文案里数量也还是 0），数据到达后整块内容按最终高度重排/复位 —— 第一下
- *       跳动。对照组就在本工程：「我的」页（Mylist/NewListUI）是同一套
- *       ListHeaderComponent 结构，但它的 FlatList 挂在 isLoading 之后（转圈 → 有数据
- *       才挂列表），从来没有这个跳动。三个歌单页此前缺的正是这道闸门。
+ *       跳动。当年同工程的「我的」页（Mylist/NewListUI）是同一套 ListHeaderComponent
+ *       结构、却从来没有这个跳动，差别就在它当时把 FlatList 挂在 isLoading 闸门之后。
+ *       【第 30 轮·图九】用户点名取消「我的」页那颗居中转圈后，它改成了「列表常挂 +
+ *       静默刷新」—— 这条对照关系到此为止：三个歌单页的闸门不再以「我的」页为参照物，
+ *       而是各自的 data=[] 空挂会整块重排（E 组已改成钉「参照物换了口径」本身）。
  *   二、网易歌单页的 RefreshControl 是 refreshing={loading}，而 loading 初值为 true：
  *       列表若在挂载帧就出现，iOS 的刷新控件会当场激活、把内容整体下压，首载结束
- *       （endRefreshing）时再回弹一次 —— 就是「向上跳一下再下移」那根弹簧。「我的」页
- *       同样是 refreshing={isLoading}，但闸门保证列表挂载那一帧 isLoading 已经是 false，
- *       所以它不跳；本页此前既没有闸门，又比 QQ/酷狗多这一条激活路径。
+ *       （endRefreshing）时再回弹一次 —— 就是「向上跳一下再下移」那根弹簧。当年的
+ *       「我的」页同样是 refreshing={isLoading}，但闸门保证列表挂载那一帧 isLoading
+ *       已经是 false，所以它不跳；本页此前既没有闸门，又比 QQ/酷狗多这一条激活路径。
  *
  * 修法 = 本脚本钉住的四条不变量：
  *   A. 三个页面都有首载闸门 listReady（初值 false），FlatList 渲染在 listReady 之后；
@@ -35,7 +37,9 @@
  *      标题在上面、按钮在标题**下面**单独一行（共享组件 PillTabs，几何与 WebDAV 逐字同源）、
  *      按钮下面才是列表 —— 本脚本因此改钉「标题行不带 equalColumns + PillTabs 行在标题之后」，
  *      tab 文字为下划线留位而整体偏高（「不和标题文字在同一直线上」）的旧结构不再允许出现。
- *   D. 首载期间有居中占位（ActivityIndicator + loadingContainer），与「我的」页同一个口径。
+ *   D. 首载期间有居中占位（ActivityIndicator + loadingContainer）。【第 30 轮·图九】起
+ *      「我的」页不再有这颗转圈（用户点名取消），三个歌单页仍保留 —— 它们的列表一挂载
+ *      就是空的，没有占位就是整块空白；对照关系见 E 组。
  *
  * 本脚本是**静态源码解析**（正则 + 分片），钉住的是「结构还在不在」，证明不了真机上到底
  * 还跳不跳。每条断言都配了一个「改回旧实现就该判红」的反例，反例全部用当前源码做变异，
@@ -190,17 +194,29 @@ const pageChecks = PAGES.map((p) => {
   }
 })
 
-// —— E. 参照物：「我的」页（NewListUI）必须保持「先转圈、有数据才挂列表」的同款口径 ——
-// 三个歌单页的注释与断言都拿它当对照，它要是变回「列表照挂、只是空着」，这组断言的前提就塌了。
+// —— E. 参照物口径（第 30 轮·图九起）：「我的」页（NewListUI）那颗居中转圈已被用户点名
+// 取消（「只保留下滑刷新，每次从其他页面返回进入我的页面都会刷新一次」），改成「列表常挂 +
+// 静默刷新」。三个歌单页的闸门因此不再拿它当对照物；这组断言反过来钉住「参照物确实换了
+// 口径」，防止有人照着上面的老注释把中心转圈加回去。
 const myListSrc = read('src/screens/Home/Views/Mylist/NewListUI.tsx')
-const myListCode = stripComments(myListSrc)
-const myListGateIdx = myListCode.indexOf('isLoading ? (')
-const myListListIdx = myListCode.indexOf('<FlatList')
-const myListRef = {
-  gate: myListGateIdx >= 0,
-  spinnerBeforeList: myListGateIdx >= 0 && myListListIdx > myListGateIdx,
-  loadingContainer: /loadingContainer/.test(myListCode),
+const auditMyList = (src) => {
+  const code = stripComments(src)
+  return {
+    // 旧口径三件套（状态 isLoading + 渲染分支 + 样式 loadingContainer）必须一件都不剩
+    noIsLoading: !code.includes('isLoading'),
+    noCenteredSpin: !code.includes('ActivityIndicator') && !code.includes('loadingContainer'),
+    // 列表不再被任何「转圈分支」替换：FlatList 常挂，唯一的旁路是 hasError 错误态
+    listAlwaysMounted: /<FlatList/.test(code) && /\{hasError \? \(/.test(code),
+    // 刷新动画只认用户下拉：refreshing 初值 false，由 onRefresh 那一刻置位
+    pullOnlyRefresh: /refreshing=\{refreshing\}/.test(code) && /onRefresh=\{\(\) => \{ setRefreshing\(true\)/.test(code),
+    // 回到本页就静默刷新的两条入口：
+    //   ① tab 切回 / 子页返回（首页 pager 把它统一落回 nav_love）
+    //   ② home 这个 Navigation 页面整页重新出现
+    navRefresh: code.includes("global.state_event.on('navActiveIdUpdated'") && code.includes("'nav_love'"),
+    appearRefresh: code.includes('registerComponentDidAppearListener') && code.includes('void refreshListInfo()'),
+  }
 }
+const myListRef = auditMyList(myListSrc)
 
 // —— 反例（全部用当前源码变异，必须被上面某一组判红）——
 const neg = (label, ok) => {
@@ -266,9 +282,19 @@ const m5dCaught = m5d !== pageOf('nav_kg_playlist') && (() => {
 // m6: 首载占位去掉转圈（只剩页头，整块空白）
 const m6 = pageOf('nav_kg_playlist').replace(/<ActivityIndicator color=\{theme\['c-primary-font'\]\} size="large" \/>/, '')
 const m6Caught = m6 !== pageOf('nav_kg_playlist') && !/<ActivityIndicator color=\{theme\['c-primary-font'\]\} size="large" \/>/.test(stripComments(m6))
-// m7: 参照物「我的」页退回「列表照挂」——闸门那段结构被拆掉
-const m7 = myListSrc.replace('isLoading ? (', 'true ? (')
-const m7Caught = m7 !== myListSrc && m7.indexOf('isLoading ? (') < 0
+// m7: 参照物「我的」页被改回「中心转圈」闸门（第 30 轮·图九 回潮）——旧三件套又冒出来
+const m7 = myListSrc.replace(
+  '      {hasError ? (',
+  "      {isLoading ? (\n        <View style={styles.loadingContainer}>\n          <ActivityIndicator color={theme['c-primary-font']} size=\"large\" />\n        </View>\n      ) : hasError ? (",
+)
+const m7Caught = m7 !== myListSrc &&
+  !(auditMyList(m7).noIsLoading && auditMyList(m7).noCenteredSpin)
+// m8: 参照物「我的」页的 tab 级静默刷新入口被删（切走再切回来不再刷新），被 E 判红
+const m8 = myListSrc.replace("    global.state_event.on('navActiveIdUpdated', handleNavChange)\n", '')
+const m8Caught = m8 !== myListSrc && !auditMyList(m8).navRefresh
+// m9: 下拉刷新被改成跟着静默加载转（refreshing={fetching}）——「只认用户下拉」失效
+const m9 = myListSrc.replace('refreshing={refreshing}', 'refreshing={fetching}')
+const m9Caught = m9 !== myListSrc && !auditMyList(m9).pullOnlyRefresh
 
 // —— 输出 ——
 console.log('='.repeat(92))
@@ -288,7 +314,7 @@ for (const c of pageChecks) {
   ].join(' ')
   console.log(`  ${c.page.name.padEnd(8)} ${c.page.navId.padEnd(22)} ${flags}`)
 }
-console.log(`  参照物「我的」 ${'nav_love'.padEnd(22)} ${myListRef.gate ? '转圈门✅' : '转圈门❌'} ${myListRef.spinnerBeforeList ? '列表在门后✅' : '列表在门后❌'} ${myListRef.loadingContainer ? '占位样式✅' : '占位样式❌'}`)
+console.log(`  参照物「我的」 ${'nav_love'.padEnd(22)} ${myListRef.noIsLoading && myListRef.noCenteredSpin ? '无中心转圈✅' : '无中心转圈❌'} ${myListRef.pullOnlyRefresh ? '下拉才转✅' : '下拉才转❌'} ${myListRef.navRefresh ? '回页静默刷✅' : '回页静默刷❌'}`)
 console.log()
 
 // A
@@ -329,8 +355,12 @@ for (const c of pageChecks) {
   check(`${c.page.name}：loadingContainer 居中（flex:1 + justifyContent:'center'）`, c.loadingContainerCentered)
 }
 // E
-check('参照物「我的」页：FlatList 仍在 isLoading 闸门之后（转圈 → 有数据才挂列表）', myListRef.gate && myListRef.spinnerBeforeList)
-check('参照物「我的」页：占位样式仍为 loadingContainer', myListRef.loadingContainer)
+check('参照物「我的」页（第 30 轮·图九）：中心刷新动画已取消（isLoading / ActivityIndicator / loadingContainer 三件套一件不剩）',
+  myListRef.noIsLoading && myListRef.noCenteredSpin)
+check('参照物「我的」页：列表常挂（FlatList 不再被居中转圈分支替换），旁路只剩 hasError 错误态', myListRef.listAlwaysMounted)
+check('参照物「我的」页：刷新动画只认用户下拉（refreshing={refreshing} + onRefresh 才置位）', myListRef.pullOnlyRefresh)
+check('参照物「我的」页：回到本页就静默刷新（navActiveIdUpdated→nav_love 与 componentDidAppear 两条入口都在）',
+  myListRef.navRefresh && myListRef.appearRefresh)
 console.log()
 
 // 反例
@@ -343,7 +373,9 @@ neg('反例 m5b：页头挪到 listReady 闸门里面（加载期间没有标题
 neg('反例 m5c：标题行又挂 equalColumns（tab 塞回标题行，图三/图四老缺陷回潮），被 C 判红', m5cCaught)
 neg('反例 m5d：PillTabs 行搬到标题上面（违反「标题在上面、按钮在标题下面」），被 C 判红', m5dCaught)
 neg('反例 m6：去掉首载占位的 ActivityIndicator，被 D 判红', m6Caught)
-neg('反例 m7：参照物「我的」页闸门被拆（本脚本的前提塌掉），被 E 判红', m7Caught)
+neg('反例 m7：参照物「我的」页被改回中心转圈闸门（第 30 轮·图九 回潮），被 E 判红', m7Caught)
+neg('反例 m8：参照物「我的」页的 tab 级静默刷新入口被删（切回本页不再刷新），被 E 判红', m8Caught)
+neg('反例 m9：下拉刷新改成 refreshing={fetching}（静默加载也转圈），被 E 判红', m9Caught)
 
 console.log()
 for (const r of results) {

@@ -33,6 +33,14 @@
  *   ⑥ 顺带收口第 27 轮埋的隐患：WebDAV 封面兜底搜索是按**列表每一行**触发的、无并发上限、失败不记账，
  *      325 首的列表一进页面就是几百个 findMusic（用户日志 17:25:14 那一片失败就是这么来的）。
  *
+ * 第 30 轮补记（图五：「扫描并下载的下载功能也没有效果，需要恢复点击下载功能」）：
+ *   页面不再调用 handleWebDAVBatchDownload / handleWebDAVDownloadAndImport，两个入口统一
+ *   走下载管理器（⋮ 菜单 → downloadMusicAsync；头部「扫描并下载」→ batchDownload）。老函数
+ *   本体保留未删，本文件继续守它们的内部形状（入口日志 / 并发闸 / 失败记账 / 清 loading text），
+ *   只是「一首都没成功 → 清 setLoadingText」这一条从「调用链保证」变成「老函数自保」——
+ *   故把文件末尾的前提校验翻面：页面若又出现 !!batchLoadingText 或又调用
+ *   handleWebDAVDownloadAndImport，就该回来复核这些断言。
+ *
  * 为什么必须靠契约脚本：上面全是「形状 / 顺序 / 上限 / 调用点」而非类型 —— 把裸 downloadFile 放回来、
  * 把阶梯删掉、把半截文件判定退回 existsFile、把入口日志挪到权限判断之后、把 addListMusics 删掉、
  * 把 setLoadingText('') 删掉、把并发闸拆掉、把失败记账删掉，tsc/eslint 全绿，只在真机上表现为
@@ -242,10 +250,16 @@ const menuLadderInvariants = (rawAction) => {
     }
   }
 
-  // 前提校验：按钮 disabled 依赖 batchLoadingText —— 这条链变了就该回来复核上面的断言
+  // 前提校验（第 30 轮已翻面）：页面把「扫描并下载」接到了下载管理器（batchDownload），
+  // 不再调用 handleWebDAVDownloadAndImport —— 上面那条「一首都没成功 → 清 setLoadingText」
+  // 现在是老函数自己保自己的形状，没有调用链替它兜底。反过来，页面一旦又把它接回去、或又
+  // 出现 batchLoadingText 这种页面级批量状态把按钮长期禁用，就必须回来复核这些断言。
   const page = stripComments(REAL.page)
-  if (!page.includes('!!batchLoadingText')) {
-    reasons.push('前提变了：index.tsx 的「扫描并下载」按钮 disabled 条件里没有 batchLoadingText，请复核 loading text 断言')
+  if (page.includes('!!batchLoadingText')) {
+    reasons.push('前提变了：index.tsx 又用 batchLoadingText 禁用按钮，请复核 loading text 断言')
+  }
+  if (page.includes('handleWebDAVDownloadAndImport')) {
+    reasons.push('前提变了：index.tsx 又调用 handleWebDAVDownloadAndImport（第 30 轮起「扫描并下载」走 batchDownload），请复核 loading text 断言')
   }
 
   return reasons

@@ -302,8 +302,11 @@ const prefetchInvariants = (rawPage) => {
       reasons.push('失效的本地封面没有从列表状态里清掉（行内 useCoverUrl 仍会因为 picUrl 非空而短路）')
     }
   }
-  if (!body.includes('if (getCachedCoverUrl(song)) continue')) {
-    reasons.push('预热没有跳过内存缓存里已有封面的歌（同一首歌重复发在线匹配）')
+  // 【第 30 轮】跳过内存缓存只在「非刷新」时成立：下拉刷新与点「扫描」都是 isRefresh，
+  // 那时**不能**被内存缓存挡住，否则用户点一次扫描也复核不到「封面是否最新」（见下面的
+  // fetchCoverUrl(song, { isRefresh }) 断言）。
+  if (!body.includes('if (!isRefresh && getCachedCoverUrl(song)) continue')) {
+    reasons.push('预热没有跳过内存缓存里已有封面的歌（同一首歌重复发在线匹配），或刷新时也被缓存挡住（复核不到封面是否最新）')
   }
   if (!body.includes('fetchCoverUrl(song,')) {
     reasons.push('预热没有走 coverUrl.ts 的 fetchCoverUrl（会被绕开 4 并发全局队列与内存缓存）')
@@ -490,15 +493,21 @@ const runCounterExamples = () => {
 
   // c9 预热又跑起整表批量下载
   check('c9 预热改回整表批量', prefetchInvariants(tamper(REAL.page,
-    '        if (getCachedCoverUrl(song)) continue',
-    '        void fetchWebDAVPic(song)\n        if (getCachedCoverUrl(song)) continue')),
+    '        if (!isRefresh && getCachedCoverUrl(song)) continue',
+    '        void fetchWebDAVPic(song)\n        if (!isRefresh && getCachedCoverUrl(song)) continue')),
   'fetchWebDAVPic')
 
   // c10 预热跳过缓存查询（每首相隔重复发）
   check('c10 预热不看内存缓存', prefetchInvariants(tamper(REAL.page,
-    '        if (getCachedCoverUrl(song)) continue',
+    '        if (!isRefresh && getCachedCoverUrl(song)) continue',
     '        // no cache check')),
   '内存缓存')
+
+  // c10b 刷新时也被内存缓存挡住（点一次扫描复核不到封面是否最新）
+  check('c10b 刷新被缓存挡住', prefetchInvariants(tamper(REAL.page,
+    '        if (!isRefresh && getCachedCoverUrl(song)) continue',
+    '        if (getCachedCoverUrl(song)) continue')),
+  '刷新时也被缓存挡住')
 
   // c11 预热上限被放大成整表
   check('c11 预热上限放大到整表', prefetchInvariants(tamper(REAL.page,
@@ -506,12 +515,13 @@ const runCounterExamples = () => {
     'const MAX_PREFETCH_COVERS = 5000')),
   '不在 (0, 50] 内')
 
-  // c12 少了「扫描」那一处调用点（锚点取 toast 那行，保证命中 handleScan 而不是「扫描并下载」里同名那次）
-  // 期望理由只能是条数那条：两处调用点的文本都是 `prefetchCovers(scannedSongs)`，
+  // c12 少了「扫描」那一处调用点。两处调用点的文本都是 `prefetchCovers(scannedSongs)`
+  // （handleScan 与「扫描并下载」），靠后缀把锚点钉在 handleScan 那处（第 30 轮后它后面紧跟
+  // `})` + `.catch(`，而「扫描并下载」那处后面是空行 + `if (scannedSongs.length === 0)`）。
   // 删掉一处后锚点检查仍能命中另一处，所以这里断言的是调用点计数。
   check('c12 少一处预热调用点', prefetchInvariants(tamper(REAL.page,
-    "          toast(`扫描完成：${config.songs.length} 首`)\n          // 【第 27 轮】扫描完立刻自动补在线封面（有上限，见 MAX_PREFETCH_COVERS）\n          prefetchCovers(scannedSongs)",
-    "          toast(`扫描完成：${config.songs.length} 首`)")),
+    '          forceCoverRefresh.current = true\n          prefetchCovers(scannedSongs)\n        })\n        .catch((err: any) => {',
+    '          forceCoverRefresh.current = true\n        })\n        .catch((err: any) => {')),
   '预热调用点不足')
 
   // c13 歌词又落回空死胡同（兜底被删）
