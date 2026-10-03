@@ -25,6 +25,8 @@ const getTaskTarget = (musicInfo: LX.Download.ListItem): localPlay.LocalPlayTarg
     filePath: task.filePath ?? task.metadata?.filePath ?? '',
     picUrl: inner?.meta?.picUrl ?? null,
     quality: 'quality' in musicInfo ? (musicInfo as any).quality : undefined,
+    // 【第 31 轮】原文条目：在线歌词匹配与落库（saveLyric/getCachedLyricInfo）都用它
+    musicInfo,
   }
 }
 
@@ -169,6 +171,8 @@ export const getLyricInfo = async({
         singer: musicInfo.singer,
         filePath: (musicInfo.meta as any).filePath,
         picUrl: (musicInfo.meta as any).picUrl ?? null,
+        // 本地文件条目：在线歌词匹配多轮重试 + 按 id 落库都要用它
+        musicInfo,
       },
       isRefresh,
     })
@@ -180,6 +184,7 @@ export const getLyricInfo = async({
         singer: musicInfo.singer,
         filePath: '',
         picUrl: null,
+        musicInfo,
       },
       isRefresh,
     })

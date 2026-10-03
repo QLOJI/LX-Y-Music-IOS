@@ -99,7 +99,26 @@ export const clearWebdavCoverMisses = () => {
   webdavCoverSearchMisses.clear()
 }
 
-const getOtherSourceByLocal = async <T>(
+/**
+ * 【第 31 轮】只清**一首歌**的「搜过没结果」备忘（行内封面加载失败后的单曲自愈用）。
+ *
+ * 与上面的整表清空分工不同：整表清空只在列表页起一轮巡检时调用（一次），而单曲自愈发生在
+ * 巡检推进过程中的任意时刻 —— 这时若调 clearWebdavCoverMisses()，会把**其他歌**这一轮
+ * 刚记下的失败备忘一起抹掉，后面每一行都会把已经确认查不到的搜索重发一遍（第 28 轮
+ * 那场「几百并发搜索风暴」就是这么回来的）。所以单曲自愈只删自己这一条 key，
+ * 既不打断在飞的巡检，也不重置别人的进度；同时下一轮巡检开始时的整表清空仍然照旧
+ * （每轮巡检依旧把失败歌重新查一遍）。 */
+export const clearWebdavCoverMiss = (musicInfo: LX.Music.MusicInfoLocal) => {
+  webdavCoverSearchMisses.delete(getWebdavCoverMissKey(musicInfo))
+}
+
+/**
+ * 本地条目 → 在线候选的多轮匹配（原样 → 「歌名-歌手」两种拆法 → 文件名两种拆法 →
+ * 只按歌名模糊），每轮把候选交给 handler，handler 抛错就换下一轮。
+ * 【第 31 轮】改为导出：localPlay（本地与下载专用链路）的在线歌词匹配复用它，
+ * 治「本地文件名把歌名/歌手拆反 → 换源/歌词全搜不到」这一类问题（见 localPlay.matchOnlineLyric）。
+ */
+export const getOtherSourceByLocal = async <T>(
   musicInfo: LX.Music.MusicInfoLocal,
   handler: (infos: LX.Music.MusicInfoOnline[]) => Promise<T>,
 ) => {

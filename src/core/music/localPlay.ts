@@ -16,7 +16,9 @@ import wySdk from '@/utils/musicSdk/wy'
 import bilibiliSdk from '@/utils/musicSdk/bilibili'
 import { existsFile, readFile } from '@/utils/fs'
 import { readPic, readLyric } from '@/utils/localMediaMetadata'
-import { buildLyricInfo } from './utils'
+import { buildLyricInfo, getCachedLyricInfo, getOtherSource, getOnlineOtherSourceLyricInfo } from './utils'
+import { getOtherSourceByLocal } from './local'
+import { saveLyric } from '@/utils/data'
 
 export interface LocalPlayTarget {
   name: string
@@ -27,6 +29,9 @@ export interface LocalPlayTarget {
   picUrl?: string | null
   // 期望音质（下载任务自带，本地音乐可空）
   quality?: LX.Quality
+  // 【第 31 轮】原始条目（本地文件 MusicInfoLocal / 下载任务 ListItem）：
+  // 在线歌词匹配的输入（歌名-歌手拆反时靠它走多轮重试），匹配成功后也按它的 id 落库缓存
+  musicInfo?: LX.Music.MusicInfo | LX.Download.ListItem
 }
 
 // 内置直连 URL 平台回退顺序：网易（cookie 直连）→ B 站（直连）
@@ -228,9 +233,44 @@ const readSidecarLyric = async(filePath: string): Promise<string | null> => {
   return null
 }
 
+/**
+ * 【第 31 轮】本地/下载条目的跨平台在线歌词匹配（用户报「这些 local 歌曲没有自动获取歌词」）。
+ *
+ * 与 WebDAV 的歌词兜底同一条链路（见 local.ts getLyricInfo 的 WebDAV 分支）：
+ *   · 本地文件走 local.ts 的 getOtherSourceByLocal —— 原样 / 歌名里「歌名-歌手」两种拆法 /
+ *     文件名两种拆法 / 只按歌名模糊，共 6 轮重试。本地条目的 name/singer 是文件名派生的
+ *     （parseFileName 把「歌手 - 歌名」拆成 name=左、singer=右，可能是反的），
+ *     只有这条链路会反复换组合重搜 —— 旧的单轮 searchMusic 搜不到就永远空歌词；
+ *   · 下载任务条目自带原始在线歌名/歌手（metadata.musicInfo），直接 getOtherSource 搜。
+ * 候选交给 getOnlineOtherSourceLyricInfo：歌词必须带时间轴（existTimeExp）才算命中，
+ * 逐候选重试；成功后 saveLyric 按条目 id 落库，下次播放 getCachedLyricInfo 直接命中。
+ */
+const matchOnlineLyric = async(
+  originInfo: LX.Music.MusicInfo | LX.Download.ListItem,
+  isRefresh: boolean,
+): Promise<LX.Player.LyricInfo | null> => {
+  const tryMatch = async(otherSource: LX.Music.MusicInfoOnline[]) => {
+    if (!otherSource.length) throw new Error('empty other source')
+    const { lyricInfo, isFromCache } = await getOnlineOtherSourceLyricInfo({
+      musicInfos: [...otherSource],
+      onToggleSource: () => {},
+      isRefresh,
+    })
+    if (!lyricInfo?.lyric) throw new Error('empty lyric')
+    if (!isFromCache) void saveLyric(originInfo as LX.Music.MusicInfo, lyricInfo as LX.Music.LyricInfo)
+    return buildLyricInfo(lyricInfo)
+  }
+  // 本地文件：歌名/歌手可能是文件名拆反的，走多轮拆分重试
+  if (!('progress' in originInfo) && (originInfo as LX.Music.MusicInfo).source === 'local') {
+    return getOtherSourceByLocal(originInfo as LX.Music.MusicInfoLocal, tryMatch)
+  }
+  // 下载任务 / 汽水：条目本身带着歌名歌手，直接搜
+  return tryMatch(await getOtherSource(originInfo))
+}
+
 export const getLyricInfo = async({
   target,
-  isRefresh: _isRefresh = false,
+  isRefresh = false,
 }: {
   target: LocalPlayTarget
   isRefresh?: boolean
@@ -243,7 +283,20 @@ export const getLyricInfo = async({
     if (sidecar) return buildLyricInfo({ lyric: sidecar })
   }
 
-  // 2. 内置平台逐平台回退
+  const originInfo = target.musicInfo
+  if (originInfo) {
+    // 2. 已落库的在线歌词（上一次匹配写过 / 用户在歌词页编辑过），刷新时跳过
+    if (!isRefresh) {
+      const cached = await getCachedLyricInfo(originInfo as LX.Music.MusicInfo).catch(() => null)
+      if (cached?.lyric) return buildLyricInfo(cached)
+    }
+
+    // 3. 跨平台在线匹配（多轮重试 + 时间轴校验 + 落库）
+    const matched = await matchOnlineLyric(originInfo, isRefresh).catch(() => null)
+    if (matched) return matched
+  }
+
+  // 4. 轻量兜底：只按「歌名 歌手」在搜索结果上逐候选取歌词
   const candidates = await searchCandidates(target.name, target.singer)
   for (const candidate of candidates) {
     const sdk = (musicSdk as any)[candidate.source]

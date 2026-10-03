@@ -7,7 +7,8 @@ import { delayUpdateMusicInfo, updateMetaData } from '@/plugins/player/playList'
 import { soundEffectController } from '@/plugins/player/soundEffect'
 import playerState from '@/store/player/state'
 import settingState from '@/store/setting/state'
-import { onHeadphonesDisconnected } from '@/utils/nativeModules/utils'
+import { onBluetoothDeviceChanged, onHeadphonesDisconnected } from '@/utils/nativeModules/utils'
+import { markManualPause } from '@/core/player/manualPause'
 import { enforceCacheLimit } from '@/utils/nativeModules/cache'
 import { Platform } from 'react-native'
 
@@ -79,6 +80,15 @@ export default async(setting: LX.AppSetting) => {
   if (Platform.OS == 'ios') {
     onHeadphonesDisconnected(() => {
       if (!playerState.isPlay) return
+      void pause()
+    })
+    // 【第 31 轮·条六】蓝牙音频设备接入 / 移除 → 暂停播放（用户要求：连接或断开都暂停）。
+    // 落「手动暂停」闸门（core/player/manualPause.ts）：不落闸的话，蓝牙切换常伴随的音频
+    // 打断（service.ts 的 3s「最近在播」时间窗）会把恢复意图立起来，暂停后几百毫秒又自己
+    // 出声 —— 用户要的是停住，直到自己重新按下播放（app_event 'play' 抬闸）。
+    onBluetoothDeviceChanged(() => {
+      if (!playerState.isPlay) return
+      markManualPause()
       void pause()
     })
   }
