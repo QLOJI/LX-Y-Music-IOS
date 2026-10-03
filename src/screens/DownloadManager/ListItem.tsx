@@ -126,7 +126,9 @@ export default memo(({ task: initialTask, rowWidth = '100%', onRemove }: { task:
           <Text size={12} color={theme['c-font-label']}>  {task.musicInfo.singer}</Text>
         </Text>
         <View style={styles.detailsRow}>
-          <Text size={11} color={theme['c-font-label']}>{task.quality.toUpperCase()}</Text>
+          {/* 【第 22 轮】quality 加存在性判断：任务来自持久化列表，历史/异常条目可能缺
+              quality，不能让一个音质文案把下载管理页整页渲染打崩（与 LocalDownload 同一口径） */}
+          <Text size={11} color={theme['c-font-label']}>{task.quality ? task.quality.toUpperCase() : ''}</Text>
           {task.status === 'completed' && task.progress.total > 0 &&
             <Text size={11} color={theme['c-font-label']}> • {sizeFormate(task.progress.total)}</Text>
           }

@@ -333,9 +333,13 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0 }: MiniLyricProps) =>
     animateToLine(index, LINE_CHANGE_GLIDE_MS)
   }, [animateToLine, getScrollOffset, worstRowHeight, cancelScroll])
 
-  // 复位：切歌 / 歌词就绪时立即（无动画）回到当前行，避免从上一次的滚动位置长距离滑过去
+  // 复位：歌词换了新的一份（切歌 / 歌词就绪 / 歌词源刷新）时立即（无动画）回到当前行，
+  // 避免从上一次的滚动位置长距离滑过去。
+  // 【第 22 轮】手动定位期间直接跳过、绝不抢滚动：用户报的「一滑动歌词，它会马上跳回原位置，
+  // 特别快」「有时候一滑出去，就回来了」就是这里被换行触发后的后果（触发链见下面的 effect）。
+  // 松手后的回位由 startIdleTimer 以 RETURN_TO_ACTIVE_MS 统一滑行完成，本函数不参与。
   const resetScroll = useCallback(() => {
-    isPauseScrollRef.current = false
+    if (isPauseScrollRef.current) return
     dragStartOffsetRef.current = null
     isOverlayShownRef.current = false
     if (scrollTimeoutRef.current) {
@@ -355,9 +359,17 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0 }: MiniLyricProps) =>
     followActiveLine(activeLine)
   }, [activeLine, followActiveLine])
 
+  // 复位只在「歌词数组真的换了一份」时跑（useLrcSet 只在换歌 / 歌词就绪 / 歌词源刷新时换引用，
+  // 换行不换引用）。【第 22 轮】依赖刻意走 ref、只写 [lyricLines]：resetScroll 的依赖链里有
+  // 活跃行（rowHeights → rowOffsets → getScrollOffset → resetScroll，每次歌词换行都重建引用），
+  // 以前写成 [lyricLines, resetScroll] 等于「每次换行都复位一次」——那次复位会取消刚起步的
+  // 换行滑行（followActiveLine）、把列表瞬跳（animated:false）回当前行，用户看到的就是
+  // 「歌词换行过程中速度特别快」。这条 effect 从此只在整份歌词变更时跑。
+  const resetScrollRef = useRef(resetScroll)
+  resetScrollRef.current = resetScroll
   useEffect(() => {
-    resetScroll()
-  }, [lyricLines, resetScroll])
+    resetScrollRef.current()
+  }, [lyricLines])
 
   // 行高/留白变化（转屏、翻译行出现）与歌词变化时，同步给定位浮层：
   // 浮层按「留白 + 逐行行高」累计算出虚线指向的行，必须与列表的实际几何一致。
@@ -459,6 +471,20 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0 }: MiniLyricProps) =>
     // 惯性滚动结束才算真正「停手」：重新计时，避免惯性还没停就触发回位
     startIdleTimer()
   }, [startIdleTimer])
+
+  // 内容尺寸变化：以前直接挂 resetScroll —— 当前行带上 / 摘下翻译槽时内容总高**每次换行都会变**，
+  // 于是每次换行都白跑一次「瞬跳 + 取消刚起步的换行滑行」，这正是用户报的「换行过程中速度快」的
+  // 第二条入口（第一条是上面那条 effect 的依赖抖动）。现在只有**窗口高度本身**变了才同步一次
+  //（转屏、行数定档变化这类整体几何变化），换行引起的行高变化交给 followActiveLine 的滑行动画；
+  // 手动定位期间一律不抢滚动（与 resetScroll 同一条纪律）。
+  const sizeHandledHeightRef = useRef(containerHeight)
+  const handleContentSizeChange = useCallback(() => {
+    if (sizeHandledHeightRef.current === containerHeight) return
+    sizeHandledHeightRef.current = containerHeight
+    if (isPauseScrollRef.current) return
+    cancelScroll()
+    listRef.current?.scrollToOffset({ offset: getScrollOffset(activeLineRef.current), animated: false })
+  }, [containerHeight, getScrollOffset, cancelScroll])
 
   const handlePlayLine = useCallback((time: number) => {
     if (scrollTimeoutRef.current) {
@@ -574,7 +600,7 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0 }: MiniLyricProps) =>
         onScrollBeginDrag={handleScrollBeginDrag}
         onScrollEndDrag={handleScrollEndDrag}
         onMomentumScrollEnd={handleMomentumScrollEnd}
-        onContentSizeChange={resetScroll}
+        onContentSizeChange={handleContentSizeChange}
         // 行高固定，不需要为动态测量保留屏幕外的行；但 iOS 上开启回收会出现整行空白，故关闭
         removeClippedSubviews={false}
       />

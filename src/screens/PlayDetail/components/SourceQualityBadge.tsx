@@ -57,7 +57,10 @@ export default memo(() => {
       : playMusicInfo.musicInfo
     : null
 
-  const abbr = musicInfo ? (SOURCE_ABBR[musicInfo.source] ?? musicInfo.source.toUpperCase()) : ''
+  // 【第 22 轮】source 必须带存在性判断：SOURCE_ABBR[undefined] 取不到会走到
+  // undefined.toUpperCase() 直接抛错（下载任务转播放项等缺少 source 的数据，
+  // 与 Mylist/MusicList/ListItem 崩溃同一类）。
+  const abbr = musicInfo?.source ? (SOURCE_ABBR[musicInfo.source] ?? musicInfo.source.toUpperCase()) : ''
 
   const qualityBadge = useMemo(() => {
     // 尚无实际达成档（本地文件、资源未加载完成）时隐藏徽标：没有「正在播的音质」就不显示
@@ -69,7 +72,7 @@ export default memo(() => {
 
   return (
     <View style={styles.row}>
-      <Badge type="tertiary">{abbr}</Badge>
+      {abbr ? <Badge type="tertiary">{abbr}</Badge> : null}
       {qualityBadge ? <Badge type={qualityBadge.type}>{t(qualityBadge.key)}</Badge> : null}
     </View>
   )
