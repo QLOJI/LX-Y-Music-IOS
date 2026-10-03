@@ -13,6 +13,7 @@ import { StyleSheet, View, Animated } from 'react-native'
 import { useTheme } from '@/store/theme/hook'
 import List, { type ItemT, type ListProps, type ListType } from './List'
 import { shadow } from '@/utils/shadow'
+import { useButtonRadius } from '@/utils/buttonRadius'
 // import InsetShadow from 'react-native-inset-shadow'
 
 export interface SearchTipListProps<T> extends ListProps<T> {
@@ -30,6 +31,10 @@ const Component = <T extends ItemT<T>>(
   ref: Ref<SearchTipListType<T>>,
 ) => {
   const theme = useTheme()
+  // 【第二十轮·图四】联想浮层纳入「按钮圆角」配置：底座是通栏面板，取与搜索输入框
+  // 同一条基准高度（40，见 SearchInput 的 buttonRadius(40)），圆角设 0 时面板走直角、
+  // 设 100 时为全圆角，与设置项语义完全一致（用户：「搜索框的联想浮层加入倒角配置中」）。
+  const buttonRadius = useButtonRadius()
   const translateY = useRef(new Animated.Value(0)).current
   const scaleY = useRef(new Animated.Value(0)).current
   const [visible, setVisible] = useState(false)
@@ -118,13 +123,21 @@ const Component = <T extends ItemT<T>>(
           transform: [{ translateY }, { scaleY }],
         }}
       >
-        <View style={{ ...styles.container, backgroundColor: theme['c-content-background'] }}>
+        <View
+          style={{
+            ...styles.container,
+            backgroundColor: theme['c-content-background'],
+            // 「按钮圆角」行内覆盖（同 SearchInput 的 40 基准），静态样式里不留兜底值：
+            // 0 是默认（直角），与配置刻度一致
+            borderRadius: buttonRadius(40),
+          }}
+        >
           <List ref={listRef} {...props} />
         </View>
         <View style={styles.blank} onTouchStart={onPressBg}></View>
       </Animated.View>
     ),
-    [onPressBg, props, scaleY, theme, translateY],
+    [onPressBg, props, scaleY, theme, translateY, buttonRadius],
   )
 
   return !visible && animatePlayed ? null : component
@@ -150,6 +163,10 @@ const styles = StyleSheet.create({
     // iOS 浮层阴影（仅 iPhone/iPad）
     ...shadow(2),
     maxHeight: '80%',
+    // 【第二十轮·图四】圆角来自行内 buttonRadius(40)，这里负责把子内容裁进圆角内，
+    // 否则列表首/末行自身的底色会在圆角外露出直角。iOS 的 layer 阴影由 shadow* 提供，
+    // 与本层 overflow 裁剪互不影响（阴影仍然画在圆角外）。
+    overflow: 'hidden',
   },
   blank: {
     flex: 1,

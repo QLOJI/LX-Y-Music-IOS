@@ -15,13 +15,28 @@ interface SwipeBackAreaProps {
   insetTop?: number
 }
 
+/** 左缘手势带宽度（pt）。
+ *
+ *  【第 20 轮·图四】12 → 20：用户要的是「我的列表（试听列表 / 我的收藏 / 同步列表）右滑
+ *  返回我的主界面」这种系统级边缘返回手感，12pt（≈4mm）比 iOS 系统边缘返回带（约 20pt）
+ *  窄太多，手指很难稳稳落在带内 —— 表现就是「这条功能好像不存在」。放宽到 20pt 后与系统
+ *  边缘返回一致；只有「横向位移 > 纵向 2 倍」的滑动才会被接管（纵向列表滚动不受影响），
+ *  且单击永远不认领（见下面 onStartShouldSetPanResponder 的说明），落在带内的按钮照常可点。 */
+const EDGE_BAND_WIDTH = 20
+
+/** 接管手势的最小横向位移（pt，图四）：手指要明确横向走一段才认，避免「轻点带抖动」被误判。 */
+const CLAIM_MIN_DX = 8
+
+/** 触发返回的最小横向位移（pt）：松手时横向走过这么多才算一次「右滑返回」。 */
+const TRIGGER_MIN_DX = 40
+
 const styles = StyleSheet.create({
   area: {
     position: 'absolute',
     left: 0,
     top: 0,
     bottom: 0,
-    width: 12,
+    width: EDGE_BAND_WIDTH,
     zIndex: 10,
   },
 })
@@ -44,15 +59,15 @@ const SwipeBackArea = memo(({ onBack, enabled = true, insetTop }: SwipeBackAreaP
       // 显式声明「单击不认领触摸」：PanResponder 只有 onMoveShouldSet* 时，起始
       // 触摸的响应权归属存在歧义，在同时存在横向 ScrollView / PagerView 的场景下
       // 可能把一次单纯的点击也纳入本层响应链而不再向下传递，使落在本区域
-      // （左侧 12pt、全高、zIndex 10）上的按钮点击丢失。显式返回 false 后，
-      // 只有明确的横向滑动（dx>12 且横向位移大于纵向两倍）才被本层接管。
+      // （左侧 EDGE_BAND_WIDTH、全高、zIndex 10）上的按钮点击丢失。显式返回 false 后，
+      // 只有明确的横向滑动（dx > CLAIM_MIN_DX 且横向位移大于纵向两倍）才被本层接管。
       onStartShouldSetPanResponder: () => false,
       onMoveShouldSetPanResponder: (_event, { dx, dy }) =>
-        dx > 12 && Math.abs(dx) > Math.abs(dy) * 2,
+        dx > CLAIM_MIN_DX && Math.abs(dx) > Math.abs(dy) * 2,
       onMoveShouldSetPanResponderCapture: (_event, { dx, dy }) =>
-        dx > 12 && Math.abs(dx) > Math.abs(dy) * 2,
+        dx > CLAIM_MIN_DX && Math.abs(dx) > Math.abs(dy) * 2,
       onPanResponderRelease: (_event, { dx }) => {
-        if (enabledRef.current && dx > 40) onBackRef.current()
+        if (enabledRef.current && dx > TRIGGER_MIN_DX) onBackRef.current()
       },
     }),
   ).current

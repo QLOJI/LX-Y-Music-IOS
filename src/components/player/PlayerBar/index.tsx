@@ -44,7 +44,8 @@ export default memo(({ componentId, isHome = false }: { componentId?: string, is
   // 回前台自动恢复（原生恢复时重捕获背景，无残帧）。
   const appActive = useAppActive()
   // 实时采景门（2026-10-02 用户第 2/9 条）：与 ModernTabBar 同一个信号 —— 首页横滑
-  // 手势会话期间，迷你播放器的玻璃也按实时档（60fps 采景 / 120fps 渲染）跟手，否则
+  // 手势会话期间，迷你播放器的玻璃也按实时档（60fps 采景，渲染档同速，见
+  // LiquidGlassView.syncRenderFrameRate）跟手，否则
   // 它就是「滑动时透过的画面延迟高、掉帧」的另一半（两块玻璃在同一个背景上）。
   const pagerDragging = usePagerDragging()
   // 安全区就绪门（仅首页实例用得上，见下方 return）：首页播放器的底边 =
