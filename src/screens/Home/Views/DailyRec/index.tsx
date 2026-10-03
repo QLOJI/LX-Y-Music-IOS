@@ -1,5 +1,11 @@
 import { memo, useRef, useState, useCallback, useEffect } from 'react'
-import { TouchableOpacity, View, BackHandler, StyleSheet } from 'react-native'
+// 【第二十轮·图一】ScrollView 漏 import：Tabs 里用了 <ScrollView>（横向滑动的两个主 tab），
+// 但 react-native 的具名导入里从来没有它 —— 进「网易云每日推荐」渲染到 Tabs 就抛
+// ReferenceError: Property 'ScrollView' doesn't exist，整棵组件树崩掉（用户原话
+// 「点击网易云每日推荐后报错，软件再也进不去了」）。补进同一行具名导入即可，
+// 不改任何布局（此前的验证脚本只查了 JSX 结构，没查具名导入是否齐 —— 见本轮新增的
+// scripts/sim-jsx-import-guard.js，把这个类别的坑纳入契约）。
+import { TouchableOpacity, View, BackHandler, StyleSheet, ScrollView } from 'react-native'
 import Text from '@/components/common/Text'
 import { createStyle } from '@/utils/tools'
 import { applyOpacity } from '@/utils/colorOpacity'
@@ -20,10 +26,13 @@ import PageTopInset from '@/components/common/PageTopInset'
 import DetailPageTitle from '@/components/common/DetailPageTitle'
 import SwipeBackArea from '@/components/common/SwipeBackArea'
 
-// 一行里的列数 = 标题 + 2 个主 tab + （「推荐歌曲」下的 2 个子模式 chip）：
-// songs 模式 5 列、playlists 模式 3 列；再经「最多同时显示 4 个」收敛（用户第 18 轮第 1 条）——
+// 一行里的列数（含标题列）= 1 + 2 个主 tab + （「推荐歌曲」下的 2 个子模式 chip）：
+// songs 模式 5、playlists 模式 3；再经「最多同时显示 4 个」（含标题）收敛（用户第 18 轮第 1 条）——
 // songs 模式 4 列：标题 / 推荐歌曲 / 推荐歌单 / 默认推荐 同时可见，「风格化推荐」横向滑动查看；
-// playlists 模式 3 列：全部同时可见（切到推荐歌单时没有风格化概念，子模式 chip 不渲染）。
+// playlists 模式 3 列：标题 / 推荐歌曲 / 推荐歌单 全部同时可见（切到推荐歌单时没有风格化概念，
+// 子模式 chip 不渲染）。【第 20 轮·图二】起标题按自然宽渲染、不占等分列：本值仍按「含标题列」
+// 的老口径表示要同时容纳的项数，DetailPageTitle 内部换算成 tab 列数（= min(本值, 4) − 1）、
+// tab 列宽 = （行宽 − 标题自然宽）÷ tab 列数，见该组件注释四。
 const columnCountOf = (activeTab: 'songs' | 'playlists') => activeTab === 'songs' ? 5 : 3
 
 const Tabs = ({
@@ -39,7 +48,7 @@ const Tabs = ({
   isStylized: boolean
   setIsStylized: (v: boolean) => void
   onOpenModal: () => void
-  /** 等分列宽（pt）：由 DetailPageTitle 实测行宽后下发，标题列与本行每一列严格同宽 */
+  /** tab 列宽（pt）：由 DetailPageTitle 按「（行宽 − 标题自然宽）÷ tab 列数」实测下发，各 tab 列等宽 */
   columnWidth: number
 }) => {
   const theme = useTheme()
@@ -51,8 +60,9 @@ const Tabs = ({
     // 字样在一条直线上、同一垂直中线）：
     // 推荐歌曲 / 推荐歌单 是主 tab（下划线选区），默认推荐 / 风格化推荐 是「推荐歌曲」下的子模式
     // （切到「推荐歌单」时没有风格化概念，故只在 songs 下显示）。
-    // 用户第 18 轮第 1 条：整行按等分列排布（每列宽度 = columnWidth，列内文字水平居中）——
-    // 不换行、不超宽，超过 4 列时靠横向滑动查看（原来的 flexWrap 在 Pro Max 上会把「风格化推荐」
+    // 用户第 18 轮第 1 条 + 第 20 轮图二：标题按自然宽、tab 列等宽平分剩余行宽（columnWidth，
+    // 列内文字水平居中），且整个 tab 行下移到位（与标题字形底部对齐）——不换行、不超宽，
+    // 剩余宽不够时靠横向滑动查看（原来的 flexWrap 在 Pro Max 上会把「风格化推荐」
     // 挤到第二行，撑破「所有顶部栏文字同一高度」）。
     <ScrollView
       style={styles.tabsScroll}
@@ -63,7 +73,7 @@ const Tabs = ({
       <TouchableOpacity
         style={[
           styles.tab,
-          // 列宽 = 等分列宽（行内给）
+          // 列宽 = DetailPageTitle 下发的 tab 列宽（行内给）
           { width: columnWidth },
           // 主 tab 圆角随「按钮圆角」设置行内覆盖；可见高度 ≈ 32 = 15 号文字行高 17 + 下划线留白 5 + 上下 padding 5×2
           { borderRadius: buttonRadius(32) },
@@ -103,7 +113,7 @@ const Tabs = ({
       {activeTab === 'songs' ? (
         <>
           {/* 子模式 chip：自身宽度仍贴合文字（描边贴着文字，不是整列宽的外框），
-              但在自己的等分列内居中 —— 与两个主 tab 同列宽、同一垂直中线。 */}
+              但在自己的 tab 列内居中 —— 与两个主 tab 同列宽、同一垂直中线。 */}
           <View style={[styles.subTabColumn, { width: columnWidth }]}>
             <TouchableOpacity
               onPress={() => { setIsStylized(false) }}
@@ -205,9 +215,10 @@ export default memo(() => {
   // ③ 顶部到标题行的间距：由共享组件 DetailPageTitle 的 row.paddingTop（designSpacing.sm）
   //    统一提供 —— 第 16 轮时只有这三页在自己的 headerExtraTop 里垫这一下，第 19 轮第 2 条起
   //    写进共享组件（十个用它的页面一条来源，七个「我的」二级列表页因此与推荐页同高）。
-  // ④ 用户第 18 轮第 1 条：整行等分成 min(列数, 4) 列（列数随 songs / playlists 模式变）——
-  //    列宽由 DetailPageTitle 实测行宽后经渲染回调下发，标题列与每个按钮列严格同宽、
-  //    列内文字水平居中、垂直同一中线；超过 4 列横向滑动查看，不换行。
+  // ④ 用户第 18 轮第 1 条 + 第 20 轮图二：标题按自然宽渲染（字号不再被列宽挤压，三页一致），
+  //    tab 列宽由 DetailPageTitle 按「（行宽 − 标题自然宽）÷ tab 列数」实测后经渲染回调下发
+  //    （列数随 songs / playlists 模式变），各 tab 列等宽、列内文字水平居中，且整个 tab 行
+  //    下移到位（与标题字形底部对齐）；剩余宽不够横向滑动查看，不换行。
   const pageHeader = (
     <>
       <PageTopInset />
@@ -286,9 +297,10 @@ export default memo(() => {
 })
 
 const styles = createStyle({
-  // 四个按钮与标题同处一行（DetailPageTitle 的 row，alignItems center → 同一垂直中线）。
-  // flex:1 吃掉标题列右侧剩余宽度；每列宽度由页面行内给（= 标题列宽，等分整行）。
-  // 不再用 flexWrap（换行会撑破行高、破坏「所有顶部栏文字同一高度」）——超过 4 列横向滑动。
+  // 四个按钮与标题同处一行（DetailPageTitle 的 row；【第 20 轮·图二】起整行下移，
+  // 与标题字形底部对齐）。flex:1 吃掉标题自然宽右侧的剩余宽度；每列宽度由页面行内给
+  // （= DetailPageTitle 下发的 tab 列宽）。
+  // 不再用 flexWrap（换行会撑破行高、破坏「所有顶部栏文字同一高度」）——剩余宽不够横向滑动。
   tabsScroll: {
     flex: 1,
   },
@@ -310,7 +322,7 @@ const styles = createStyle({
     paddingBottom: 5,
     borderBottomWidth: BorderWidths.normal3,
   },
-  // 子模式按钮（默认推荐 / 风格化推荐）所在的一列：宽度行内给（= 等分列宽），
+  // 子模式按钮（默认推荐 / 风格化推荐）所在的一列：宽度行内给（= DetailPageTitle 下发的 tab 列宽），
   // 列内居中的是 chip 本身（chip 宽度贴合文字、描边不拉满整列）。
   subTabColumn: {
     alignItems: 'center',

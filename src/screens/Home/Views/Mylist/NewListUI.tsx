@@ -27,7 +27,7 @@ import { LIST_IDS, COMPONENT_IDS } from '@/config/constant'
 import { scaleSizeH } from '@/utils/pixelRatio'
 import { designRadius, designSpacing, pageTitleGap, pageTitleLineHeight } from '@/theme/DesignTokens'
 import { useButtonRadius } from '@/utils/buttonRadius'
-import { useBottomOverlayInset } from '@/store/common/hook'
+import { useBottomOverlayInset, useNavActiveId } from '@/store/common/hook'
 import PageTopInset from '@/components/common/PageTopInset'
 import Loading from '@/components/common/Loading'
 import { Navigation } from 'react-native-navigation'
@@ -906,6 +906,40 @@ export default memo(() => {
     </View>
   )
 
+  // 竖屏详情覆盖层（我的收藏等）可见时，列表面板整棵子树直接不渲染，而不是用
+  // display:'none' 藏在覆盖层下面。此前的写法会带来两个副作用：
+  // 1) 「歌单列表 FlatList」与「收藏歌曲列表 FlatList」同时挂载，同一个页面里
+  //    存在两个 UIScrollView；
+  // 2) 每次进出收藏页都要在这棵大子树（含 1 个 FlatList + 5 个浮层组件）上
+  //    往返切换 display，反复触发原生视图层级重建。
+  // 取舍依据（静态分析推断，未经真机复现）：「歌单列表」与「收藏歌曲列表」两个 FlatList
+  // 原本同页并存（前者用 display:'none' 藏在覆盖层下），每进出一次覆盖层就要翻转一次
+  // 这棵子树的显示状态 —— 这类反复翻转是「反复进出后只剩列表能滑、其余点击全失效」
+  // （原生滚动不依赖 JS 仍可滑；点击、tab 栏、迷你播放器都要经 JS）这类 JS 帧驱动
+  // 停摆问题的可疑来源之一。宁可每次进出多渲染一次列表子树，也不留这层隐患。
+  // 面板数据保存在本组件 state（listInfoMap）里，重新渲染不会丢数据，仅歌单列表
+  // 的滚动位置会回到顶部。
+  const isDetailOverlayVisible = !isHorizontal && showMusicList
+
+  // 【第 20 轮·图四】浮层期间的首页横滑锁（「我的列表右滑返回我的主界面」的前置条件）。
+  // 「我的」是首页 pager 里的 tab 页（nav_love），不是 detail 宿主页 —— 浮层盖住它时
+  // 下层 pager 的横滑仍然活着，会先在原生层抢走右滑手势（左缘的 SwipeBackArea 是 JS
+  // responder，抢不过原生 pan）：用户侧就是「往右滑没反应，或者直接翻到别的 tab 页」。
+  // 所以浮层可见**且当前正停在「我的」页**时锁住 pager 横滑，其余情况（收起浮层 / 切到
+  // 别的 tab / 组件卸载）一律交还 true —— 交还动作放在 cleanup 里，卸载时也会执行。
+  // 锁一旦漏放，五个 tab 页会直到杀进程都滑不动（同 DrawerLayoutFixed.ios.tsx 的 P0 教训）。
+  // 说明：该事件现在的另一个写入方是 DrawerLayoutFixed.ios.tsx（抽屉组件在本工程已无
+  // 调用点，见 SongList/index.tsx 注释），语义是「谁最后说谁算」；本页只在自己的场景里
+  // 上锁、一离开就交还，不会把其它锁顶掉。
+  const navActiveId = useNavActiveId()
+  const shouldLockHomePager = isDetailOverlayVisible && navActiveId === 'nav_love'
+  useEffect(() => {
+    global.app_event.changeHomePageScrollEnabled?.(!shouldLockHomePager)
+    return () => {
+      if (shouldLockHomePager) global.app_event.changeHomePageScrollEnabled?.(true)
+    }
+  }, [shouldLockHomePager])
+
   // iPad 横屏：左栏列表名卡片 + 右栏歌曲列表（master-detail 分栏），竖屏走上面的整屏切换。
   if (isHorizontal) {
     const hasActiveList = showMusicList || (activeListId != null && activeListId !== LIST_IDS.DEFAULT)
@@ -940,25 +974,16 @@ export default memo(() => {
     )
   }
 
-  // 竖屏详情覆盖层（我的收藏等）可见时，列表面板整棵子树直接不渲染，而不是用
-  // display:'none' 藏在覆盖层下面。此前的写法会带来两个副作用：
-  // 1) 「歌单列表 FlatList」与「收藏歌曲列表 FlatList」同时挂载，同一个页面里
-  //    存在两个 UIScrollView；
-  // 2) 每次进出收藏页都要在这棵大子树（含 1 个 FlatList + 5 个浮层组件）上
-  //    往返切换 display，反复触发原生视图层级重建。
-  // 用户反馈「点我的收藏 → 返回 → 再点我的收藏」后整页只剩列表能滑、其余点击
-  // 全部无响应，正是这类反复进出后的 JS 帧驱动停摆表现（原生滚动不依赖 JS，
-  // 所以列表仍可滑动；点击、tab 栏、迷你播放器都要经 JS，故全部失效）。
-  // 面板数据保存在本组件 state（listInfoMap）里，重新渲染不会丢数据，仅歌单列表
-  // 的滚动位置会回到顶部。
-  const isDetailOverlayVisible = !isHorizontal && showMusicList
-
+  // isDetailOverlayVisible 与它的横滑锁在组件前段（早退之前）定义，见那里的长注释。
   return (
     <View style={styles.overlayContainer}>
       {isDetailOverlayVisible ? null : listPanel}
       {isDetailOverlayVisible ? (
         <View style={StyleSheet.absoluteFill}>
           <MusicList onBack={handleBackToList} listId={openListIdRef.current ?? undefined} />
+          {/* 【第 20 轮·图四】左缘右滑 = 退回「我的」主界面（与左上角返回按钮同一个
+              handleBackToList）。浮层期间首页 pager 的横滑已被上面那个 effect 锁住，
+              这只手才落得到本层；手势带宽度与阈值见 SwipeBackArea（第 20 轮 12→20pt）。 */}
           <SwipeBackArea onBack={handleBackToList} />
         </View>
       ) : null}

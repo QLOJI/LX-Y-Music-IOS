@@ -3,6 +3,8 @@ import { StyleSheet } from 'react-native'
 import Input, { type InputType, type InputProps } from '@/components/common/Input'
 import { designTypography } from '@/theme/DesignTokens'
 import { useButtonRadius } from '@/utils/buttonRadius'
+import { getTextSize } from '@/utils/pixelRatio'
+import { useFontSize } from '@/store/common/hook'
 import searchState from '@/store/search/state'
 
 // 输入框文字的「跨实例暂存」（用户第 11 轮第 7 条：点下面的按钮后，输入框里的字看不见了）。
@@ -34,6 +36,10 @@ export default forwardRef<SearchInputType, SearchInputProps>(
     const [text, setText] = useState(() => lastInputText ?? searchState.searchText ?? '')
     const inputRef = useRef<InputType>(null)
     const buttonRadius = useButtonRadius()
+    // 【第二十轮·图四】输入文字字号与联想浮层统一。useFontSize() 订阅「字体大小」设置，
+    // 改字号时本组件重渲染；字号算法与 Text 组件的 setSpText 同一口径
+    // （getTextSize(size) × 字体倍率），见 utils/pixelRatio。
+    const fontSizeValue = useFontSize()
 
     // 所有写入口都经这里：同步暂存再落 state，重挂载后能还原
     const applyText = useCallback((next: string) => {
@@ -84,6 +90,13 @@ export default forwardRef<SearchInputType, SearchInputProps>(
           styles.input,
           // 搜索输入框圆角随「按钮圆角」设置行内覆盖；高度取 styles.input.height 的源值 40
           { borderRadius: buttonRadius(40) },
+          // 【第二十轮·图四】输入文字字号必须与联想浮层（Text 组件按 setSpText 缩放）同口径：
+          // 此前 styles.input 里写死 fontSize:15（普通 StyleSheet，不随「字体大小」缩放，
+          // 且因调用方 style 优先，把 Input 内部本来的 setSpText(size) 也覆盖掉了），
+          // 字号一旦不是 1.0 输入框文字就比联想浮层小一圈（用户原话「搜索框中输入的文字
+          // 字体太小了，要和联想浮层文字统一」）。改为行内计算 —— 静态样式表会在模块加载
+          // 时把值冻住，不能放在 styles.input 里。
+          { fontSize: getTextSize(designTypography.body) * fontSizeValue },
         ]}
         onBlur={onBlur}
         onFocus={onFocus}
@@ -103,6 +116,6 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     paddingLeft: 6,
     paddingRight: 10,
-    fontSize: designTypography.body,
+    // 字号不在这里给：见组件内行内 fontSize（要随「字体大小」设置变化，静态样式表做不到）
   },
 })

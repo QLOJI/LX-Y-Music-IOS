@@ -27,8 +27,10 @@ const TABS: Array<{ id: TabType, label: string }> = [
 ]
 
 // 一行里的列数 = 标题 + 4 个 tab = 5 → 收敛到「最多同时显示 4 个」（用户第 18 轮第 1 条：
-// 「比如 QQ每日推荐、主页推荐、雷达推荐、推荐歌单这 4 个文字」）：每列 = 1/4 行宽，
-// 「推荐新歌」列横向滑动查看，列宽不变、不压缩。
+// 「比如 QQ每日推荐、主页推荐、雷达推荐、推荐歌单这 4 个文字」）：标题按**自然宽**渲染，
+// 剩余行宽由 3 个 tab 列等宽平分，「推荐新歌」横向滑动查看（列宽不变、不压缩）。
+// 【第 20 轮·图二】列数的含义没变（含标题列），变的是标题不再占等分列 ——
+// 旧版把标题塞进 1/4 列宽里自动缩字号，三页缩得不一样（「字体不一样」的根因），见 DetailPageTitle 注释四。
 const COLUMN_COUNT = TABS.length + 1
 
 const Tabs = ({
@@ -38,7 +40,7 @@ const Tabs = ({
 }: {
   activeTab: TabType
   onTabChange: (tab: TabType) => void
-  /** 等分列宽（pt）：由 DetailPageTitle 实测行宽后下发，标题列与本行每个 tab 列同宽 */
+  /** tab 列宽（pt）：由 DetailPageTitle 按「（行宽 − 标题自然宽）÷ tab 列数」实测下发，各 tab 列等宽 */
   columnWidth: number
 }) => {
   const theme = useTheme()
@@ -55,7 +57,7 @@ const Tabs = ({
           key={tab.id}
           style={[
             styles.tab,
-            // 列宽 = 等分列宽（行内给，超过 4 列时靠横向滑动查看，不压缩列宽）
+            // 列宽 = DetailPageTitle 下发的 tab 列宽（行内给；剩余宽不够时靠横向滑动查看，不压缩列宽）
             { width: columnWidth },
             // 顶部分段 tab 圆角随「按钮圆角」设置行内覆盖；可见高度 ≈ 32 = 15 号文字行高 17 + 下划线留白 5 + 上下 padding 5×2
             { borderRadius: buttonRadius(32) },
@@ -143,8 +145,9 @@ export default memo(() => {
   // ③ 顶部到标题行的间距：由共享组件 DetailPageTitle 的 row.paddingTop（designSpacing.sm）
   //    统一提供 —— 第 16 轮时只有这三页在自己的 headerExtraTop 里垫这一下，第 19 轮第 2 条起
   //    写进共享组件（十个用它的页面一条来源，七个「我的」二级列表页因此与推荐页同高）。
-  // ④ 用户第 18 轮第 1 条：整行等分成 min(列数, 4) 列 —— 列宽由 DetailPageTitle 实测行宽后
-  //    经渲染回调下发，标题列与每个 tab 列严格同宽、列内文字水平居中、垂直同一中线。
+  // ④ 用户第 18 轮第 1 条 + 第 20 轮图二：标题按自然宽渲染（字号不再被列宽挤压，三页一致），
+  //    tab 列宽由 DetailPageTitle 按「（行宽 − 标题自然宽）÷ tab 列数」实测后经渲染回调下发，
+  //    各 tab 列等宽、列内文字水平居中，且整个 tab 行下移到位（与标题字形底部对齐）。
   const pageHeader = (
     <>
       <PageTopInset />
@@ -195,9 +198,10 @@ export default memo(() => {
 })
 
 const styles = createStyle({
-  // 四个 tab 与标题同处一行（DetailPageTitle 的 row，alignItems center → 同一垂直中线）。
-  // flex:1 吃掉标题列右侧的剩余宽度；每列宽度由页面行内给（= 标题列宽，等分整行），
-  // 5 个项目 → 一屏 4 列，第 5 个横向滑动查看（用户第 18 轮第 1 条）。
+  // 四个 tab 与标题同处一行（DetailPageTitle 的 row；【第 20 轮·图二】起整行下移，
+  // 与标题字形底部对齐）。flex:1 吃掉标题自然宽右侧的剩余宽度；每列宽度由页面行内给
+  // （= DetailPageTitle 下发的 tab 列宽），一屏「标题 + 3 个 tab」，第 4 个横向滑动查看
+  // （用户第 18 轮第 1 条）。
   tabsScroll: {
     flex: 1,
   },

@@ -64,9 +64,18 @@ export default forwardRef<ActiveListType, ActiveListProps>(
     // 当前列表由 NewListUI.handleItemPress 在打开前写入、列表数据由 List 挂载时按
     // getListPrevSelectId() 载入，此处无需也不应再写。
 
+    // 【第二十轮·图九】整栏可点 → 返回 的行为收窄到「左上角返回箭头」：
+    // · 行 onPress：返回态（onBack 存在）时置空 —— 用户原话「我点击顶部的列表标题
+    //   也会返回我的主界面，只保留点击左上角的返回才会返回我的主界面，点击顶部的
+    //   列表标题不会返回」；标题容器是 absolute + pointerEvents="none"，此前标题点击
+    //   穿透到这一行的 onPress 就触发了返回。非返回态（从「我的」未进入详情）时
+    //   仍然是点击列表名开列表（showList），行为不变。
+    // · 长按整栏滚动到顶部保留在行上（返回态下也要能用）。
+    // 箭头自己的 TouchableOpacity 承担返回：槽位左右内边距 12/10 从 Icon 挪到按钮上，
+    // glyph 位置与之前逐像素相同（[12, 32]，中心 22），命中区从 42×20 变成 42×44。
     return (
       <TouchableOpacity
-        onPress={onBack || showList}
+        onPress={onBack ? undefined : showList}
         onLongPress={onScrollToTop}
         style={{
           ...styles.currentList,
@@ -74,15 +83,21 @@ export default forwardRef<ActiveListType, ActiveListProps>(
           borderBottomColor: theme['c-border-background'],
         }}
       >
-        <Icon
-          style={styles.currentListIcon}
-          color={theme['c-button-font']}
-          name={onBack ? 'chevron-left' : 'chevron-right'}
-          // 返回态的箭头尺寸与「设置 → 基本设置」返回按钮里的 chevron-left 一致（20）：
-          // 配合 44 行高 + 槽位左右内边距 12 + 图标左内边距 12，glyph 中心正好落在
-          // 基本设置返回按钮的中心（12 + 12 + 20/2 = 12 + 44/2 = 34pt）。
-          size={onBack ? 20 : 12}
-        />
+        <TouchableOpacity
+          style={styles.currentListBack}
+          onPress={onBack || showList}
+          accessibilityRole="button"
+          accessibilityLabel={global.i18n.t('back')}
+        >
+          <Icon
+            color={theme['c-button-font']}
+            name={onBack ? 'chevron-left' : 'chevron-right'}
+            // 返回态的箭头尺寸与「设置 → 基本设置」返回按钮里的 chevron-left 一致（20）：
+            // 配合 44 行高 + 槽位左右内边距 12 + 图标左内边距 12，glyph 中心正好落在
+            // 基本设置返回按钮的中心（12 + 12 + 20/2 = 12 + 44/2 = 34pt）。
+            size={onBack ? 20 : 12}
+          />
+        </TouchableOpacity>
         {fetching ? <Loading color={theme['c-button-font']} style={styles.loading} /> : null}
         {/* 标题：整栏正中，两种状态共用同一套几何（绝对定位 + 左右对称内边距）。
             第 16 轮第 4 条先在返回态这么做（从「我的」进入试听列表/我的收藏/同步列表等时，
@@ -126,13 +141,15 @@ const styles = createStyle({
     borderBottomWidth: BorderWidths.normal,
     // backgroundColor: 'rgba(0,0,0,0.2)',
   },
-  currentListIcon: {
-    // 12 = 基本设置返回按钮内 20 号图标两侧的留白 ((44 - 20) / 2)：
-    // 槽位左右内边距同为 12，于是本图标的 glyph 左缘/中心与设置页返回按钮完全重合。
+  // 【第二十轮·图九】箭头槽位：从 Icon 的 style 改成包一层 TouchableOpacity 的样式。
+  // 12 = 基本设置返回按钮内 20 号图标两侧的留白 ((44 - 20) / 2)：
+  // 槽位左右内边距同为 12，于是 glyph 左缘/中心与设置页返回按钮完全重合；
+  // height:'100%' 让命中区吃满 44 行高（图标本体只有 20 高，点不中会很难按）。
+  currentListBack: {
+    height: '100%',
     paddingLeft: 12,
     paddingRight: 10,
-    // paddingTop: 10,
-    // paddingBottom: 0,
+    justifyContent: 'center',
   },
   // 【第 16 轮第 4 条 + 第 19 轮第 3 条】列表名：整栏水平居中，两种状态共用。
   // 左右内边距按两侧「最宽遮挡物」取值：右侧 = 两个 46pt 图标按钮 + 容器 paddingRight 2；
