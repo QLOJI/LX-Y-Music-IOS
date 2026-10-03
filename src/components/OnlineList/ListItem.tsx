@@ -9,9 +9,12 @@ import { useSettingValue } from '@/store/setting/hook'
 import { scaleSizeH } from '@/utils/pixelRatio'
 import { applyOpacity } from '@/utils/colorOpacity'
 import { LIST_ITEM_HEIGHT } from '@/config/constant'
-import { createStyle, type RowInfo } from '@/utils/tools'
+import { type RowInfo } from '@/utils/tools'
 import { useButtonRadius } from '@/utils/buttonRadius'
-import { designRadius, designSpacing, designTypography } from '@/theme/DesignTokens'
+import { designTypography } from '@/theme/DesignTokens'
+// 【第 24 轮】行内样式统一：歌曲行的几何/字重/字号只有 components/common/songRowStyles.ts 一份，
+// 本组件不再自带一份（此前这里的 songName 是 '600'，与「我的列表」的细体不一致 = 用户报的字体粗细不同）。
+import { songRowMetrics, songRowStyles as styles } from '@/components/common/songRowStyles'
 import Image from '@/components/common/Image'
 import PlayingIcon from '@/components/common/PlayingIcon'
 import { useIsWyLiked, useIsTxLiked, useIsKgLiked } from '@/store/user/hook'
@@ -156,7 +159,7 @@ const ListItem = memo(
             ) : isPlaying ? (
               <PlayingIcon />
             ) : (
-              <Text color={theme['c-font']} size={14} style={styles.indexText}>
+              <Text color={theme['c-font']} size={songRowMetrics.indexTextSize} style={styles.indexText}>
                 {index + 1}
               </Text>
             )}
@@ -181,7 +184,7 @@ const ListItem = memo(
               {historySource ? <Badge type="normal">{historySource}</Badge> : null}
               <Text
                 style={styles.listItemSingleText}
-                size={12}
+                size={songRowMetrics.metaTextSize}
                 color={isPlaying ? theme['c-primary-alpha-200'] : theme['c-500']}
                 numberOfLines={1}
               >
@@ -191,7 +194,8 @@ const ListItem = memo(
           </View>
           {isShowInterval ? (
             <Text
-              size={12}
+              size={songRowMetrics.metaTextSize}
+              style={styles.interval}
               color={isPlaying ? theme['c-primary-alpha-200'] : theme['c-500']}
               numberOfLines={1}
             >
@@ -200,22 +204,25 @@ const ListItem = memo(
           ) : null}
         </TouchableOpacity>
 
+        {/* 【第 24 轮】爱心位必须**恒占位**：此前无爱心（不支持收藏的音源）的行会让
+            时长与 ⋮ 一起右移一个按钮的宽度，「时间/爱心/三个点」因此行行不齐。
+            不可点时渲染等宽空 View（几何同 styles.likeButton，含左右 margin）。 */}
         {showLikeButton ? (
           <TouchableOpacity
             onPress={handleLike}
             style={[
               styles.likeButton,
               // 图标按钮 40×40：按自身高度折算半高
-              { borderRadius: buttonRadius(40) },
+              { borderRadius: buttonRadius(songRowMetrics.iconButtonSize) },
             ]}
           >
             <Icon
               name={isLiked ? 'love-filled' : 'love'}
-              size={17}
+              size={songRowMetrics.iconSize}
               color={isLiked ? theme['c-liked'] : theme['c-350']}
             />
           </TouchableOpacity>
-        ) : null}
+        ) : <View style={styles.likeButton} />}
 
         {hideMenu ? null : (
           <TouchableOpacity
@@ -224,10 +231,10 @@ const ListItem = memo(
             style={[
               styles.moreButton,
               // 图标按钮 40×40：按自身高度折算半高
-              { borderRadius: buttonRadius(40) },
+              { borderRadius: buttonRadius(songRowMetrics.iconButtonSize) },
             ]}
           >
-            <Icon name="dots-vertical" style={{ color: theme['c-350'] }} size={17} />
+            <Icon name="dots-vertical" style={{ color: theme['c-350'] }} size={songRowMetrics.iconSize} />
           </TouchableOpacity>
         )}
       </View>
@@ -260,95 +267,3 @@ export default (props: ListItemProps) => {
   return <ListItem {...props} qualityShowHighest={qualityShowHighest} />
 }
 
-const styles = createStyle({
-  listItem: {
-    flexDirection: 'row',
-    flexWrap: 'nowrap',
-    // 左右各留 16pt：封面盒（宽 70、内容居中溢出约 8pt）叠加后，封面实际落在距屏幕
-    // 边缘 24pt，与页头大标题（paddingHorizontal: lg=24）对齐；右侧 more 按钮
-    // （marginRight xs=8）同样收在 24pt。列表整体不再贴边；iPad 横屏双列时
-    // 两列间距对称（16+8 ｜ 8+16）。
-    paddingLeft: designSpacing.md,
-    paddingRight: designSpacing.md,
-    alignItems: 'center',
-  },
-  listItemLeft: {
-    flex: 1,
-    flexGrow: 1,
-    flexShrink: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  sn: {
-    width: 70,
-    justifyContent: 'center',
-    alignItems: 'center',
-    paddingLeft: designSpacing.sm,
-    paddingRight: designSpacing.sm,
-  },
-  snIndex: {
-    width: 40,
-    justifyContent: 'center',
-    alignItems: 'center',
-    paddingLeft: 5,
-    paddingRight: 5,
-  },
-  albumArt: {
-    width: 54,
-    height: 54,
-    borderRadius: designRadius.md,
-  },
-  itemInfo: {
-    flexGrow: 1,
-    flexShrink: 1,
-    paddingLeft: designSpacing.xs,
-    paddingRight: designSpacing.xs,
-  },
-  songName: {
-    fontWeight: '600',
-  },
-  indexText: {
-    fontWeight: '700',
-  },
-  listItemSingle: {
-    paddingTop: 2,
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  listItemTimeLabel: {
-    marginRight: 5,
-    fontWeight: '400',
-  },
-  listItemSingleText: {
-    flexGrow: 0,
-    flexShrink: 1,
-    fontWeight: '300',
-  },
-  listItemBadge: {
-    paddingLeft: 5,
-    paddingTop: 2,
-    alignSelf: 'flex-start',
-  },
-  listItemRight: {
-    flexGrow: 0,
-    flexShrink: 0,
-    flexBasis: 'auto',
-    justifyContent: 'center',
-  },
-  likeButton: {
-    width: 40,
-    height: 40,
-    marginHorizontal: designSpacing.xs,
-    borderRadius: 999,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  moreButton: {
-    width: 40,
-    height: 40,
-    marginRight: designSpacing.xs,
-    borderRadius: 999,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-})
