@@ -3,7 +3,7 @@ import { toMD5, toast, requestStoragePermission } from '@/utils/tools'
 import { getMusicUrl, getLyricInfo, getPicPath } from '@/core/music'
 import { getFileExtension, getFileExtensionFromUrl } from '@/screens/Home/Views/Mylist/MusicList/download/utils'
 import { mergeLyrics } from '@/screens/Home/Views/Mylist/MusicList/download/lrcTool'
-import { writeFile, unlink, downloadFile, mkdir, moveFile, copyFile, stopDownload } from '@/utils/fs'
+import { writeFile, unlink, downloadFile, mkdir, moveFile, copyFile, stopDownload, getWebDAVPrivateDirectory } from '@/utils/fs'
 import { getDefaultDownloadPath } from '@/utils/downloadPath'
 import { writeMetadata, writePic, writeLyric, isWriteSupported } from '@/utils/localMediaMetadata'
 import settingState from '@/store/setting/state'
@@ -40,6 +40,24 @@ const isDownloadableUrl = (value?: string | null): boolean => !!value && /^https
 
 const isWebDAVMusicInfo = (musicInfo: LX.Music.MusicInfo): boolean =>
   musicInfo.source === 'local' && !!(musicInfo.meta as any)?.webdav
+
+/**
+ * 【第 30 轮】这首歌的下载落盘目录。
+ *
+ * WebDAV 在「配置」页有自己的下载目录（webdav.downloadPath，见 WebDAVDownloadPath 组件），
+ * 下载管理器此前一律用全局 download.path —— 从 WebDAV 列表点下载的文件会落到音乐下载目录里，
+ * 与配置页显示的路径对不上（而且老的 WebDAV 专用下载链路读的是这个键）。现在 WebDAV 歌曲
+ * 优先用 webdav.downloadPath（未设置时回退 WebDAV 私有目录，与 WebDAVListAction 同口径），
+ * 其余音源一律维持 download.path 原行为。
+ */
+const resolveDownloadDir = (musicInfo: LX.Music.MusicInfo): string => {
+  if (isWebDAVMusicInfo(musicInfo)) {
+    const webdavPath = settingState.setting['webdav.downloadPath']
+    if (webdavPath && typeof webdavPath === 'string' && webdavPath.trim()) return webdavPath.trim()
+    return getWebDAVPrivateDirectory()
+  }
+  return settingState.setting['download.path'] || getDefaultDownloadPath()
+}
 
 let currentDownloadTask: any | null = null
 
@@ -137,11 +155,11 @@ const startDownload = async(task: DownloadTask) => {
 
   let downloadFilePath = task.filePath
   if (isBilibiliSource && urlExtension) {
-    const downloadDir = settingState.setting['download.path'] || getDefaultDownloadPath()
+    const downloadDir = resolveDownloadDir(task.musicInfo)
     downloadFilePath = `${downloadDir}/${task.fileName}.download.${urlExtension}`
     console.log(`[Download] Bilibili 源使用临时路径下载: ${downloadFilePath}`)
   } else if (urlExtension && urlExtension !== taskExt) {
-    const downloadDir = settingState.setting['download.path'] || getDefaultDownloadPath()
+    const downloadDir = resolveDownloadDir(task.musicInfo)
     downloadFilePath = `${downloadDir}/${task.fileName}.download.${urlExtension}`
     finalFilePath = `${downloadDir}/${task.fileName}.${urlExtension}`
     console.log(`[Download] URL 扩展名(${urlExtension})与任务扩展名(${taskExt})不一致，使用真实扩展名下载: ${downloadFilePath} -> ${finalFilePath}`)
@@ -155,7 +173,7 @@ const startDownload = async(task: DownloadTask) => {
   let lastWritten = 0
   let lastTime = Date.now()
   let downloadedFilePath: string
-  const effectiveDownloadDir = settingState.setting['download.path'] || getDefaultDownloadPath()
+  const effectiveDownloadDir = resolveDownloadDir(task.musicInfo)
   // 【第 26 轮】进度回调抽成具名函数：现在三条下载路径（本地复制 / WebDAV 直链 / 普通下载）共用它
   const onProgress = (res: { bytesWritten: number, contentLength: number }) => {
     const now = Date.now()
@@ -628,11 +646,30 @@ export const batchDownload = async(musicInfos: LX.Music.MusicInfo[]) => {
  * 直接按下载设置中的音质下载单曲，并提示所添加的音质（不再弹确认框）
  */
 export const downloadMusic = (musicInfo: LX.Music.MusicInfo) => {
-  if (!settingState.setting['download.enable']) return
+  if (!settingState.setting['download.enable']) {
+    // 【第 30 轮】原来这里静默 return：设置里关掉「启用下载」后，WebDAV 列表 ⋮ 菜单的「下载」
+    // 按下去什么都不发生、也没有任何解释（用户读到的还是「按钮没反应」）。现在明确提示一次。
+    // 其他调用点大多自己判过这个开关（FeatureBtns / MoreBtn / DownloadBtn），不会重复弹。
+    toast('下载功能已在设置中关闭', 'short')
+    return
+  }
   const quality = settingState.setting['download.quality'] as LX.Quality
   addTask(musicInfo, quality)
   toast(
     global.i18n.t('download_added_tip', { name: musicInfo.name, quality: global.i18n.t(quality) }),
     'short',
   )
+}
+
+/**
+ * 【第 30 轮】与 downloadMusic 完全同一条链路，只是返回 Promise。
+ *
+ * 给「点了就必须有回声」的菜单入口用（WebDAV 列表 ⋮ 菜单的「下载」）：downloadMusic 是同步的，
+ * 调用方拿不到失败信号 —— addTask 内部一旦抛错（文件名过滤、音质换算、设置缺键），
+ * 老的 `void handleWebDAVDownload(...).catch(...)` 那种写法就永远等不到这次异常。
+ * 这里把调用包进 async，异常统一变成 reject，调用方一个 .catch 就能落日志 + 提示。
+ * 其余 6 个调用点（列表/播放页的下载按钮）是即点即走的按钮，保持同步调用不受影响。
+ */
+export const downloadMusicAsync = async(musicInfo: LX.Music.MusicInfo): Promise<void> => {
+  downloadMusic(musicInfo)
 }
