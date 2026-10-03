@@ -34,6 +34,34 @@ let lastPlayingAt = 0
 let playingHeartbeat: ReturnType<typeof setInterval> | null = null
 let interruptedAt = 0
 
+// —— 第 31 轮·追加：短暂系统音忽略窗口 ——
+// 电源键的锁定音 / 系统提示音这类短促系统音同样会让 iOS 发一对「打断开始 → 很快结束」。
+// 独占模式下立刻 pause 会把一声提示音放大成「音乐被切一下再接回」（用户报：按电源键或
+// 系统提示音时音乐会短暂变化）。改为延迟决定：窗口内「结束」先到 → 当作提示音，播放
+// 全程不被触碰；超时才真正 pause（导航 / 通话 / 其它音乐照旧）。任何用户动作（播放 /
+// 切歌 / 停止 / 遥控）都会撤销待决暂停 —— 用户要的音乐优先。数值与原生侧
+// LXShortInterruptionIgnoreMs 同值，可在真机上按需调。
+const SHORT_INTERRUPTION_IGNORE_MS = 1500
+let interruptionPauseTimer: ReturnType<typeof setTimeout> | null = null
+
+const clearInterruptionPauseTimer = () => {
+  if (interruptionPauseTimer != null) {
+    clearTimeout(interruptionPauseTimer)
+    interruptionPauseTimer = null
+  }
+}
+
+// 窗口到期 = 打断仍在持续：按旧口径立即暂停（用户动作会提前撤销本计时器；
+// 到点前已停止播放也不再出声）。
+const scheduleInterruptionPause = () => {
+  clearInterruptionPauseTimer()
+  interruptionPauseTimer = setTimeout(() => {
+    interruptionPauseTimer = null
+    if (global.lx.isPlayedStop) return
+    void pause()
+  }, SHORT_INTERRUPTION_IGNORE_MS)
+}
+
 const stopPlayingHeartbeat = () => {
   if (playingHeartbeat != null) {
     clearInterval(playingHeartbeat)
@@ -88,6 +116,9 @@ export const cancelResumePending = () => {
   shouldResumeAfterDuck = false
   resumeRetryCount = 0
   clearResumeTimer()
+  // 【第 31 轮·追加】任何「用户意图 / 播放状态明确」的动作都会走到这里（播放、手动暂停、
+  // 切歌、停止、遥控、自然播完）：一并撤销短暂系统音窗口里的待决暂停。
+  clearInterruptionPauseTimer()
 }
 
 const scheduleAutoResume = () => {
@@ -221,7 +252,9 @@ const registerPlaybackService = async() => {
         interruptedAt = Date.now()
         clearDuckRecoveryTimeouts()
         clearResumeTimer()
-        void pause()
+        // 【第 31 轮·追加】短暂系统音忽略窗口：不立刻暂停，推迟 SHORT_INTERRUPTION_IGNORE_MS；
+        // 窗口内若「结束」先到（电源键 / 提示音），待决暂停被撤销，播放全程不被触碰。
+        scheduleInterruptionPause()
         return
       }
       // 打断结束 / 音量恢复：若之前被自动暂停则继续播放（带退避补试）
@@ -229,6 +262,14 @@ const registerPlaybackService = async() => {
       // AVAudioSessionInterruptionOptionKey（RNTP 侧因此报 permanent=true，且旧版 RNTP
       // 会直接 return 不发事件 —— dependencies-patch.js 已补）。短暂中断照旧恢复；
       // 只有连续超过 SHORT_INTERRUPTION_MAX_MS 的抢占才保持暂停，不跟导航/通话抢音频。
+      // 【第 31 轮·追加】窗口内结束 = 电源键 / 系统提示音这类短暂系统音：我们还没暂停过 ——
+      // 撤销待决。scheduleAutoResume 只在「真被停掉」时出声（还在播 → 直接取消意图不出声，
+      // 见其内部 isPlay 判定）—— 短暂系统音不留停播，也不做多余的恢复动作。
+      if (interruptionPauseTimer != null) {
+        clearInterruptionPauseTimer()
+        interruptedAt = 0
+        return scheduleAutoResume()
+      }
       const wasLongInterruption = interruptedAt > 0 && Date.now() - interruptedAt > SHORT_INTERRUPTION_MAX_MS
       interruptedAt = 0
       if (permanent && wasLongInterruption) return cancelResumePending()
