@@ -38,10 +38,32 @@
  *     拿到后 saveLyric 落在 musicInfo.id 上（下次 getCachedLyricInfo 直接命中），
  *     全部失败才落回空歌词（不能直接抛，否则播放链路会炸）。
  *
+ * 第 29 轮增量（需求原话：「WebDAV界面中，还是存在不自动加载在线封面的情况，要时刻关注
+ * WebDAV列表，如果存在歌曲封面缺失或者未更新的情况，扫描或者打开列表时自动加载」
+ *   + 「刷新列表后也要刷新封面是否最新或者缺失。」）：
+ *   第 27 轮那套「预热前 20 首 + 本会话试过就不再补」的真实表现是：325 首里第 20 首往后
+ *   永远靠行内 useCoverUrl，而它只要 meta.picUrl 非空就短路；一首歌在线匹配失败一次就被
+ *   第 28 轮的失败备忘（webdavCoverSearchMisses）永久跳过。于是「封面缺失/未更新」永远补不上。
+ *   本轮把列表页的预热升级成「整表巡检」，形状（不变量 C 新增 5 条）：
+ *     · 巡检不再只看 meta.picUrl 空不空：picUrl 是 file:// 时校验封面文件还在不在
+ *       （existsFile），文件被系统清掉就当「缺失」——失效封面作废内存缓存
+ *       （invalidateCoverCache）、列表状态里清成空串（picUrl: '')，再走 fetchCoverUrl 重补；
+ *     · 每轮巡检开始先 clearWebdavCoverMisses() 清掉跨轮的「搜过没结果」备忘，
+ *       prefetchedCoverIds 也每轮清空，失败过的歌下一轮还会被补；
+ *     · 整份列表都要走到：按 MAX_PREFETCH_COVERS 分批推进（`i += MAX_PREFETCH_COVERS`），
+ *       不是只补前 20 首；
+ *     · 下拉刷新 = 连「封面是不是最新的」都重查：forceCoverRefresh 置位后这批请求带
+ *       isRefresh（coverUrl.ts 的 fetchCoverUrl(song, { isRefresh }) 会绕过内存缓存直查在线源）；
+ *     · 行内兜底：Image 的 onError → handleCoverError 一次性自愈（作废缓存 + 清 picUrl +
+ *       单首重补，同一 (id,url) 只重试一次，避免死图抖动刷请求）。
+ *   请求量仍由 coverUrl.ts 的 4 并发全局队列 + local.ts 的 2 并发搜索闸 + 分批收口。
+ *
  * 为什么必须靠契约脚本：这几条全是「形状 / 顺序 / 上限」而非类型 —— 把无条件 return 放回去、
  * 把兜底删掉、把 onToggleSource 换成真的换源、把空串 return 提到兜底之前、把上限改成整表、
- * 把去重删掉、把 fallback 挪到空歌词之后，tsc/eslint 全是绿的，只在真机上表现为
- * 「扫完还是灰占位 / 播放还是无歌词 / 扫一次发几百个请求」。带反例自检。
+ * 把去重删掉、把 fallback 挪到空歌词之后，或者把第 29 轮的 file:// 校验 / 失败备忘清空 /
+ * 分批推进删掉，tsc/eslint 全是绿的，只在真机上表现为
+ * 「扫完还是灰占位 / 播到某首还是无歌词 / 扫一次发几百个请求 / 封面挂了就再也回不来」。
+ * 带反例自检（c1–c22）。
  *
  * 运行：node scripts/sim-webdav-auto-cover-lyric.js
  * 退出码：不变量全过、且全部反例被拦下时为 0，否则 1。
@@ -265,14 +287,35 @@ const prefetchInvariants = (rawPage) => {
   if (!body.includes('prefetchedCoverIds.current.add(song.id)')) {
     reasons.push('预热没有把试过的 song.id 记下来（失败的首歌每次进列表都会重搜一遍）')
   }
-  if (!body.includes('if (song.meta.picUrl) continue')) {
-    reasons.push('预热没有跳过已有 meta.picUrl 的歌（第 25 轮写回过的封面会被重复匹配）')
+  // 【第 29 轮】「有 meta.picUrl 就跳过」改成「先校验本地封面文件还在不在」：
+  // file:// 封面文件会被系统清理，留着那个 picUrl 反而让行内 useCoverUrl 短路成空占位。
+  if (!body.includes('if (song.meta.picUrl) {')) {
+    reasons.push('巡检没有对「已有 meta.picUrl」做分支（本地封面文件失效时会被当成有封面，行内 useCoverUrl 还会短路）')
+  } else {
+    if (!body.includes('existsFile(')) {
+      reasons.push('巡检没有校验 file:// 封面文件是否还在（被系统清掉后列表永远空占位）')
+    }
+    if (!body.includes('invalidateCoverCache(song)')) {
+      reasons.push('失效的本地封面没有作废内存缓存（行内会继续拿到那张已经不存在的图）')
+    }
+    if (!body.includes("picUrl: ''")) {
+      reasons.push('失效的本地封面没有从列表状态里清掉（行内 useCoverUrl 仍会因为 picUrl 非空而短路）')
+    }
   }
   if (!body.includes('if (getCachedCoverUrl(song)) continue')) {
     reasons.push('预热没有跳过内存缓存里已有封面的歌（同一首歌重复发在线匹配）')
   }
-  if (!body.includes('fetchCoverUrl(song)')) {
+  if (!body.includes('fetchCoverUrl(song,')) {
     reasons.push('预热没有走 coverUrl.ts 的 fetchCoverUrl（会被绕开 4 并发全局队列与内存缓存）')
+  }
+  // 【第 29 轮】整份列表都要巡检到（第 27 轮只补前 20 首，滚下去的歌全靠行内），
+  // 分批发而不是一次全量：批大小就是 MAX_PREFETCH_COVERS。
+  if (!body.includes('i += MAX_PREFETCH_COVERS')) {
+    reasons.push('巡检没有按 MAX_PREFETCH_COVERS 分批推进整份列表（第 27 轮的「只补前 20 首」漏掉了后面的歌）')
+  }
+  // 【第 29 轮】失败备忘必须每轮清空，否则一首歌失败一次就再也不会被补上
+  if (!body.includes('clearWebdavCoverMisses()')) {
+    reasons.push('每轮巡检没有清空「搜过没结果」的失败备忘（封面缺失的歌不会再被自动补）')
   }
   if (/\bgetPicPath\s*\(/.test(body)) {
     reasons.push('预热直接调了 getPicPath（绕开 coverUrl.ts 的缓存/在飞去重/并发上限）')
@@ -294,8 +337,10 @@ const prefetchInvariants = (rawPage) => {
       reasons.push(`缺少预热调用点 ${anchor}（进列表 / 下拉刷新 / 扫描 / 播放回填 里少了一处）`)
     }
   }
-  if (countOf(code, 'prefetchCovers(') < 5) {
-    reasons.push(`预热调用点不足：prefetchCovers( 只有 ${countOf(code, 'prefetchCovers(')} 处（进列表/扫描/扫描并下载/刷新/播放回填 至少 5 处）`)
+  // 第 29 轮把行内 onError 自愈也算一个调用点（handleCoverError → prefetchCovers([target])），
+  // 所以下限从 5 提到 6：进列表 / 扫描 / 扫描并下载 / 下拉刷新 / 播放回填 / 行内自愈。
+  if (countOf(code, 'prefetchCovers(') < 6) {
+    reasons.push(`预热调用点不足：prefetchCovers( 只有 ${countOf(code, 'prefetchCovers(')} 处（进列表/扫描/扫描并下载/刷新/播放回填/行内自愈 至少 6 处）`)
   }
 
   // 第 25 轮删掉的整表批量下载不能回来，也不能再引 fetchWebDAVPic 做封面
@@ -431,28 +476,28 @@ const runCounterExamples = () => {
     'void matchedUrl')),
   '没有广播')
 
-  // c7 预热没有上限
+  // c7 预热没有上限（第 29 轮：循环挪进 sweep 内层，锚点缩进跟着变，字面量仍然唯一）
   check('c7 预热无上限', prefetchInvariants(tamper(REAL.page,
-    '      if (started >= MAX_PREFETCH_COVERS) break',
-    '      // no bound')),
+    '          if (started >= MAX_PREFETCH_COVERS) break',
+    '          // no bound')),
   '没有条数上限')
 
   // c8 预热没有 id 去重
   check('c8 预热无去重', prefetchInvariants(tamper(REAL.page,
-    '      if (prefetchedCoverIds.current.has(song.id)) continue',
-    '      // no dedup')),
+    '        if (prefetchedCoverIds.current.has(song.id)) continue',
+    '        // no dedup')),
   '没有按 song.id 去重')
 
   // c9 预热又跑起整表批量下载
   check('c9 预热改回整表批量', prefetchInvariants(tamper(REAL.page,
-    '      if (getCachedCoverUrl(song)) continue',
-    '      void fetchWebDAVPic(song)\n      if (getCachedCoverUrl(song)) continue')),
+    '        if (getCachedCoverUrl(song)) continue',
+    '        void fetchWebDAVPic(song)\n        if (getCachedCoverUrl(song)) continue')),
   'fetchWebDAVPic')
 
   // c10 预热跳过缓存查询（每首相隔重复发）
   check('c10 预热不看内存缓存', prefetchInvariants(tamper(REAL.page,
-    '      if (getCachedCoverUrl(song)) continue',
-    '      // no cache check')),
+    '        if (getCachedCoverUrl(song)) continue',
+    '        // no cache check')),
   '内存缓存')
 
   // c11 预热上限被放大成整表
@@ -502,6 +547,38 @@ const runCounterExamples = () => {
   }),
   'apis(')
 
+  // ---- 第 29 轮新增反例：封面巡检（整表 / 失效本地封面 / 失败备忘）----
+
+  // c18 巡检退回第 27 轮「有 picUrl 就跳过」（失效的本地封面被当成有封面，行内还短路）
+  check('c18 巡检不校验本地封面', prefetchInvariants(tamper(REAL.page,
+    '        if (song.meta.picUrl) {\n',
+    '        if (song.meta.picUrl) continue\n')),
+  '本地封面文件失效')
+
+  // c19 巡检不校验封面文件是否存在（file:// 一律当成有封面）
+  check('c19 巡检不查文件在不在', prefetchInvariants(tamper(REAL.page,
+    '          const alive = await existsFile(song.meta.picUrl.replace(\'file://\', \'\')).catch(() => false)',
+    '          const alive = true')),
+  '校验 file:// 封面文件是否还在')
+
+  // c20 失效封面不作废内存缓存（行内会一直拿到那张已经不存在的图）
+  check('c20 失效封面不作废缓存', prefetchInvariants(tamper(REAL.page,
+    '          invalidateCoverCache(song)',
+    '          void song')),
+  '作废内存缓存')
+
+  // c21 巡检不清失败备忘（封面缺失的歌永远不再被自动补）
+  check('c21 巡检不清失败备忘', prefetchInvariants(tamper(REAL.page,
+    '    clearWebdavCoverMisses()',
+    '    void 0')),
+  '失败备忘')
+
+  // c22 巡检退回「只补前 N 首」（整表一把梭 / 滚下去的歌没有封面也不补）
+  check('c22 巡检不再分批推进整表', prefetchInvariants(tamper(REAL.page,
+    '      for (let i = 0; i < queue.length; i += MAX_PREFETCH_COVERS) {',
+    '      for (const song of queue) {')),
+  '分批推进整份列表')
+
   return results
 }
 
@@ -510,12 +587,12 @@ const runCounterExamples = () => {
 // ---------------------------------------------------------------------------
 
 console.log('=== sim-webdav-auto-cover-lyric ===')
-console.log('WebDAV：扫描/刷新自动补在线封面（有界预热 + 走搜索兜底并写回）+ 播放自动补齐歌词（第 27 轮）')
+console.log('WebDAV：扫描/刷新/进列表自动巡检封面（整表分批 + 失效本地封面重补 + 失败备忘每轮清空）+ 播放自动补齐歌词（第 27 轮起，第 29 轮加强）')
 console.log()
 
 const checks = [
   ['条一① 封面兜底走 getOtherSourceByLocal + 内置平台 getPic，不换源，命中写回 meta + 广播；空封面不再无条件 return，空返回收口在兜底之后', () => webdavCoverFallbackInvariants(REAL.local)],
-  ['条一③ 列表页预热有界（≤50 / 去重 / 跳缓存）+ 预热点齐全 + 没回退成整表批量', () => prefetchInvariants(REAL.page)],
+  ['条一③ 列表页巡检（整表分批 ≤50 / 每轮清失败备忘 / file:// 失效封面重补 / 跳缓存）+ 预热点齐全 + 没回退成整表批量下载', () => prefetchInvariants(REAL.page)],
   ['条二 WebDAV 歌词兜底 + saveLyric + 空歌词仍是最后收口', () => webdavLyricFallbackInvariants(REAL.local)],
   ['兜底链路复核：helper 走 searchMusic/内置平台接口，内置 apiList 仍为空，并发上限仍是 4', () => helperInvariants(REAL)],
 ]
