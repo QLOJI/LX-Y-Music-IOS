@@ -9,12 +9,16 @@ import { applyOpacity } from '@/utils/colorOpacity'
 import { useButtonRadius } from '@/utils/buttonRadius'
 import { createStyle } from '@/utils/tools'
 
-type ButtonProps = BtnProps
+// block：网格单元格内使用（Sync 页两列按钮网格）——去掉并排预留的右外边距，
+// 让按钮撑满单元格、两列右缘齐平（同 CheckBox 的 block 形态）。
+type ButtonProps = BtnProps & {
+  block?: boolean
+}
 
 // 设置页的动作按钮统一走「推荐页排行榜按钮」那套视觉语言：
 // 圆角 designRadius.md + 1px 边框 + 半透明主题色底 + 主题色文字，
 // 与页面里的开关行、输入行是同一套控件外观。
-export default memo(({ disabled, onPress, children }: ButtonProps) => {
+export default memo(({ disabled, onPress, children, block }: ButtonProps) => {
   const theme = useTheme()
   const buttonOpacity = useSettingValue('theme.buttonOpacity')
   // 「按钮圆角」：按钮基元行内覆盖；高度取 styles.button.minHeight 的源值 40
@@ -32,6 +36,7 @@ export default memo(({ disabled, onPress, children }: ButtonProps) => {
       style={[
         styles.button,
         buttonStyle,
+        block && styles.buttonBlock,
         // 「按钮圆角」行内覆盖；高度取 styles.button.minHeight 的源值 40（14 号单行文字，可见高度即 minHeight）
         { borderRadius: buttonRadius(40) },
       ]}
@@ -55,6 +60,10 @@ const styles = createStyle({
     // minHeight 撑高后，RN 默认纵向排列会把文字顶到上沿，必须显式双向居中
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  // 【第 23 轮】网格单元内：去掉并排预留的右外边距（右缘与单元齐平，两列按钮等宽对齐）
+  buttonBlock: {
+    marginRight: 0,
   },
   label: {
     fontWeight: '600',
