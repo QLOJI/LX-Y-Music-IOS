@@ -4,6 +4,8 @@ import { AppState, Platform } from 'react-native'
 // 切歌（playNext/playPrev）与 markTimeoutExitInteraction 已随重复监听一并移出本文件：
 // 现在只由唯一入口 remoteCommand.ts 调用（第 20 轮·遥控命令单一通路）。
 import { pause, play } from '@/core/player/player'
+// 【第 22 轮】用户手动暂停闸门：置位后所有自动续播入口都不许出声（见 core/player/manualPause.ts）
+import { clearManualPause, isManualPause } from '@/core/player/manualPause'
 import { initUnifiedPlayerController } from './controller'
 import { exitApp } from '@/core/common'
 import playerState from '@/store/player/state'
@@ -88,6 +90,9 @@ export const cancelResumePending = () => {
 const scheduleAutoResume = () => {
   clearResumeTimer()
   if (global.lx.isPlayedStop || playerState.isPlay) return cancelResumePending()
+  // 【第 22 轮】手动暂停闸门：用户主动暂停后，即使各条路径又把待恢复标记立了起来
+  //（打断开始 / 退后台预置），这里也一律不出声，直到用户自己重新按下播放。
+  if (isManualPause()) return cancelResumePending()
   if (!shouldResumeAfterDuck) return
   shouldResumeAfterDuck = false
   resumeRetryCount = 0
@@ -162,7 +167,9 @@ const registerPlaybackService = async() => {
         // 仅降低音量(混合播放)：暂不暂停，记录待恢复
         // 【第 21 轮·优化 1】改用「最近 3s 确实在播」：车机蓝牙下导航播报会先走一次
         // 路由暂停（isPlay 已是 false），这里若还看瞬间快照就记不上恢复意图。
-        shouldResumeAfterDuck ||= wasPlayingRecently()
+        // 【第 22 轮】手动暂停闸门优先：3s 时间窗会把「手动暂停后 3 秒内被打断」误记成
+        //「刚才确实在播」，用户手动暂停后其它音频一响就把恢复意图立起来 —— 直接否决。
+        shouldResumeAfterDuck ||= !isManualPause() && wasPlayingRecently()
         interruptedAt = Date.now()
         clearDuckRecoveryTimeouts()
         return
@@ -172,7 +179,9 @@ const registerPlaybackService = async() => {
         // 不能依赖当前 isPlay 判断：native 可能先把状态置为暂停、事件顺序不定，
         // 只要收到打断开始(且不是用户手动停止/结束)就视为需要恢复。
         // 【第 21 轮·优化 1】记下打断开始时刻，结束分支据此区分短暂中断与长时间抢占。
-        if (!global.lx.isPlayedStop) shouldResumeAfterDuck = true
+        // 【第 22 轮】手动暂停闸门：用户主动暂停在先，其它音频引起的打断不允许立恢复意图
+        //（用户报的「别的音频播完就自己开始播放」的主要来源就是这条无条件置位）。
+        if (!global.lx.isPlayedStop && !isManualPause()) shouldResumeAfterDuck = true
         interruptedAt = Date.now()
         clearDuckRecoveryTimeouts()
         clearResumeTimer()
@@ -218,7 +227,8 @@ const registerPlaybackService = async() => {
 
     if (shouldResumeAfterDuck) {
       shouldResumeAfterDuck = false
-      play()
+      // 【第 22 轮】手动暂停闸门：与 iOS 同一口径 —— 用户主动暂停后不自动出声
+      if (!isManualPause()) play()
     }
   })
 
@@ -255,7 +265,9 @@ export default () => {
       // 【第 21 轮·优化 1】判定同样换成「最近 3s 确实在播」：车机蓝牙下高德播报会先触发
       // 路由暂停，退后台那一刻 isPlay 可能刚被置 false，旧写法会漏掉这次预置。
       wasBackgroundPlaying = Platform.OS == 'ios' && wasPlayingRecently()
-      if (wasBackgroundPlaying && !global.lx.isPlayedStop) shouldResumeAfterDuck = true
+      // 【第 22 轮】手动暂停闸门：用户暂停后 3s 内切后台，wasPlayingRecently 仍是 true
+      //（时间窗故意要跨过暂停），但这不是「刚才在播」而是「刚被用户叫停」——不预置续播标记。
+      if (wasBackgroundPlaying && !global.lx.isPlayedStop && !isManualPause()) shouldResumeAfterDuck = true
       return
     }
     if (state != 'active') return
@@ -271,6 +283,9 @@ export default () => {
     // 【第 21 轮·优化 1】开始播放 = 「确实在播」时间窗起点，心跳负责在随后每秒续期
     startPlayingHeartbeat()
     cancelResumePending()
+    // 【第 22 轮】播放真正开始（用户重新按播放 / 点歌 / 切歌）：抬起「手动暂停」闸门，
+    // 之后的抢占-恢复流程照旧。这是闸门唯一的复位口（见 core/player/manualPause.ts）。
+    clearManualPause()
   })
   // 【第 21 轮·优化 1】显式停止：作废待续播标记并停表（用户明确不要放了，不能自动拉起）
   global.app_event.on('stop', () => {
