@@ -53,6 +53,31 @@ export const raiseToastOverlay = (): void => {
   UtilsModule.raiseOverlayWindows()
 }
 
+/**
+ * 把本地图片文件写进系统相册（iOS 相册，用户照片 App 里直接可见）。
+ *
+ * 【第 21 轮·优化 2（2026-10-03）】用户报「长按封面点『下载封面』无效」：旧实现把封面
+ * 写进应用沙盒的 Pictures 目录，用户在任何系统相册里都看不到那个文件，等于没保存。
+ * 现在走 PHPhotoLibrary 写入相册（原生实现见 AppDelegate.mm 的 UtilsModule
+ * saveImageToPhotosLibrary）。调用方必须先把图片落成真实文件。
+ *
+ * 返回值三态，调用方据此分流：
+ *   true  —— 已写入相册（用户的照片 App 里能看到）
+ *   false —— 用户在权限弹窗拒绝 / 写入失败（原生 reject 已统一折算成 false）
+ *   null  —— 原生方法不可用（旧构建未包含该实现），调用方回退到沙盒落盘
+ * 不向外抛异常：权限被拒是常规路径，按返回值处理即可。
+ */
+export const saveImageToPhotosLibrary = async(filePath: string): Promise<boolean | null> => {
+  if (!isIOS) return null
+  if (typeof UtilsModule?.saveImageToPhotosLibrary != 'function') return null
+  try {
+    const result = await (UtilsModule.saveImageToPhotosLibrary as (path: string) => Promise<boolean>)(filePath)
+    return result === true
+  } catch {
+    return false
+  }
+}
+
 export const getWIFIIPV4Address = isIOS
   ? async(): Promise<string> => ''
   : (UtilsModule.getWIFIIPV4Address as () => Promise<string>)
