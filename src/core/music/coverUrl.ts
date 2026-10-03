@@ -46,18 +46,35 @@ export const getCachedCoverUrl = (song: CoverSong): string => {
   return coverCache.get(keyOf(song)) ?? ''
 }
 
-export const fetchCoverUrl = async(song: CoverSong): Promise<string> => {
+/**
+ * 【第 29 轮】作废某首歌的内存封面缓存。
+ * 缓存 key 是「source|歌名|歌手」，存的是上次拿到的 URL —— 这个 URL 可能已经失效
+ * （本地封面文件被系统清掉、远程封面 404）。作废后下一次 fetchCoverUrl 会重新走 getPicPath。
+ */
+export const invalidateCoverCache = (song: CoverSong): void => {
+  coverCache.delete(keyOf(song))
+}
+
+export const fetchCoverUrl = async(
+  song: CoverSong,
+  options?: { isRefresh?: boolean },
+): Promise<string> => {
   // qs 源沿用既有跨平台匹配逻辑（含其独立缓存）
   if (song.source === 'qs') return fetchQsCover(song as LX.Music.MusicInfoOnline)
 
   const key = keyOf(song)
-  const cached = coverCache.get(key)
-  if (cached) return cached
+  // 【第 29 轮】isRefresh = 列表刷新时的「封面是不是最新的」复核：不能被内存缓存直接短路，
+  // 重新走一遍 getPicPath（会被 local.ts 透传给在线源的 isRefresh），拿到新结果再覆盖缓存。
+  // 其余路径照旧先吃缓存。在飞去重不分模式：同一首同时在飞就复用那个 Promise。
+  if (!options?.isRefresh) {
+    const cached = coverCache.get(key)
+    if (cached) return cached
+  }
   const inflight = coverInflight.get(key)
   if (inflight) return inflight
 
   const task = runWithLimit(async() =>
-    getPicPath({ musicInfo: song as LX.Music.MusicInfo, isRefresh: false }),
+    getPicPath({ musicInfo: song as LX.Music.MusicInfo, isRefresh: options?.isRefresh === true }),
   )
     .then((url) => {
       if (url) coverCache.set(key, url)

@@ -85,6 +85,20 @@ const markWebdavCoverMiss = (musicInfo: LX.Music.MusicInfoLocal) => {
   webdavCoverSearchMisses.add(getWebdavCoverMissKey(musicInfo))
 }
 
+/**
+ * 【第 29 轮】清空「搜过没结果」的失败备忘。
+ *
+ * 第 28 轮的备忘是为了压住「列表逐行重发的搜索风暴」，但它的副作用正好是用户这一轮的抱怨：
+ * 一首歌只要搜过一次没结果，之后**每次**进列表 / 扫描 / 刷新都会被上面那个 has() 直接跳过，
+ * 于是「封面缺失或者未更新」的歌永远不会被自动补上，只能靠 ⋮ 菜单「在线封面」手动点。
+ * 现在由列表页在每轮封面巡检开始时调用本函数：本次巡检把失败的首歌重新查一遍；
+ * 请求量仍由下面的 2 并发闸（以及列表页的分批推进）收口，备忘在单轮巡检内继续生效
+ * （行内 useCoverUrl 在巡检推进过程中再问同一首时，会把这一轮已经确认查不到的歌挡掉）。
+ */
+export const clearWebdavCoverMisses = () => {
+  webdavCoverSearchMisses.clear()
+}
+
 const getOtherSourceByLocal = async <T>(
   musicInfo: LX.Music.MusicInfoLocal,
   handler: (infos: LX.Music.MusicInfoOnline[]) => Promise<T>,
