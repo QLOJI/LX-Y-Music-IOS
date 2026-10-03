@@ -1,5 +1,5 @@
 import { updateSetting } from '@/core/common'
-import { reloadConfig } from '@/plugins/player'
+import { syncPlayWithOthersEnabled } from '@/plugins/player'
 import { useI18n } from '@/lang'
 import { createStyle, toast } from '@/utils/tools'
 import { memo } from 'react'
@@ -23,8 +23,11 @@ export default memo(() => {
   const setPlayWithOthers = async(playWithOthers: boolean) => {
     // 写库时翻回存储语义：同时播放 = 不独占
     updateSetting({ 'player.isHandleAudioFocus': !playWithOthers })
-    // 切换后重新初始化播放器，让 iOS 音频会话分类（mixWithOthers）立即生效。
-    await reloadConfig().catch(() => {})
+    // 【第 24 轮】不再 reloadConfig()：重建播放器会在**会话激活态**重设分类，用户实锤
+    // 「勾选后声音消失（进度还在走）/ 锁屏与灵动岛卡片消失」。现在只把策略标记下发给
+    // 原生（不碰播放器、不碰音频会话）——切换无感：当前播放不中断、卡片始终在，行为在
+    // 打断分支即时生效（service.ts 的混音分支 + AppDelegate 的 Began 分支）。
+    await syncPlayWithOthersEnabled().catch(() => {})
     toast(t('setting_play_handle_audio_focus_tip'))
   }
 
