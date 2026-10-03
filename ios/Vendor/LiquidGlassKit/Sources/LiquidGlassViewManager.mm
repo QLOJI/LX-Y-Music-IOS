@@ -72,7 +72,8 @@
 // draw；恢复后下一帧自动重捕获背景，无残帧。磨砂档不实现（respondsToSelector 分流）。
 - (void)setPaused:(BOOL)paused;
 // 实时采景会话（2026-10-02 用户第 2/9 条）：RN prop `live`，横向滑动 PagerView 的
-// 手势会话期间置 true —— 采景从 30fps 基线放宽到 60fps、渲染提到 120fps，解决
+// 手势会话期间置 true —— 采景从 30fps 基线放宽到 60fps，渲染档同步到 60fps
+//（第 20 轮起两档同速，见 LiquidGlassView.syncRenderFrameRate），解决
 // 「滑动时透过的画面延迟高/掉帧/像反向切入」。同样仅 Metal 液态档实现。
 - (void)setRealtimeCapture:(BOOL)realtime;
 @end
@@ -392,8 +393,9 @@ RCT_CUSTOM_VIEW_PROPERTY(paused, NSNumber, LGLiquidGlassHostView) {
 }
 
 // 实时采景（JS 传「横向滑动 PagerView 的手势会话是否进行中」，2026-10-02 用户第 2/9 条）：
-// 会话期间采景从静止态基线 30fps 放宽到 60fps、渲染提到 120fps（见 LiquidGlassView
-// 的 setRealtimeCapture）。磨砂档 / 26.2+ no-op（系统材质无采景节流）。
+// 会话期间采景从静止态基线 30fps 放宽到 60fps、渲染档同步到 60fps（第 20 轮起两档
+// 同速，见 LiquidGlassView 的 setRealtimeCapture / syncRenderFrameRate）。
+// 磨砂档 / 26.2+ no-op（系统材质无采景节流）。
 // json 为 nil（prop 未传/重置）时回 NO（回到静止态基线）。
 RCT_CUSTOM_VIEW_PROPERTY(live, NSNumber, LGLiquidGlassHostView) {
   [view applyRealtimeCapture:(json != nil ? [json boolValue] : NO)];

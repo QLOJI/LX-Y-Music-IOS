@@ -133,7 +133,8 @@ public class LiquidGlassEffectView: UIView, AnyVisualEffectView {
 
     /// RN bridge entry: realtime capture session (RN prop `live`), see
     /// LiquidGlassView.setRealtimeCapture(_:). 横向滑动 PagerView 的手势会话期间
-    /// 由 JS 置 true：采景从静止态基线 30fps 放宽到 60fps、渲染提到 120fps，
+    /// 由 JS 置 true：采景从静止态基线 30fps 放宽到 60fps，渲染档随之同步到
+    /// 60fps（第 20 轮起两档同速，见 syncRenderFrameRate），
     /// 解决「滑动时透过的画面延迟高、掉帧、像反向切入」。同一口径已被抬起的透镜
     /// （LiquidLensView → beginLiveCapture）使用。仅 Metal 液态档实现该 selector，
     /// 磨砂档由 manager 的 respondsToSelector 分流为 no-op。

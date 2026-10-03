@@ -444,18 +444,28 @@ final class LiquidGlassView: MTKView {
         captureSettleStartedAt = now
     }
 
-    // MARK: - 自适应刷新率
+    // MARK: - 渲染帧率 = 采景档（2026-10-03，第 20 轮优化项 ②①）
 
-    /// 静止态 30fps（见 init 注释：省电）；背景一变化就提到高刷。
+    /// 静止档 30fps：与 captureMinInterval(33ms ≈ 30Hz) **同速**。
+    ///
+    /// 口径（本类帧率的唯一模型）：帧率只画得出采景给到的东西 —— 背景纹理在两次
+    /// 采景之间是同一张，而 shader 没有任何随时间变化的 uniform（见 ShaderUniforms：
+    /// resolution / 形状参数 / touchPoint，全由输入驱动），此时多画的帧逐帧输出相同，
+    /// 纯属重复绘制（白烧 GPU + 每帧唤醒 CPU）。因此渲染帧率一律跟随采景档：
+    /// 静止 = 30fps、实时会话 = 60fps，见 syncRenderFrameRate。
+    /// （此前另有一条「背景一变化就升到 120fps、静默 0.4s 降回」的自适应升档 ——
+    /// 采景被 33ms 全局节流压在 30Hz，升上去的帧全是重复绘制，已删除。）
     private static let idleFramesPerSecond = 30
-    private static let liveFramesPerSecond = 120
-    /// 最后一次检测到背景变化后的高刷保持时长：页面切换/惯性滚动都是一阵一阵的，
-    /// 变化停止后仍保持一拍，避免在动画尾巴上反复升降档。
-    private static let motionHoldDuration: TimeInterval = 0.4
-    /// 上一帧的稀疏采样（约 16x16 个最大通道值），用于帧间变化检测
-    private var lastCaptureGrid: [UInt8]?
-    private var lastCaptureChangeAt: TimeInterval = 0
-    /// 显式高刷（透镜抬起/跟手期间由 LiquidLensView 打开）：期间不做自适应降档
+    /// 实时档 60fps：与 liveCaptureMinInterval(16.7ms) **同速**（透镜抬起 / 横滑会话）。
+    private static let liveFramesPerSecond = 60
+    /// 把渲染帧率同步到当前采景档。**全类唯一给 preferredFramesPerSecond 赋值的地方** ——
+    /// 档位由 isLiveCaptureActive 两个标志唯一决定，任何会话开始/结束都走这里，
+    /// 不会再出现「标志已落、帧率还挂在旧档」的中间态。
+    private func syncRenderFrameRate() {
+        preferredFramesPerSecond = isLiveCaptureActive ? Self.liveFramesPerSecond : Self.idleFramesPerSecond
+    }
+    /// 显式高刷（透镜抬起/跟手期间由 LiquidLensView 打开）：期间采景间隔放宽到 60fps，
+    /// 渲染档随之提到 liveFramesPerSecond（见 syncRenderFrameRate）
     private var liveCaptureRequested = false
 
     /// 实时采景会话（2026-10-02 用户第 2/9 条）：由 RN prop `live` 驱动，横滑
@@ -468,7 +478,7 @@ final class LiquidGlassView: MTKView {
     private var realtimeCaptureRequested = false
 
     /// 当前是否处于「实时采景」档：采景间隔用 liveCaptureMinInterval(60fps)，
-    /// 渲染帧率提到 liveFramesPerSecond(120fps)，且自适应降档被禁用。
+    /// 渲染帧率同档提到 liveFramesPerSecond(60fps)（见 syncRenderFrameRate）。
     private var isLiveCaptureActive: Bool { liveCaptureRequested || realtimeCaptureRequested }
 
     /// Whether to automatically capture superview on each frame.
@@ -521,14 +531,12 @@ final class LiquidGlassView: MTKView {
         // "黑弧"，且 multiplyBlend 合成在动画期间会失效变黑块。玻璃边缘定义由
         // shader 自身的 fresnel/glare 提供，不再叠加阴影环。
         setupMetal()
-        // 30fps 上限（省电）：MTKView 默认按屏幕刷新率（本工程 Info.plist 解锁了
-        // CADisableMinimumFrameDurationOnPhone，ProMotion 下即 120Hz）连续 draw，
-        // 玻璃内容是静止的——输入不变则每帧输出逐帧相同，高刷下纯属白烧 GPU/CPU。
-        // 30fps 对静止态足够；morph/拖拽等玻璃自身形变由原生层驱动，观感是否变差需真机对照。
+        // 30fps = 静止档（与采景节流同速，见 idleFramesPerSecond 注释）：MTKView 默认按
+        // 屏幕刷新率（本工程 Info.plist 解锁了 CADisableMinimumFrameDurationOnPhone，
+        // ProMotion 下即 120Hz）连续 draw，玻璃内容是静止的——输入不变则每帧输出逐帧相同，
+        // 高刷下纯属白烧 GPU/CPU。透镜抬起 / 横滑会话由 syncRenderFrameRate 提到 60fps。
         // 注意：这里只降本视图的渲染帧率，不改 Info.plist 的全局高刷开关。
-        // 注意：这只是「静止态」的档位。背景一旦在变化（页面切换/列表滚动/透镜拖动），
-        // analyzeCapture 会把帧率提到 liveFramesPerSecond，静默 0.4s 后降回来。
-        preferredFramesPerSecond = 30
+        syncRenderFrameRate()
 //        layer.shouldRasterize = true
 //        clipsToBounds = true
 //        autoResizeDrawable = false
@@ -601,11 +609,11 @@ final class LiquidGlassView: MTKView {
     /// ① 丢掉上一次抬起留下的背景纹理——那是上一次会话（上一次点击的 tab 位置的页面）
     ///    内容，重新抬起后的最初几帧会把它画出来，就是用户说的「点歌单再点搜索，
     ///    椭圆背景里短暂留着歌单的背景」；
-    /// ② 把刷新率拉到屏幕上限：抬起期间背景每帧都在变，30fps 的采景滞后（最多 ~33ms
-    ///    外加合成队列）在跟手拖动和切页动画里肉眼可见。
+    /// ② 把采景间隔放宽到 60fps（渲染档随之提档，见 syncRenderFrameRate）：抬起期间
+    ///    背景每帧都在变，30fps 的采景滞后（最多 ~33ms 外加合成队列）在跟手拖动和切页
+    ///    动画里肉眼可见。
     func beginLiveCapture() {
         liveCaptureRequested = true
-        lastCaptureGrid = nil
         consecutiveUniformFrames = 0
         backgroundTexture = nil
         // 2026-10-01：抬起 = 新的采景会话（纹理已丢，重新开始）。重开沉降窗口：
@@ -613,14 +621,15 @@ final class LiquidGlassView: MTKView {
         // 等的是本次会话的第一帧可信背景，不会把上一次抬起/上一页的内容带进来
         //（旧内容已在上一行被丢弃）。
         beginCaptureSettleWindow()
-        preferredFramesPerSecond = Self.liveFramesPerSecond
+        syncRenderFrameRate()
     }
 
-    /// 透镜落下后调用：交回自适应帧率（内容仍在变化时 analyzeCapture 会自己再提上去）。
+    /// 透镜落下后调用：采景档落回静止档，渲染档随之同步降回（见 syncRenderFrameRate）。
+    /// 第 20 轮起渲染帧率只跟采景档，不再按内容变化自适应升降（那条路径整段删掉，
+    /// 理由见 idleFramesPerSecond 注释）。
     func endLiveCapture() {
         liveCaptureRequested = false
-        lastCaptureGrid = nil
-        preferredFramesPerSecond = Self.idleFramesPerSecond
+        syncRenderFrameRate()
     }
 
     /// RN prop `live` 的落点（Bridge → LGLiquidGlassHostView.applyRealtimeCapture:
@@ -631,8 +640,9 @@ final class LiquidGlassView: MTKView {
     /// 设置界面左右滑动时……透过的画面延迟很高，掉帧严重」。背景每一帧都在变，而采景
     /// 此前被限在静止态基线 30fps（shouldThrottleCapture），前景以 60~120fps 在动 ——
     /// 透过画面系统性落后 1~3 拍，快速滑动时的欠采样还会让运动看起来「反向切入」。
-    /// 进实时档后与透镜抬起同档（60fps 采景 / 120fps 渲染）：这是工程里既有的、
-    /// 已被接受的「实时」口径（抬起的透镜用同一档，观感无异议）。
+    /// 进实时档后与透镜抬起同档（60fps 采景，渲染档随之同步到 60fps，见
+    /// syncRenderFrameRate）：这是工程里既有的、已被接受的「实时」口径
+    ///（抬起的透镜用同一档，观感无异议）。
     /// 不整段旁路节流：三块玻璃各自每帧调 drawHierarchy 是上一轮「整条底部区域掉帧」
     /// 的成因，60fps 是这条路径上手调过的上限。
     func setRealtimeCapture(_ realtime: Bool) {
@@ -643,13 +653,10 @@ final class LiquidGlassView: MTKView {
         // 的画面、然后猛地跳一下」的相位滞后来源（用户第 9 条「延迟很高」的起点）。
         lastCaptureAt = 0
         consecutiveUniformFrames = 0
-        if realtime {
-            preferredFramesPerSecond = Self.liveFramesPerSecond
-        } else if !liveCaptureRequested {
-            // 交回自适应帧率：背景若仍在变，analyzeCapture 会在下一帧自己再提上去
-            preferredFramesPerSecond = Self.idleFramesPerSecond
-            lastCaptureGrid = nil
-        }
+        // 渲染档只跟采景档走（第 20 轮：两个档位各自与对应采景间隔同速，
+        // 见 syncRenderFrameRate）——开始会话提到 live 档、结束落回静止档，
+        // 两条路都收敛到这一个赋值点。
+        syncRenderFrameRate()
     }
 
     /// 从暂停（MTKView.isPaused = true，省电门）恢复时的一次性复位（2026-10-02 用户第 2 条）。
@@ -673,15 +680,14 @@ final class LiquidGlassView: MTKView {
     ///
     /// 剩余代价：CAMetalLayer 上那一帧旧图像必然要显示到下一次 draw 为止（≤1 拍），
     /// 这是暂停式省电门的固有代价；本次复位把「多次沿用旧帧 / 等到下一 tick」压到
-    /// 「最多一拍」。渲染档位同步提到 liveFramesPerSecond：pop 转场期间背景每帧都在变，
-    /// 拍长越短，这一拍越短，也会由 analyzeCapture 在画面静止后自动降回 30fps。
+    /// 「最多一拍」。渲染档与采景档重新同步（第 20 轮：两者同速，见 syncRenderFrameRate）
+    /// ——静止档下一拍 ≤33ms，与既有静止态上限一致。
     func handleResumeFromPause() {
         backgroundTexture = nil
         consecutiveUniformFrames = 0
         lastCaptureHadPartialBlack = false
-        lastCaptureGrid = nil
         lastCaptureAt = 0
-        preferredFramesPerSecond = Self.liveFramesPerSecond
+        syncRenderFrameRate()
         // 2026-10-02（用户第 16 轮第 1 条：「底部 tab 栏和迷你播放器栏边缘又出现瞬间闪烁的
         // 黑边，分别在进入软件时、从其他页面切回到有底部栏界面时」）：暂停恢复也是一次
         // 「合成源刚建立」——暂停期间 render server 对这条 backdrop 链路的合成就停摆了，
@@ -830,19 +836,19 @@ final class LiquidGlassView: MTKView {
     /// 本帧是否因采景节流而跳过（每实例，2026-10-02，用户第 5 条）。
     ///
     /// 起因：「滑入推荐、歌单界面时，底部的 tab 和迷你播放器区域液态效果明显掉帧，
-    /// 而且滑动松手会自动切入的动画也很不流畅」。页面在滑动 = 背景每一帧都在变
-    /// ——正是 analyzeCapture 把帧率提到 liveFramesPerSecond(120) 的极端情形：
-    /// 一屏三块玻璃（Tab 栏 / 迷你播放器 / 抬起的透镜）各自以 120fps 调 drawHierarchy，
-    /// 合计 360 次/秒。而这条采景路径是**主线程同步**的（drawHierarchy 要等 render
+    /// 而且滑动松手会自动切入的动画也很不流畅」。页面在滑动 = 背景每一帧都在变：
+    /// 一屏三块玻璃（Tab 栏 / 迷你播放器 / 抬起的透镜）若各自高刷调 drawHierarchy，
+    /// 合计每秒数百次。而这条采景路径是**主线程同步**的（drawHierarchy 要等 render
     /// server 交出 backdrop 内容，上游注释即写 "Noticeable rendering delay"），
     /// 直接与 pager 动画抢主线程，表现为整条底部区域和吸附动画一起掉帧。
     ///
     /// 口径：把「采景」这一步压回静止态的基线——30fps/实例（三块合计 90 次/秒本就是
-    /// 工程既有的、可接受的稳态），显式高刷会话放宽到 60fps。**渲染帧率不动**：
-    /// preferredFramesPerSecond 照旧自适应升降档，玻璃自身的形变、跟手位置、透镜的
-    /// 挤压/拉伸仍是高刷；被限流的只有「重新采一次背景」这一步。代价是折射内容的
-    /// 更新率下降，而该内容本身就是 0.2x 降采样的模糊结果（透镜 0.8x，故给它更高的
-    /// 60fps），30fps 与 120fps 的观感差异远小于它让出的主线程时间。
+    /// 工程既有的、可接受的稳态），显式高刷会话放宽到 60fps。第 20 轮起**渲染帧率与
+    /// 采景档同速**（syncRenderFrameRate）：玻璃自身的形变、跟手位置、透镜的
+    /// 挤压/拉伸在实时档（60fps）仍按 60fps 走，静止档渲染成 30fps —— 那一档采景
+    /// 本来就是 30Hz，渲染再快也只是重画同一张纹理。代价是折射内容的更新率下降，
+    /// 而该内容本身就是 0.2x 降采样的模糊结果（透镜 0.8x，故给它更高的 60fps），
+    /// 30fps 与 120fps 的观感差异远小于它让出的主线程时间。
     ///
     /// 首帧（backgroundTexture == nil）不节流：挂载后 / 抬起会话开始的第一帧必须立刻
     /// 拿到纹理，否则 draw() 的「无纹理则跳过本帧」会让玻璃一直透明（见 beginLiveCapture）。
@@ -963,45 +969,24 @@ final class LiquidGlassView: MTKView {
     /// 捕获统计（在 render 闭包内、缓冲锁定期调用）：
     /// ① 均匀帧判定——CABackdropLayer 未就绪时的捕获是整幅均匀黑，真实背景（含内容）
     ///    必然非均匀；
-    /// ② 帧间变化检测——与上一帧采样比较，背景在变就把帧率提到高刷、停一会儿再降回
-    ///    30fps。「背景实时显示」和「静止省电」本来互斥，只有按内容变化自适应才能两者
-    ///    兼得；只靠透镜抬起时的显式高刷不够——tab 栏玻璃被透镜采进背景纹理（18.4
-    ///    路径没有排除机制），它慢一拍同样会表现为「椭圆里还是上一页的背景」。
-    /// ③ 半成品形态（2026-10-01；2026-10-02 第 19 轮扩口径）——部分合成帧（一半真实
+    /// ② 半成品形态（2026-10-01；2026-10-02 第 19 轮扩口径）——部分合成帧（一半真实
     ///    背景、一半黑条，即本文件 captureReferenceSize 注释里的「半张没合成的黑条」）
     ///    是**非均匀**的，① 看不见它。在同一次扫描里统计两个近黑占比写进
     ///    lastCaptureHadPartialBlack，供 commitCapturedTexture 在沉降窗口内采信：
     ///    全网格口径（边缘一圈黑）+ **外圈**口径（单侧/双侧黑带，见常量注释）。
+    ///
+    /// 第 20 轮（2026-10-03，耗电契约 ②①）删掉了原 ② 帧间变化检测——它按采样差把
+    /// preferredFramesPerSecond 提到高刷、停一会儿再降回。但背景捕获有全局 33ms 节流：
+    /// 提上去的那段渲染每一帧画的都是同一张纹理（shader 无随时间变化的 uniform），
+    /// 白烧 GPU 还每帧唤醒 CPU。渲染档现在只跟采景档（syncRenderFrameRate），
+    /// 采样网格只服务下面两个未就绪判据。
+    ///
     /// 返回 isUniform。
     private func analyzeCapture(_ buffer: CVPixelBuffer, now: TimeInterval) -> Bool {
         // 首帧真实采景 = 窗口真正的起算点：锚点与首帧之间的墙钟可能整个被冷启动长任务
         // 吃掉，按锚点起算窗口会在首帧到达前过期（见 reanchorCaptureSettleWindowIfNeeded）
         reanchorCaptureSettleWindowIfNeeded(now)
         let (grid, columns) = Self.sampleCapture(buffer)
-
-        if let last = lastCaptureGrid, !grid.isEmpty, last.count == grid.count {
-            var total = 0
-            for index in 0..<grid.count {
-                total += abs(Int(grid[index]) - Int(last[index]))
-            }
-            // 均值差 ≥ 2/255 视为背景在动：静止画面的逐帧采样完全一致（差 0）
-            if total >= 2 * grid.count {
-                lastCaptureChangeAt = now
-                if preferredFramesPerSecond != Self.liveFramesPerSecond {
-                    preferredFramesPerSecond = Self.liveFramesPerSecond
-                }
-            }
-        }
-        lastCaptureGrid = grid
-
-        // 实时档（透镜抬起 / RN `live`，见 isLiveCaptureActive）期间不做自适应降档：
-        // 否则横滑会话里玻璃会在两次背景变化之间被打回 30fps，观感就是「透过的画面
-        // 一顿一顿」。会话结束（两个标志都落）后照常按 motionHoldDuration 降回。
-        if !isLiveCaptureActive,
-           preferredFramesPerSecond != Self.idleFramesPerSecond,
-           now - lastCaptureChangeAt > Self.motionHoldDuration {
-            preferredFramesPerSecond = Self.idleFramesPerSecond
-        }
 
         guard !grid.isEmpty, columns > 0 else {
             lastCaptureHadPartialBlack = false
