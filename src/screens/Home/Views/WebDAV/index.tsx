@@ -23,6 +23,9 @@ import { applyOpacity } from '@/utils/colorOpacity'
 // fetchWebDAVPic 批量下载（4 worker 扫全表，325 首就是 325 次请求），且只认网盘内封面文件，
 // 不做在线匹配 —— 网盘里没有封面文件时列表永远是无封面占位（用户截图）。
 import useCoverUrl from '@/utils/hooks/useCoverUrl'
+// 【第 27 轮】扫描/刷新/进列表后主动预热封面：走的仍是同一套 fetchCoverUrl（内存缓存 +
+// coverCache 上限 4 并发的全局队列），只是不等行渲染。见本文件 prefetchCovers。
+import { fetchCoverUrl, getCachedCoverUrl } from '@/core/music/coverUrl'
 import { useButtonRadius } from '@/utils/buttonRadius'
 import { confirmDialog, createStyle, toast, getRowInfo } from '@/utils/tools'
 import { LIST_ITEM_HEIGHT } from '@/config/constant'
@@ -84,6 +87,11 @@ const formatSize = (size?: number) => {
 }
 
 const getFolderName = (folder?: LX.WebDAV.DriveFolder | null) => folder?.path || 'WebDAV 根目录'
+
+// 【第 27 轮】扫描/刷新/进列表后自动预热在线封面的条数上限（见组件里的 prefetchCovers）。
+// 每次最多补这么多首：首屏那几首先出图，剩下的滚到哪行由行内 useCoverUrl 逐行补，
+// 不会因为曲库有几百首就一次性打出几百个在线匹配请求。
+const MAX_PREFETCH_COVERS = 20
 
 const SongItem = memo(
   ({
@@ -305,6 +313,43 @@ export default memo(() => {
     return Array.from(foldersMap.values()).sort((a, b) => a.path.localeCompare(b.path))
   }, [songs])
 
+  // 【第 27 轮】扫描 / 刷新 / 进列表后自动补充在线封面。
+  //
+  // 为什么还要这一层：列表行本身有 useCoverUrl 逐行按需补（第 25 轮），但那只覆盖"已经渲染出来
+  // 的那几行"，而且首屏渲染那一瞬间就得等在线匹配（findMusic 跨平台搜索 + getPic）才出图。
+  // 这里在拿到曲库列表时按列表顺序提前把前 MAX_PREFETCH_COVERS 首没有封面的歌丢给同一套
+  // fetchCoverUrl（同一个 4 并发全局队列 + 同一份内存缓存，命中在飞的请求不会重复发），
+  // 于是首屏那几首的请求在渲染前就已经在路上了，滚下去的歌仍旧由行内 useCoverUrl 补。
+  //
+  // 三重收口，避免扫描完 325 首就打出 325 个在线匹配：
+  //   ① MAX_PREFETCH_COVERS 上限；
+  //   ② 已经有 meta.picUrl（第 25 轮写回已落盘的）或内存缓存里已有封面的直接跳过；
+  //   ③ prefetchedCoverIds 记住本次会话已经试过的歌曲 id，扫描/刷新/进列表来回切也不会重复补。
+  const prefetchedCoverIds = useRef(new Set<string>())
+  const prefetchCovers = useCallback((list: LX.WebDAV.MusicInfo[]) => {
+    let started = 0
+    for (const song of list) {
+      if (started >= MAX_PREFETCH_COVERS) break
+      if (!song?.id || !song.meta) continue
+      if (song.meta.picUrl) continue
+      if (prefetchedCoverIds.current.has(song.id)) continue
+      prefetchedCoverIds.current.add(song.id)
+      if (getCachedCoverUrl(song)) continue
+      started++
+      // fetchCoverUrl 内部已 catch（失败返回空串），这里再把拿到手的封面推回列表状态：
+      // 即使 meta 落盘那一步失败（updateWebDAVMusicMeta 抛错时不会广播 webdavPicUpdated），
+      // 已经渲染出来的行也能立刻换图。
+      void fetchCoverUrl(song).then(url => {
+        if (!url) return
+        setSongs(prevSongs => prevSongs.map(item =>
+          item.id === song.id
+            ? { ...item, meta: { ...item.meta, picUrl: url } }
+            : item,
+        ))
+      })
+    }
+  }, [])
+
   const loadConfig = useCallback(async() => {
     return getWebDAVConfig().then(config => {
       setSelectedFolder(config.selectedFolder ?? null)
@@ -312,8 +357,9 @@ export default memo(() => {
       setSongs(songs)
       setScannedAt(config.scannedAt)
       setFilterPath(config.filterPath ?? null)
+      prefetchCovers(songs)
     })
-  }, [])
+  }, [prefetchCovers])
 
   const handleSetFilterPath = useCallback((path: string | null) => {
     setFilterPath(path)
@@ -355,6 +401,8 @@ export default memo(() => {
       setSongs(config.songs ?? [])
       setScanText('')
       toast('标签加载完成')
+      // 【第 27 轮】刷新完把没有封面的前几首自动补上在线封面
+      prefetchCovers(config.songs ?? [])
     }).catch((err: any) => {
       const message = err.message ?? String(err)
       setScanText(message)
@@ -363,7 +411,7 @@ export default memo(() => {
       setLoading(false)
       setRefreshing(false)
     })
-  }, [songs])
+  }, [songs, prefetchCovers])
 
   const showMenu = useCallback(
     (musicInfo: LX.WebDAV.MusicInfo, index: number, position: { x: number, y: number, w: number, h: number }) => {
@@ -387,10 +435,12 @@ export default memo(() => {
           setSongs(updatedSongs)
           // 【第 25 轮】这里原来会对整份列表再跑一遍封面批量下载；已改为逐行按需（行内 useCoverUrl），
           // 只要重新读一次配置即可把播放链路刚写回的封面/标签带进来。
+          // 【第 27 轮】再加一步：把还没有封面的前几首预热补上（播放链路只补当前播放那一首）。
+          prefetchCovers(updatedSongs)
         })()
       })
     },
-    [songs],
+    [songs, prefetchCovers],
   )
 
   const handlePlayLater = useCallback((info: WebDAVSelectInfo) => {
@@ -499,6 +549,8 @@ export default memo(() => {
           setSongs(scannedSongs)
           setScannedAt(config.scannedAt)
           setScanText('')
+          // 【第 27 轮】扫描完立刻自动补在线封面（有上限，见 MAX_PREFETCH_COVERS）
+          prefetchCovers(scannedSongs)
 
           if (scannedSongs.length === 0) {
             toast('没有扫描到可下载的歌曲')
@@ -516,7 +568,7 @@ export default memo(() => {
           setLoading(false)
         })
     })
-  }, [selectedFolder])
+  }, [selectedFolder, prefetchCovers])
 
   const loadFolders = useCallback((folder: LX.WebDAV.DriveFolder | null) => {
     setFolderLoading(true)
@@ -568,11 +620,14 @@ export default memo(() => {
         setScanText(`已找到 ${count} 首，正在扫描：${path}`)
       })
         .then((config) => {
-          setSongs(config.songs ?? [])
+          const scannedSongs = config.songs ?? []
+          setSongs(scannedSongs)
           setScannedAt(config.scannedAt)
           setScanText('')
           setActiveTab('list')
           toast(`扫描完成：${config.songs.length} 首`)
+          // 【第 27 轮】扫描完立刻自动补在线封面（有上限，见 MAX_PREFETCH_COVERS）
+          prefetchCovers(scannedSongs)
         })
         .catch((err: any) => {
           const message = err.message ?? String(err)
@@ -595,7 +650,7 @@ export default memo(() => {
       return
     }
     runScan()
-  }, [hasConfig, selectedFolder])
+  }, [hasConfig, selectedFolder, prefetchCovers])
 
   const handleSelectCurrentFolder = useCallback(() => {
     setLoading(true)
