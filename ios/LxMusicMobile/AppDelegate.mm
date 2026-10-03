@@ -3287,6 +3287,18 @@ static void LXStreamingFlacErrorCallback(const FLAC__StreamDecoder *decoder, FLA
 static NSString *LXStreamingFlacDecoderErrorStatusName(FLAC__StreamDecoderErrorStatus status);
 #endif
 
+// 【第 24 轮】「与其他应用同时播放」策略标记（JS 经模块方法 setPlayWithOthers 下发）。
+// 语义：YES = 不因其它音频打断自己 —— 系统打断时引擎照旧停摆（音频已被系统压住，
+// 继续渲染只会出杂音），但**对外不呈现暂停**：状态与锁屏 / 灵动岛卡片保持「在播」，
+// 打断结束分支照常重启引擎、恢复输出；NO = 独占口径（第 13/16/21 轮语义）：打断即
+// 暂停并对外呈现 paused，短暂中断自动续播。
+// 【为什么不在这里动音频会话分类】mixWithOthers 会让本应用失去 Now Playing 主会话
+// 资格（Apple 规则：mixable 会话无资格）—— 锁屏 / 灵动岛播放卡片当场消失；且与
+// prepareAudioSession 的 LongFormAudio 路由策略互斥（setCategory 报 -50，会话被停用后
+// 表现为「歌曲在走、没有声音」）。两条都是用户第 24 轮实锤的现象，「同时播放」因此
+// 落在策略层而不是会话层。
+static BOOL LXPlayWithOthersEnabled = NO;
+
 @implementation StreamingFlacPlayerModule {
   std::unique_ptr<LXStreamingPlanarPCMBuffer> _pcmBuffer;
   std::atomic<int64_t> _renderedFrames;
@@ -3821,7 +3833,10 @@ RCT_EXPORT_MODULE();
           if (self.engine != nil && self.engine.isRunning) [self.engine pause];
           _sourceRenderingEnabled.store(false, std::memory_order_release);
           self.playbackStarted = NO;
-          shouldEmitPause = YES;
+          // 【第 24 轮】「与其他应用同时播放」下不对外呈现暂停：引擎照旧停摆（上面刚停，
+          // 系统已把我们的音频压住），但不发 paused、不改 currentState —— UI / 锁屏 /
+          // 灵动岛保持「在播」，interruptedBySystem 照置，结束分支会重启引擎并恢复输出。
+          shouldEmitPause = !LXPlayWithOthersEnabled;
         }
         // 【让出会话的前提】引擎必须先停下来：引擎还在跑时 setActive:NO 会把它的 IO 掐断，
         // 之后 isRunning 仍为真、Ended 分支不会重启它 —— 表现为打断结束后无声。
@@ -4580,6 +4595,15 @@ RCT_REMAP_METHOD(setRate, setStreamRate:(nonnull NSNumber *)rate resolver:(RCTPr
   dispatch_sync(self.renderQueue, ^{
     if (self.timePitchNode != nil) self.timePitchNode.rate = self.currentRate;
   });
+  resolve(nil);
+}
+
+// 【第 24 轮】下发「与其他应用同时播放」策略标记（勾选 = YES = 不因其它音频自我暂停）。
+// 幂等、只写一个文件级标记：不碰播放器、不碰音频会话，所以切换设置无感（不打断当前
+// 播放、不会让锁屏 / 灵动岛卡片消失）。行为在打断分支生效，见
+// handleAudioSessionInterruption: 的 Began 分支。
+RCT_REMAP_METHOD(setPlayWithOthers, setPlayWithOthers:(BOOL)enabled resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
+  LXPlayWithOthersEnabled = enabled;
   resolve(nil);
 }
 
