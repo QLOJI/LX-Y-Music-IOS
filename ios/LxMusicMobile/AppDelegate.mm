@@ -687,6 +687,8 @@ static BOOL LXIsReceivingRemoteControlEvents = NO;
 static NSString * const LXTrackPlayerLifecycleNotificationName = @"LXTrackPlayerLifecycle";
 static id LXTrackPlayerLifecycleObserver = nil;
 static id LXNowPlayingApplicationObserver = nil;
+// 【第 23 轮】屏幕亮度观察者（锁屏卡片歌词时钟的「亮度证据」熄屏门，见文件后部时钟区块）
+static id LXScreenBrightnessObserver = nil;
 static NSString * const LXRemoteCommandNotificationName = @"LXRemoteCommand";
 static BOOL LXRemoteCommandHandlersInstalled = NO;
 static void LXBeginReceivingRemoteControlEvents(void);
@@ -697,6 +699,8 @@ static void LXReanchorNowPlayingLyric(double elapsedMs, double snapshotAtMs, dou
 static void LXNowPlayingLyricStep(void);
 static void LXStartNowPlayingLyricTimer(void);
 static void LXSyncNowPlayingLyricTimer(void);
+// 【第 23 轮】亮度证据记录（定义在文件后部时钟区块；亮度观察者 / 回前台两处调用）
+static void LXRememberScreenBrightness(void);
 static void LXQueueNowPlayingLyricRedraw(void);
 static void LXForceNowPlayingCardRepaint(void);
 static NSObject *LXLyricLock(void);
@@ -1105,6 +1109,10 @@ static void LXRegisterTrackPlayerLifecycleObserver(void) {
 
   if (LXNowPlayingApplicationObserver == nil) {
     LXNowPlayingApplicationObserver = [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidBecomeActiveNotification object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification * _Nonnull note) {
+      // 【第 23 轮】回前台是亮度证据的兜底取证点（最低亮度下屏幕亮/灭可能连亮度变化
+      // 通知都不发）；先记录、再按证据重评熄屏门——熄屏期间停掉的歌词时钟在这里补建。
+      LXRememberScreenBrightness();
+      LXSyncNowPlayingLyricTimer();
       if (LXNowPlayingInfoCache.count == 0) return;
       // 【用户第 16 轮第 9 条】只有**真的在播放**时才重新激活音频会话。
       // 旧实现在这里无条件 setActive:YES：LX 手动暂停着（或已被其他音频打断、停着）时，
@@ -1118,6 +1126,16 @@ static void LXRegisterTrackPlayerLifecycleObserver(void) {
         [[AVAudioSession sharedInstance] setActive:YES error:nil];
       }
       LXApplyNowPlayingInfo();
+    }];
+  }
+
+  if (LXScreenBrightnessObserver == nil) {
+    LXScreenBrightnessObserver = [[NSNotificationCenter defaultCenter] addObserverForName:UIScreenBrightnessDidChangeNotification object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification * _Nonnull note) {
+      // 【第 23 轮】亮度 0 有两种含义（最低亮度 / 熄屏），判定必须带证据。
+      // 先记录再判定，顺序不能反——从亮屏硬关屏那一次通知，是拿到
+      // 「刚才明显亮过」的唯一机会（熄屏后 brightness 恒为 0、可能不再发通知）。
+      LXRememberScreenBrightness();
+      LXSyncNowPlayingLyricTimer();
     }];
   }
 }
@@ -1474,6 +1492,32 @@ static void LXStopNowPlayingLyricTimer(void) {
   LXNowPlayingLyricQueue = nil;
 }
 
+// 【第 23 轮】锁屏卡片歌词时钟的「亮度证据」熄屏门。
+// 用户现象：亮度调到最低后看锁屏卡片，歌词不再滚动（8.3Hz 时钟被停）。
+// 根因：UIScreen.brightness 的 0.0 同时是「最低亮度（minimum brightness）」与「熄屏」；
+// 用 brightness > 0 判「亮屏」会把最低亮度误判成熄屏；且最低亮度下屏幕亮/灭时亮度值
+// 恒为 0（可能连亮度变化通知都不发），误判后无法自愈。
+// 口径（不确定一律按亮处理，宁可不省电也不冻歌词）：亮度 0 时，只有「刚才明显亮过
+// （>= LXScreenOffTrustBrightness）」才认定熄屏（= 从亮屏硬关屏）；最低亮度 / 暗环境
+// 自动亮度 / 渐暗到 0 / 从未观测到非零亮度，全部按亮处理。
+// 证据只在读到非零亮度时更新（0 不能当证据，它就是被怀疑的那一侧）；记录点两处：
+// 亮度变化通知（先记录再判定）与回前台（兜底取证）。
+// 可见性门控其余部分与「不降频」结论不变（0.12s 原速，方案 a 仍否决）。
+static double LXLastNonZeroBrightness = 0;
+static const double LXScreenOffTrustBrightness = 0.3;
+
+// 记录亮度证据：只在非零时更新（0 覆盖会把「刚才是亮的」抹掉）。
+static void LXRememberScreenBrightness(void) {
+  CGFloat brightness = UIScreen.mainScreen.brightness;
+  if (brightness > 0) LXLastNonZeroBrightness = brightness;
+}
+
+// 熄屏判定：亮度非零 → 按亮；亮度 0 → 只有「刚才明显亮过」才可信（从亮屏硬关屏）。
+static BOOL LXIsScreenTrustedOff(void) {
+  if (UIScreen.mainScreen.brightness > 0) return NO;
+  return LXLastNonZeroBrightness >= LXScreenOffTrustBrightness;
+}
+
 // 时钟生命周期守卫：只在「正在播放」时才让 8.3Hz 时钟运行。
 // 暂停 / 停止 / 空闲时停钟——这些状态下 tick 里 rate ≤ 0 会立刻早退（不做任何事），
 // 但 8.3Hz 的唤醒本身仍在阻止 CPU 深度睡眠，是锁屏后台的净耗电。播放态恢复时
@@ -1482,7 +1526,9 @@ static void LXStopNowPlayingLyricTimer(void) {
 // 就必须运行（不能只在有歌词时运行，否则无歌词的歌在前台进度条失去平滑驱动，
 // 退化为 1s 慢校准的跳变）。
 static void LXSyncNowPlayingLyricTimer(void) {
-  if (LXNowPlayingState == MPNowPlayingPlaybackStatePlaying) {
+  // 【第 23 轮】熄屏（亮度证据可信）时也走停钟：卡片不可见，8.3Hz 是净唤醒；
+  // 判定一律走 LXIsScreenTrustedOff——不确定按亮，绝不因亮度误判冻结歌词。
+  if (LXNowPlayingState == MPNowPlayingPlaybackStatePlaying && !LXIsScreenTrustedOff()) {
     LXStartNowPlayingLyricTimer();
   } else {
     LXStopNowPlayingLyricTimer();
