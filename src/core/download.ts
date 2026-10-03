@@ -1,16 +1,22 @@
 import RNFetchBlob from '@/utils/rnFetchBlob'
 import { toMD5, toast, requestStoragePermission } from '@/utils/tools'
-import { getMusicUrl, getLyricInfo } from '@/core/music'
+import { getMusicUrl, getLyricInfo, getPicPath } from '@/core/music'
 import { getFileExtension, getFileExtensionFromUrl } from '@/screens/Home/Views/Mylist/MusicList/download/utils'
 import { mergeLyrics } from '@/screens/Home/Views/Mylist/MusicList/download/lrcTool'
-import { writeFile, unlink, downloadFile, mkdir, moveFile, stopDownload } from '@/utils/fs'
+import { writeFile, unlink, downloadFile, mkdir, moveFile, copyFile, stopDownload } from '@/utils/fs'
 import { getDefaultDownloadPath } from '@/utils/downloadPath'
 import { writeMetadata, writePic, writeLyric, isWriteSupported } from '@/utils/localMediaMetadata'
 import settingState from '@/store/setting/state'
 import downloadState from '@/store/download/state'
 import downloadActions from '@/store/download/action'
 import { filterFileName, sizeFormate } from '@/utils'
-import { getPicUrl } from '@/core/music/online'
+import {
+  getWebDAVDownloadUrl,
+  getWebDAVAuthHeaders,
+  downloadWebDAVFile,
+  updateWebDAVMusicMeta,
+} from '@/core/webdavMusic/drive'
+import { webDAVLog } from '@/core/webdavMusic/logger'
 import DownloadTask = LX.Download.DownloadTask
 import wySdk from '@/utils/musicSdk/wy'
 import bilibiliSdk from '@/utils/musicSdk/bilibili'
@@ -26,6 +32,15 @@ const WY_MEDIA_HEADERS = {
 const getDownloadHeaders = (task: DownloadTask) => {
   return task.musicInfo.source === 'wy' ? WY_MEDIA_HEADERS : DOWNLOAD_HEADERS
 }
+
+// 【第 26 轮】只有 http(s) 能交给 RNFS 的 fromUrl。
+// file:// 与无 scheme 的本地路径交给 fromUrl，iOS 上是 NSURLErrorUnsupportedURL
+// —— 用户截图里下载管理那条「unsupported URL」就是这么来的（见 startDownload 的注释）。
+const isDownloadableUrl = (value?: string | null): boolean => !!value && /^https?:\/\//i.test(value)
+
+const isWebDAVMusicInfo = (musicInfo: LX.Music.MusicInfo): boolean =>
+  musicInfo.source === 'local' && !!(musicInfo.meta as any)?.webdav
+
 let currentDownloadTask: any | null = null
 
 const processQueue = async() => {
@@ -51,8 +66,15 @@ const processQueue = async() => {
 const startDownload = async(task: DownloadTask) => {
   downloadActions.updateTask(task.id, { status: 'downloading' })
 
-  let url: string
+  let url = ''
   let headers: any = getDownloadHeaders(task)
+  // 【第 26 轮】本地 / WebDAV 歌曲在下载管理里**没有可下载的远端地址**：
+  // getMusicUrl 对 source=local 返回的是本地文件路径（普通本地音乐 = 原文件；WebDAV = 已预下载
+  // 到 Caches 的那份副本）。此前它被直接当 fromUrl 交给 RNFS，iOS 上是
+  // NSURLErrorUnsupportedURL —— 用户截图里下载管理那条「unsupported URL」就是这个。
+  // 现在明确分流：WebDAV 用远端直链下载，本地音乐直接复制；任何无 scheme 的路径都不再进 downloadFile。
+  let localSourcePath = ''
+  let isWebDAVSource = false
   if (task.isForceCookie && task.musicInfo.source === 'wy') {
     const highQualityLevels: LX.Quality[] = ['flac', 'hires', 'master', 'atmos', 'atmos_plus']
     console.log(`[Batch Download] Forcing cookie for ${task.musicInfo.name}`)
@@ -68,30 +90,49 @@ const startDownload = async(task: DownloadTask) => {
       removeTask(task.id)
       return
     }
-  } else {
-    if (task.musicInfo.source === 'bilibili') {
-      console.log('[Download] 处理 bilibili 源')
-      try {
-        const result: any = await (bilibiliSdk.getMusicUrl(task.musicInfo, task.quality) as any).promise
-        url = result.url
-        if (result.headers) {
-          headers = result.headers
-          console.log('[Download] 使用 bilibili 自定义 headers')
-        }
-      } catch (error: any) {
-        toast(`${task.musicInfo.name} 下载失败: ${error.message}`, 'short')
-        removeTask(task.id)
-        return
+  } else if (task.musicInfo.source === 'bilibili') {
+    console.log('[Download] 处理 bilibili 源')
+    try {
+      const result: any = await (bilibiliSdk.getMusicUrl(task.musicInfo, task.quality) as any).promise
+      url = result.url
+      if (result.headers) {
+        headers = result.headers
+        console.log('[Download] 使用 bilibili 自定义 headers')
       }
-    } else {
-      url = await getMusicUrl({ musicInfo: task.musicInfo, quality: task.quality, isRefresh: true })
+    } catch (error: any) {
+      toast(`${task.musicInfo.name} 下载失败: ${error.message}`, 'short')
+      removeTask(task.id)
+      return
+    }
+  } else if (isWebDAVMusicInfo(task.musicInfo)) {
+    // WebDAV：直链 + Basic Auth（同一套 headers 也用于第二级的直链重试）
+    isWebDAVSource = true
+    url = getWebDAVDownloadUrl(task.musicInfo as LX.WebDAV.MusicInfo)
+    headers = getWebDAVAuthHeaders()
+    webDAVLog.info('downloadManager: WebDAV download source ready', { fileName: task.fileName })
+  } else if (task.musicInfo.source === 'local') {
+    // 普通本地音乐：本来就是本地文件，「下载」= 复制到下载目录，没有网络请求
+    localSourcePath = String((task.musicInfo.meta as any)?.filePath || '')
+    if (!localSourcePath) {
+      webDAVLog.warn('downloadManager: local source has no filePath, fallback to getMusicUrl')
+      const resolved = await getMusicUrl({ musicInfo: task.musicInfo, quality: task.quality, isRefresh: true })
+      localSourcePath = resolved
+    }
+  } else {
+    url = await getMusicUrl({ musicInfo: task.musicInfo, quality: task.quality, isRefresh: true })
+    if (!isDownloadableUrl(url)) {
+      // 兜底：任何来源只要给回的是本地路径（无 scheme / file://），就改走复制，绝不交给 RNFS.fromUrl
+      webDAVLog.warn('downloadManager: resolved url is not downloadable, use local copy', { source: task.musicInfo.source })
+      localSourcePath = url
+      url = ''
     }
   }
 
   const isBilibiliSource = task.musicInfo.source === 'bilibili'
   let finalFilePath = task.filePath
 
-  const urlExtension = getFileExtensionFromUrl(url)
+  // 本地复制时没有 URL，扩展名从源文件路径推（同样是「真实文件」的扩展名）
+  const urlExtension = getFileExtensionFromUrl(url || localSourcePath)
   const taskExt = task.filePath.substring(task.filePath.lastIndexOf('.') + 1).toLowerCase()
 
   let downloadFilePath = task.filePath
@@ -115,38 +156,71 @@ const startDownload = async(task: DownloadTask) => {
   let lastTime = Date.now()
   let downloadedFilePath: string
   const effectiveDownloadDir = settingState.setting['download.path'] || getDefaultDownloadPath()
+  // 【第 26 轮】进度回调抽成具名函数：现在三条下载路径（本地复制 / WebDAV 直链 / 普通下载）共用它
+  const onProgress = (res: { bytesWritten: number, contentLength: number }) => {
+    const now = Date.now()
+    const written = res.bytesWritten
+    const total = res.contentLength
+    const deltaTime = now - lastTime
+    if (deltaTime === 0) return
+
+    const deltaBytes = written - lastWritten
+    const speed = deltaBytes / (deltaTime / 1000)
+
+    lastWritten = written
+    lastTime = now
+    const percent = total > 0 ? written / total : 0
+    downloadActions.updateTask(task.id, {
+      progress: {
+        ...task.progress,
+        percent,
+        downloaded: written,
+        total,
+        speed: `${sizeFormate(speed)}/s`,
+      },
+    })
+  }
   try {
     await mkdir(effectiveDownloadDir)
 
-    const downloadTask = downloadFile(url, downloadFilePath, {
-      headers,
-      progress: (res) => {
-        const now = Date.now()
-        const written = res.bytesWritten
-        const total = res.contentLength
-        const deltaTime = now - lastTime
-        if (deltaTime === 0) return
-
-        const deltaBytes = written - lastWritten
-        const speed = deltaBytes / (deltaTime / 1000)
-
-        lastWritten = written
-        lastTime = now
-        const percent = total > 0 ? written / total : 0
-        downloadActions.updateTask(task.id, {
-          progress: {
-            ...task.progress,
-            percent,
-            downloaded: written,
-            total,
-            speed: `${sizeFormate(speed)}/s`,
-          },
+    if (localSourcePath) {
+      // 【第 26 轮】本地文件（普通本地音乐 / 任何回退到本地副本的来源）：没有网络请求，直接复制。
+      // 绝不能把这种路径交给 downloadFile —— file:// 或无 scheme 的路径在 iOS 上就是 unsupported URL。
+      await copyFile(localSourcePath, downloadFilePath)
+      console.log('[Download] 本地文件复制完成:', localSourcePath, '->', downloadFilePath)
+    } else if (isWebDAVSource) {
+      try {
+        // 【第 26 轮】WebDAV 走远端直链：drive.ts 的 downloadWebDAVFile 负责三级阶梯
+        // （直接请求 → HEAD/GET 解析出 302 之后的直链再请求 → 抛错），并在每次尝试前清掉半截文件。
+        // onTask 把真实的 RNFS task 交出来，removeTask 的「取消」才能 stopDownload(jobId)。
+        await downloadWebDAVFile(url, downloadFilePath, { headers, progress: onProgress }, (t) => {
+          currentDownloadTask = t
         })
-      },
-    })
+      } catch (webdavError: any) {
+        // 兜底：远端直链全部失败时，用播放时已预下载到 Caches 的那份副本（getMusicUrl 的 WebDAV 分支）。
+        // 这样「下载」不会白点；但只有拿到的东西确实是本地文件才复制，拿到 http(s) 说明兜底也失败，原样抛出。
+        webDAVLog.warn('downloadManager: WebDAV direct download failed, try playback cache', {
+          error: webdavError?.message,
+        })
+        const cachedPath = await getMusicUrl({
+          musicInfo: task.musicInfo,
+          quality: task.quality,
+          isRefresh: false,
+        })
+        if (!cachedPath || isDownloadableUrl(cachedPath)) throw webdavError
+        await unlink(downloadFilePath).catch(() => {})
+        await copyFile(cachedPath, downloadFilePath)
+        webDAVLog.info('downloadManager: WebDAV download recovered from playback cache')
+      }
+    } else {
+      const downloadTask = downloadFile(url, downloadFilePath, {
+        headers,
+        progress: onProgress,
+      })
+      currentDownloadTask = downloadTask
+      await downloadTask.promise
+    }
 
-    currentDownloadTask = downloadTask
-    await downloadTask.promise
     downloadedFilePath = downloadFilePath
     console.log('下载完成:', downloadedFilePath)
 
@@ -157,6 +231,19 @@ const startDownload = async(task: DownloadTask) => {
         console.log(`[Download] 重命名为最终路径: ${downloadedFilePath}`)
       } catch (renameError) {
         console.warn('[Download] 重命名失败:', renameError)
+      }
+    }
+
+    // 【第 26 轮】WebDAV 下载成功后把落盘路径写回歌曲 meta：下次播放 local.ts:getMusicUrl 直接命中
+    // 「本地已有该文件」的离线分支，不再为了播放又去 Caches 预下载一份（省一次网盘请求）。
+    // 写回的是**下载目录里的正式文件**，不是会被系统回收的 Caches 副本。
+    if (isWebDAVSource) {
+      try {
+        await updateWebDAVMusicMeta(task.musicInfo.id, { filePath: downloadedFilePath })
+        webDAVLog.info('downloadManager: WebDAV local path written back', { id: task.musicInfo.id })
+      } catch (writeBackError: any) {
+        // 写回失败不影响下载结果本身，只是下次播放仍走预下载
+        webDAVLog.warn('downloadManager: write back WebDAV local path failed', { error: writeBackError?.message })
       }
     }
 
@@ -240,15 +327,24 @@ const handleMetadata = async(task: DownloadTask, filePath: string) => {
   const downloadDir = settingState.setting['download.path'] || getDefaultDownloadPath()
   if (settingState.setting['download.writePicture']) {
     try {
-      const picUrl = await getPicUrl({ musicInfo: task.musicInfo as LX.Music.MusicInfoOnline } as any)
-      const extension = getFileExtensionFromUrl(picUrl) || 'jpg'
-      const picPath = `${downloadDir}/temp.${extension}`
-      console.log(`[Metadata] 下载封面: ${picUrl} -> ${picPath}`)
-      const { promise } = downloadFile(picUrl, picPath)
-      await promise
+      // 【第 26 轮】封面来源改用分发器 getPicPath：本地 / WebDAV 歌曲走本地链路（网盘内同名封面、
+      // 音频内嵌封面、离线在线匹配），在线歌曲与原来的 getPicUrl **完全等价**（分发器的在线分支调的就是它）。
+      // 此前写死 getPicUrl（在线专用），WebDAV 歌曲在这里永远拿不到封面，封面写入静默失败。
+      const picSource = await getPicPath({ musicInfo: task.musicInfo as LX.Music.MusicInfoOnline })
+      if (!picSource) throw new Error('未找到可用封面')
+      const extension = getFileExtensionFromUrl(picSource) || 'jpg'
+      const tempPicPath = `${downloadDir}/temp.${extension}`
+      console.log(`[Metadata] 获取封面: ${picSource} -> ${tempPicPath}`)
+      if (isDownloadableUrl(picSource)) {
+        const { promise } = downloadFile(picSource, tempPicPath)
+        await promise
+      } else {
+        // 本地路径 / file://（本地音乐内嵌封面、WebDAV 缓存封面）：复制，不能交给 downloadFile
+        await copyFile(picSource, tempPicPath)
+      }
       console.log('[Metadata] 封面下载完成，开始写入到音频文件')
-      await writePic(filePath, picPath)
-      await unlink(picPath)
+      await writePic(filePath, tempPicPath)
+      await unlink(tempPicPath)
       console.log('[Metadata] 封面写入完成')
       downloadActions.updateTask(task.id, { metadataStatus: { ...task.metadataStatus, cover: 'success' } })
     } catch (e: any) {
@@ -331,13 +427,19 @@ export const retryMetadata = async(taskId: string) => {
 
   if (metadataStatus.cover === 'fail' && settingState.setting['download.writePicture']) {
     try {
-      const picUrl = await getPicUrl({ musicInfo: task.musicInfo as LX.Music.MusicInfoOnline } as any)
-      const extension = getFileExtensionFromUrl(picUrl) || 'jpg'
+      // 【第 26 轮】同 handleMetadata：走分发器，本地 / WebDAV 歌曲才有封面可拿
+      const picSource = await getPicPath({ musicInfo: task.musicInfo as LX.Music.MusicInfoOnline })
+      if (!picSource) throw new Error('未找到可用封面')
+      const extension = getFileExtensionFromUrl(picSource) || 'jpg'
       const picPath = `${RNFetchBlob.fs.dirs.CacheDir}/lx_temp_pic_${task.id}.${extension}`
 
-      console.log(`[Retry Metadata] 下载封面: ${picUrl} -> ${picPath}`)
-      const { promise } = downloadFile(picUrl, picPath)
-      await promise
+      console.log(`[Retry Metadata] 获取封面: ${picSource} -> ${picPath}`)
+      if (isDownloadableUrl(picSource)) {
+        const { promise } = downloadFile(picSource, picPath)
+        await promise
+      } else {
+        await copyFile(picSource, picPath)
+      }
       console.log('[Retry Metadata] 封面下载完成，开始写入')
       await writePic(filePath, picPath)
       await unlink(picPath)

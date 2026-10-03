@@ -3,7 +3,7 @@ import { createClient, type FileStat } from 'webdav'
 import settingState from '@/store/setting/state'
 import { webDAVLog } from './logger'
 import { btoa } from 'react-native-quick-base64'
-import { downloadFile, existsFile, mkdir, temporaryDirectoryPath } from '@/utils/fs'
+import { downloadFile, existsFile, mkdir, unlink, temporaryDirectoryPath } from '@/utils/fs'
 import { enforceCacheLimit } from '@/utils/nativeModules/cache'
 import { stringMd5 } from 'react-native-quick-md5'
 
@@ -272,6 +272,9 @@ const getWebDAVRemoteUrl = (remoteFilePath: string): string => {
   }
 
   let remote = String(remoteFilePath || '')
+  // 【第 26 轮】remotePath 本身已经是完整 URL 时直接使用（有的服务器的直链就是这样存进 meta 的），
+  // 再拼 baseUrl 会变成 https://host/dav/https://host/… 这种必然 404 的地址。
+  if (/^https?:\/\//i.test(remote)) return remote
   if (!remote.startsWith('/')) remote = '/' + remote
 
   if (
@@ -345,7 +348,8 @@ export const fetchWebDAVPic = async(musicInfo: LX.WebDAV.MusicInfo): Promise<str
     const localPath = `${coversDir}/${stringMd5(picPath)}.${ext}`
     if (await existsFile(localPath)) return `file://${localPath}`
     await mkdir(coversDir)
-    await downloadFile(url, localPath, { headers: getWebDAVAuthHeaders() }).promise
+    // 【第 26 轮】走统一下载阶梯（直下 → 解析 302 直链 → 抛错），失败不留半截文件
+    await downloadWebDAVFile(url, localPath, { headers: getWebDAVAuthHeaders() })
     return `file://${localPath}`
   } catch (err) {
     webDAVLog.warn('fetchWebDAVPic: failed', { err })
@@ -369,6 +373,93 @@ export const fetchWebDAVLrc = async(musicInfo: LX.WebDAV.MusicInfo): Promise<str
   }
 }
 
+/**
+ * 【第 26 轮】直链解析：把「WebDAV 地址」换成服务端 302 之后真正提供字节的地址。
+ *
+ * 用户的服务器如果是「连接返回 302 直链」的配置，NSURLSession 一般会自动跟随；但
+ * ① 跨主机跳转时 Authorization 会被系统丢掉，跳转目标若要鉴权就 401；
+ * ② 直链常带查询串/签名，RNFS 与 fetch 对编码的处理不完全一致。
+ * 所以这里显式解析一次，**只在直下失败后调用**（正常路径不增加往返），拿到就再下一次。
+ *
+ * 先 HEAD（省流量），不支持 HEAD（405/501）时退到 GET + Range: bytes=0-0。
+ * 拿不到（没跳转 / 报错）返回 ''，由调用方决定兜底。
+ */
+export const resolveWebDAVDirectUrl = async(
+  url: string,
+  headers?: Record<string, string>,
+): Promise<string> => {
+  const reqHeaders = headers ?? getWebDAVAuthHeaders()
+  try {
+    // RN 的 fetch 自动跟随重定向，response.url 是**最终**地址
+    const response = await fetch(url, { method: 'HEAD', headers: reqHeaders })
+    if (response.url && response.url !== url) return response.url
+  } catch (err) {
+    webDAVLog.warn('resolveWebDAVDirectUrl: HEAD failed', { err })
+  }
+  try {
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: { ...reqHeaders, Range: 'bytes=0-0' },
+    })
+    if (response.url && response.url !== url) return response.url
+  } catch (err) {
+    webDAVLog.warn('resolveWebDAVDirectUrl: GET failed', { err })
+  }
+  return ''
+}
+
+/**
+ * 【第 26 轮】统一的「从 WebDAV 取一份文件到本地」入口（播放预下载 / 封面 / 手动下载共用）。
+ *
+ * 三级阶梯，任一级成功即返回，全失败才抛：
+ *   ① 直接用 WebDAV 地址下载（NSURLSession 自动跟随 302，显式带 Basic Auth）
+ *   ② 显式解析出 302 之后的直链，再下一次（「连接换直链」型服务器）
+ *   ③ 抛错 —— 由调用方兜底（下载管理会退到「复制播放缓存里的那份副本」）
+ *
+ * onTask 把底层下载句柄交回调用方，保证「取消下载」仍然有效。
+ */
+export const downloadWebDAVFile = async(
+  url: string,
+  localPath: string,
+  options: Parameters<typeof downloadFile>[2] = {},
+  onTask?: (task: any) => void,
+): Promise<string> => {
+  const headers = options.headers ?? getWebDAVAuthHeaders()
+  let lastError: any = null
+
+  // 每次尝试先删掉目标文件：上一次失败可能留下半截文件，而调用方是用 existsFile
+  // 判断「是否已下载」的 —— 留半截等于把坏文件当成完整音频/封面向外返回。
+  const attempt = async(target: string) => {
+    await unlink(localPath).catch(() => {})
+    const task = downloadFile(target, localPath, { ...options, headers })
+    onTask?.(task)
+    await task.promise
+  }
+
+  try {
+    await attempt(url)
+    return url
+  } catch (err) {
+    lastError = err
+    webDAVLog.warn('downloadWebDAVFile: direct download failed, try resolving redirect', { url, err })
+  }
+
+  const directUrl = await resolveWebDAVDirectUrl(url, headers)
+  if (directUrl) {
+    try {
+      await attempt(directUrl)
+      webDAVLog.info('downloadWebDAVFile: downloaded via resolved direct url')
+      return directUrl
+    } catch (err) {
+      lastError = err
+      webDAVLog.warn('downloadWebDAVFile: resolved direct url download failed', { err })
+    }
+  }
+
+  await unlink(localPath).catch(() => {})
+  throw lastError ?? new Error('WebDAV download failed')
+}
+
 // 整文件预下载 WebDAV 音频到本地私有缓存目录，返回本地绝对路径。
 // iOS 的 AVPlayer 无法可靠注入 Authorization/User-Agent 头，
 // 直链流式播放不稳定，改为用 downloadFile（NSURLSession，能正确携带 Basic Auth）
@@ -386,7 +477,9 @@ export const downloadWebDAVMusic = async(musicInfo: LX.WebDAV.MusicInfo): Promis
 
   await mkdir(cacheDir)
   const downloadUrl = getWebDAVDownloadUrl(musicInfo)
-  await downloadFile(downloadUrl, filePath, { headers: getWebDAVAuthHeaders() }).promise
+  // 【第 26 轮】走统一下载阶梯（直下 → 解析 302 直链 → 抛错）。
+  // 「连接换直链」型服务器（rjml.xyz 这类）在这里第一次就成功；需要 302 的由第二级兜。
+  await downloadWebDAVFile(downloadUrl, filePath, { headers: getWebDAVAuthHeaders() })
 
   // 下载完成后按上限对全部应用缓存做 LRU 清理，避免缓存无限累积
   // （不仅清 WebDAV 子目录，让 getAppCacheSize 显示的总大小也收敛到上限内）
