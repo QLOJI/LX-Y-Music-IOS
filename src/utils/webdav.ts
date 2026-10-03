@@ -93,7 +93,12 @@ export async function downloadFile(path: string): Promise<string | null> {
     return await cli.getFileContents(path, { format: 'text' })
   } catch (error: any) {
     if (error.status === 404 || error.status === 409) {
-      webDAVLog.info(`downloadFile: File not found on server: ${path}`)
+      // 【第 28 轮】原话是 "downloadFile: File not found on server: xxx"，用户直接把它读成了
+      // 「歌曲下载失败」——其实这里是**歌单同步**在探远端有没有 playlists.json，
+      // 首次同步远端当然没有，属正常流程（紧接着就会上传本地状态）。日志得自己说清楚，
+      // 不然每次同步都在日志里刷一行看着像报错的东西。歌曲下载走的是另一条链路
+      // （core/webdavMusic/drive.ts 的 downloadWebDAVFile）。
+      webDAVLog.info(`[Sync] remote lists file not found (normal on first sync; songs are downloaded via the music module): ${path}`)
       return null
     }
     webDAVLog.error(`downloadFile: Unexpected error for "${path}":`, error)
