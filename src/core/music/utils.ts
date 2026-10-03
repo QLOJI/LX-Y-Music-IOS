@@ -45,6 +45,46 @@ LX.Music.MusicInfo | LX.Download.ListItem,
 LX.Music.MusicInfoOnline[]
 >()
 
+/**
+ * 各音源 SDK 的 getPic 返回值并不统一，必须收口成「非空字符串或空串」再往外传。
+ *
+ * 已知两种形状（见 src/utils/musicSdk 下各平台目录里的 pic.js）：
+ *   · wy / kg / kw / tx 直接给 `Promise<string>`；
+ *   · **mg.getPic 给的是请求对象** —— mg/pic.js 的 getPicUrl 是 async 包 async，
+ *     最后 `return requestObj`（httpFetch 的 `{ promise, cancelHttp }`），不是 requestObj.promise，
+ *     所以 `await musicSdk.mg.getPic(...)` 解出来的是对象；
+ *   · 自定义源脚本按老 API 约定同样可能返回请求对象。
+ * 这里按 core/music/localPlay.ts 的 resolveSdkResult 同一口径解包（thenable / `{ promise }`
+ * 最多三层），并且**只接受字符串**：解包完不是字符串一律当空串（= 这次没拿到封面）。
+ *
+ * 之前这两条链路都是裸 `reqPromise.then((url: string) => ...)`，那个请求对象会被当成 URL
+ * 一路带出去：进 core/music/coverUrl.ts 的内存缓存 → 写进歌曲 meta → 落盘
+ * （JSON.stringify 之后是 `{"picUrl":{"promise":{}}}`）→ webdavPicUpdated 广播给列表页。
+ * 列表行把它交给 <Image url={...}>，Image.tsx 里 `url?.startsWith('/')` 的 startsWith 求值为
+ * undefined 再被调用 —— 渲染期致命错误，正是用户截到的
+ * 「Fatal: TypeError TaskQueue: Error with task : undefined is not a function」。
+ */
+export const resolvePicUrl = async(value: unknown): Promise<string> => {
+  try {
+    let v: any = value
+    for (let i = 0; i < 3; i++) {
+      if (v == null) return ''
+      if (typeof v.then === 'function') {
+        v = await v
+        continue
+      }
+      if (v.promise && typeof v.promise.then === 'function') {
+        v = await v.promise
+        continue
+      }
+      break
+    }
+    return typeof v === 'string' ? v : ''
+  } catch {
+    return ''
+  }
+}
+
 const cleanFileName = (name: string): string => {
   if (!name) return name
   let cleaned = name
@@ -400,13 +440,15 @@ export const getOnlineOtherSourcePicByLocal = async(
   let reqPromise
   try {
     userApiLog.info('[在线匹配封面] 调用 apis(\'local\').getPic()')
-    reqPromise = apis('local').getPic(oldMusicInfo).promise
+    // 不再自己 `.promise`：脚本可能给的是纯 Promise、也可能给请求对象/纯字符串，
+    // 统一交给 resolvePicUrl 解包并收口成字符串（见该函数注释）。
+    reqPromise = apis('local').getPic(oldMusicInfo)
   } catch (err: any) {
     userApiLog.error(`[在线匹配封面] API 调用失败 - 错误: ${err?.message || err}`)
     reqPromise = Promise.reject(err)
   }
 
-  return reqPromise.then((url: string) => {
+  return resolvePicUrl(reqPromise).then((url: string) => {
     const hasUrl = !!url && url.length > 0
     userApiLog.info(`[在线匹配封面] 匹配完成 - 歌曲: ${musicInfo.name} - 是否成功: ${hasUrl} - URL: ${url || '空'}`)
     return { url }
@@ -837,7 +879,9 @@ export const getOnlineOtherSourcePicUrl = async({
   }
   if (!musicInfo) throw new Error(global.i18n.t('toggle_source_failed'))
 
-  if (musicInfo.meta.picUrl && !isRefresh) { return { musicInfo, url: musicInfo.meta.picUrl, isFromCache: true } }
+  // 缓存命中这条也收口成字符串：meta.picUrl 可能是历史脏值（请求对象），
+  // 原样当 URL 返回会一路进 <Image url> 炸渲染（见 resolvePicUrl 注释）
+  if (typeof musicInfo.meta.picUrl === 'string' && musicInfo.meta.picUrl && !isRefresh) { return { musicInfo, url: musicInfo.meta.picUrl, isFromCache: true } }
 
   let reqPromise
   try {
@@ -846,7 +890,8 @@ export const getOnlineOtherSourcePicUrl = async({
     reqPromise = Promise.reject(err)
   }
   // retryedSource.includes(musicInfo.source)
-  return reqPromise
+  // resolvePicUrl 收口：mg.getPic 解出来是请求对象，裸 then 会把对象当 URL 传出去（见函数注释）
+  return resolvePicUrl(reqPromise)
     .then((url: string) => {
       return { musicInfo, url, isFromCache: false }
     })
@@ -881,7 +926,8 @@ export const handleGetOnlinePicUrl = async({
   } catch (err) {
     reqPromise = Promise.reject(err)
   }
-  return reqPromise
+  // 同上：mg.getPic 给的是请求对象，必须收口成字符串再当 URL 用
+  return resolvePicUrl(reqPromise)
     .then((url: string) => {
       return { musicInfo, url, isFromCache: false }
     })

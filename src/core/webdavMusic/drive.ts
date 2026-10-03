@@ -147,6 +147,15 @@ export const normalizeWebDAVMusicInfo = (musicInfo: LX.WebDAV.MusicInfo) => {
   const title = parseFileName(musicInfo.meta.fileName || musicInfo.name)
   musicInfo.name = title.name
   musicInfo.singer = title.singer
+  // 清掉历史脏封面值（getWebDAVConfig 读盘时就会走到这里，等于给已落盘的坏数据做一次读时修复）：
+  // 类型上 meta.picUrl 是 string|null，但历史上写入过非字符串 —— 音源 SDK getPic 没解包就返回的
+  // 请求对象被当 URL 存了进来，JSON 落盘后是 {"picUrl":{"promise":{}}}，读回来是个普通对象。
+  // 它一旦流到列表行 <Image url={...}>，Image.tsx 的 `url.startsWith` 就是 undefined 再被调用
+  // ⇒ 渲染期致命错误「undefined is not a function」。这里当成"没有封面"（空串），
+  // 让封面链路重新去取（详见 core/music/utils.ts resolvePicUrl 注释）。
+  if (musicInfo.meta.picUrl !== undefined && musicInfo.meta.picUrl !== null && typeof musicInfo.meta.picUrl !== 'string') {
+    musicInfo.meta.picUrl = ''
+  }
   return musicInfo
 }
 
@@ -349,7 +358,11 @@ export const updateWebDAVMusicMeta = async(musicId: string, update: WebDAVMusicM
 
   const song = config.songs[songIndex]
   if (update.picUrl !== undefined) {
-    song.meta.picUrl = update.picUrl
+    // 只落字符串：调用方若把「上游没解包的请求对象」当 URL 传进来（历史 bug 的入口），
+    // 落盘会变成 {"picUrl":{"promise":{}}}，下次进列表读回来就是脏 meta.picUrl，
+    // 一路流到 <Image url> 触发渲染期致命错误（详见 core/music/utils.ts resolvePicUrl 注释）。
+    // 非字符串直接忽略：宁可这首歌这次不写封面，也不把坏数据固化进配置。
+    if (typeof update.picUrl === 'string') song.meta.picUrl = update.picUrl
   }
   // filePath 允许显式清空（传 null 或 ''）：文件被本地删除后需要清掉旧路径，
   // 否则播放链路会一直误判"已下载"而尝试读取不存在的文件。

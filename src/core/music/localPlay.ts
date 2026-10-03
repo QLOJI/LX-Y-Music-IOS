@@ -320,13 +320,14 @@ export const getPicUrl = async({
     try {
       if (await existsFile(target.filePath)) {
         const picPath = await readPic(target.filePath).catch(() => null)
-        if (picPath) return picPath.startsWith('/') ? `file://${picPath}` : picPath
+        if (typeof picPath === 'string' && picPath) return picPath.startsWith('/') ? `file://${picPath}` : picPath
       }
     } catch {}
   }
 
-  // 2. meta 缓存
-  if (!isRefresh && target.picUrl) return target.picUrl
+  // 2. meta 缓存（只认字符串：历史脏值 / 上游未解包的请求对象不能原样往外带，
+  //    否则会进 coverUrl.ts 内存缓存与 <Image url>，渲染期抛 undefined is not a function）
+  if (!isRefresh && typeof target.picUrl === 'string' && target.picUrl) return target.picUrl
 
   // 3. 内置平台逐平台回退（搜索结果自带 img 兜底）
   const candidates = await searchCandidates(target.name, target.singer)

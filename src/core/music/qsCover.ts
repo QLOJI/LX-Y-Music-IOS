@@ -37,7 +37,9 @@ const runWithLimit = async(fn: () => Promise<string>): Promise<string> => {
 }
 
 export const getCachedQsCover = (song: LX.Music.MusicInfoOnline): string => {
-  return qsCoverCache.get(`${song.name}|${song.singer}`) ?? ''
+  const cached = qsCoverCache.get(`${song.name}|${song.singer}`)
+  // 只认字符串（见 coverUrl.ts / utils.ts resolvePicUrl 注释：脏值进 <Image url> 会炸渲染）
+  return typeof cached === 'string' ? cached : ''
 }
 
 const withTimeout = async(promise: Promise<string>, ms: number, fallback: string): Promise<string> => {
@@ -53,7 +55,7 @@ const withTimeout = async(promise: Promise<string>, ms: number, fallback: string
 export const fetchQsCover = async(song: LX.Music.MusicInfoOnline): Promise<string> => {
   const key = `${song.name}|${song.singer}`
   const cached = qsCoverCache.get(key)
-  if (cached) return Promise.resolve(cached)
+  if (typeof cached === 'string' && cached) return Promise.resolve(cached)
   const inflight = qsCoverInflight.get(key)
   if (inflight) return inflight
   const task = runWithLimit(async() =>
@@ -71,6 +73,8 @@ export const fetchQsCover = async(song: LX.Music.MusicInfoOnline): Promise<strin
     ),
   )
     .then((url) => {
+      // getLocalPlayPicUrl 的类型标的是 string，运行期仍收口一次：非字符串当空（不入缓存、不外传）
+      if (typeof url !== 'string') return ''
       if (url) qsCoverCache.set(key, url)
       return url
     })

@@ -380,7 +380,7 @@ export const getPicUrl = async({
       if (targetExists) {
         try {
           const pic = await extractPic(targetFilePath)
-          if (pic) {
+          if (typeof pic === 'string' && pic) {
             const picUrl = pic.startsWith('/') ? `file://${pic}` : pic
             webDAVLog?.info('getPicUrl: extracted cover from audio', { picUrl })
 
@@ -398,7 +398,10 @@ export const getPicUrl = async({
         webDAVLog?.warn('getPicUrl: audio file not found in download dir', { targetFilePath })
       }
 
-      if (musicInfo.meta.picUrl) {
+      // 只认字符串：历史落盘的脏 meta.picUrl（音源 SDK getPic 未解包的请求对象）既不能拿去
+      // `.startsWith`（直接抛 undefined is not a function），也不能当封面返回出去。
+      // 脏值当「没有封面」，继续往下走在线匹配，命中后会把它覆盖成正常 URL。
+      if (typeof musicInfo.meta.picUrl === 'string' && musicInfo.meta.picUrl) {
         if (musicInfo.meta.picUrl.startsWith('file://')) {
           const picFilePath = musicInfo.meta.picUrl.replace('file://', '')
           const picExists = await existsFile(picFilePath).catch(() => false)
@@ -419,16 +422,21 @@ export const getPicUrl = async({
     }
 
     let pic = await readPic(musicInfo.meta.filePath).catch(() => null)
-    if (pic) {
+    if (typeof pic === 'string' && pic) {
       if (pic.startsWith('/')) pic = `file://${pic}`
       return pic
     }
 
-    if (musicInfo.meta.picUrl) return musicInfo.meta.picUrl
+    if (typeof musicInfo.meta.picUrl === 'string' && musicInfo.meta.picUrl) return musicInfo.meta.picUrl
   }
 
   try {
     const result = await getOnlineOtherSourcePicByLocal(musicInfo)
+    // 收口：result.url 只认字符串（上游 utils.ts resolvePicUrl 已收过一道，这里按「原样透传上游」
+    // 再兜一道）。非字符串既不能写进 meta（会落盘成 {"picUrl":{"promise":{}}} 这种脏数据），
+    // 也不能广播给列表页 / 当封面返回 —— 那条链路的终点是 <Image url> 的渲染期致命错误。
+    // 就地改 result.url：下游 updateWebDAVMusicMeta / webdavPicUpdated / return 三处写法不变。
+    if (typeof result.url !== 'string') result.url = ''
     webDAVLog?.info('getPicUrl: fetched online cover', { url: result.url })
     // 【第 25 轮】在线匹配到的封面写回歌曲 meta 并落盘（updateWebDAVMusicMeta → WebDAV 配置），
     // 即「将封面存入缓存」（用户原话）。与上面「已下载音频的内嵌封面」那条路径同口径

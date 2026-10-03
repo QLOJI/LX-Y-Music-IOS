@@ -43,7 +43,10 @@ const keyOf = (song: CoverSong): string =>
 
 export const getCachedCoverUrl = (song: CoverSong): string => {
   if (song.source === 'qs') return getCachedQsCover(song as LX.Music.MusicInfoOnline)
-  return coverCache.get(keyOf(song)) ?? ''
+  const cached = coverCache.get(keyOf(song))
+  // 只认字符串：脏值（例如音源 SDK getPic 没解包就返回的请求对象）绝不能从这里流回列表行，
+  // 否则会进 <Image url> 触发渲染期 TypeError（详见 utils.ts resolvePicUrl 注释）
+  return typeof cached === 'string' ? cached : ''
 }
 
 /**
@@ -77,6 +80,9 @@ export const fetchCoverUrl = async(
     getPicPath({ musicInfo: song as LX.Music.MusicInfo, isRefresh: options?.isRefresh === true }),
   )
     .then((url) => {
+      // getPicPath 的类型标的是 string，但运行期它会把上游（音源 SDK / 网盘 meta）拿到的值原样带出来：
+      // 非字符串一律按「没拿到封面」处理，既不入缓存也不往外传（见 utils.ts resolvePicUrl 注释）。
+      if (typeof url !== 'string') return ''
       if (url) coverCache.set(key, url)
       return url
     })
