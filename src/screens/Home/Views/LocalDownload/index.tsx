@@ -501,7 +501,9 @@ export default memo(() => {
                   {
                     borderWidth: StyleSheet.hairlineWidth,
                     borderColor: theme['c-border-background'],
-                    backgroundColor: theme['c-content-background'],
+                    // 【第 23 轮】批量选择浮动条纳入「和其他按钮一样（按钮透明度）」范围：
+                    // 与页头按钮 / 列表行同 token 同函数，改「按钮透明度」即跟随。
+                    backgroundColor: applyOpacity(theme['c-primary-background'], buttonOpacity),
                     // 悬浮在迷你播放器胶囊上方：胶囊 + tab 栏最高约到 safeAreaBottom + 150
                     bottom: 160 + safeAreaBottom,
                   },
