@@ -199,31 +199,45 @@ export default memo(() => {
         />
 
         <View style={{ opacity: isEnableWebdav ? 1 : 0.5 }}>
+          {/* 【第 23 轮】六个动作按钮两列网格对齐：每格 flexBasis 45% + flexGrow 1（同设置页
+              两列勾选网格的单元格几何），两格等宽 → 左右缘全部对齐；block 去掉并排右外边距。 */}
           <View style={styles.btnRow}>
-            <Button onPress={handleTestConnection} disabled={!isEnableWebdav || isTesting}>
-              {isTesting ? '测试中...' : '测试连接'}
-            </Button>
-            <Button onPress={handleSyncNow} disabled={!isEnableWebdav || isSyncing}>
-              {isSyncing ? '同步中...' : '立即同步歌单'}
-            </Button>
+            <View style={styles.btnCell}>
+              <Button block onPress={handleTestConnection} disabled={!isEnableWebdav || isTesting}>
+                {isTesting ? '测试中...' : '测试连接'}
+              </Button>
+            </View>
+            <View style={styles.btnCell}>
+              <Button block onPress={handleSyncNow} disabled={!isEnableWebdav || isSyncing}>
+                {isSyncing ? '同步中...' : '立即同步歌单'}
+              </Button>
+            </View>
           </View>
 
           <View style={styles.btnRow}>
-            <Button onPress={handleUpload} disabled={!isEnableWebdav || isUploading}>
-              {isUploading ? '上传中...' : '上传设置与音源'}
-            </Button>
-            <Button onPress={handleDownload} disabled={!isEnableWebdav || isDownloading}>
-              {isDownloading ? '下载中...' : '下载设置与音源'}
-            </Button>
+            <View style={styles.btnCell}>
+              <Button block onPress={handleUpload} disabled={!isEnableWebdav || isUploading}>
+                {isUploading ? '上传中...' : '上传设置与音源'}
+              </Button>
+            </View>
+            <View style={styles.btnCell}>
+              <Button block onPress={handleDownload} disabled={!isEnableWebdav || isDownloading}>
+                {isDownloading ? '下载中...' : '下载设置与音源'}
+              </Button>
+            </View>
           </View>
 
           <View style={styles.btnRow}>
-            <Button onPress={handleUploadLists} disabled={!isEnableWebdav || isUploadingLists}>
-              {isUploadingLists ? '上传中...' : '上传歌单'}
-            </Button>
-            <Button onPress={handleDownloadLists} disabled={!isEnableWebdav || isDownloadingLists}>
-              {isDownloadingLists ? '下载中...' : '下载歌单'}
-            </Button>
+            <View style={styles.btnCell}>
+              <Button block onPress={handleUploadLists} disabled={!isEnableWebdav || isUploadingLists}>
+                {isUploadingLists ? '上传中...' : '上传歌单'}
+              </Button>
+            </View>
+            <View style={styles.btnCell}>
+              <Button block onPress={handleDownloadLists} disabled={!isEnableWebdav || isDownloadingLists}>
+                {isDownloadingLists ? '下载中...' : '下载歌单'}
+              </Button>
+            </View>
           </View>
 
           <Text style={styles.lastSyncText} size={12} color={theme['c-font-label']}>
@@ -246,6 +260,12 @@ const styles = createStyle({
     gap: designSpacing.xs,
     marginTop: designSpacing.xs,
     marginBottom: designSpacing.sm,
+  },
+  // 【第 23 轮】按钮网格单元：flexBasis 45% + flexGrow 1 —— 行宽扣除 gap 后两格等分，
+  // 与 CheckBoxGrid 的单元格同几何（每行恰好两项、左右缘对齐）
+  btnCell: {
+    flexGrow: 1,
+    flexBasis: '45%',
   },
   lastSyncText: {
     marginTop: designSpacing.xs,
