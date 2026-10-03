@@ -18,6 +18,11 @@ import { SvgIcon } from '@/components/common/SvgIcon'
 import { useTheme } from '@/store/theme/hook'
 import { useSettingValue } from '@/store/setting/hook'
 import { applyOpacity } from '@/utils/colorOpacity'
+// 【第 25 轮】列表封面改为**逐行按需**（与其他歌曲列表同一套：core/music/coverUrl.ts 的
+// 缓存 + 并发上限队列）。此前本页在「进列表 / 扫描完 / 播放后」对全部歌曲跑一遍
+// fetchWebDAVPic 批量下载（4 worker 扫全表，325 首就是 325 次请求），且只认网盘内封面文件，
+// 不做在线匹配 —— 网盘里没有封面文件时列表永远是无封面占位（用户截图）。
+import useCoverUrl from '@/utils/hooks/useCoverUrl'
 import { useButtonRadius } from '@/utils/buttonRadius'
 import { confirmDialog, createStyle, toast, getRowInfo } from '@/utils/tools'
 import { LIST_ITEM_HEIGHT } from '@/config/constant'
@@ -28,7 +33,6 @@ import { useHorizontalMode } from '@/utils/hooks'
 import { usePlayMusicInfo } from '@/store/player/hook'
 import playerState from '@/store/player/state'
 import {
-  fetchWebDAVPic,
   getWebDAVConfig,
   listWebDAVFolders,
   saveWebDAVFilterPath,
@@ -106,6 +110,9 @@ const SongItem = memo(
     const buttonOpacity = useSettingValue('theme.buttonOpacity')
     // 「按钮圆角」：封面与图标按钮的行内覆盖（静态 borderRadius 原样保留作兜底）
     const buttonRadius = useButtonRadius()
+    // 行封面：meta.picUrl 优先，为空时按需动态获取（网盘内同名封面 → 本地缓存 → 已下载文件的
+    // 内嵌封面 → 在线匹配），结果带缓存与并发上限。只有渲染出来的行才会触发，不再全表扫。
+    const coverUrl = useCoverUrl(item)
     const moreButtonRef = useRef<TouchableOpacity>(null)
     const subText = item.singer || item.meta.filePath
     const sizeText = formatSize(item.meta.size)
@@ -130,22 +137,28 @@ const SongItem = memo(
         style={{
           ...styles.songItem,
           width: rowWidth,
-          // 播放中行高亮底色随「按钮透明度」淡出；只改颜色 alpha，不用容器 style.opacity
-          backgroundColor: isPlaying
-            ? applyOpacity(theme['c-primary-background-hover'], buttonOpacity)
-            : theme['c-content-background'],
-          borderColor: isPlaying
-            ? theme['c-primary-background-active']
-            : theme['c-border-background'],
+          // 【第 25 轮】卡片底色与边框**任何状态**都受「按钮透明度」控制。
+          // 此前只有播放中的那一行套了 applyOpacity，未播放行用的是不透明的
+          // theme['c-content-background'] —— 于是同一个列表里只有正在播的那张卡片是半透明的
+          // （用户：WebDAV 的歌曲栏背景透明度没有受到控制，点击播放后才有透明度）。
+          // 只改颜色 alpha，不用容器 style.opacity：否则文字与图标会跟着一起淡。
+          backgroundColor: applyOpacity(
+            isPlaying ? theme['c-primary-background-hover'] : theme['c-content-background'],
+            buttonOpacity,
+          ),
+          borderColor: applyOpacity(
+            isPlaying ? theme['c-primary-background-active'] : theme['c-border-background'],
+            buttonOpacity,
+          ),
         }}
       >
         <TouchableOpacity style={styles.songItemLeft} onPress={() => { onPress(item) }}>
           {/* 【第 24 轮】行内几何全部取 components/common/songRowStyles.ts：
               封面盒、标题字重/字号、副标题字号、⋮ 按钮都与其他歌曲列表同源（此前是本文件私有的一份） */}
           <View style={songRowStyles.sn}>
-            {item.meta.picUrl ? (
+            {coverUrl ? (
               <Image
-                url={item.meta.picUrl}
+                url={coverUrl}
                 style={[
                   songRowStyles.albumArt,
                   // 歌曲封面 54×54：按自身高度折算半高，行内覆盖「按钮圆角」
@@ -292,29 +305,6 @@ export default memo(() => {
     return Array.from(foldersMap.values()).sort((a, b) => a.path.localeCompare(b.path))
   }, [songs])
 
-  const syncSongsCover = useCallback(async(songList: LX.WebDAV.MusicInfo[]) => {
-    // 仅补充网盘内封面（快速直连下载到本地），不触发全平台搜索；
-    // 全平台封面由播放详情页按需获取。限制并发 4，避免批量下载风暴。
-    let index = 0
-    const workers = Array.from({ length: 4 }, async() => {
-      while (index < songList.length) {
-        const i = index++
-        const song = songList[i]
-        if (song.meta.picUrl) continue
-        try {
-          const picUrl = await fetchWebDAVPic(song)
-          if (picUrl) {
-            songList[i] = { ...song, meta: { ...song.meta, picUrl } }
-          }
-        } catch {
-          // ignore error
-        }
-      }
-    })
-    await Promise.all(workers)
-    setSongs([...songList])
-  }, [])
-
   const loadConfig = useCallback(async() => {
     return getWebDAVConfig().then(config => {
       setSelectedFolder(config.selectedFolder ?? null)
@@ -322,9 +312,8 @@ export default memo(() => {
       setSongs(songs)
       setScannedAt(config.scannedAt)
       setFilterPath(config.filterPath ?? null)
-      void syncSongsCover(songs)
     })
-  }, [syncSongsCover])
+  }, [])
 
   const handleSetFilterPath = useCallback((path: string | null) => {
     setFilterPath(path)
@@ -396,11 +385,12 @@ export default memo(() => {
           const config = await getWebDAVConfig()
           const updatedSongs = config.songs ?? []
           setSongs(updatedSongs)
-          void syncSongsCover(updatedSongs)
+          // 【第 25 轮】这里原来会对整份列表再跑一遍封面批量下载；已改为逐行按需（行内 useCoverUrl），
+          // 只要重新读一次配置即可把播放链路刚写回的封面/标签带进来。
         })()
       })
     },
-    [songs, syncSongsCover],
+    [songs],
   )
 
   const handlePlayLater = useCallback((info: WebDAVSelectInfo) => {
