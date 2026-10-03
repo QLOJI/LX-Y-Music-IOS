@@ -110,7 +110,7 @@ export default forwardRef<ListMusicSearchType, ListMusicSearchProps>(({ onScroll
         <View style={styles.itemName}>
           <Text numberOfLines={1}>{item.name}</Text>
           <Text style={styles.subName} numberOfLines={1} size={12} color={theme['c-font-label']}>
-            {item.singer} ({item.meta.albumName})
+            {item.singer}{item.meta?.albumName ? ` (${item.meta.albumName})` : ''}
           </Text>
         </View>
         <Text style={styles.itemSource} size={12} color={theme['c-font-label']}>

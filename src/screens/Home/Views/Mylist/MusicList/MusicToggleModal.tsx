@@ -14,7 +14,7 @@ import Button from '@/components/common/Button'
 import { useSourceListI18n } from '@/components/SourceSelector'
 import { searchMusic } from '@/utils/musicSdk'
 import { toNewMusicInfo } from '@/utils'
-import { handleShowMusicSourceDetail, handleToggleSource } from './listAction'
+import { handleShowMusicSourceDetail, handleToggleSource, normalizeToggleInfo, getToggleSearchCandidates } from './listAction'
 import { BorderRadius, BorderWidths } from '@/theme'
 import playerState from '@/store/player/state'
 import { LIST_IDS } from '@/config/constant'
@@ -101,7 +101,7 @@ const ListItem = memo(({ info, onPlay, onOpenDetail }: {
           <Text color={theme['c-font']} size={12} numberOfLines={1}>
             {info.singer}
             {
-              info.meta.albumName ? (
+              info.meta?.albumName ? (
                 <Text color={theme['c-font-label']} size={12} numberOfLines={1}> ({info.meta.albumName})</Text>
               ) : null
             }
@@ -206,7 +206,7 @@ const SourceDetail = ({ info, onConfirm, toggleSource }: { info: LX.Music.MusicI
           <Text color={theme['c-font']} size={12} numberOfLines={1}>
             {info.singer}
             {
-              info.meta.albumName ? (
+              info.meta?.albumName ? (
                 <Text color={theme['c-font-label']} size={12} numberOfLines={1}> ({info.meta.albumName})</Text>
               ) : null
             }
@@ -229,7 +229,7 @@ const SourceDetail = ({ info, onConfirm, toggleSource }: { info: LX.Music.MusicI
                 <Text color={theme['c-font']} size={12} numberOfLines={1}>
                   {toggleSource.singer}
                   {
-                    toggleSource.meta.albumName ? (
+                    toggleSource.meta?.albumName ? (
                       <Text color={theme['c-font-label']} size={12} numberOfLines={1}> ({toggleSource.meta.albumName})</Text>
                     ) : null
                   }
@@ -271,7 +271,7 @@ const SourceDetail = ({ info, onConfirm, toggleSource }: { info: LX.Music.MusicI
             <Text color={theme['c-font']} size={12} numberOfLines={1}>
               {info.singer}
               {
-                info.meta.albumName ? (
+                info.meta?.albumName ? (
                   <Text color={theme['c-font-label']} size={12} numberOfLines={1}> ({info.meta.albumName})</Text>
                 ) : null
               }
@@ -294,7 +294,7 @@ const SourceDetail = ({ info, onConfirm, toggleSource }: { info: LX.Music.MusicI
                   <Text color={theme['c-font']} size={12} numberOfLines={1}>
                     {toggleSource.singer}
                     {
-                      toggleSource.meta.albumName ? (
+                      toggleSource.meta?.albumName ? (
                         <Text color={theme['c-font-label']} size={12} numberOfLines={1}> ({toggleSource.meta.albumName})</Text>
                       ) : null
                     }
@@ -350,27 +350,46 @@ const Modal = forwardRef<ModalType, {}>((props, ref) => {
     if (isPlaying) void playNext()
   }, [])
 
-  const loadData = useCallback((selectInfo: SelectInfo = infoRef.current) => {
+  const loadData = useCallback((selectInfo?: SelectInfo) => {
+    // Empty 的「重新加载」把点击事件当参数传进来（原来会读 event.musicInfo.name 直接抛 TypeError），
+    // 这里只认带 musicInfo 的调用，其余一律回落到当前弹窗的条目
+    const target = selectInfo?.musicInfo ? selectInfo : infoRef.current
     setSourceInfo({ sourceInfo: [], lists: {}, loading: true, error: false })
-    searchMusic({
-      name: selectInfo.musicInfo.name,
-      singer: selectInfo.musicInfo.singer,
-      source: '',
-    }).then((result: Array<{ source: LX.OnlineSource, list: LX.Music.MusicInfoOnline[] }>) => {
+    // 【第 31 轮】本地 / 下载条目的歌名歌手是从文件名派生的（可能拆反、可能为空），
+    // 按候选顺序逐组搜索，上一组一个结果都没有才试下一组；
+    // 在线歌曲只有一组候选，行为与本轮之前完全一致。
+    const candidates = getToggleSearchCandidates(target.musicInfo)
+    if (!candidates.length) {
+      setSourceInfo({ sourceInfo: [], lists: {}, loading: false, error: false })
+      return
+    }
+    const searchNext = (index: number): Promise<void> => {
+      const candidate = candidates[index]
+      return searchMusic({
+        name: candidate.name,
+        singer: candidate.singer,
+        source: '',
+      }).then((result: Array<{ source: LX.OnlineSource, list: LX.Music.MusicInfoOnline[] }>) => {
+        if (isUnmountedRef.current) return
+        const tags: LX.OnlineSource[] = []
+        const lists: Partial<Record<LX.OnlineSource, LX.Music.MusicInfoOnline[]>> = {}
+        for (const s of result) {
+          // toNewMusicInfo 缺 songmid/source 时返回 null，不过滤会在列表渲染时炸
+          const list = s.list.map(info => toNewMusicInfo(info)).filter(Boolean) as LX.Music.MusicInfoOnline[]
+          if (!list.length) continue
+          tags.push(s.source)
+          lists[s.source] = list
+        }
+        if (!tags.length && index + 1 < candidates.length) return searchNext(index + 1)
+        setSourceInfo({ sourceInfo: tags, lists, loading: false, error: false })
+        if (tags.length) setSource(tags[0])
+      })
+    }
+    void searchNext(0).catch(() => {
       if (isUnmountedRef.current) return
-      const tags: LX.OnlineSource[] = []
-      const lists: Partial<Record<LX.OnlineSource, LX.Music.MusicInfoOnline[]>> = {}
-      for (const s of result) {
-        tags.push(s.source)
-        lists[s.source] = s.list.map(s => toNewMusicInfo(s) as LX.Music.MusicInfoOnline)
-      }
-      setSourceInfo({ sourceInfo: tags, lists, loading: false, error: false })
-      if (tags.length) setSource(tags[0])
-    }).catch(() => {
-      if (isUnmountedRef.current) return
-      setSourceInfo({ ...sourceInfo, error: true })
+      setSourceInfo({ sourceInfo: [], lists: {}, loading: false, error: true })
     })
-  }, [isUnmountedRef, sourceInfo])
+  }, [isUnmountedRef])
   useImperativeHandle(ref, () => ({
     show(info) {
       infoRef.current = info
@@ -406,7 +425,9 @@ const Modal = forwardRef<ModalType, {}>((props, ref) => {
               </>)
             : <Empty loading={sourceInfo.loading} error={sourceInfo.error} onReload={loadData} />
         }
-        <SourceDetail info={infoRef.current.musicInfo} onConfirm={confirmToggleSource} toggleSource={toggleSource} />
+        {/* 展示用规整条目（下载任务条目没有 meta，直接进 SourceDetail 会读 undefined.albumName 崩）；
+            confirmToggleSource 仍拿 infoRef.current 的**原始条目**去 handleToggleSource 定位旧项 */}
+        <SourceDetail info={normalizeToggleInfo(infoRef.current.musicInfo)} onConfirm={confirmToggleSource} toggleSource={toggleSource} />
       </View>
     </Dialog>
   )

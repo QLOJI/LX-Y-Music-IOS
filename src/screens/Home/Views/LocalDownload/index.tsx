@@ -18,7 +18,8 @@ import downloadActions from '@/store/download/action'
 import { mkdir, readDir, unlink, stat } from '@/utils/fs'
 import { sizeFormate } from '@/utils'
 import { designRadius, designSpacing, designTypography } from '@/theme/DesignTokens'
-import { useSafeAreaBottom, useBottomOverlayInset } from '@/store/common/hook'
+import { useBottomOverlayInset } from '@/store/common/hook'
+import { useAboveMiniPlayerBottom } from '@/utils/tabBarCollapse'
 import PageTopInset from '@/components/common/PageTopInset'
 import DetailPageTitle from '@/components/common/DetailPageTitle'
 import PillTabs from '@/components/common/PillTabs'
@@ -162,7 +163,9 @@ export default memo(() => {
   const buttonOpacity = useSettingValue('theme.buttonOpacity')
   const buttonRadius = useButtonRadius()
   const isHorizontal = useHorizontalMode()
-  const safeAreaBottom = useSafeAreaBottom()
+  // 【第 31 轮·图二】批量管理浮动条的落点：直接取迷你播放器顶边（见 useAboveMiniPlayerBottom
+  // 的完整说明）。此前这里是 `160 + safeAreaBottom` 的写死算式，改「Tab栏距离」就出现间距。
+  const aboveMiniPlayerBottom = useAboveMiniPlayerBottom()
   // 底部悬浮层（迷你播放器 + 底部 Tab + 安全区）统一避让高度
   const bottomInset = useBottomOverlayInset()
   const downloadPathSetting = useSettingValue('download.path')
@@ -504,8 +507,12 @@ export default memo(() => {
                     // 【第 23 轮】批量选择浮动条纳入「和其他按钮一样（按钮透明度）」范围：
                     // 与页头按钮 / 列表行同 token 同函数，改「按钮透明度」即跟随。
                     backgroundColor: applyOpacity(theme['c-primary-background'], buttonOpacity),
-                    // 悬浮在迷你播放器胶囊上方：胶囊 + tab 栏最高约到 safeAreaBottom + 150
-                    bottom: 160 + safeAreaBottom,
+                    // 悬浮在迷你播放器胶囊上方：底边 = 播放器**顶边**（紧贴，零缝）。
+                    // 【第 31 轮·图二】此前是 `160 + safeAreaBottom` 的写死值（按标准字体、
+                    // 滑块满程凑出来的「胶囊 + tab 栏最高处」），用户在主题设置里改小
+                    // 「Tab栏距离」后播放器整体下移，这里不动 ⇒ 裂出间距。现在改取
+                    // useAboveMiniPlayerBottom()（与 PlayerBar 落点同式，含滑块/字体/横屏/收起态）。
+                    bottom: aboveMiniPlayerBottom,
                   },
                 ]}
               >

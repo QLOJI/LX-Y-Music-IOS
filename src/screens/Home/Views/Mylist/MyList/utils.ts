@@ -53,13 +53,11 @@ export const sortListMusicInfo = (
             break
           case 'album':
             list.sort((a, b) => {
-              if (a.meta.albumName == null) {
-                return b.meta.albumName == null ? 0 : -1
-              } else {
-                return b.meta.albumName == null
-                  ? 1
-                  : a.meta.albumName.localeCompare(b.meta.albumName, localeId)
-              }
+              // 列表里可能混着下载任务条目（没有 meta），meta 可选链兜底
+              const aAlbum = a.meta?.albumName
+              const bAlbum = b.meta?.albumName
+              if (aAlbum == null) return bAlbum == null ? 0 : -1
+              return bAlbum == null ? 1 : aAlbum.localeCompare(bAlbum, localeId)
             })
             break
         }
@@ -89,13 +87,11 @@ export const sortListMusicInfo = (
             break
           case 'album':
             list.sort((a, b) => {
-              if (a.meta.albumName == null) {
-                return b.meta.albumName == null ? 0 : 1
-              } else {
-                return b.meta.albumName == null
-                  ? -1
-                  : b.meta.albumName.localeCompare(a.meta.albumName, localeId)
-              }
+              // 同「up」：下载任务条目没有 meta，排序不能直接解引用
+              const aAlbum = a.meta?.albumName
+              const bAlbum = b.meta?.albumName
+              if (aAlbum == null) return bAlbum == null ? 0 : 1
+              return bAlbum == null ? -1 : bAlbum.localeCompare(aAlbum, localeId)
             })
             break
         }

@@ -101,7 +101,7 @@ const ListItem = memo(
           <View style={styles.listItemAlbum}>
             <Text color={theme['c-font']} size={12} numberOfLines={1}>
               {info.musicInfo.singer}
-              {info.musicInfo.meta.albumName ? (
+              {info.musicInfo.meta?.albumName ? (
                 <Text color={theme['c-font-label']} size={12} numberOfLines={1}>
                   {' '}
                   ({info.musicInfo.meta.albumName})

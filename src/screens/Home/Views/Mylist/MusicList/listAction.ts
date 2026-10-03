@@ -121,7 +121,10 @@ export const searchListMusic = (list: LX.Music.MusicInfo[], text: string) => {
       fullMathNameResults.add(mInfo)
     } else if (mInfo.singer?.toLowerCase().includes(textLower)) {
       fullMathSingerResults.add(mInfo)
-    } else if (mInfo.meta.albumName?.toLowerCase().includes(textLower)) {
+    } else if (mInfo.meta?.albumName?.toLowerCase().includes(textLower)) {
+      // 【第 31 轮】meta 可能是 undefined：试听列表里混着下载任务条目 / 本地条目（见
+      // normalizeToggleInfo 的说明），搜索框每敲一个字都会遍历全表，这里不兜住就是
+      // 「一打字整个列表页崩」。
       fullMathAlbumResults.add(mInfo)
     }
   }
@@ -136,7 +139,7 @@ export const searchListMusic = (list: LX.Music.MusicInfo[], text: string) => {
   for (const mInfo of list) {
     if (fullMathNameResults.has(mInfo) || fullMathSingerResults.has(mInfo) || fullMathAlbumResults.has(mInfo)) continue
 
-    const str = `${mInfo.name}${mInfo.singer}${mInfo.meta.albumName ? mInfo.meta.albumName : ''}`
+    const str = `${mInfo.name}${mInfo.singer}${mInfo.meta?.albumName ? mInfo.meta.albumName : ''}`
     if (rxp.test(str)) result.push(mInfo)
   }
 
@@ -146,7 +149,7 @@ export const searchListMusic = (list: LX.Music.MusicInfo[], text: string) => {
     sortInsert(sortedList, {
       num: similar(
         text,
-        `${mInfo.name}${mInfo.singer}${mInfo.meta.albumName ? mInfo.meta.albumName : ''}`,
+        `${mInfo.name}${mInfo.singer}${mInfo.meta?.albumName ? mInfo.meta.albumName : ''}`,
       ),
       data: mInfo,
     })
@@ -185,6 +188,108 @@ export const handleDislikeMusic = async(musicInfo: SelectInfo['musicInfo']) => {
   if (hasDislike(playerState.playMusicInfo.musicInfo)) {
     void playNext(true)
   }
+}
+
+/**
+ * 【第 31 轮】把试听列表里的条目规整成「换源弹窗能安全渲染 + 能拿去搜」的 musicInfo。
+ *
+ * 崩溃现场（用户真机报错截图，2026-10-03 23:40）：
+ *   `Fatal: TypeError Cannot read property 'albumName' of undefined`，栈落在 SourceDetail。
+ * 试听列表（LIST_IDS.DEFAULT）里混着**不是标准 MusicInfo** 的条目：
+ *   · 下载任务条目：LocalDownload 的 taskToPlayItem 是
+ *     `{ id, isComplate, status, progress, metadata: { musicInfo, url, ext, fileName, filePath } }`，
+ *     根本没有 name / singer / meta —— 播放「本地与下载」里的下载歌曲后，试听列表里的就是它，
+ *     选中换源时 SourceDetail 读 info.meta.albumName 直接炸；
+ *   · 本地文件条目：localFileToPlayItem 有 meta，但 name/singer 是从文件名派生的
+ *     （见 parseFileName），换源时按原样搜常常什么都搜不到。
+ * 这里把「内层真正的 musicInfo」（下载任务条目在 metadata.musicInfo）抠出来，补齐
+ * name/singer/meta 三个换源弹窗必经字段。**只用于展示与搜索**：替换列表项必须仍用原始
+ * 条目（handleToggleSource 拿 musicInfo.id 在列表里找旧项，用内层 id 会找不到）。
+ */
+export const normalizeToggleInfo = (info: LX.Music.MusicInfo | undefined | null): LX.Music.MusicInfo => {
+  const raw = (info ?? {}) as any
+  // 下载任务条目：真正的 musicInfo 藏在 metadata.musicInfo（LocalDownload/taskToPlayItem）
+  const inner = (raw.metadata?.musicInfo ?? raw.musicInfo ?? raw) as any
+  const meta = (inner.meta ?? raw.meta ?? {}) as any
+  return {
+    ...inner,
+    id: inner.id ?? raw.id ?? '',
+    name: inner.name ?? raw.name ?? '',
+    singer: inner.singer ?? raw.singer ?? '',
+    source: inner.source ?? raw.source ?? '',
+    meta: {
+      ...meta,
+      albumName: meta.albumName ?? '',
+      // 本地/下载条目的路径分散在 meta.filePath / meta.songId / metadata.filePath 三处，统一补齐
+      filePath: meta.filePath ?? raw.filePath ?? raw.metadata?.filePath ?? meta.songId,
+    },
+  } as LX.Music.MusicInfo
+}
+
+/** 【第 31 轮】条目是不是「本地 / 下载」来的（歌名歌手由文件名派生，换源搜索要换几种组合试）。
+ *  判据与 local.ts 的 isWebDAVMusic 无关：这里只看 source 与有没有文件路径。 */
+const isLocalToggleInfo = (info: LX.Music.MusicInfo | undefined | null): boolean => {
+  const raw = (info ?? {}) as any
+  const inner = (raw.metadata?.musicInfo ?? raw.musicInfo ?? raw) as any
+  if ((inner.source ?? raw.source) === 'local') return true
+  const meta = (inner.meta ?? raw.meta ?? {}) as any
+  return !!(meta.songId || meta.filePath || raw.filePath || raw.metadata?.filePath)
+}
+
+/** 条目的文件名（去扩展名）：meta.filePath / meta.songId / metadata.filePath 三处取一处 */
+const getToggleFileBaseName = (info: LX.Music.MusicInfo | undefined | null): string => {
+  const raw = (info ?? {}) as any
+  const inner = (raw.metadata?.musicInfo ?? raw.musicInfo ?? raw) as any
+  const meta = (inner.meta ?? raw.meta ?? {}) as any
+  const path = String(meta.filePath ?? raw.filePath ?? raw.metadata?.filePath ?? meta.songId ?? '')
+  const base = path.split('/').pop() ?? ''
+  const dot = base.lastIndexOf('.')
+  return (dot > 0 ? base.slice(0, dot) : base).trim()
+}
+
+/**
+ * 【第 31 轮】换源搜索的候选组合（按优先级排序，调用方按顺序试到有结果为止）。
+ *
+ * 在线歌曲只有一组候选（就是它自己的歌名/歌手），行为与本轮之前完全一致；
+ * 本地/下载歌曲来自文件名，parseFileName 把「歌手 - 歌名」拆成 name=左、singer=右，
+ * 而中文文件名「歌名 - 歌手」和「歌手 - 歌名」两种写法都常见 —— 拆反的时候按原样搜
+ * 什么都搜不到（用户这一轮报的「local 歌曲不能换源，要能按歌名换源」）。
+ * 候选顺序与 core/music/local.ts 的 getOtherSourceByLocal（歌词/封面兜底那条链路）同思路：
+ *   ① 原样 → ② 歌名歌手对调 → ③ 文件名整段/两种拆法 → ④ 只按歌名搜（歌手字段常是错的，
+ *   带着它会把正确结果筛掉）。上限 5 组，调用方只在上一组**一个结果都没有**时才试下一组。
+ */
+export const getToggleSearchCandidates = (info: LX.Music.MusicInfo | undefined | null): Array<{ name: string, singer: string }> => {
+  const normalized = normalizeToggleInfo(info)
+  const name = (normalized.name ?? '').trim()
+  const singer = (normalized.singer ?? '').trim()
+  if (!isLocalToggleInfo(info)) return [{ name, singer }]
+
+  const candidates: Array<{ name: string, singer: string }> = []
+  const push = (n: string, s: string) => {
+    const nn = n.trim()
+    if (!nn) return
+    if (candidates.some(c => c.name === nn && c.singer === s.trim())) return
+    candidates.push({ name: nn, singer: s.trim() })
+  }
+  // ① 原样（文件名是「歌名 - 歌手」的批次）
+  push(name, singer)
+  // ② 对调（文件名是「歌手 - 歌名」的批次）
+  if (singer) push(singer, name)
+  // ③ 文件名整段派生的组合（去扩展名；带 '-' 时两种拆法都试）
+  const fileBase = getToggleFileBaseName(info)
+  if (fileBase && fileBase !== name) {
+    if (fileBase.includes('-')) {
+      const [left, ...rest] = fileBase.split('-')
+      const right = rest.join('-').trim()
+      if (right) {
+        push(left, right)
+        push(right, left)
+      } else push(fileBase, '')
+    } else push(fileBase, '')
+  }
+  // ④ 只按歌名搜（最后兜底）
+  push(name, '')
+  return candidates.slice(0, 5)
 }
 
 export const handleToggleSource = async(listId: string, musicInfo: LX.Music.MusicInfo, toggleMusicInfo: LX.Music.MusicInfoOnline) => {

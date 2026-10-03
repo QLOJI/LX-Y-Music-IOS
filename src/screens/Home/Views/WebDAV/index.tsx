@@ -63,6 +63,9 @@ import MetadataEditModal from '@/components/MetadataEditModal'
 import {
   handleFetchWebDAVPicFromOnline,
   handleWebDAVRemove,
+  // 【第 31 轮】行内封面加载失败的单曲自愈走「加法式」helper（只作废这一首的缓存与
+  // 失败备忘、单取一次），不再借道 prefetchCovers —— 后者会清空轮次把在飞的整轮巡检掐死。
+  refreshWebdavCover,
 } from './WebDAVListAction'
 // 【第 30 轮】本页的下载入口（⋮ 菜单「下载」/ 头部「扫描并下载」）统一走下载管理器：
 // 与「我的 / 歌单 / 搜索结果 / 播放列表」里的下载按钮完全同一条路径（任务列表可见、有进度、
@@ -439,6 +442,16 @@ export default memo(() => {
       setSongs(songs)
       setScannedAt(config.scannedAt)
       setFilterPath(config.filterPath ?? null)
+      // 【第 31 轮·图一】「进列表」也按强制刷新处理：与点扫描 / 下拉刷新同一个口径。
+      // 用户需求原文：「进入 WebDAV 歌单界面也是会刷新该列表下所有歌曲的在线封面」。
+      // 第 30 轮只把扫描与下拉接上了 force（见上面 ③④），而**入口这条路**（第 30 轮图六加的
+      // 「每次切页都 loadConfig」）没接：进列表走的这次 prefetchCovers 里 isRefresh = false，
+      // 内存里已有封面结果的歌会被 getCachedCoverUrl 挡在门外（第 30 轮那条注释管的就是这个），
+      // 于是「进来看到的还是灰占位 / 老封面」照旧复现。置位后本次巡检不看内存缓存、
+      // 并把 isRefresh 透传到在线源复核「未更新」的封面。
+      // 请求量不变：仍由分批（每批 20）+ coverUrl.ts 的 4 并发全局队列 + local.ts 的 2 并发
+      // 搜索闸收口；拿到手的 URL 已缓存的会覆盖写回，不额外放大并发。
+      forceCoverRefresh.current = true
       prefetchCovers(songs)
     })
   }, [prefetchCovers])
@@ -612,7 +625,12 @@ export default memo(() => {
   // 【第 29 轮】行内封面加载失败的自愈 —— 巡检之外的另一半「时刻关注」：
   // 远程封面（http(s)）没法在巡检里逐个探活，但真的挂了时 Image 一定会走到 onError。
   // 做法：作废内存缓存 → 清掉这一行状态里的 picUrl（行内 useCoverUrl 才会重新走 fetchCoverUrl）
-  // → 交给 prefetchCovers([song]) 重查（页面里 fetchCoverUrl 的调用点仍只有巡检那一处）。
+  // → 交给 WebDAVListAction.refreshWebdavCover 重取这一首。
+  // 【第 31 轮】重取入口从 prefetchCovers([song]) 换成 refreshWebdavCover(song)：
+  // 前者是**整轮**巡检的入口（clear 试过名单 + 清空全部失败备忘 + 轮次 +1），在巡检推进
+  // 过程中被行内失败触发时，会把**正在飞的那一轮**判成过期而整体中止 —— 一首歌的封面
+  // 加载失败就能掐死后面所有歌的封面补全（用户这一轮报的「WebDAV 还是存在不自动加载
+  // 在线封面」的另一半成因）。后者是加法式单曲补齐，不碰轮次、不清别人进度。
   // 同一行 + 同一个 URL 只自愈一次：否则「换来的封面又挂 → 再失败 → 再换」会变成死循环。
   const coverErrorRetriedKeys = useRef(new Set<string>())
   const handleCoverError = useCallback((song: LX.WebDAV.MusicInfo, url: string) => {
@@ -620,13 +638,19 @@ export default memo(() => {
     if (coverErrorRetriedKeys.current.has(key)) return
     coverErrorRetriedKeys.current.add(key)
     webDAVLog.warn('handleCoverError: cover load failed, retrying once', { musicId: song.id, url })
-    invalidateCoverCache(song)
-    const target = { ...song, meta: { ...song.meta, picUrl: '' } }
+    // 行内状态先清成空占位（行内 useCoverUrl 才会重新走 fetchCoverUrl）
     setSongs(prevSongs => prevSongs.map(item =>
       item.id === song.id ? { ...item, meta: { ...item.meta, picUrl: '' } } : item,
     ))
-    prefetchCovers([target])
-  }, [prefetchCovers])
+    // 单曲自愈：作废这一首的内存缓存与失败备忘后重取一次；拿到新封面立刻推回列表状态
+    // （fetchCoverUrl 失败返回空串，空串不动状态，保持空占位）。
+    void refreshWebdavCover(song).then((newPicUrl) => {
+      if (!newPicUrl) return
+      setSongs(prevSongs => prevSongs.map(item =>
+        item.id === song.id ? { ...item, meta: { ...item.meta, picUrl: newPicUrl } } : item,
+      ))
+    })
+  }, [])
 
   const handleEditMetadata = useCallback((info: WebDAVSelectInfo) => {
     selectedMusicInfoRef.current = info.musicInfo
@@ -738,6 +762,8 @@ export default memo(() => {
   // 的话，第二次之后进来页面一行都不跑，新缺的封面（比如播放链路/自愈清掉的那几张）永远等不到
   // 巡检。惰性挂载发生在导航事件之后一帧，所以「首次进入」由挂载 effect 负责、这条只管后续切换，
   // 两条不重不漏。prefetchCovers 内部按列表顺序入队、每批 20 首推进，天然是「由上到下秒加载」。
+  // 【第 31 轮·图一】这两条入口现在都走 loadConfig，而 loadConfig 会置位 forceCoverRefresh ——
+  // 即「进列表」按强制刷新处理（用户需求：进入 WebDAV 歌单界面也要刷新该列表下所有歌曲的在线封面）。
   useEffect(() => {
     const handleNavChange = (id: string) => {
       if (id !== 'nav_webdav') return

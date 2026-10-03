@@ -7,6 +7,8 @@ import { updateListMusics, addListMusics } from '@/core/list'
 import { webDAVLog } from '@/core/webdavMusic/logger'
 import { readPic, readMetadata } from '@/utils/localMediaMetadata'
 import { handleGetOnlinePicUrl } from '@/core/music'
+import { fetchCoverUrl, invalidateCoverCache } from '@/core/music/coverUrl'
+import { clearWebdavCoverMiss } from '@/core/music/local'
 import { LIST_IDS } from '@/config/constant'
 
 
@@ -467,6 +469,38 @@ export const handleWebDAVDownload = async(
   }
 
   return undefined
+}
+
+/**
+ * 【第 31 轮】单曲封面自愈（列表行内 onError 的落点）。
+ *
+ * 与整表巡检（WebDAV/index.tsx 的 prefetchCovers）严格分工：
+ *   - prefetchCovers 是**整轮**的入口：它一进来就 `prefetchedCoverIds.current.clear()`、
+ *     `clearWebdavCoverMisses()`（清空全部失败备忘）、并把 `coverSweepToken` 轮次 +1 ——
+ *     任何一次调用都会让**正在飞的那一轮**整表巡检判定为「上一轮、已过期」而整体中止。
+ *     所以它绝不能出现在单曲自愈路径上：某一行封面加载失败（远程图 404 / 本地图被系统清掉）
+ *     就会把后面所有歌的封面补全一起掐死 —— 观感正是用户这一轮报的
+ *     「WebDAV 还是存在不自动加载在线封面的情况」。
+ *   - 本函数是**加法式**的：只作废这一首的内存缓存与失败备忘，单独重取一次封面。
+ *     不碰轮次、不清别人的进度、不打断任何在飞请求（prefetchCovers 只对**自己**新起的
+ *     那一轮负责，行内自愈是并行的单点补齐）。
+ *   - 传空 picUrl 是刻意的：local.ts 的封面分发见到 picUrl 就直接用，清空后才会走
+ *     「在线封面兜底搜索」这条真正能救回封面的路（同 index.tsx 行内自愈原来的做法）。
+ *   - 封面命中后的写回与广播（updateWebDAVMusicMeta + webdavPicUpdated）由
+ *     fetchCoverUrl → getPicPath 内部完成；返回值交给调用方即时更新行状态。
+ */
+export const refreshWebdavCover = async(
+  song: LX.WebDAV.MusicInfo,
+): Promise<string> => {
+  webDAVLog.info('refreshWebdavCover: retry single cover', { musicId: song.id })
+  invalidateCoverCache(song)
+  // 只删这一首的失败备忘：整表清空会把其他歌这一轮刚记下的「搜不到」一起抹掉，
+  // 之后每一行都会重发已经确认查不到的搜索（第 28 轮的搜索风暴就是这么回来的）。
+  clearWebdavCoverMiss(song)
+  const target = { ...song, meta: { ...song.meta, picUrl: '' } }
+  const url = await fetchCoverUrl(target, { isRefresh: true })
+  if (!url) webDAVLog.warn('refreshWebdavCover: still missing', { musicId: song.id })
+  return url
 }
 
 /**
