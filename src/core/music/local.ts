@@ -12,7 +12,7 @@ import {
 } from './utils'
 import { getLocalFilePath } from '@/utils/music'
 import { readLyric, readPic } from '@/utils/localMediaMetadata'
-import { stat, existsFile, readDir, readFile } from '@/utils/fs'
+import { unlink, stat, existsFile, readDir, readFile } from '@/utils/fs'
 import { searchMusic } from '@/utils/musicSdk'
 import { toNewMusicInfo } from '@/utils'
 import settingState from '@/store/setting/state'
@@ -33,6 +33,56 @@ const loadWebDAVModule = async() => {
     webDAVLog = logger.webDAVLog
   }
   return webDAVModule
+}
+
+/**
+ * 【第 28 轮】WebDAV 在线封面兜底搜索的并发闸 + 会话内失败备忘。
+ *
+ * 第 27 轮给 WebDAV 加的封面兜底是「一首歌一次跨平台搜索」，但封面分支的调用方是
+ * **列表的每一行**（行挂载就会请求一次封面）。325 首的列表一进页面就等于瞬间发起
+ * 几百次 findMusic，用户的日志里 17:25:14 那一片 `getOnlineOtherSourcePicByLocal failed`
+ * 就是这场风暴（而且失败不记录，滚动一次就重来一轮）。
+ * 这里加两道闸：
+ *   ① 最多 2 个搜索在飞，其余排队 —— 把「几百并发」压成两条流水线；
+ *   ② 本次会话内搜过且没结果的 歌名|歌手 记下来，不再重试（上限 300 条，满了整体清空重来）。
+ * 不重试是刻意的取舍：失败多半是搜索源本身没这首歌或超时，连点没意义；
+ * 用户想要单曲重试还有 ⋮ 菜单「在线封面」，那条路（handleFetchWebDAVPicFromOnline）
+ * 不经过这里的备忘，随时可重试。
+ */
+const WEBDAV_COVER_SEARCH_CONCURRENCY = 2
+const WEBDAV_COVER_MISS_CACHE_MAX = 300
+let webdavCoverSearchActive = 0
+const webdavCoverSearchQueue: Array<() => void> = []
+const webdavCoverSearchMisses = new Set<string>()
+
+const acquireWebdavCoverSearch = () => new Promise<void>((resolve) => {
+  if (webdavCoverSearchActive < WEBDAV_COVER_SEARCH_CONCURRENCY) {
+    webdavCoverSearchActive++
+    resolve()
+  } else {
+    webdavCoverSearchQueue.push(() => {
+      webdavCoverSearchActive++
+      resolve()
+    })
+  }
+})
+
+const releaseWebdavCoverSearch = () => {
+  const next = webdavCoverSearchQueue.shift()
+  if (next) {
+    // 名额直接转交给排队者，活跃计数保持不减（避免中间有别的搜索插队）
+    next()
+  } else {
+    webdavCoverSearchActive--
+  }
+}
+
+const getWebdavCoverMissKey = (musicInfo: LX.Music.MusicInfoLocal) =>
+  `${musicInfo.name ?? ''}|${musicInfo.singer ?? ''}`
+
+const markWebdavCoverMiss = (musicInfo: LX.Music.MusicInfoLocal) => {
+  if (webdavCoverSearchMisses.size >= WEBDAV_COVER_MISS_CACHE_MAX) webdavCoverSearchMisses.clear()
+  webdavCoverSearchMisses.add(getWebdavCoverMissKey(musicInfo))
 }
 
 const getOtherSourceByLocal = async <T>(
@@ -165,15 +215,25 @@ export const getMusicUrl = async({
   const isWebDAV = 'webdav' in musicInfo.meta && (musicInfo.meta as any).webdav === true
   if (isWebDAV) {
     const webDAVMusicInfo = musicInfo as LX.WebDAV.MusicInfo
+    const module = await loadWebDAVModule()
     // 用户手动下载的文件优先（离线可播）
     if (webDAVMusicInfo.meta.filePath) {
-      const localExists = await existsFile(webDAVMusicInfo.meta.filePath).catch(() => false)
-      if (localExists) return webDAVMusicInfo.meta.filePath
+      // 【第 28 轮】这里原来只 existsFile 一下 —— 下载中断/取消留下的半截文件永远是 true，
+      // 于是每次点播都把这个坏文件直接交给播放器（「点了没反应/播一下就停」），而且因为
+      // 就地 return，连下面那行「downloaded to local for playback」都不会打，日志里一片安静。
+      // 现在按字节数判定：半截的删掉，交给下面的预下载重新拿一份完整的。
+      const fileState = await module.getWebDAVFileState(webDAVMusicInfo.meta.filePath, webDAVMusicInfo.meta.size)
+      if (fileState === 'complete') return webDAVMusicInfo.meta.filePath
+      if (fileState === 'incomplete') {
+        webDAVLog?.warn('getMusicUrl: incomplete downloaded file removed, falling back to pre-download', {
+          filePath: webDAVMusicInfo.meta.filePath,
+        })
+        await unlink(webDAVMusicInfo.meta.filePath).catch(() => {})
+      }
     }
     // 未下载：整文件预下载到本地缓存后播放。
     // iOS 的 AVPlayer 无法可靠注入 Authorization/User-Agent，直链流式不稳定，
     // 改用 downloadFile 先下载再播放本地文件；失败即抛错，不走自定义源换源。
-    const module = await loadWebDAVModule()
     const localPath = await module.downloadWebDAVMusic(webDAVMusicInfo)
     webDAVLog?.info('getMusicUrl: WebDAV downloaded to local for playback', { musicId: musicInfo.id })
     return localPath
@@ -373,29 +433,44 @@ export const getPicUrl = async({
   // 匹配到的封面同样写回 meta 并落盘（updateWebDAVMusicMeta + webdavPicUpdated 广播），
   // 所以列表行立刻换图、下次进列表不再重发、试听列表也跟着显示。
   if (isWebDAVMusic) {
-    const matchedUrl = await getOtherSourceByLocal(musicInfo, async(otherSource) => {
-      const { url } = await getOnlineOtherSourcePicUrl({
-        musicInfos: [...otherSource],
-        onToggleSource: () => {},
-        isRefresh,
-      })
-      // 空串当失败处理，好让 getOtherSourceByLocal 继续用下一套 歌名/歌手 组合重试
-      if (!url) throw new Error('empty cover url')
-      return url
-    }).catch(() => '')
+    // 【第 28 轮】搜过没结果的歌（失败备忘）直接跳过搜索：列表是逐行要封面的，同一首"查过没有"的
+    // 歌反复重发 findMusic 搜索毫无意义（见文件上方 WEBDAV_COVER_SEARCH_* 注释）。
+    if (webdavCoverSearchMisses.has(getWebdavCoverMissKey(musicInfo))) {
+      webDAVLog?.info('getPicUrl: WebDAV cover search skipped (known miss)', { musicId: musicInfo.id })
+    } else {
+      // 【第 28 轮】没搜过的进并发闸，最多 WEBDAV_COVER_SEARCH_CONCURRENCY 个搜索同时飞
+      await acquireWebdavCoverSearch()
+      try {
+        const matchedUrl = await getOtherSourceByLocal(musicInfo, async(otherSource) => {
+          const { url } = await getOnlineOtherSourcePicUrl({
+            musicInfos: [...otherSource],
+            onToggleSource: () => {},
+            isRefresh,
+          })
+          // 空串当失败处理，好让 getOtherSourceByLocal 继续用下一套 歌名/歌手 组合重试
+          if (!url) throw new Error('empty cover url')
+          return url
+        }).catch(() => '')
 
-    if (matchedUrl) {
-      webDAVLog?.info('getPicUrl: WebDAV cover matched by online search', { url: matchedUrl })
-      void (async() => {
-        try {
-          const module = await loadWebDAVModule()
-          await module.updateWebDAVMusicMeta(musicInfo.id, { picUrl: matchedUrl })
-          appEvent.webdavPicUpdated(musicInfo.id, matchedUrl)
-        } catch (err) {
-          webDAVLog?.warn('getPicUrl: persist searched cover failed', { err })
+        if (matchedUrl) {
+          webDAVLog?.info('getPicUrl: WebDAV cover matched by online search', { url: matchedUrl })
+          void (async() => {
+            try {
+              const module = await loadWebDAVModule()
+              await module.updateWebDAVMusicMeta(musicInfo.id, { picUrl: matchedUrl })
+              appEvent.webdavPicUpdated(musicInfo.id, matchedUrl)
+            } catch (err) {
+              webDAVLog?.warn('getPicUrl: persist searched cover failed', { err })
+            }
+          })()
+          return matchedUrl
         }
-      })()
-      return matchedUrl
+
+        // 【第 28 轮】搜不到就记进备忘，本会话内不再为这首歌重发搜索（上限见 WEBDAV_COVER_MISS_CACHE_MAX）
+        markWebdavCoverMiss(musicInfo)
+      } finally {
+        releaseWebdavCoverSearch()
+      }
     }
 
     // 云盘（WebDAV）不走自定义源换源，搜索兜底也空就返回空

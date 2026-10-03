@@ -3,7 +3,7 @@ import { createClient, type FileStat } from 'webdav'
 import settingState from '@/store/setting/state'
 import { webDAVLog } from './logger'
 import { btoa } from 'react-native-quick-base64'
-import { downloadFile, existsFile, mkdir, unlink, temporaryDirectoryPath } from '@/utils/fs'
+import { downloadFile, existsFile, mkdir, stat, unlink, temporaryDirectoryPath } from '@/utils/fs'
 import { enforceCacheLimit } from '@/utils/nativeModules/cache'
 import { stringMd5 } from 'react-native-quick-md5'
 
@@ -258,6 +258,32 @@ export const getWebDAVAuthHeaders = (): Record<string, string> => {
   return headers
 }
 
+/**
+ * 【第 28 轮】本地文件到底是「没有」「半截」还是「完整」。
+ *
+ * 第 28 轮之前的判断一律是 existsFile —— 而 RNFS 的 downloadFile 是**直接写目标路径**的
+ * （不写临时文件再改名），下载中断、被取消、断网都会在原地留一个半截文件。
+ * 于是「路径上有东西」在四个地方都被当成「已下完」：
+ *   ① 播放：用户的已下载文件（local.ts getMusicUrl）
+ *   ② 播放：私有缓存里的那份（本文件 downloadWebDAVMusic）
+ *   ③ 菜单「下载」 ④ 扫描并下载（WebDAVListAction）
+ * 表现就是「点了没反应 / 播一下就停 / 再怎么点都不重新下」。这里统一成一处判断：
+ * 用 PROPFIND 报的 meta.size 校验实际字节数（留 1% 容差，避免服务端字节数与目录大小
+ * 差几十字节就来回重下）；拿不到期望大小就退回旧的「存在即完整」行为，不做更坏的假设。
+ */
+export type WebDAVFileState = 'missing' | 'incomplete' | 'complete'
+
+export const getWebDAVFileState = async(
+  filePath: string,
+  expectedSize?: number,
+): Promise<WebDAVFileState> => {
+  if (!await existsFile(filePath).catch(() => false)) return 'missing'
+  if (!expectedSize || expectedSize <= 0) return 'complete'
+  const info = await stat(filePath).catch(() => null)
+  if (!info || !info.isFile) return 'complete'
+  return info.size >= expectedSize * 0.99 ? 'complete' : 'incomplete'
+}
+
 // 播放/封面缓存目录（Caches，可被系统清理，不参与 iCloud 备份）。
 // 注意与 getWebDAVPrivateDirectory（用户手动下载目录，位于 Documents）区分：
 // 这里是流式播放自动预下载的临时缓存，可被系统回收；用户手动下载的文件要保留。
@@ -473,12 +499,26 @@ export const downloadWebDAVMusic = async(musicInfo: LX.WebDAV.MusicInfo): Promis
   // 播放器的是“编码后”路径，两者不一致导致播放器找不到文件、无法播放。
   const filePath = `${cacheDir}/${stringMd5(remotePath)}.${ext}`
 
-  if (await existsFile(filePath)) return filePath
+  // 【第 28 轮】半截缓存文件不能算「已缓存」：只 existsFile 的话，上次中断留下的半个 flac
+  // 会被当成缓存命中直接返回给播放器 —— 表现就是「点了没反应/播一下就停」。
+  // 另外缓存命中要单独打一行日志：调用方那行「downloaded to local for playback」在
+  // 命中缓存时也会照打（它只关心拿到本地路径），光看日志分不出这次到底下没下。
+  const cacheState = await getWebDAVFileState(filePath, musicInfo.meta.size)
+  if (cacheState === 'complete') {
+    webDAVLog.info('downloadWebDAVMusic: cache hit', { filePath })
+    return filePath
+  }
+  if (cacheState === 'incomplete') {
+    webDAVLog.warn('downloadWebDAVMusic: incomplete cache file removed, re-downloading', { filePath })
+    await unlink(filePath).catch(() => {})
+  }
 
   await mkdir(cacheDir)
   const downloadUrl = getWebDAVDownloadUrl(musicInfo)
   // 【第 26 轮】走统一下载阶梯（直下 → 解析 302 直链 → 抛错）。
-  // 「连接换直链」型服务器（rjml.xyz 这类）在这里第一次就成功；需要 302 的由第二级兜。
+  // 「连接换直链」型服务器通常在这里第一次就成功；需要跟随 302 的由第二级兜。
+  // （【第 28 轮】注释里原本写着用户自报的那台服务器域名，已删掉：交付物与源码里不落用户的
+  //   WebDAV 地址 / 账号信息，只保留现象级描述。）
   await downloadWebDAVFile(downloadUrl, filePath, { headers: getWebDAVAuthHeaders() })
 
   // 下载完成后按上限对全部应用缓存做 LRU 清理，避免缓存无限累积
