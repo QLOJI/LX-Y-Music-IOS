@@ -1,4 +1,4 @@
-import { memo, useState, useMemo, useRef } from 'react'
+import { memo, useState, useRef } from 'react'
 import { View, TouchableOpacity, ScrollView } from 'react-native'
 import ImageBackground from '@/components/common/ImageBackground'
 import Image from '@/components/common/Image'
@@ -34,7 +34,6 @@ export default memo(({ artist, onFollow: _onFollow, componentId }: Props) => {
   const buttonRadius = useButtonRadius()
   const statusBarHeight = useStatusbarHeight()
   const similarArtistsModalRef = useRef<SimilarArtistsModalType>(null)
-  const [isDescExpanded, setDescExpanded] = useState(false)
   const [isPreviewVisible, setPreviewVisible] = useState(false)
   const isFollowed = useIsWyArtistFollowed(artist.id)
 
@@ -74,12 +73,7 @@ export default memo(({ artist, onFollow: _onFollow, componentId }: Props) => {
     })
   }
 
-  const truncatedDesc = useMemo(() => {
-    if (!isDescExpanded && description.length > 75) {
-      return description.substring(0, 75) + '...'
-    }
-    return description
-  }, [description, isDescExpanded])
+  // 【第 30 轮·图十】原来的 truncatedDesc（75 字截断 + 点击展开）已删：整段直接可滑。
 
   return (
     <View style={{ paddingTop: statusBarHeight }}>
@@ -102,13 +96,14 @@ export default memo(({ artist, onFollow: _onFollow, componentId }: Props) => {
             </Text>
 
             {!!description && (
+              // 【第 30 轮·图十】歌手简介不再截断成「75 字 + ...」也不再需要点一下才展开：
+              // 整段直接放进这个定高（见 styles.descWrapper.maxHeight）的 ScrollView 里，
+              // 想看全就上下滑（显示滚动条给出「还能滑」的提示）。歌单简介同款，见 SonglistDetail。
               <View style={styles.descWrapper}>
-                <ScrollView nestedScrollEnabled={true}>
-                  <TouchableOpacity activeOpacity={0.8} onPress={() => { setDescExpanded(!isDescExpanded) }}>
-                    <Text size={designTypography.caption} color="rgba(255,255,255,0.82)">
-                      {truncatedDesc}
-                    </Text>
-                  </TouchableOpacity>
+                <ScrollView nestedScrollEnabled={true} showsVerticalScrollIndicator={true}>
+                  <Text size={designTypography.caption} color="rgba(255,255,255,0.82)">
+                    {description}
+                  </Text>
                 </ScrollView>
               </View>
             )}

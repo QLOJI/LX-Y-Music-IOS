@@ -26,10 +26,10 @@ import { LyricScrollLayout } from '@/utils/lyricScroll'
 import { audioClock } from '@/core/player/audioClock'
 import KaraokeLyric from '@/screens/PlayDetail/components/KaraokeLyric'
 import PlayLine, { type PlayLineType } from '@/screens/PlayDetail/components/PlayLine'
-// 播放页动效时长的统一来源（数值与背景见 lyricAnimation.ts）；
-// 例外：大歌词「换行停留 / 换行滑动」两个时长按需求 #1 直接对齐 REF 参考工程，
-// 以本文件下方的 LINE_CHANGE_HOLD_MS / LINE_CHANGE_GLIDE_REF_MS 定义（原因见其注释）。
-import { IDLE_RETURN_MS, OVERLAY_FADE_MS, getReturnDuration } from '@/screens/PlayDetail/lyricAnimation'
+// 播放页动效时长的统一来源（数值与背景见 lyricAnimation.ts）；大歌词的「换行停留 /
+// 换行滑动」两个时长也在那里（LINE_CHANGE_HOLD_MS / RETURN_TO_ACTIVE_MS），
+// 横竖屏与小歌词回位同源，本文件不再保留本地魔数。
+import { IDLE_RETURN_MS, LINE_CHANGE_HOLD_MS, OVERLAY_FADE_MS, RETURN_TO_ACTIVE_MS, getReturnDuration } from '@/screens/PlayDetail/lyricAnimation'
 
 type FlatListType = FlatListProps<Line>
 
@@ -186,8 +186,8 @@ export default () => {
   const scrollCancelRef = useRef<(() => void) | null>(null)
   // 连续滚动：rAF 目标 offset 不直接写入列表，而是让跟随值按固定时长/固定速率收敛到目标。
   // 逐字歌词无间隙切行、行高测量后的回正修正都是瞬时硬跳（长句换行后行高更大、跳变越明显），
-  // 平滑收敛把这些瞬跳变成一段平滑滑动（换行节奏见下方 LINE_CHANGE_HOLD_MS /
-  // LINE_CHANGE_GLIDE_REF_MS：停留 600ms + 滑动 600ms，对齐 REF），
+  // 平滑收敛把这些瞬跳变成一段平滑滑动（换行节奏见 LINE_CHANGE_HOLD_MS /
+  // RETURN_TO_ACTIVE_MS：停留 200ms + 滑动 600ms，与竖屏同源），
   // 消除换行长句切行时的顿挫感。
   const smoothOffsetRef = useRef(0)
   const lastWrittenOffsetRef = useRef(-1)
@@ -210,19 +210,18 @@ export default () => {
   const glideToRef = useRef(0)
   const glideStartTsRef = useRef(-1)
   // 换行节奏对齐 REF 参考工程（需求 #1「换行动画顺滑不生硬」，与竖屏同一套参数）：
-  //   REF 是「连续换行（diff==1）后先停留 600ms，再用 600ms 滑到新行」——
-  //   停留见 REF Horizontal/Lyric.tsx:244-258（diff==1 时 setTimeout(600) 后才 handleScrollToActive），
+  //   REF 是「连续换行（diff==1）后先停留，再用固定时长滑到新行」——
+  //   停留见 REF Horizontal/Lyric.tsx:244-258（diff==1 时 setTimeout 后才 handleScrollToActive），
   //   滑动见 REF Horizontal/Lyric.tsx:146（scrollTo(..., 600)）；非连续跳变则立即定位。
-  //   本工程此前是「换行当帧立即起滑、200ms 滑完」，没有停留段，节奏明显更急、更生硬。
+  // 【第 30 轮】停留时长从 REF 的 600ms 收到 lyricAnimation 的 LINE_CHANGE_HOLD_MS
+  //   （designMotion.quick，200）——用户报「逐词加载完到下一行，换行动画有很大延迟」，
+  //   延迟就是这段干等；滑动时长不动，仍是下面的 RETURN_TO_ACTIVE_MS，横竖屏同源。
   // ⚠️ 停留窗口锚定在【一串连续换行的第一行】，不是锚定最后一次换行：
-  //   串内后续换行只更新滑动目标、绝不重置 lineChangeTsRef。否则行间隔 <600ms 的快歌里
-  //   窗口会被每次换行续命、列表长时间不动（比原缺陷更糟）。REF 同样是「首个 600ms 到点
+  //   串内后续换行只更新滑动目标、绝不重置 lineChangeTsRef。否则行间隔小的快歌里
+  //   窗口会被每次换行续命、列表长时间不动（比原缺陷更糟）。REF 同样是「首个停留窗口到点
   //   即起滑，后续换行只改目标」，因此不会冻住。「新的一串」判据：距锚点已超过
   //   停留+滑动（即上一轮整周期已走完）。
-  //   这两个值刻意不放进 lyricAnimation.ts：那里的 LINE_CHANGE_GLIDE_MS 仍被小歌词
-  //   MiniLyric 引用，且是「全局动效放慢」定案的 designMotion.quick(200)；本次只对齐大歌词。
-  const LINE_CHANGE_HOLD_MS = 600
-  const LINE_CHANGE_GLIDE_REF_MS = 600
+  const LINE_CHANGE_GLIDE_REF_MS = RETURN_TO_ACTIVE_MS
   // lineChangeTsRef：当前这串连续换行的停留锚点（< 0 = 不在串内，直接平滑跟随）。
   const lineChangeTsRef = useRef(-1)
   // glideStartedRef：本串是否已经起过滑（防止停留到点后每帧重复起滑；新的一串开始时复位；

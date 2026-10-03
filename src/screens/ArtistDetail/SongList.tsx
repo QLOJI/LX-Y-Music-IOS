@@ -172,7 +172,10 @@ export default memo(SongList)
 const styles = createStyle({
   listHeader: {
     paddingHorizontal: 15,
-    paddingTop: 10,
+    // 【第 30 轮】原 paddingTop: 10 叠在 DetailActionBar 的 paddingBottom 上，会让歌手页
+    // 「播放全部」下方总间距变成 12+10=22，与上方的 12 不等宽（用户图二/图三「上下间距不
+    // 一样」）。归零后由 ActionBar 统一给 12，页面之间口径一致。
+    paddingTop: 0,
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',

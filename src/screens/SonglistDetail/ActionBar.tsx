@@ -115,10 +115,14 @@ const styles = createStyle({
     width: '100%',
     flexGrow: 0,
     flexShrink: 0,
+    // 【第 30 轮】「播放全部」上下间距对齐且收紧：上（离上方封面/简介的下边缘）=
+    // marginTop = sm(12)，下（到歌曲列表）= paddingBottom = sm(12)。原 paddingBottom 是
+    // md(16)，用户报「播放全部文字上下间距太大」—— 上下同值才是视觉居中，16 比 12 大
+    // 的那 4pt 会让整行看起来偏上。
     marginTop: designSpacing.sm,
     paddingHorizontal: designSpacing.md,
     gap: designSpacing.sm,
-    paddingBottom: designSpacing.md,
+    paddingBottom: designSpacing.sm,
   },
   controlBtn: {
     flexGrow: 1,

@@ -12,6 +12,17 @@ import { designMotion } from '@/theme/DesignTokens'
 /** 歌词换行时，当前行滑到居中位置的时长（大歌词与小歌词同值）。 */
 export const LINE_CHANGE_GLIDE_MS = designMotion.quick
 
+/**
+ * 【第 30 轮】连续换行（diff==1）后、起滑之前的「停留」时长。
+ *
+ * 大歌词（竖屏 / 横屏）此前是 REF 参考工程的 600ms 停留 + 600ms 滑动，用户报
+ * 「逐词加载完到下一行，换行动画有很大延迟」—— 卡顿感全部来自这 600ms 的停顿
+ * （滑动本身是 easeInOutQuad，是顺滑的）。现在收口到 designMotion.quick(200)：
+ * 停留 200 + 滑动 RETURN_TO_ACTIVE_MS(600)，换行节奏由 1.2s 缩短到 0.8s，观感不再是
+ * 「停一下再走」。停留窗口的语义不变（锚定在一串连续换行的第一行、串内不重置）。
+ */
+export const LINE_CHANGE_HOLD_MS = designMotion.quick
+
 /** 手动拖动歌词结束、停手多久后自动回位并隐藏定位浮层。用户要求「未滑动响应时间缩短一半」，故由 3000 改为 1500。 */
 export const IDLE_RETURN_MS = 1500
 

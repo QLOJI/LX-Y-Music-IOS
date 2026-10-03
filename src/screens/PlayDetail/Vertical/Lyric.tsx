@@ -33,7 +33,7 @@ import PlayLine, { type PlayLineType } from '@/screens/PlayDetail/components/Pla
 // 例外：大歌词「换行停留」时长按需求 #1 直接对齐 REF 参考工程，以本文件下方的
 // LINE_CHANGE_HOLD_MS 定义（原因见其注释）；「换行滑动」时长已收口回 lyricAnimation
 // 的 RETURN_TO_ACTIVE_MS —— 小歌词的停手回位复用的就是它，必须同源。
-import { IDLE_RETURN_MS, OVERLAY_FADE_MS, RETURN_TO_ACTIVE_MS } from '@/screens/PlayDetail/lyricAnimation'
+import { IDLE_RETURN_MS, LINE_CHANGE_HOLD_MS, OVERLAY_FADE_MS, RETURN_TO_ACTIVE_MS } from '@/screens/PlayDetail/lyricAnimation'
 // import { screenkeepAwake } from '@/utils/nativeModules/utils'
 // import { log } from '@/utils/log'
 // import { toast } from '@/utils/tools'
@@ -497,22 +497,23 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
   // 改这段时务必保留声明：它和 glideFromRef / glideToRef 是一组，缺一即崩。
   const glideStartTsRef = useRef(-1)
   // 换行节奏对齐 REF 参考工程（需求 #1「换行动画顺滑不生硬」）：
-  //   REF 是「连续换行（diff==1）后先停留 600ms，再用 600ms 滑到新行」——
-  //   停留见 REF Vertical/Lyric.tsx:290-298（diff==1 时 setTimeout(600) 后才 handleScrollToActive），
+  //   REF 是「连续换行（diff==1）后先停留，再用固定时长滑到新行」——
+  //   停留见 REF Vertical/Lyric.tsx:290-298（diff==1 时 setTimeout 后才 handleScrollToActive），
   //   滑动见 REF Vertical/Lyric.tsx:186（scrollTo(..., 600)）；非连续跳变则立即定位。
-  //   本工程此前是「换行当帧立即起滑、200ms 滑完」，没有停留段，节奏明显更急、更生硬。
+  // 【第 30 轮】停留时长从 REF 的 600ms 收到 lyricAnimation 的 LINE_CHANGE_HOLD_MS
+  //   （designMotion.quick，200）——用户报「逐词加载完到下一行，换行动画有很大延迟」，
+  //   延迟就是这段干等；滑动时长不动，仍是下面的 RETURN_TO_ACTIVE_MS。
+  //   现在两个时长都在共享文件里（大歌词横竖屏 + 小歌词回位同源），本文件不再留魔数。
   // ⚠️ 停留窗口锚定在【一串连续换行的第一行】，不是锚定最后一次换行：
-  //   串内后续换行只更新滑动目标、绝不重置 lineChangeTsRef。否则行间隔 <600ms 的快歌里
-  //   窗口会被每次换行续命、列表长时间不动（比原缺陷更糟）。REF 同样是「首个 600ms 到点
+  //   串内后续换行只更新滑动目标、绝不重置 lineChangeTsRef。否则行间隔小的快歌里
+  //   窗口会被每次换行续命、列表长时间不动（比原缺陷更糟）。REF 同样是「首个停留窗口到点
   //   即起滑，后续换行只改目标」，因此不会冻住。「新的一串」判据：距锚点已超过
   //   停留+滑动（即上一轮整周期已走完）。
-  //   停留时长（600ms）只属大歌词的换行节奏，留在本文件；滑动时长改用 lyricAnimation 的
-  //   RETURN_TO_ACTIVE_MS —— 小歌词 MiniLyric 的停手回位复用的就是这条滑动的时长，
-  //   用户要求两者同速（「小歌词滑完返回播放进度比大歌词快」），所以它必须住在共享文件里、
-  //   由两边共同引用，而不是各写一个 600 在这里和小歌词那边。
+  //   滑动时长用 lyricAnimation 的 RETURN_TO_ACTIVE_MS —— 小歌词 MiniLyric 的停手回位
+  //   复用的就是这条滑动的时长，用户要求两者同速（「小歌词滑完返回播放进度比大歌词快」），
+  //   所以它必须住在共享文件里、由两边共同引用，而不是各写一个 600 在这里和小歌词那边。
   //   别与 LINE_CHANGE_GLIDE_MS 混淆：那个（designMotion.quick，200）是小歌词「换行跟随」的
   //   时长，本次不动。
-  const LINE_CHANGE_HOLD_MS = 600
   const LINE_CHANGE_GLIDE_REF_MS = RETURN_TO_ACTIVE_MS
   // lineChangeTsRef：当前这串连续换行的停留锚点（< 0 = 不在串内，直接平滑跟随）。
   const lineChangeTsRef = useRef(-1)

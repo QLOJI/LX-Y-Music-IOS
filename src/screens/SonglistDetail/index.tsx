@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useMemo, useCallback } from 'react'
-import { View, BackHandler, TouchableOpacity } from 'react-native'
+import { View, BackHandler, TouchableOpacity, ScrollView } from 'react-native'
 import MusicList, { type MusicListType } from './MusicList'
 import { type ListInfoItem } from '@/store/songlist/state'
 import { ListInfoContext } from './state'
@@ -34,6 +34,12 @@ import { useStatusbarHeight } from '@/store/common/hook'
 import MusicInfoOnline = LX.Music.MusicInfoOnline
 
 const IMAGE_WIDTH = scaleSizeW(104)
+
+/**
+ * 【第 30 轮·图十】歌单简介的可视区高度＝原来的 3 行（`designTypography.caption` × 全局行高比
+ * × 3，与 common/Text 内部算默认行高的口径一致）：内容超出就上下滑，不再截断成「...」。
+ */
+const SONG_LIST_DESC_MAX_HEIGHT = Math.round(designTypography.caption * designTypography.lineHeightRatio * 3)
 
 const ListHeader = ({ detailInfo, info, onBack, showSearchBar, searchText, isFuzzySearch, onToggleSearch, onSearchTextChanged, onToggleSearchMode }: { detailInfo: DetailInfo, info: ListInfoItem, onBack?: () => void, showSearchBar: boolean, searchText: string, isFuzzySearch: boolean, onToggleSearch: () => void, onSearchTextChanged: (text: string) => void, onToggleSearchMode: () => void }) => {
   const theme = useTheme()
@@ -119,10 +125,19 @@ const ListHeader = ({ detailInfo, info, onBack, showSearchBar, searchText, isFuz
               {detailInfo.name}
             </Text>
             <View style={styles.descContainer}>
+              {/* 【第 30 轮·图十】歌单简介不再截断成 3 行「...」：整段放进定高的 ScrollView
+                  （高度=3 行，见 SONG_LIST_DESC_MAX_HEIGHT），想看全就上下滑（带滚动条提示）。
+                  歌手简介同款，见 ArtistDetail/Header.tsx。 */}
               <View style={{ flexGrow: 1, flexShrink: 1 }}>
-                <Text size={designTypography.caption} color={theme['c-font-label']} numberOfLines={3}>
-                  {detailInfo.desc}
-                </Text>
+                <ScrollView
+                  nestedScrollEnabled={true}
+                  showsVerticalScrollIndicator={true}
+                  style={{ maxHeight: SONG_LIST_DESC_MAX_HEIGHT }}
+                >
+                  <Text size={designTypography.caption} color={theme['c-font-label']}>
+                    {detailInfo.desc}
+                  </Text>
+                </ScrollView>
               </View>
               {showSubscribeButton && (
                 <TouchableOpacity
