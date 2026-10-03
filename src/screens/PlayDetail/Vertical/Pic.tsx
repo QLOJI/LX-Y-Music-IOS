@@ -8,13 +8,8 @@ import { useSettingValue } from '@/store/setting/hook'
 import Image, { defaultHeaders } from '@/components/common/Image'
 import { useStatusbarHeight, useScreenCovered } from '@/store/common/hook'
 import { HEADER_HEIGHT } from './components/Header'
-import { createStyle, toast, requestStoragePermission } from '@/utils/tools'
-import Menu, { type MenuType, type Menus } from '@/components/common/Menu'
-import { addTask } from '@/core/download'
-import RNFetchBlob from '@/utils/rnFetchBlob'
-import { getPicUrl } from '@/core/music/online'
-import { getFileExtensionFromUrl } from '@/screens/Home/Views/Mylist/MusicList/download/utils'
-import settingState from '@/store/setting/state'
+import { createStyle } from '@/utils/tools'
+import CoverLongPressMenu, { type CoverLongPressMenuType } from '@/screens/PlayDetail/components/CoverLongPressMenu'
 
 const AnimatedCover = Animated.createAnimatedComponent(FastImage)
 
@@ -342,73 +337,20 @@ export default memo(({ componentId, active = true, coverRegionHeight = 0 }: { co
     outputRange: ['0deg', '360deg'],
   }), [spinValue])
 
-  // ---- 长按菜单：下载歌曲 / 下载封面（保留原功能）----
-  const menuRef = useRef<MenuType>(null)
+  // ---- 长按菜单：下载歌曲 / 下载封面 ----
+  // 【第 21 轮·优化 2（2026-10-03）】菜单实现（菜单项、动作、弹层与锚点测量）抽到
+  // PlayDetail/components/CoverLongPressMenu.tsx，与横屏封面共用同一份 —— 以前这段
+  // 内联在这里，横屏封面因此完全没有长按入口；「下载封面」自己那套写沙盒 Pictures
+  // 的代码也一并收敛过去（现在统一走 utils/image.ts 保存到系统相册）。
+  // 本组件只负责：量出封面位置 → 让菜单弹出来。
+  const menuRef = useRef<CoverLongPressMenuType>(null)
   const coverRef = useRef<View>(null)
-  const [menuVisible, setMenuVisible] = useState(false)
-
-  const menus = useMemo((): Menus => [
-    { action: 'download_song', label: '下载歌曲' },
-    { action: 'download_pic', label: '下载封面' },
-  ], [])
 
   const handleLongPress = () => {
-    if (!coverRef.current) return
-    coverRef.current.measure((x, y, w, h, px, py) => {
-      setMenuVisible(true)
-      requestAnimationFrame(() => {
-        menuRef.current?.show({ x: px, y: py, w, h })
-      })
-    })
+    menuRef.current?.show()
   }
 
   const menuMusicInfo = playMusicInfo.musicInfo
-  const handleMenuPress = ({ action }: typeof menus[number]) => {
-    switch (action) {
-      case 'download_song':
-        if (menuMusicInfo) {
-          const quality = settingState.setting['player.playQuality']
-          addTask(menuMusicInfo as LX.Music.MusicInfo, quality)
-        }
-        break
-      case 'download_pic':
-        if (menuMusicInfo) {
-          void (async() => {
-            try {
-              const isGranted = await requestStoragePermission()
-              if (isGranted === false) {
-                toast('没有存储权限，无法下载', 'short')
-                return
-              }
-              toast('正在下载封面...', 'short')
-              const picUrl = await getPicUrl({ musicInfo: menuMusicInfo as LX.Music.MusicInfoOnline, isRefresh: true })
-              const extension = getFileExtensionFromUrl(picUrl)
-              const picBaseDir = RNFetchBlob.fs.dirs.PictureDir || RNFetchBlob.fs.dirs.DownloadDir
-              const downloadDir = `${picBaseDir}/LX-N-Music`
-              const mInfo = menuMusicInfo as LX.Music.MusicInfo
-              const fileName = `${mInfo.name}_${mInfo.singer}.${extension}`.replace(/[\\/:*?"<>|]/g, '_')
-              const filePath = `${downloadDir}/${fileName}`
-
-              const exists = await RNFetchBlob.fs.exists(downloadDir)
-              if (!exists) {
-                try {
-                  await RNFetchBlob.fs.mkdir(downloadDir)
-                } catch (e) {
-                  console.warn('mkdir failed')
-                }
-              }
-              const targetPath = (await RNFetchBlob.fs.exists(downloadDir)) ? filePath : `${picBaseDir}/${fileName}`
-              await RNFetchBlob.config({ path: targetPath }).fetch('GET', picUrl)
-              await RNFetchBlob.fs.scanFile([{ path: targetPath }])
-              toast(`封面已保存到: ${targetPath}`, 'long')
-            } catch (err: any) {
-              toast(`下载封面失败: ${err.message}`, 'long')
-            }
-          })()
-        }
-        break
-    }
-  }
 
   // 方形封面的圆角：小圆角，保留图本身的方形观感。
   // 保持独立字面量而不并入 designRadius 令牌：这 4pt 是按「自转方形封面」的观感手调的，
@@ -481,7 +423,7 @@ export default memo(({ componentId, active = true, coverRegionHeight = 0 }: { co
           )}
         </View>
       </TouchableWithoutFeedback>
-      {menuVisible && <Menu ref={menuRef} menus={menus} onPress={handleMenuPress} onHide={() => { setMenuVisible(false) }} />}
+      <CoverLongPressMenu ref={menuRef} anchorRef={coverRef} musicInfo={menuMusicInfo} />
     </View>
   )
 })

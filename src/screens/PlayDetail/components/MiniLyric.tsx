@@ -19,7 +19,7 @@ import { createStyle } from '@/utils/tools'
 import { scaleSizeH, scaleSizeW, setSpText } from '@/utils/pixelRatio'
 import { useWindowSize } from '@/utils/hooks'
 import playerState from '@/store/player/state'
-import { getReturnDuration, IDLE_RETURN_MS, LINE_CHANGE_GLIDE_MS } from '@/screens/PlayDetail/lyricAnimation'
+import { IDLE_RETURN_MS, LINE_CHANGE_GLIDE_MS, RETURN_TO_ACTIVE_MS } from '@/screens/PlayDetail/lyricAnimation'
 
 // 迷你歌词 = 封面页上的「上一行 / 当前行 / 下一行」**定窗**歌词窗（窗口高度固定，行高逐行算）。
 //
@@ -273,7 +273,9 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0 }: MiniLyricProps) =>
    *   • 帧率跟着屏幕刷新率走（120Hz 每帧都出一帧画面），不像 setTimeout(10ms) 那样与 vsync 错拍；
    *   • 起点与终点在启动前一次锁定，中途不重算 —— 这是「回位过程只朝一个方向走、
    *     不会先向上再向下」的结构性保证。
-   * 先取消上一条动画；duration 不传时按距离取 getReturnDuration（手动定位后的回位）。
+   * 先取消上一条动画；duration 不传时用 RETURN_TO_ACTIVE_MS（手动定位后的回位）。
+   * 回位时长与竖屏大歌词的回位滑动同值同源 —— 用户报的 bug 就是这里以前按距离取
+   * [120,300]（getReturnDuration），同屏一比小歌词"窜"得比大歌词快；两边必须同速。
    * onDone 在动画落地（或无需动画直接落位）后回调一次，任何路径都恰好回调一次。
    */
   const animateToLine = useCallback((index: number, duration?: number, onDone?: () => void) => {
@@ -292,7 +294,7 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0 }: MiniLyricProps) =>
       onDone?.()
       return
     }
-    const total = Math.max(duration ?? getReturnDuration(distance), 1)
+    const total = Math.max(duration ?? RETURN_TO_ACTIVE_MS, 1)
     let rafId = 0
     let startTime = 0
     const step = (now: number) => {

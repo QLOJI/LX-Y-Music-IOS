@@ -30,9 +30,10 @@ import { useWindowSize } from '@/utils/hooks'
 import KaraokeLyric from '@/screens/PlayDetail/components/KaraokeLyric'
 import PlayLine, { type PlayLineType } from '@/screens/PlayDetail/components/PlayLine'
 // 播放页动效时长的统一来源（数值与背景见 lyricAnimation.ts）；
-// 例外：大歌词「换行停留 / 换行滑动」两个时长按需求 #1 直接对齐 REF 参考工程，
-// 以本文件下方的 LINE_CHANGE_HOLD_MS / LINE_CHANGE_GLIDE_REF_MS 定义（原因见其注释）。
-import { IDLE_RETURN_MS, OVERLAY_FADE_MS } from '@/screens/PlayDetail/lyricAnimation'
+// 例外：大歌词「换行停留」时长按需求 #1 直接对齐 REF 参考工程，以本文件下方的
+// LINE_CHANGE_HOLD_MS 定义（原因见其注释）；「换行滑动」时长已收口回 lyricAnimation
+// 的 RETURN_TO_ACTIVE_MS —— 小歌词的停手回位复用的就是它，必须同源。
+import { IDLE_RETURN_MS, OVERLAY_FADE_MS, RETURN_TO_ACTIVE_MS } from '@/screens/PlayDetail/lyricAnimation'
 // import { screenkeepAwake } from '@/utils/nativeModules/utils'
 // import { log } from '@/utils/log'
 // import { toast } from '@/utils/tools'
@@ -505,10 +506,14 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
   //   窗口会被每次换行续命、列表长时间不动（比原缺陷更糟）。REF 同样是「首个 600ms 到点
   //   即起滑，后续换行只改目标」，因此不会冻住。「新的一串」判据：距锚点已超过
   //   停留+滑动（即上一轮整周期已走完）。
-  //   这两个值刻意不放进 lyricAnimation.ts：那里的 LINE_CHANGE_GLIDE_MS 仍被小歌词
-  //   MiniLyric 引用，且是「全局动效放慢」定案的 designMotion.quick(200)；本次只对齐大歌词。
+  //   停留时长（600ms）只属大歌词的换行节奏，留在本文件；滑动时长改用 lyricAnimation 的
+  //   RETURN_TO_ACTIVE_MS —— 小歌词 MiniLyric 的停手回位复用的就是这条滑动的时长，
+  //   用户要求两者同速（「小歌词滑完返回播放进度比大歌词快」），所以它必须住在共享文件里、
+  //   由两边共同引用，而不是各写一个 600 在这里和小歌词那边。
+  //   别与 LINE_CHANGE_GLIDE_MS 混淆：那个（designMotion.quick，200）是小歌词「换行跟随」的
+  //   时长，本次不动。
   const LINE_CHANGE_HOLD_MS = 600
-  const LINE_CHANGE_GLIDE_REF_MS = 600
+  const LINE_CHANGE_GLIDE_REF_MS = RETURN_TO_ACTIVE_MS
   // lineChangeTsRef：当前这串连续换行的停留锚点（< 0 = 不在串内，直接平滑跟随）。
   const lineChangeTsRef = useRef(-1)
   // glideStartedRef：本串是否已经起过滑（防止停留到点后每帧重复起滑；新的一串开始时复位；

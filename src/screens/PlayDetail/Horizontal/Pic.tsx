@@ -1,6 +1,7 @@
 import { memo, useEffect, useMemo, useRef, useCallback } from 'react'
-import { Animated, Easing, View } from 'react-native'
-import { usePlayerMusicInfo, useIsPlay } from '@/store/player/hook'
+import { Animated, Easing, TouchableWithoutFeedback, View } from 'react-native'
+import { usePlayerMusicInfo, useIsPlay, usePlayMusicInfo } from '@/store/player/hook'
+import CoverLongPressMenu, { type CoverLongPressMenuType } from '@/screens/PlayDetail/components/CoverLongPressMenu'
 import { useWindowSize } from '@/utils/hooks'
 import { createStyle } from '@/utils/tools'
 import { shadow } from '@/utils/shadow'
@@ -26,6 +27,15 @@ const SQUARE_RADIUS = 4
 
 export default memo(({ componentId }: { componentId: string }) => {
   const musicInfo = usePlayerMusicInfo()
+  // 【第 21 轮·优化 2】封面长按菜单（下载歌曲 / 下载封面）。
+  // 菜单本体的唯一实现在 PlayDetail/components/CoverLongPressMenu.tsx，横屏这里只提供
+  // 锚点（实际封面容器 coverRef）并触发展开 —— 用户报的「横屏没有下载封面入口」就是这个。
+  const playMusicInfo = usePlayMusicInfo()
+  const menuRef = useRef<CoverLongPressMenuType>(null)
+  const coverRef = useRef<View>(null)
+  const handleLongPress = useCallback(() => {
+    menuRef.current?.show()
+  }, [])
   const { width: winWidth, height: winHeight } = useWindowSize()
   const layout = useLandscapeLayout()
   const statusBarHeight = useStatusbarHeight()
@@ -243,14 +253,24 @@ export default memo(({ componentId }: { componentId: string }) => {
           imageContainerStyle.borderRadius —— 曾经三层各自被「按钮圆角」行内覆盖（默认 0），
           把圆形封面压成直角方块，形状设置直接失效；横屏与竖屏必须同观感
           （sim-cover-shape.js 的 invariant 4 就是钉这个的），竖屏 Pic.tsx 同步去掉了覆盖。 */}
-      <View style={[styles.content, imageContainerStyle, { overflow: 'hidden' }]}>
-        <Animated.View style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, borderRadius: imageContainerStyle.borderRadius, transform: [{ rotate: spin }] }}>
-          <Image
-            url={musicInfo.pic}
-            style={imageStyle}
-          />
-        </Animated.View>
-      </View>
+      {/* 【第 21 轮·优化 2】长按封面弹「下载歌曲 / 下载封面」菜单：菜单实现与竖屏
+          共用 PlayDetail/components/CoverLongPressMenu.tsx（横屏以前完全没有这个入口）。
+          TouchableWithoutFeedback 不产生额外视图，不会改动上面的布局与圆角链路。 */}
+      <TouchableWithoutFeedback onLongPress={handleLongPress}>
+        <View
+          ref={coverRef}
+          collapsable={false}
+          style={[styles.content, imageContainerStyle, { overflow: 'hidden' }]}
+        >
+          <Animated.View style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, borderRadius: imageContainerStyle.borderRadius, transform: [{ rotate: spin }] }}>
+            <Image
+              url={musicInfo.pic}
+              style={imageStyle}
+            />
+          </Animated.View>
+        </View>
+      </TouchableWithoutFeedback>
+      <CoverLongPressMenu ref={menuRef} anchorRef={coverRef} musicInfo={playMusicInfo.musicInfo} />
     </View>
   )
 })

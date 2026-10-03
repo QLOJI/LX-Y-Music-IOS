@@ -18,6 +18,24 @@ export const IDLE_RETURN_MS = 1500
 /** 定位浮层（虚线 + 时间 + 播放三角）显隐的淡入淡出时长。 */
 export const OVERLAY_FADE_MS = designMotion.quick
 
-/** 自动回位动画的时长：随距离线性增长并夹在 [120, 300] 内，远距离不会拖沓。 */
+/**
+ * 手动滑动后「回位到正在播放的那一行」的时长（与竖屏大歌词的回位滑动同值同源）。
+ *
+ * 竖屏大歌词的回位不是另起一套动画：停手后它往连续滚动循环里排一个 glide 任务，
+ * 走的就是换行滑动那条 easeInOutQuad、固定 600ms（Vertical/Lyric.tsx 的
+ * LINE_CHANGE_GLIDE_REF_MS，需求 #1 对齐参考工程的定案值）。
+ * 小歌词（MiniLyric）此前按距离取 [120, 300]，同屏一比就是「小歌词回位窜得快」
+ * —— 用户报的「小歌词滑动后返回播放进度时，动画速度和大歌词不一致」。
+ * 现在两边共同引用本常量：改一处两边同步，不会再各自漂移。
+ * （曲线两边同为 easeInOutQuad，只差时长，所以对齐时长即完全同速。）
+ */
+export const RETURN_TO_ACTIVE_MS = 600
+
+/**
+ * 自动回位动画的时长：随距离线性增长并夹在 [120, 300] 内，远距离不会拖沓。
+ *
+ * 注意：**竖屏大歌词与小歌词的回位不用它**（两者必须同速，见 RETURN_TO_ACTIVE_MS）；
+ * 目前只有横屏大歌词的回位/跟随在用，别拿它去改小歌词。
+ */
 export const getReturnDuration = (distance: number) =>
   Math.min(Math.max(Math.abs(distance) * 0.5, 120), 300)
