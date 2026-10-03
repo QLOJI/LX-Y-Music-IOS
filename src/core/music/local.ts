@@ -318,8 +318,11 @@ export const getPicUrl = async({
           return musicInfo.meta.picUrl
         }
       }
-      webDAVLog?.info('getPicUrl: no cover found, return empty')
-      return ''
+      // 【第 25 轮】这里此前是 `return ''` —— 网盘内没有封面文件（也没有已下载音频的内嵌封面）时
+      // 直接返回空，**根本走不到下面那段在线匹配**，于是列表里永远是灰占位。
+      // 现在落到下面的 getOnlineOtherSourcePicByLocal（按 歌名+歌手 在线匹配封面），
+      // 匹配失败再由末尾的 `if (isWebDAVMusic) return ''` 收口。
+      webDAVLog?.info('getPicUrl: no pan cover found, try online match')
     }
 
     let pic = await readPic(musicInfo.meta.filePath).catch(() => null)
@@ -334,6 +337,24 @@ export const getPicUrl = async({
   try {
     const result = await getOnlineOtherSourcePicByLocal(musicInfo)
     webDAVLog?.info('getPicUrl: fetched online cover', { url: result.url })
+    // 【第 25 轮】在线匹配到的封面写回歌曲 meta 并落盘（updateWebDAVMusicMeta → WebDAV 配置），
+    // 即「将封面存入缓存」（用户原话）。与上面「已下载音频的内嵌封面」那条路径同口径
+    // （同样 updateWebDAVMusicMeta + webdavPicUpdated 广播），区别只是封面来源是在线匹配。
+    // 写回之后：① WebDAV 列表行收到 webdavPicUpdated 立刻换成在线封面；② 下次进列表
+    // meta.picUrl 已在，命中上面的分支直接返回，不再重发在线匹配；③ 播放时整份列表写入
+    // 试听列表，这份 meta.picUrl 跟着进快照 ⇒ 试听列表里也显示同一张封面。
+    // 落盘是 fire-and-forget：不挡当前这一帧的封面显示。
+    if (isWebDAVMusic && result.url) {
+      void (async() => {
+        try {
+          const module = await loadWebDAVModule()
+          await module.updateWebDAVMusicMeta(musicInfo.id, { picUrl: result.url })
+          appEvent.webdavPicUpdated(musicInfo.id, result.url)
+        } catch (err) {
+          webDAVLog?.warn('getPicUrl: persist online cover failed', { err })
+        }
+      })()
+    }
     return result.url
   } catch (err) {
     webDAVLog?.warn('getPicUrl: getOnlineOtherSourcePicByLocal failed', { err })
