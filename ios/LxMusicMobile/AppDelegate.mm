@@ -4063,7 +4063,11 @@ static const int64_t LXShortInterruptionIgnoreMs = 1500;
   // 「配置变化通知可能就来自渲染线程」的路径上同队列 dispatch_sync 死锁
   dispatch_async(self.renderQueue, ^{
     if (self.engine == nil) return;
-    double hardwareSampleRate = self.engine.outputNode.inputFormat(forBus:0).sampleRate;
+    // 【第 31 轮修正·编译】硬件输出采样率从会话读：AVAudioSession.sampleRate 就是硬件当下的
+    // 真实值，会话激活期间恒可取；引擎端口那种读法（outputNode 的 inputFormatForBus:）
+    // 在引擎已停 / 未挂图时可能没有意义甚至抛异常 —— 本处此前误写成 Swift 风格的
+    // 「inputFormat(forBus:0)」，ObjC 里不合法，CI 在 AppDelegate.mm 上直接语法报错。
+    double hardwareSampleRate = [AVAudioSession sharedInstance].sampleRate;
     BOOL hardwareFormatChanged = hardwareSampleRate > 0 && self.configuredHardwareSampleRate > 0 &&
       fabs(hardwareSampleRate - self.configuredHardwareSampleRate) > 0.5;
     if (self.engine.isRunning && hardwareFormatChanged) {
@@ -4318,7 +4322,10 @@ static const int64_t LXShortInterruptionIgnoreMs = 1500;
       self.streamError = error ?: LXError(@"streaming_flac_engine", @"Failed to start AVAudioEngine");
     } else {
       // 【第 31 轮·条五】记下建图时的硬件输出格式：路由变化后比对它判断要不要重挂输出
-      self.configuredHardwareSampleRate = self.engine.outputNode.inputFormat(forBus:0).sampleRate;
+      // 【第 31 轮修正·编译】用会话的硬件采样率（AVAudioSession.sampleRate）：与引擎端口读法
+      // 等价（会话激活时它就是硬件当下值），且不会在引擎状态不完整时抛异常；原写法误用了
+      // Swift 风格的端口调用语法，ObjC 编译不通过。
+      self.configuredHardwareSampleRate = [AVAudioSession sharedInstance].sampleRate;
     }
   });
 
