@@ -57,11 +57,18 @@ const Image = memo(({ url, resizeMode = 'cover', style, onError, nativeID }: Ima
     return () => { subscription.remove() }
   }, [isError])
 
-  let uri = typeof url == 'number'
-    ? _Image.resolveAssetSource(url).uri
-    : url?.startsWith('/')
-      ? 'file://' + url
-      : url
+  // url 的合法形状只有三种：require 进来的资源 id（number）、URL 字符串、空（null/undefined）。
+  // 之前这里写的是 `url?.startsWith('/')`：可选链只在 url 为 null/undefined 时短路，
+  // 一旦 url 是个**非空对象**（例如音源 SDK getPic 没解包就返回的请求对象
+  // `{ promise, cancelHttp }`，被当成封面 URL 存进歌曲 meta / 内存缓存后传到这里），
+  // `url.startsWith` 求值为 undefined 再被调用 —— 渲染期直接抛
+  // 「TypeError: undefined is not a function」（Fatal，整个 App 弹错误框）。
+  // 现在把「不是 string 也不是 number」一律当没有封面：走空占位，不再让脏数据炸掉渲染。
+  let uri: string | undefined = typeof url == 'number'
+    ? _Image.resolveAssetSource(url)?.uri
+    : typeof url == 'string'
+      ? url.startsWith('/') ? 'file://' + url : url
+      : undefined
   const showDefault = useMemo(() => !uri || isError, [isError, uri])
   // 只有 http(s) 远程封面走 FastImage（2026-10-02 需求：重复进入详情页时封面不再先消失再显示）。
   // FastImage 底层是 SDWebImage，自带内存 + 磁盘二级缓存：同一 URL 第二次进入时命中内存缓存、
