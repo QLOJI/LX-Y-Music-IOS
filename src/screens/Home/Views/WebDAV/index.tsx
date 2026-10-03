@@ -38,6 +38,7 @@ import {
 } from '@/core/webdavMusic/drive'
 import settingState from '@/store/setting/state'
 import { designRadius, designSpacing, designTypography } from '@/theme/DesignTokens'
+import { songRowMetrics, songRowStyles } from '@/components/common/songRowStyles'
 import { useBottomOverlayInset } from '@/store/common/hook'
 import PageTopInset from '@/components/common/PageTopInset'
 import DetailPageTitle from '@/components/common/DetailPageTitle'
@@ -139,14 +140,16 @@ const SongItem = memo(
         }}
       >
         <TouchableOpacity style={styles.songItemLeft} onPress={() => { onPress(item) }}>
-          <View style={styles.sn}>
+          {/* 【第 24 轮】行内几何全部取 components/common/songRowStyles.ts：
+              封面盒、标题字重/字号、副标题字号、⋮ 按钮都与其他歌曲列表同源（此前是本文件私有的一份） */}
+          <View style={songRowStyles.sn}>
             {item.meta.picUrl ? (
               <Image
                 url={item.meta.picUrl}
                 style={[
-                  styles.albumArt,
+                  songRowStyles.albumArt,
                   // 歌曲封面 54×54：按自身高度折算半高，行内覆盖「按钮圆角」
-                  { borderRadius: buttonRadius(54) },
+                  { borderRadius: buttonRadius(songRowMetrics.coverSize) },
                 ]}
                 cache={false}
               />
@@ -155,24 +158,24 @@ const SongItem = memo(
                 style={[
                   styles.albumArtPlaceholder,
                   // 无封面占位与封面同尺寸 54×54，同口径行内覆盖「按钮圆角」
-                  { borderRadius: buttonRadius(54) },
+                  { borderRadius: buttonRadius(songRowMetrics.coverSize) },
                 ]}
               />
             )}
           </View>
-          <View style={styles.itemInfo}>
+          <View style={songRowStyles.itemInfo}>
             <Text
               size={designTypography.body}
-              style={styles.songTitle}
+              style={songRowStyles.songName}
               color={isPlaying ? theme['c-primary-font'] : theme['c-font']}
               numberOfLines={1}
             >
               {item.name || item.meta.fileName}
             </Text>
-            <View style={styles.listItemSingle}>
+            <View style={songRowStyles.listItemSingle}>
               <Text
-                style={styles.listItemSingleText}
-                size={designTypography.caption}
+                style={songRowStyles.listItemSingleText}
+                size={songRowMetrics.metaTextSize}
                 color={isPlaying ? theme['c-primary-alpha-200'] : theme['c-500']}
                 numberOfLines={1}
               >
@@ -181,7 +184,7 @@ const SongItem = memo(
             </View>
             {detailText ? (
               <Text
-                size={designTypography.caption}
+                size={songRowMetrics.metaTextSize}
                 color={isPlaying ? theme['c-primary-alpha-200'] : theme['c-500']}
                 numberOfLines={1}
               >
@@ -194,12 +197,12 @@ const SongItem = memo(
           onPress={handleShowMenu}
           ref={moreButtonRef}
           style={[
-            styles.moreButton,
-            // 更多图标按钮无固定高度（height: '80%'）且无纵向 padding：以图标本体 17（Icon size=17）作可见高度
-            { borderRadius: buttonRadius(17) },
+            songRowStyles.moreButton,
+            // 图标按钮 40×40：与其他歌曲列表同一几何（此前 height:'80%' + padding 12，⋮ 落在别的 x 上）
+            { borderRadius: buttonRadius(songRowMetrics.iconButtonSize) },
           ]}
         >
-          <Icon name="dots-vertical" style={{ color: theme['c-350'] }} size={17} />
+          <Icon name="dots-vertical" style={{ color: theme['c-350'] }} size={songRowMetrics.iconSize} />
         </TouchableOpacity>
       </View>
     )
@@ -1130,8 +1133,10 @@ const styles = createStyle({
     flexDirection: 'row',
     flexWrap: 'nowrap',
     alignItems: 'center',
-    paddingLeft: designSpacing.sm,
-    paddingRight: designSpacing.sm,
+    // 【第 24 轮】左右内边距对齐其他歌曲列表（原 sm=12）：⋮ 与封面的落点才与「我的列表 /
+    // 歌单详情 / 歌单」各处同一竖线（行内留 16 + 按钮右 margin 8）
+    paddingLeft: designSpacing.md,
+    paddingRight: designSpacing.md,
     marginBottom: designSpacing.sm,
     borderWidth: 1,
     borderRadius: designRadius.lg,
@@ -1143,46 +1148,14 @@ const styles = createStyle({
     flexDirection: 'row',
     alignItems: 'center',
   },
-  sn: {
-    width: 74,
-    justifyContent: 'center',
-    alignItems: 'center',
-    paddingLeft: designSpacing.xs,
-    paddingRight: designSpacing.xs,
-  },
+  // 【第 24 轮】sn / albumArt / itemInfo / listItemSingle / listItemSingleText / songTitle / moreButton
+  // 已全部移入 components/common/songRowStyles.ts（歌曲行唯一来源）；本卡片只保留自己的
+  // 边框+底色（songItem）与无封面占位（占位底色是 WebDAV 独有的，尺寸仍取共享 metrics）。
   albumArtPlaceholder: {
-    width: 54,
-    height: 54,
+    width: songRowMetrics.coverSize,
+    height: songRowMetrics.coverSize,
     borderRadius: designRadius.md,
     backgroundColor: 'rgba(0,0,0,0.08)',
-  },
-  albumArt: {
-    width: 54,
-    height: 54,
-    borderRadius: designRadius.md,
-  },
-  itemInfo: {
-    flexGrow: 1,
-    flexShrink: 1,
-    paddingRight: 2,
-  },
-  listItemSingle: {
-    paddingTop: 3,
-    flexDirection: 'row',
-  },
-  listItemSingleText: {
-    flexGrow: 0,
-    flexShrink: 1,
-    fontWeight: '400',
-  },
-  songTitle: {
-    fontWeight: '600',
-  },
-  moreButton: {
-    height: '80%',
-    paddingLeft: designSpacing.sm,
-    paddingRight: designSpacing.sm,
-    justifyContent: 'center',
   },
   empty: {
     height: 120,
