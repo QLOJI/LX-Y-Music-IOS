@@ -6,7 +6,7 @@ import wyDailyRecApi from '@/utils/musicSdk/wy/dailyRec'
 import wyMusicDetailApi from '@/utils/musicSdk/wy/musicDetail'
 import { playOnlineList } from '@/core/list'
 import { MUSIC_TOGGLE_MODE } from '@/config/constant'
-import { updateSetting } from '@/core/common'
+import { updateSetting, setNavActiveId } from '@/core/common'
 import { useWySubscribedPlaylists, useWyUid } from '@/store/user/hook.ts'
 import { useBottomOverlayInset } from '@/store/common/hook'
 import { useHorizontalMode } from '@/utils/hooks'
@@ -23,6 +23,7 @@ import commonState from '@/store/common/state'
 import { setWySubscribedPlaylists, removeWySubscribedPlaylist } from '@/store/user/action.ts'
 import Menu, { type MenuType, type Position } from '@/components/common/Menu'
 import PlaylistEditModal, { type PlaylistEditModalType } from './PlaylistEditModal'
+import SwipeBackArea from '@/components/common/SwipeBackArea'
 import MusicInfoOnline = LX.Music.MusicInfoOnline
 
 export default memo(() => {
@@ -210,6 +211,12 @@ export default memo(() => {
     setSelectedPlaylist(null)
     setScrollToMusicInfo(null)
   }, [])
+  // 【第 21 轮·图二】右滑返回「我的」主界面：与排行榜页（Leaderboard/Vertical）同一条
+  // 右缘手势带，onBack 只做一件事 —— 把首页切回「我的」（setNavActiveId('nav_love')）。
+  const handleBackToLove = useCallback(() => {
+    setNavActiveId('nav_love')
+  }, [])
+
   // 页头（状态栏占位 + 标题行）。用户第 16 轮第 2/7 条后它**不再**进列表：之前它是
   // ListHeaderComponent（在可滚动内容里），列表挂载/换数据/下拉刷新时标题会跟着整体位移
   // ——「第一次进入时标题和内容一起向上跳一下」。现在固定在列表上方，标题在任何情况下
@@ -261,6 +268,10 @@ export default memo(() => {
           <SonglistDetail info={selectedPlaylist} onBack={handleBack} initialScrollToInfo={scrollToMusicInfo} />
         </View>
       )}
+      {/* 【第 21 轮·图二】右滑返回「我的」主界面：与排行榜页（Leaderboard/Vertical）同一条
+          右缘手势带。歌单详情浮层打开时本层让位（enabled=false）—— 浮层里 SonglistDetail
+          自带手势，返回到歌单列表由它负责，这一层再拦就会「一次滑动连退两级」。 */}
+      <SwipeBackArea onBack={handleBackToLove} enabled={!selectedPlaylist} />
       {menuVisible && (
         <Menu
           ref={menuRef}

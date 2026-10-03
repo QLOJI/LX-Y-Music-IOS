@@ -41,6 +41,9 @@ import { designRadius, designSpacing, designTypography } from '@/theme/DesignTok
 import { useBottomOverlayInset } from '@/store/common/hook'
 import PageTopInset from '@/components/common/PageTopInset'
 import DetailPageTitle from '@/components/common/DetailPageTitle'
+import PillTabs from '@/components/common/PillTabs'
+import SwipeBackArea from '@/components/common/SwipeBackArea'
+import { setNavActiveId } from '@/core/common'
 import { useI18n } from '@/lang'
 import WebDAVListMenu, { type WebDAVListMenuType, type SelectInfo as WebDAVSelectInfo } from './WebDAVListMenu'
 import WebDAVDownloadPath from './components/WebDAVDownloadPath'
@@ -55,42 +58,6 @@ import { readMetadata, readPic } from '@/utils/localMediaMetadata'
 
 type ActiveTab = 'config' | 'list' | 'folders'
 const ITEM_HEIGHT = scaleSizeH(LIST_ITEM_HEIGHT)
-
-const TabButton = ({ label, tab, activeTab, onPress }: {
-  label: string
-  tab: ActiveTab
-  activeTab: ActiveTab
-  onPress: () => void
-}) => {
-  const theme = useTheme()
-  const buttonOpacity = useSettingValue('theme.buttonOpacity')
-  // 「按钮圆角」：三段标签胶囊的行内覆盖（静态 borderRadius 原样保留作兜底）
-  const buttonRadius = useButtonRadius()
-  return (
-    <TouchableOpacity
-      style={{
-        ...styles.tab,
-        // 胶囊底色与边框随「按钮透明度」淡出；只改颜色 alpha，不用容器 style.opacity。
-        // 选中态底色由「主色实底」改为主色 20% 淡染：选中文字已改成主题主色
-        // （与设置里「LX-Y Music 字体大小预览」同色），同色实心底会把文字吃掉
-        backgroundColor: applyOpacity(activeTab === tab ? theme['c-primary-alpha-800'] : theme['c-primary-light-900-alpha-300'], buttonOpacity),
-        borderColor: applyOpacity(activeTab === tab ? theme['c-primary'] : theme['c-border-background'], buttonOpacity),
-        // 标签胶囊圆角随「按钮圆角」设置行内覆盖；高度取 styles.tab 的源值 32（胶囊自身高度）
-        borderRadius: buttonRadius(32),
-      }}
-      onPress={onPress}
-    >
-      <Text
-        style={{
-          ...styles.tabText,
-          color: activeTab === tab ? theme['c-primary'] : theme['c-font-label'],
-        }}
-      >
-        {label}
-      </Text>
-    </TouchableOpacity>
-  )
-}
 
 const formatTime = (time?: number) => {
   if (!time) return ''
@@ -770,11 +737,18 @@ export default memo(() => {
           字重渲染，字号取共享页头（也就是本页原来那行）的字号 —— 用户第 14 轮第 1 条。
           它与下面三段标签一起放在所有滚动容器之外，切标签、滚列表都不位移。 */}
       <DetailPageTitle title={t('nav_webdav')} />
-      <View style={{ ...styles.tabs, borderBottomColor: theme['c-border-background'] }}>
-        <TabButton label="列表" tab="list" activeTab={activeTab} onPress={() => { setActiveTab('list') }} />
-        <TabButton label="文件列表" tab="folders" activeTab={activeTab} onPress={() => { setActiveTab('folders') }} />
-        <TabButton label="配置" tab="config" activeTab={activeTab} onPress={() => { setActiveTab('config') }} />
-      </View>
+      {/* 【第 21 轮·图三/图四】三段标签改用共享 PillTabs —— 本页原先是它自己的一份内联实现，
+          酷狗歌单 / QQ歌单 要把标题行里的 tab 搬到这里时，几何必须与它逐字一致（用户点名
+          「都参考 WebDAV 布局」），所以抽成唯一实现，三个页面共用同一份间距/胶囊几何。 */}
+      <PillTabs
+        tabs={[
+          { key: 'list', label: '列表' },
+          { key: 'folders', label: '文件列表' },
+          { key: 'config', label: '配置' },
+        ]}
+        activeKey={activeTab}
+        onChange={(key) => { setActiveTab(key as ActiveTab) }}
+      />
     </>
   )
 
@@ -1045,10 +1019,17 @@ export default memo(() => {
     </View>
   )
 
+  // 【第 21 轮·图七】右滑返回「我的」主界面：与排行榜页（Leaderboard/Vertical）同一条
+  // 右缘手势带，onBack 只做一件事 —— 把首页切回「我的」（setNavActiveId('nav_love')）。
+  const handleBackToLove = useCallback(() => {
+    setNavActiveId('nav_love')
+  }, [])
+
   return (
     <View style={styles.container}>
       {renderTabsHeader()}
       {activeTab === 'config' ? renderConfig() : activeTab === 'folders' ? renderFolders() : renderList()}
+      <SwipeBackArea onBack={handleBackToLove} />
       <WebDAVListMenu
         ref={webDAVListMenuRef}
         onPlay={(info) => { handlePlay(info.musicInfo) }}
@@ -1067,24 +1048,6 @@ export default memo(() => {
 const styles = createStyle({
   container: {
     flex: 1,
-  },
-  tabs: {
-    flexDirection: 'row',
-    height: 44,
-    paddingHorizontal: designSpacing.md,
-    alignItems: 'center',
-    gap: designSpacing.xs,
-  },
-  tab: {
-    height: 32,
-    paddingHorizontal: designSpacing.sm,
-    borderWidth: 1,
-    borderRadius: designRadius.pill,
-    justifyContent: 'center',
-  },
-  tabText: {
-    fontSize: designTypography.caption,
-    fontWeight: '600',
   },
   scroll: {
     flex: 1,

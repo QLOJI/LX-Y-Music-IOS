@@ -3,7 +3,7 @@
  */
 
 import { memo, useEffect, useState, useCallback, useRef } from 'react'
-import { View, FlatList, RefreshControl, BackHandler, StyleSheet, Keyboard, TouchableOpacity, ActivityIndicator } from 'react-native'
+import { View, FlatList, RefreshControl, BackHandler, StyleSheet, Keyboard, ActivityIndicator } from 'react-native'
 import ListItem from './ListItem'
 import txUserApi from '@/utils/musicSdk/tx/user'
 import { useI18n } from '@/lang'
@@ -16,9 +16,11 @@ import Menu, { type MenuType, type Position } from '@/components/common/Menu'
 import ConfirmAlert, { type ConfirmAlertType } from '@/components/common/ConfirmAlert'
 import Input from '@/components/common/Input'
 import { useHorizontalMode } from '@/utils/hooks'
-import { useButtonRadius } from '@/utils/buttonRadius'
 import PageTopInset from '@/components/common/PageTopInset'
 import DetailPageTitle from '@/components/common/DetailPageTitle'
+import PillTabs from '@/components/common/PillTabs'
+import SwipeBackArea from '@/components/common/SwipeBackArea'
+import { setNavActiveId } from '@/core/common'
 import { useBottomOverlayInset } from '@/store/common/hook'
 
 interface PlaylistInfo {
@@ -39,7 +41,6 @@ export default memo(() => {
   const theme = useTheme()
   // 底部悬浮层（迷你播放器 + 底部 Tab + 安全区）统一避让高度
   const bottomInset = useBottomOverlayInset()
-  const buttonRadius = useButtonRadius()
   const [activeTab, setActiveTab] = useState<TabType>('created')
   const [createdPlaylists, setCreatedPlaylists] = useState<PlaylistInfo[]>([])
   const [collectedPlaylists, setCollectedPlaylists] = useState<PlaylistInfo[]>([])
@@ -244,32 +245,23 @@ export default memo(() => {
     }
   }, [newPlaylistName, fetchPlaylists])
 
-  const renderTab = useCallback((tab: TabType, label: string) => {
-    const isActive = activeTab === tab
-    return (
-      <TouchableOpacity
-        key={tab}
-        style={[
-          styles.tabItem,
-          // 分段 tab 圆角随「按钮圆角」设置行内覆盖；可见高度 ≈ 26 = 15 号文字行高 17 + 下划线留白 3 + 上下 padding 3×2
-          { borderRadius: buttonRadius(26) },
-        ]}
-        onPress={() => { setActiveTab(tab) }}
-      >
-        <Text
-          style={[styles.tabText, { borderBottomColor: isActive ? theme['c-primary-font-active'] : 'transparent' }]}
-          color={theme['c-font']}
-          // 三等分后每份约 109pt（375 宽屏）：数量到 4 位或「字体大小」调得很大时只截断，
-          // 不换行 —— 换行会把整行撑高、三等分的视觉就被破坏（第 16 轮第 2 条）。
-          numberOfLines={1}
-        >
-          {label}
-        </Text>
-      </TouchableOpacity>
-    )
-  }, [activeTab, theme, buttonRadius])
+  // 【第 21 轮·图三/图四】tab 从标题行里搬出来（原 equalColumns 三等分写法），改到标题
+  // **下面**单独一行，几何用共享 PillTabs（与 WebDAV 页逐字同源）。原因：tab 文字为给
+  // 下划线留位（paddingBottom 3 + 边框 2）整体比标题字形中心高 ~2.5pt —— 用户看到的就是
+  // 「标题右边的按钮中文字不和标题文字在同一直线上（显示在标题文字上面一点）」；且用户
+  // 点名「都参考 WebDAV 布局：标题在上面、按钮在标题栏下面、按钮下面显示列表」。
+  // key 只可能是这两个（tabs 数组就在 JSX 里），onChange 原样回传。
+  const handleTabChange = useCallback((key: string) => {
+    setActiveTab(key as TabType)
+  }, [])
 
-  // 页头（状态栏占位 + 标题行 + 同行 tab）。用户第 16 轮第 2/7 条后它**不再**进列表：
+  // 【第 21 轮·图三/图四】右滑返回「我的」主界面：与排行榜页（Leaderboard/Vertical）同一条
+  // 右缘手势带，onBack 只做一件事 —— 把首页切回「我的」（setNavActiveId('nav_love')）。
+  const handleBackToLove = useCallback(() => {
+    setNavActiveId('nav_love')
+  }, [])
+
+  // 页头（状态栏占位 + 标题行 + 标题下面那行 tab）。用户第 16 轮第 2/7 条后它**不再**进列表：
   // 之前它就是 ListHeaderComponent，列表挂载/换数据/下拉刷新时它都在可滚动内容里，
   // 用户看到「第一次进入时标题和内容一起向上跳一下」。现在它是列表的兄弟节点、固定在
   // 容器顶部 —— 标题在任何时候都不动（既不随列表滚动，也不随刷新位移），列表只占它
@@ -277,17 +269,21 @@ export default memo(() => {
   const pageHeader = (
     <>
       <PageTopInset />
-      {/* 标题行与 tab 同行：位置/行高/字重与「我的」标题同源，字号取 WebDAV 页标题
-          （共享页头）的字号。此前用裸 StyleSheet.create 写死 lineHeight 42、
-          字号却随「字体大小」设置放大，字体调大后标题上下笔画被裁
-          —— 用户第 14 轮第 1 条的「显示不全」。详见组件注释。
-          equalColumns：QQ歌单 / 自建歌单 / 收藏歌单 三等分、同一垂直中线（第 16 轮第 2 条）。 */}
-      <DetailPageTitle title={t('nav_tx_playlist')} equalColumns>
-        <View style={[styles.tabBar]}>
-          {renderTab('created', `自建歌单 (${createdPlaylists.length})`)}
-          {renderTab('collected', `收藏歌单 (${collectedPlaylists.length})`)}
-        </View>
-      </DetailPageTitle>
+      {/* 标题行：位置/行高/字重与「我的」标题同源，字号取 WebDAV 页标题（共享页头）的
+          字号。此前用裸 StyleSheet.create 写死 lineHeight 42、字号却随「字体大小」设置
+          放大，字体调大后标题上下笔画被裁 —— 用户第 14 轮第 1 条的「显示不全」。
+          详见组件注释。 */}
+      <DetailPageTitle title={t('nav_tx_playlist')} />
+      {/* 标题下面那行 tab（WebDAV 布局，第 21 轮·图三/图四）：与列表同为固定头的一部分，
+          不随列表滚动；按钮下面才是列表。 */}
+      <PillTabs
+        tabs={[
+          { key: 'created', label: `自建歌单 (${createdPlaylists.length})` },
+          { key: 'collected', label: `收藏歌单 (${collectedPlaylists.length})` },
+        ]}
+        activeKey={activeTab}
+        onChange={handleTabChange}
+      />
     </>
   )
   return (
@@ -339,6 +335,10 @@ export default memo(() => {
           <SonglistDetail info={selectedPlaylist} onBack={handleBack} initialScrollToInfo={null} />
         </View>
       )}
+      {/* 【第 21 轮·图三/图四】右滑返回「我的」主界面：与排行榜页（Leaderboard/Vertical）
+          同一条右缘手势带。歌单详情浮层打开时本层让位（enabled=false）—— 浮层里
+          SonglistDetail 自带手势，返回到歌单列表由它负责，这一层再拦就会「一次滑动连退两级」。 */}
+      <SwipeBackArea onBack={handleBackToLove} enabled={!selectedPlaylist} />
       {menuVisible && (
         <Menu
           ref={menuRef}
@@ -371,24 +371,9 @@ const styles = StyleSheet.create({
     flex: 1,
     maxWidth: '50%',
   },
-  // 【第 16 轮第 2 条】三等分的后两份：标题 flex:1（DetailPageTitle.equalColumns）+ 本行
-  // flex:2，行宽被切成 3 等份（标题 / 自建歌单 / 收藏歌单各 1/3），每个 tab 再对半分。
-  // alignItems 由 'flex-end' 改成 'center'：tab 文字与标题同处 42pt 行高的垂直中线，
-  // 视觉上「在一条直线上」（原 bottom 对齐会比标题低半行）。
-  tabBar: {
-    flexDirection: 'row',
-    flex: 2,
-    alignItems: 'center',
-  },
-  tabItem: {
-    flex: 1,
-    paddingVertical: 3,
-    alignItems: 'center',
-  },
-  tabText: {
-    paddingBottom: 3,
-    borderBottomWidth: 2,
-  },
+  // 【第 21 轮·图三/图四】原 tabBar / tabItem / tabText（标题行内三等分 tab）已删除：
+  // tab 改成标题下面的 PillTabs 行（几何来自 WebDAV，见组件注释），标题行的 equalColumns
+  // 一并去掉 —— 本页页头里已没有需要三等分的东西。
   loadingContainer: {
     flex: 1,
     justifyContent: 'center',

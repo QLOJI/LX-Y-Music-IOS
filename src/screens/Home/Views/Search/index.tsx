@@ -42,6 +42,15 @@ export default () => {
   const overlayContainerWindowPosRef = useRef<{ x: number, y: number } | null>(null)
   const searchInfo = useRef<SearchInfo>({ temp_source: 'kw', source: 'kw', searchType: 'music' })
   const timeoutRef = useRef<NodeJS.Timeout | null>(null)
+  // 【第 21 轮·图九】输入防抖（handleTipSearch 的 500ms）也要能被取消。旧实现只登记
+  // handleShowTipList 的定时器，输入防抖定时器没人回收：点「取消」清空输入后，最后那次
+  // 输入留下的定时器照样跑，把「已清空」的旧关键词重新写回 searchState 并刷新联想缓存，
+  // 于是出现「搜索框里没有文字、联想浮层还显示旧词条」。所有延迟任务统一走这两个 ref。
+  const tipSearchTimeoutRef = useRef<NodeJS.Timeout | null>(null)
+  // 输入框当前文字（onChangeText 的原值，已 trim；程序性 setText 也会同步）。
+  // 联想浮层的显示门槛是「输入框非空」——聚焦/上滑触发的 show 不能无条件摊开全局缓存，
+  // 缓存里可能还留着上一次的关键词（图九）。
+  const inputTextRef = useRef('')
   const [selectedList, setSelectedList] = useState<ListInfoItem | null>(null)
   // 换算后的浮层几何（本层坐标）：top / left / width（等宽于搜索框行）。首帧还没测量到时
   // 给 null → 容器给 0 高：既不参与任何显示（SearchTipList 的高度门控同样是 0），也不会
@@ -150,6 +159,9 @@ export default () => {
   const handleSearch: HeaderBarProps['onSearch'] = useCallback((text) => {
     handleHideTipList()
     setSelectedList(null)
+    // 程序性写词（提交 / 点词条 / 点热词）也要同步 inputTextRef：setText 不经过 onChangeText，
+    // 不记的话「输入框有文字但 ref 为空」，聚焦时的联想浮层门槛会误判（图九）。
+    inputTextRef.current = text
     setSearchState(text)
     searchTipListRef.current?.search(text, layoutHeightRef.current)
     headerBarRef.current?.setText(text)
@@ -258,20 +270,43 @@ export default () => {
   }
 
   const handleTipSearch: HeaderBarProps['onTipSearch'] = (text) => {
+    inputTextRef.current = text
+    // 每次输入都重置上一次的防抖定时器：不重置时连打会堆积多个定时器，且点「取消」后
+    // 没人回收（图九）。
+    if (tipSearchTimeoutRef.current) {
+      clearTimeout(tipSearchTimeoutRef.current)
+      tipSearchTimeoutRef.current = null
+    }
+    if (!text) {
+      // 输入被清空（点「取消」、输入框的 X、或用户手动删光）：立刻收掉浮层。
+      // TipList.hide() 会连同全局联想缓存一起清掉，之后聚焦触发的 show 也摊不出旧词条。
+      searchTipListRef.current?.hide()
+      return
+    }
     refreshTipListAnchor()
-    setTimeout(() => {
+    // 定时器内第一句必须先刷新实测（契约脚本按此形状断言；图九的兜底夹在它和 search 之间）。
+    tipSearchTimeoutRef.current = setTimeout(() => {
       refreshTipListAnchor()
+      tipSearchTimeoutRef.current = null
       searchTipListRef.current?.search(text, layoutHeightRef.current)
     }, 500)
   }
   const handleHideTipList = () => {
+    // 两类延迟任务都要清：show 的 500ms 与输入的 500ms 防抖（图九 —— 只清前者时，
+    // 「取消」后最后那次输入的定时器仍会跑，把旧关键词重新写回 searchState 并刷新缓存）
     if (timeoutRef.current) {
       clearTimeout(timeoutRef.current)
       timeoutRef.current = null
     }
+    if (tipSearchTimeoutRef.current) {
+      clearTimeout(tipSearchTimeoutRef.current)
+      tipSearchTimeoutRef.current = null
+    }
     searchTipListRef.current?.hide()
   }
   const handleCancelSearch = useCallback(() => {
+    // 先清输入登记再收浮层：hide() 内部会把全局联想缓存清空，两者都做完才算「回到空搜索态」
+    inputTextRef.current = ''
     handleHideTipList()
     setSelectedList(null)
     setSearchState('')
@@ -281,10 +316,22 @@ export default () => {
   }, [])
   const handleShowTipList: HeaderBarProps['onShowTipList'] = () => {
     if (timeoutRef.current) clearTimeout(timeoutRef.current)
+    // 空输入框不弹联想浮层（图九：清空/取消后再聚焦，旧关键词的词条不该再出现）
+    if (!inputTextRef.current) {
+      timeoutRef.current = null
+      return
+    }
     refreshTipListAnchor()
+    // 定时器内第一句必须先刷新实测（契约脚本按此形状断言；图九的空输入兜底夹在它和 show 之间）。
     timeoutRef.current = setTimeout(() => {
       refreshTipListAnchor()
+      timeoutRef.current = null
+      const text = inputTextRef.current
+      if (!text) return
+      // show 之后补一次 search：hide() 已把全局缓存清空，只 show 会摊出一个空壳
+      // （要再打字才出词条）。用**当前**输入文字重查，浮层内容始终跟输入框一致。
       searchTipListRef.current?.show(layoutHeightRef.current)
+      searchTipListRef.current?.search(text, layoutHeightRef.current)
     }, 500)
   }
 

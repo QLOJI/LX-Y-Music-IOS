@@ -100,6 +100,13 @@ export default forwardRef<TipListType, TipListProps>(({ onSearch }, ref) => {
           visibleListRef.current = false
           searchTipListRef.current?.setList([])
         })
+        // 【第 21 轮·图九】收浮层的同时把全局联想缓存一起清掉。show() 只要看到
+        // searchState.tipListInfo.list 非空就会把它整份摊出来 —— 缓存里留着上一次
+        // 关键词的词条时，清空输入框后再聚焦就会「输入框没有文字、浮层却显示旧词条」。
+        // 顺带把在途请求也一并作废：handleSearch 里 `keyword != searchState.tipListInfo.text`
+        // 这道闸看到 text 已被清空，晚到的响应不会再写回来。
+        setTipListInfo('', searchState.temp_source)
+        setTipList([])
       },
     }),
     [visible],

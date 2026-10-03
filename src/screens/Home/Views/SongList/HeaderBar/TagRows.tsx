@@ -117,14 +117,10 @@ export default forwardRef<TagRowsType, TagRowsProps>(({ onTagChange }, ref) => {
   return (
     <View style={styles.container}>
       {(collapsed ? groups.slice(0, 1) : groups).map((group, index) => (
-        <ScrollView
-          key={`${group.name}-${index}`}
-          style={styles.groupScroll}
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          keyboardShouldPersistTaps="always"
-          contentContainerStyle={styles.groupContent}
-        >
+        // 【第 21 轮·图十三】组名（热门/主题/场景/心情…）提到横向 ScrollView **外面**，
+        // 与胶囊行并排：组名固定不动，只有右侧的标签胶囊能左右滑。旧实现把组名放在
+        // ScrollView 的内容里，滑动时组名跟着一起被推出屏幕（用户截图里的现象）。
+        <View key={`${group.name}-${index}`} style={styles.groupRow}>
           {group.name ? (
             <Text
               style={styles.groupName}
@@ -135,29 +131,37 @@ export default forwardRef<TagRowsType, TagRowsProps>(({ onTagChange }, ref) => {
               {group.name}
             </Text>
           ) : null}
-          {group.list.map((tag) => {
-            const isActive = activeId == tag.id
-            return (
-              <Pressable
-                key={tag.id || `default-${index}`}
-                style={[
-                  styles.tagButton,
-                  isActive ? activeTagStyle : inactiveTagStyle,
-                  // 标签胶囊圆角随「按钮圆角」设置行内覆盖；高度取 styles.tagButton 的源值 32（胶囊自身高度）
-                  { borderRadius: buttonRadius(32) },
-                ]}
-                onPress={() => { handlePress(tag.name, tag.id) }}
-              >
-                <Text
-                  style={styles.tagText}
-                  color={isActive ? theme['c-primary'] : theme['c-font']}
+          <ScrollView
+            style={styles.groupScroll}
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            keyboardShouldPersistTaps="always"
+            contentContainerStyle={styles.groupContent}
+          >
+            {group.list.map((tag) => {
+              const isActive = activeId == tag.id
+              return (
+                <Pressable
+                  key={tag.id || `default-${index}`}
+                  style={[
+                    styles.tagButton,
+                    isActive ? activeTagStyle : inactiveTagStyle,
+                    // 标签胶囊圆角随「按钮圆角」设置行内覆盖；高度取 styles.tagButton 的源值 32（胶囊自身高度）
+                    { borderRadius: buttonRadius(32) },
+                  ]}
+                  onPress={() => { handlePress(tag.name, tag.id) }}
                 >
-                  {tag.name}
-                </Text>
-              </Pressable>
-            )
-          })}
-        </ScrollView>
+                  <Text
+                    style={styles.tagText}
+                    color={isActive ? theme['c-primary'] : theme['c-font']}
+                  >
+                    {tag.name}
+                  </Text>
+                </Pressable>
+              )
+            })}
+          </ScrollView>
+        </View>
       ))}
     </View>
   )
@@ -171,13 +175,22 @@ const styles = createStyle({
     // 是「有些间距太近」最极端的一处；现在与横向按钮间距同值（controlGap）。
     gap: controlGap,
   },
+  groupRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    // 左边距由行容器统一提供（原挂在 groupContent 上）：有组名的行是「组名 + 胶囊」，
+    // 无组名的「默认」行直接是胶囊 —— 两种行都从这里对齐到同一个左边界。
+    paddingLeft: designSpacing.lg,
+  },
   groupScroll: {
-    flexGrow: 0,
+    // 只占「组名右边的剩余宽度」：胶囊在这个范围内横向滚动，组名在滚动区域之外，
+    // 滑动时始终不动（第 21 轮·图十三）。
+    flex: 1,
   },
   groupContent: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingLeft: designSpacing.lg,
+    // 左边距改由 groupRow 提供，这里只留右端留白（滚到最右时最后一个胶囊不贴边）
     paddingRight: designSpacing.lg,
   },
   groupName: {

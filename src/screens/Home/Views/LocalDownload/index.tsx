@@ -19,6 +19,10 @@ import { sizeFormate } from '@/utils'
 import { designRadius, designSpacing, designTypography } from '@/theme/DesignTokens'
 import { useSafeAreaBottom, useBottomOverlayInset } from '@/store/common/hook'
 import PageTopInset from '@/components/common/PageTopInset'
+import DetailPageTitle from '@/components/common/DetailPageTitle'
+import PillTabs from '@/components/common/PillTabs'
+import SwipeBackArea from '@/components/common/SwipeBackArea'
+import { setNavActiveId } from '@/core/common'
 
 type TabId = 'local' | 'download'
 
@@ -359,165 +363,180 @@ export default memo(() => {
     [isHorizontal, isPlayingId, selectedIds, selecting, toggleSelect, handlePlayLocal],
   )
 
+  // 【第 21 轮·图七】右滑返回「我的」主界面：与排行榜页（Leaderboard/Vertical）同一条
+  // 右缘手势带，onBack 只做一件事 —— 把首页切回「我的」（setNavActiveId('nav_love')）。
+  const handleBackToLove = useCallback(() => {
+    setNavActiveId('nav_love')
+  }, [])
+
+  // 下载 / 本地切换的 key 只可能是这两个（tabs 数组就在下面 JSX 里），原样回传即可。
+  const handleTabChange = useCallback((key: string) => {
+    setTab(key as TabId)
+  }, [])
+
+  // 页头（状态栏占位 + 标题行 + 标题下面那行按钮 + 下载/本地切换 + 说明）。
+  // 【第 21 轮·图七】竖屏时它固定在列表**外面**（见 return 里的 {!isHorizontal && pageHeader}）：
+  // 此前竖屏它是 FlatList 的 ListHeaderComponent —— 页头落在可滚动内容里，iOS 会对贴着安全区
+  // 顶边的滚动视图自动加顶部 contentInset（本机 = 62pt），用户截图里「标题文字消失、标题栏
+  // 位置和大小不统一」就是这层 inset 在推页头；列表一滚页头还会跟着走。移成列表兄弟节点后，
+  // 与「我的」/ WebDAV 同构、位置固定。横屏仍走 LandscapeDetailLayout 的左栏（header 槽）。
+  // 另把「下载 / 本地」原来那条整宽分段条换成共享 PillTabs —— 胶囊几何与 WebDAV / 酷狗歌单 /
+  // QQ歌单逐字同源（用户点名「间距都参考 WebDAV」）。
   const pageHeader = (
     <>
-      {/* 竖屏下共享页头已含状态栏占位，这里再叠加 PageTopInset 会出现大段空白；
-          仅横屏（LandscapeDetailLayout 自带页头、共享页头隐藏）需要保留 */}
-      {isHorizontal ? <PageTopInset /> : null}
-          <View style={styles.header}>
-            <View style={styles.headerActions}>
-              <TouchableOpacity
-                // 按钮底面随「按钮透明度」淡出
-                style={{ ...styles.headerBtn, backgroundColor: applyOpacity(theme['c-primary-background'], buttonOpacity), borderRadius: buttonRadius(32) /* 批量管理按钮高 32：按自身高度 32 折算半高，行内覆盖「按钮圆角」 */ }}
-                onPress={selecting ? exitSelecting : enterSelecting}
-              >
-                <Text size={designTypography.caption} color={theme['c-primary-font']}>
-                  {selecting ? '取消' : '批量管理'}
-                </Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                // 按钮底面随「按钮透明度」淡出
-                style={{ ...styles.refreshBtn, backgroundColor: applyOpacity(theme['c-primary-background'], buttonOpacity), borderRadius: buttonRadius(32) /* 刷新按钮高 32：按自身高度 32 折算半高，行内覆盖「按钮圆角」 */ }}
-                onPress={handleRefresh}
-              >
-                <Text size={designTypography.caption} color={theme['c-primary-font']}>
-                  刷新
-                </Text>
-              </TouchableOpacity>
-            </View>
-          </View>
+      {/* 本页已接管页头（PAGE_OWNED_HEADER_IDS：nav_local_download），共享页头不再渲染，
+          所以横竖屏都要自己铺状态栏占位（此前只在横屏铺，竖屏靠共享页头，见下条注释）。
+          —— 用户第 14 轮第 1 条：本页标题按「我的」标题位置固定且显示完全。 */}
+      <PageTopInset />
+      <DetailPageTitle title={t('nav_local_download')} />
+      <View style={styles.header}>
+        <View style={styles.headerActions}>
+          <TouchableOpacity
+            // 按钮底面随「按钮透明度」淡出
+            style={{ ...styles.headerBtn, backgroundColor: applyOpacity(theme['c-primary-background'], buttonOpacity), borderRadius: buttonRadius(32) /* 批量管理按钮高 32：按自身高度 32 折算半高，行内覆盖「按钮圆角」 */ }}
+            onPress={selecting ? exitSelecting : enterSelecting}
+          >
+            <Text size={designTypography.caption} color={theme['c-primary-font']}>
+              {selecting ? '取消' : '批量管理'}
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            // 按钮底面随「按钮透明度」淡出
+            style={{ ...styles.refreshBtn, backgroundColor: applyOpacity(theme['c-primary-background'], buttonOpacity), borderRadius: buttonRadius(32) /* 刷新按钮高 32：按自身高度 32 折算半高，行内覆盖「按钮圆角」 */ }}
+            onPress={handleRefresh}
+          >
+            <Text size={designTypography.caption} color={theme['c-primary-font']}>
+              刷新
+            </Text>
+          </TouchableOpacity>
+        </View>
+      </View>
 
-          <View style={{ ...styles.tabs, borderColor: theme['c-border-background'] }}>
-            {(['download', 'local'] as TabId[]).map(id => (
-              <TouchableOpacity
-                key={id}
-                style={[
-                  styles.tabItem,
-                  // 选中态胶囊底面随「按钮透明度」淡出；底色由「主色实底」改为主色 20% 淡染，
-                  // 因为选中文字已改成主题主色（与设置里「LX-Y Music 字体大小预览」同色），
-                  // 同色实心底会把文字吃掉
-                  tab === id && { ...styles.tabItemActive, backgroundColor: applyOpacity(theme['c-primary-alpha-800'], buttonOpacity) },
-                  // 页签胶囊高 38：按自身高度 38 折算半高，行内覆盖「按钮圆角」
-                  { borderRadius: buttonRadius(38) },
-                ]}
-                onPress={() => { setTab(id) }}
-              >
-                <Text
-                  size={designTypography.caption}
-                  color={tab === id ? theme['c-primary'] : theme['c-font-label']}
-                >
-                  {id === 'local' ? '本地' : '下载'}
-                </Text>
-              </TouchableOpacity>
-            ))}
-          </View>
+      {/* 下载 / 本地切换：共享 PillTabs（选中态淡染底 + 主色文字，几何见组件注释） */}
+      <PillTabs
+        tabs={[
+          { key: 'download', label: '下载' },
+          { key: 'local', label: '本地' },
+        ]}
+        activeKey={tab}
+        onChange={handleTabChange}
+      />
 
-          <Text size={11} color={theme['c-500']} style={styles.tip}>
-            {tab === 'download'
-              ? '软件内下载的音乐，离线可播放'
-              : `下载目录下的「${getLocalDirName()}」文件夹，把音频放进来即可离线播放，支持同名 .lrc 歌词`}
-          </Text>
+      <Text size={11} color={theme['c-500']} style={styles.tip}>
+        {tab === 'download'
+          ? '软件内下载的音乐，离线可播放'
+          : `下载目录下的「${getLocalDirName()}」文件夹，把音频放进来即可离线播放，支持同名 .lrc 歌词`}
+      </Text>
     </>
   )
 
   return (
-    <LandscapeDetailLayout
-      header={isHorizontal ? pageHeader : null}
-      body={
-        <View style={styles.listArea}>
-          {tab === 'download' ? (
-            <FlatList
-              style={styles.list}
-              data={completedTasks}
-              ListHeaderComponent={isHorizontal ? undefined : pageHeader}
-              contentContainerStyle={{ paddingBottom: bottomInset }}
-              key={isHorizontal ? 'horizontal' : 'vertical'}
-              numColumns={isHorizontal ? 2 : 1}
-              columnWrapperStyle={isHorizontal ? styles.columnWrapper : undefined}
-              keyExtractor={item => item.id}
-              // 限制渲染窗口减负；removeClippedSubviews 必须关闭：iOS 上新增行（下载刚完成
-              // 的歌曲进场）的离屏视图复用会让整行渲染成空白/白底，直到下一次重渲（点一下）
-              // 才恢复（用户第 11 轮第 12 条）。仓库内同类列表均已按此口径关闭。
-              initialNumToRender={20}
-              windowSize={5}
-              maxToRenderPerBatch={10}
-              removeClippedSubviews={false}
-              updateCellsBatchingPeriod={50}
-              renderItem={renderDownloadItem}
-              ListEmptyComponent={
-                <View style={styles.empty}>
-                  <Text color={theme['c-500']}>{loading ? '加载中...' : t('no_item')}</Text>
-                </View>
-              }
-            />
-          ) : (
-            <FlatList
-              style={styles.list}
-              data={localFiles}
-              ListHeaderComponent={isHorizontal ? undefined : pageHeader}
-              contentContainerStyle={{ paddingBottom: bottomInset }}
-              key={isHorizontal ? 'horizontal' : 'vertical'}
-              numColumns={isHorizontal ? 2 : 1}
-              columnWrapperStyle={isHorizontal ? styles.columnWrapper : undefined}
-              keyExtractor={item => item.id}
-              initialNumToRender={20}
-              windowSize={5}
-              maxToRenderPerBatch={10}
-              // 同上：iOS 上开启离屏摘除会让新扫描/新下载进场的行整行变白，关闭
-              removeClippedSubviews={false}
-              updateCellsBatchingPeriod={50}
-              renderItem={renderLocalItem}
-              ListEmptyComponent={
-                <View style={styles.empty}>
-                  <Text color={theme['c-500']}>{loading ? '正在扫描...' : `「${getLocalDirName()}」文件夹为空`}</Text>
-                </View>
-              }
-            />
-          )}
+    // 根 View 给 SwipeBackArea 一个铺满的定位父级（与排行榜页/歌单页同构）
+    <View style={{ flex: 1 }}>
+      <LandscapeDetailLayout
+        header={isHorizontal ? pageHeader : null}
+        body={
+          <View style={styles.listArea}>
+            {/* 【第 21 轮·图七】竖屏：页头固定在列表**外面**（列表的兄弟节点），列表只占
+                页头下面那块 —— WebDAV 布局「标题 → 按钮 → 列表」，也避开 iOS 给贴安全区
+                滚动视图自动加的顶部 contentInset（本机 62pt，此前标题被这层 inset 推走/
+                吞掉）。横屏仍走 LandscapeDetailLayout 左栏（header 槽）。 */}
+            {!isHorizontal && pageHeader}
+            {tab === 'download' ? (
+              <FlatList
+                style={styles.list}
+                data={completedTasks}
+                contentContainerStyle={{ paddingBottom: bottomInset }}
+                key={isHorizontal ? 'horizontal' : 'vertical'}
+                numColumns={isHorizontal ? 2 : 1}
+                columnWrapperStyle={isHorizontal ? styles.columnWrapper : undefined}
+                keyExtractor={item => item.id}
+                // 限制渲染窗口减负；removeClippedSubviews 必须关闭：iOS 上新增行（下载刚完成
+                // 的歌曲进场）的离屏视图复用会让整行渲染成空白/白底，直到下一次重渲（点一下）
+                // 才恢复（用户第 11 轮第 12 条）。仓库内同类列表均已按此口径关闭。
+                initialNumToRender={20}
+                windowSize={5}
+                maxToRenderPerBatch={10}
+                removeClippedSubviews={false}
+                updateCellsBatchingPeriod={50}
+                renderItem={renderDownloadItem}
+                ListEmptyComponent={
+                  <View style={styles.empty}>
+                    <Text color={theme['c-500']}>{loading ? '加载中...' : t('no_item')}</Text>
+                  </View>
+                }
+              />
+            ) : (
+              <FlatList
+                style={styles.list}
+                data={localFiles}
+                contentContainerStyle={{ paddingBottom: bottomInset }}
+                key={isHorizontal ? 'horizontal' : 'vertical'}
+                numColumns={isHorizontal ? 2 : 1}
+                columnWrapperStyle={isHorizontal ? styles.columnWrapper : undefined}
+                keyExtractor={item => item.id}
+                initialNumToRender={20}
+                windowSize={5}
+                maxToRenderPerBatch={10}
+                // 同上：iOS 上开启离屏摘除会让新扫描/新下载进场的行整行变白，关闭
+                removeClippedSubviews={false}
+                updateCellsBatchingPeriod={50}
+                renderItem={renderLocalItem}
+                ListEmptyComponent={
+                  <View style={styles.empty}>
+                    <Text color={theme['c-500']}>{loading ? '正在扫描...' : `「${getLocalDirName()}」文件夹为空`}</Text>
+                  </View>
+                }
+              />
+            )}
 
-          {selecting && (
-            <View
-              style={[
-                styles.selectBar,
-                {
-                  borderWidth: StyleSheet.hairlineWidth,
-                  borderColor: theme['c-border-background'],
-                  backgroundColor: theme['c-content-background'],
-                  // 悬浮在迷你播放器胶囊上方：胶囊 + tab 栏最高约到 safeAreaBottom + 150
-                  bottom: 160 + safeAreaBottom,
-                },
-              ]}
-            >
-              <TouchableOpacity style={[styles.selectBarBtn, { borderRadius: buttonRadius(22) /* 小按钮可见高 ≈ 文字 + 上下 padding 4×2 ≈ 22 */ }]} onPress={toggleSelectAll}>
-                <Text size={designTypography.caption} color={theme['c-primary-font']}>
-                  {tab === 'download'
-                    ? completedTasks.length > 0 && completedTasks.every(t => selectedIds.has(t.id))
-                      ? '取消全选'
-                      : '全选'
-                    : localFiles.length > 0 && localFiles.every(f => selectedIds.has(f.id))
-                      ? '取消全选'
-                      : '全选'}
-                </Text>
-              </TouchableOpacity>
-              <Text size={designTypography.caption} color={theme['c-font-label']} style={{ marginLeft: 'auto' }}>
-                已选 {selectedIds.size} 项
-              </Text>
-              <TouchableOpacity
-                style={[styles.selectBarBtn, selectedIds.size === 0 && styles.selectBarBtnDisabled, { borderRadius: buttonRadius(22) /* 同「全选」按钮：可见高 ≈ 22 */ }]}
-                onPress={handleDeleteSelected}
+            {selecting && (
+              <View
+                style={[
+                  styles.selectBar,
+                  {
+                    borderWidth: StyleSheet.hairlineWidth,
+                    borderColor: theme['c-border-background'],
+                    backgroundColor: theme['c-content-background'],
+                    // 悬浮在迷你播放器胶囊上方：胶囊 + tab 栏最高约到 safeAreaBottom + 150
+                    bottom: 160 + safeAreaBottom,
+                  },
+                ]}
               >
-                <Text
-                  size={designTypography.caption}
-                  color={selectedIds.size === 0 ? theme['c-500'] : theme['c-primary-font']}
-                >
-                  删除
+                <TouchableOpacity style={[styles.selectBarBtn, { borderRadius: buttonRadius(22) /* 小按钮可见高 ≈ 文字 + 上下 padding 4×2 ≈ 22 */ }]} onPress={toggleSelectAll}>
+                  <Text size={designTypography.caption} color={theme['c-primary-font']}>
+                    {tab === 'download'
+                      ? completedTasks.length > 0 && completedTasks.every(t => selectedIds.has(t.id))
+                        ? '取消全选'
+                        : '全选'
+                      : localFiles.length > 0 && localFiles.every(f => selectedIds.has(f.id))
+                        ? '取消全选'
+                        : '全选'}
+                  </Text>
+                </TouchableOpacity>
+                <Text size={designTypography.caption} color={theme['c-font-label']} style={{ marginLeft: 'auto' }}>
+                  已选 {selectedIds.size} 项
                 </Text>
-              </TouchableOpacity>
-            </View>
-          )}
-        </View>
-      }
+                <TouchableOpacity
+                  style={[styles.selectBarBtn, selectedIds.size === 0 && styles.selectBarBtnDisabled, { borderRadius: buttonRadius(22) /* 同「全选」按钮：可见高 ≈ 22 */ }]}
+                  onPress={handleDeleteSelected}
+                >
+                  <Text
+                    size={designTypography.caption}
+                    color={selectedIds.size === 0 ? theme['c-500'] : theme['c-primary-font']}
+                  >
+                    删除
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            )}
+          </View>
+        }
       />
+      {/* 【第 21 轮·图七】右滑返回「我的」主界面：铺满整页的右缘手势带（与排行榜页同一条）。
+          本页没有二级浮层，直接常开。 */}
+      <SwipeBackArea onBack={handleBackToLove} />
+    </View>
   )
 })
 
@@ -547,21 +566,9 @@ const styles = createStyle({
     borderRadius: designRadius.pill,
     justifyContent: 'center',
   },
-  tabs: {
-    flexDirection: 'row',
-    height: 38,
-    marginHorizontal: designSpacing.md,
-    marginBottom: designSpacing.sm,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderRadius: designRadius.pill,
-    overflow: 'hidden',
-  },
-  tabItem: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  tabItemActive: {},
+  // 【第 21 轮·图七】原 tabs / tabItem / tabItemActive（整宽分段条：h38 + 发丝边框 +
+  // overflow hidden + 每项 flex:1）已删除：下载/本地切换改用共享 PillTabs（几何来自 WebDAV，
+  // 见组件注释），与酷狗歌单 / QQ歌单 / WebDAV 同一份胶囊几何。
   tip: {
     paddingLeft: designSpacing.md,
     paddingRight: designSpacing.md,
