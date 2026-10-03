@@ -78,12 +78,24 @@ const ListItem = memo(
     const buttonOpacity = useSettingValue('theme.buttonOpacity')
     // 封面 54×54；点赞/更多图标按钮高度为行高 ITEM_HEIGHT=scaleSizeH(70) 的 80% ≈ 56
     const buttonRadius = useButtonRadius()
-    const coverUrl = useCoverUrl(item)
+    // 【第 22 轮·图三/图四】下载任务转成的播放项（判据 'progress' in item，见 LocalDownload 的
+    // taskToPlayItem）**没有** source / name / singer，显示数据全挂在 item.metadata.musicInfo 上；
+    // 播放器内核刻意保留这个结构（'progress' in musicInfo 是任务项判据，歌词/封面/URL 都依赖它，
+    // 不能改）。此前本组件直接读 item.source 并在下方 .toUpperCase()，播「下载 / 本地」歌曲后
+    // 长按迷你播放器或进入试听列表，渲染期就抛
+    // `TypeError: Cannot read property 'toUpperCase' of undefined` 整页崩。
+    // 这里统一取「显示用信息」：任务项取 metadata.musicInfo，其余就是 item 自己；
+    // 下面所有展示 / 点赞 / 音质 / API 支持判断都读 info，而 onPress / onLongPress / onShowMenu
+    // 仍回传原始 item（播放链路要继续拿任务结构）。
+    const info: LX.Music.MusicInfo = 'progress' in item
+      ? ((item as unknown as LX.Download.ListItem).metadata?.musicInfo ?? item)
+      : item
+    const coverUrl = useCoverUrl(info)
     // 汽水(qs) 等音源经 filterListDetail 构造的歌曲可能不带 meta 字段，这里兜底避免
     // 下方 item.meta.xxx 访问 undefined 时整行抛错、导致整列表空白（尤其播放态重渲染时）。
-    const meta = (item.meta ?? {}) as any
+    const meta = (info.meta ?? {}) as any
     const isSelected = selectedList.includes(item)
-    const isSupported = useAssertApiSupport(item.source)
+    const isSupported = useAssertApiSupport(info.source)
     const moreButtonRef = useRef<TouchableOpacity>(null)
 
     const isWyLiked = useIsWyLiked(meta.songId)
@@ -94,23 +106,24 @@ const ListItem = memo(
     // 抛 `Cannot read property 'songmid' of undefined` 整列表崩掉（用户第 11 轮第 13 条）。
     const txSongMid = isNumericId
       ? String(txSongId)
-      : (meta.songmid || meta.strMediaMid || (typeof item.id === 'string' && item.id.startsWith('tx_') ? item.id.slice(3) : item.id))
+      : (meta.songmid || meta.strMediaMid || (typeof info.id === 'string' && info.id.startsWith('tx_') ? info.id.slice(3) : info.id))
     const isTxLiked = useIsTxLiked(txSongMid)
     const isKgLiked = useIsKgLiked(meta.hash || meta.songId)
-    const showLikeButton = item.source === 'wy' || item.source === 'tx' || item.source === 'kg'
-    const isLiked = item.source === 'wy' ? isWyLiked : item.source === 'tx' ? isTxLiked : item.source === 'kg' ? isKgLiked : false
+    // 【第 22 轮】下面全部改读 info：任务项的 source 在 metadata.musicInfo 上（item.source 是 undefined）
+    const showLikeButton = info.source === 'wy' || info.source === 'tx' || info.source === 'kg'
+    const isLiked = info.source === 'wy' ? isWyLiked : info.source === 'tx' ? isTxLiked : info.source === 'kg' ? isKgLiked : false
 
     const handleLike = () => {
-      if (item.source === 'wy') {
-        handleLikeMusic(item as LX.Music.MusicInfoOnline)
-      } else if (item.source === 'tx') {
-        handleTxLikeMusic(item as LX.Music.MusicInfoOnline)
-      } else if (item.source === 'kg') {
-        handleKgLikeMusic(item as LX.Music.MusicInfoOnline)
+      if (info.source === 'wy') {
+        handleLikeMusic(info as LX.Music.MusicInfoOnline)
+      } else if (info.source === 'tx') {
+        handleTxLikeMusic(info as LX.Music.MusicInfoOnline)
+      } else if (info.source === 'kg') {
+        handleKgLikeMusic(info as LX.Music.MusicInfoOnline)
       }
     }
 
-    const tagInfo = useQualityTag(item, qualityShowHighest)
+    const tagInfo = useQualityTag(info, qualityShowHighest)
 
     const handleShowMenu = () => {
       if (moreButtonRef.current?.measure) {
@@ -126,7 +139,7 @@ const ListItem = memo(
     }
 
     const active = activeIndex == index
-    const singer = `${item.singer}${isShowAlbumName && meta.albumName ? `·${meta.albumName}` : ''}`
+    const singer = `${info.singer}${isShowAlbumName && meta.albumName ? `·${meta.albumName}` : ''}`
 
     return (
       <View
@@ -170,14 +183,16 @@ const ListItem = memo(
           </View>
           <View style={styles.itemInfo}>
             <Text color={active ? theme['c-primary-font'] : theme['c-font']} numberOfLines={1}>
-              {item.name}
-              {item.alias ? <Text color={theme['c-font-label']}> ({item.alias})</Text> : null}
+              {info.name}
+              {info.alias ? <Text color={theme['c-font-label']}> ({info.alias})</Text> : null}
             </Text>
             <View style={styles.listItemSingle}>
-              <Badge>{item.source.toUpperCase()}</Badge>
+              {/* 【第 22 轮】source 必须带存在性判断：任务项在极端情况（metadata 缺失）下取不到
+                  音源，不能让一个徽标把整页渲染打崩（用户报的崩溃点就是这行 .toUpperCase()） */}
+              {info.source ? <Badge>{info.source.toUpperCase()}</Badge> : null}
               {tagInfo.type ? <Badge type={tagInfo.type}>{tagInfo.text}</Badge> : null}
-              {item.source !== 'local' && meta.fee === 1 ? <Badge type="vip">VIP</Badge> : null}
-              {item.source === 'wy' && meta.originCoverType === 2 ? <Badge type="normal">cover</Badge> : null}
+              {info.source !== 'local' && meta.fee === 1 ? <Badge type="vip">VIP</Badge> : null}
+              {info.source === 'wy' && meta.originCoverType === 2 ? <Badge type="normal">cover</Badge> : null}
               <Text
                 style={styles.listItemSingleText}
                 size={11}
@@ -194,7 +209,7 @@ const ListItem = memo(
               color={active ? theme['c-primary-alpha-400'] : theme['c-500']}
               numberOfLines={1}
             >
-              {item.interval}
+              {info.interval}
             </Text>
           ) : null}
         </TouchableOpacity>

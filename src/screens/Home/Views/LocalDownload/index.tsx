@@ -114,9 +114,13 @@ const SongRow = memo(
         style={{
           ...styles.songItem,
           // 播放中/选中行高亮底色随「按钮透明度」淡出；只改颜色 alpha，不用容器 style.opacity
+          // 【第 22 轮·图一/图二】普通行此前走不透明的 c-content-background，绕过了「按钮透明度」
+          // 设置 —— 下载 / 本地两栏每首歌都像贴着一块实心底板，点下去进入 isPlaying 态才变成
+          // 跟随透明度的高亮底，用户看到的「点击后才正常」就是这个差。现在与页头「批量管理 /
+          // 刷新」按钮、播放中/选中行同一口径：同一个 c-primary-background token + applyOpacity。
           backgroundColor: isPlaying || selected
             ? applyOpacity(theme['c-primary-background-hover'], buttonOpacity)
-            : theme['c-content-background'],
+            : applyOpacity(theme['c-primary-background'], buttonOpacity),
           borderColor: isPlaying || selected
             ? theme['c-primary-background-active']
             : theme['c-border-background'],
