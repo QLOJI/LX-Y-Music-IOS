@@ -1,7 +1,7 @@
 import { View } from 'react-native'
 import { usePlayerMusicInfo } from '@/store/player/hook'
 import { useSettingValue } from '@/store/setting/hook'
-import Text from '@/components/common/Text'
+import MarqueeText from '@/components/common/MarqueeText'
 import { createStyle, formatMusicName } from '@/utils/tools'
 import { useTheme } from '@/store/theme/hook'
 
@@ -17,10 +17,13 @@ export default () => {
     : ''
 
   return (
+    // 【第 30 轮·图十】歌名过长不再截断成「...」：跑马灯从右到左滚动（速率见 MarqueeText）。
     <View style={styles.container}>
-      <Text color={theme['c-font']} numberOfLines={1} style={{ fontWeight: '700' }}>
-        {title}
-      </Text>
+      <MarqueeText
+        text={title}
+        color={theme['c-font']}
+        style={{ fontWeight: '700' }}
+      />
     </View>
   )
 }

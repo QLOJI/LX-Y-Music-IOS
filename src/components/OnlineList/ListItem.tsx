@@ -1,6 +1,7 @@
 import { memo, useRef } from 'react'
 import { View, TouchableOpacity } from 'react-native'
 import Text from '@/components/common/Text'
+import MarqueeText from '@/components/common/MarqueeText'
 import Badge from '@/components/common/Badge'
 import { Icon } from '@/components/common/Icon'
 import { useI18n } from '@/lang'
@@ -165,15 +166,17 @@ const ListItem = memo(
             )}
           </View>
           <View style={styles.itemInfo}>
-            <Text
-              numberOfLines={1}
+            {/* 【第 30 轮·图十】歌名过长不再截断成「...」：跑马灯从右到左滚动。
+                别名保留原来的灰字样式，故走 children（变更检测仍看 text）。 */}
+            <MarqueeText
+              text={item.alias ? `${item.name} (${item.alias})` : item.name}
               size={designTypography.body}
               style={styles.songName}
               color={isPlaying ? theme['c-primary-font'] : theme['c-font']}
             >
               {item.name}
               {item.alias ? <Text color={theme['c-font-label']}> ({item.alias})</Text> : null}
-            </Text>
+            </MarqueeText>
             <View style={styles.listItemSingle}>
               {/* 【第 22 轮】source 加存在性判断：与 Mylist/MusicList/ListItem 同一条防线 ——
                   缺 source 的数据（下载任务转播放项等）绝不能靠一个徽标把整页渲染打崩 */}

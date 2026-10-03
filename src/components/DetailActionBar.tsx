@@ -77,10 +77,12 @@ const styles = createStyle({
     width: '100%',
     flexGrow: 0,
     flexShrink: 0,
+    // 【第 30 轮】同 SonglistDetail/ActionBar：上下间距都收敛到 sm(12)，与歌单详情页对齐
+    // （用户报「播放全部文字上下间距太大」，要求上下间距一样）。
     marginTop: designSpacing.sm,
     paddingHorizontal: designSpacing.md,
     gap: designSpacing.sm,
-    paddingBottom: designSpacing.md,
+    paddingBottom: designSpacing.sm,
   },
   controlBtn: {
     flexGrow: 1,
