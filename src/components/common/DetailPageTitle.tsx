@@ -31,15 +31,18 @@ const titleMinFontScale = 0.5
  *  也就是说现有文案永远够不着这道上限（不缩字号），只有将来更长的标题才会在窄屏被它收住。 */
 const titleMaxWidthFraction = 0.6
 
-/** 【第 20 轮·图二】「tab 文字字形底部对齐」的下移系数（相对两类文字的字号差）。
+/** 【第 20 轮·图二 / 第 21 轮·图十~图十二】「tab 文字字形底部对齐」的下移系数（相对两类文字的字号差）。
  *
- *  来源：用户图二截图实测 —— 同一条行里标题字形底比 tab 文字字形底低 9px
- *  （截图 2.36px/pt ⇒ 3.8pt）。标题字号 subPageTitleSize(20)、tab 字号是 Text 默认
- *  designTypography.body(15)，字号差 5pt ⇒ 系数 3.8 ÷ 5 = 0.76。
- *  用「系数 × 字号差」而不是写死 3.8pt：两个字号都随「字体大小」设置等比缩放（setSpText），
+ *  第 20 轮取 0.76（= 3.8pt ÷ 字号差 5pt），来源是一张 2.36px/pt 的截图；用户第 21 轮
+ *  图十~图十二复核「酷狗 / QQ / 网易每日推荐标题与右边 tab 文字还没完全底部对齐」——
+ *  按本机截图重新量（1280×2781 = 440pt ⇒ 2.909px/pt）：带着 0.76 的 3.8pt 时 tab 字形底
+ *  反而比标题字形底**低** 5.33px（= 1.83pt），即老系数过冲；正确落差 = 3.8 − 1.83 = 1.97pt
+ *  ⇒ 系数 = 1.97 ÷ 5 ≈ 0.39。与「两个字号在行内垂直居中时字形底落差 ≈ 0.36 × 字号差」的
+ *  度量关系一致（0.36 × 5 = 1.8pt），两路证据互相印证。
+ *  用「系数 × 字号差」而不是写死 pt：两个字号都随「字体大小」设置等比缩放（setSpText），
  *  落差同样等比，字体设置变化时不需要第二个常数。
  *  iOS 各机型/字号档的字体度量会有零点几 pt 出入 —— 真机复核若仍有 1pt 级残差，只改这一个系数。 */
-const tabInkBottomOffsetRatio = 0.76
+const tabInkBottomOffsetRatio = 0.39
 
 interface Props {
   /** 标题文案：与共享页头同一个 i18n key（t(navId)） */
@@ -120,8 +123,9 @@ interface Props {
  *     · tab 列宽 = （行内容区实测宽 − 标题实测宽）÷ tab 列数，各列等宽（列内文字水平居中），
  *       下限 minTabColumnWidth 保证 4 字 tab 不被逼到缩字号（宁可行内横向滑动，同 >4 列口径）；
  *     · **底部对齐**（图二：「主页推荐等文字和 QQ 每日推荐文字不在一条直线上」）：标题字号大、
- *       tab 字号小，两个行盒在同一行内垂直居中时，大字号的字形底天然更低（实测 3.8pt）——
- *       把 tab 整行（含下划线、子模式 chip）下移同一距离，两类文字字形底就落在同一条线上。
+ *       tab 字号小，两个行盒在同一行内垂直居中时，大字号的字形底天然更低（本机复测 1.97pt，
+ *       第 21 轮图十~图十二修正，见 tabInkBottomOffsetRatio）——把 tab 整行（含下划线、
+ *       子模式 chip）下移同一距离，两类文字字形底就落在同一条线上。
  *       下移的是 tab 而不是上移标题：标题保持与「我的 / WebDAV」等非等分列页面同一高度，
  *       十一个页面的大标题才在同一水平线上；transform 不改布局，行高仍由标题行盒决定。
  *   调用方接口不变：children 仍是 `(columnWidth) => ReactNode`，语义是「每个 tab 列的宽度」。
@@ -171,8 +175,9 @@ const DetailPageTitle = memo(({ title, children, equalColumns = false, equalColu
       ? Math.max((availableWidth - titleWidth) / tabCount, minTabColumnWidth)
       // 首帧兜底：旧口径（整行等分），下一帧就被实测值替换，不会闪。
       : availableWidth / columnCount
-  // 【第 20 轮·图二】tab 文字的下移量（字形底部对齐）：两类文字都在行内垂直居中，字号大的
-  // 字形底天然更低，落差 ≈ 系数 × 字号差（截图实测 3.8pt @ 字体设置 1.0）。随字体设置等比。
+  // 【第 20 轮·图二 / 第 21 轮·图十~图十二】tab 文字的下移量（字形底部对齐）：两类文字都在
+  // 行内垂直居中，字号大的字形底天然更低，落差 ≈ 系数 × 字号差（本机复测 1.97pt @ 字体设置
+  // 1.0；第 20 轮的 3.8pt 过冲 1.83pt，见上方系数注释）。随字体设置等比。
   const tabInkBottomOffset = isColumn
     ? tabInkBottomOffsetRatio * (setSpText(subPageTitleSize) - setSpText(designTypography.body))
     : 0

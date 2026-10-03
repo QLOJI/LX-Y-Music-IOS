@@ -49,8 +49,10 @@ export default memo(({ visible, url, name = 'image', onClose }: Props) => {
     void (async() => {
       try {
         toast('正在保存图片...', 'short')
-        const targetPath = await saveImageToPictures(url, name)
-        if (targetPath) toast(`图片已保存到: ${targetPath}`, 'long')
+        const result = await saveImageToPictures(url, name)
+        // 【第 21 轮·优化 2】iOS 走系统相册（用户照片 App 可见），不再给沙盒路径；
+        // Android / 原生相册不可用的兜底分支仍显示落盘路径
+        if (result) toast(result.savedToPhotos ? '已保存到相册' : `图片已保存到: ${result.path}`, 'long')
       } catch (err: any) {
         toast(`保存图片失败: ${err.message}`, 'long')
       }
