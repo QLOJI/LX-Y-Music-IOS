@@ -24,6 +24,11 @@
  *     由 service.ts 导出、在 remoteCommand.ts 的 play/pause/toggle 分支调用 ——
  *     不能改挂 app_event 'pause'（缓冲时的暂停也发那个事件，会误清标记）。
  *
+ * 【第 22 轮追加（2026-10-03）】用户报「手动暂停后，播放其他音频结束，返回软件时也会
+ * 自动开始播放」——只清一次标记挡不住「打断开始 / 退后台预置」重新置位。修法：新增
+ * core/player/manualPause.ts 手动暂停闸门，remoteCommand.ts 的 'pause' 分支落闸，
+ * service.ts 五处自动续播入口全部否决，play 事件复位。本脚本 ⑥ 号不变量盯这条。
+ *
  * 本脚本从源码抽取真实写法做断言，并带反例自检（通路重复这类回归 tsc/eslint 无感：
  * 原生不参与 TS 检查、多一条监听也不报错，只表现为「一次按键跳两首」）。
  * 运行：node scripts/sim-remote-command-single-source.js
@@ -98,7 +103,9 @@ const serviceInvariants = (rawFile) => {
     for (const [needle, label] of [
       // 第 21 轮·优化 1：待恢复记录的判据从「瞬间 isPlay 快照」换成「最近 3s 确实在播」
       // 时间窗（车机蓝牙下导航播报会先触发路由暂停，isPlay 已被置 false；快照会漏记意图）
-      ['shouldResumeAfterDuck ||= wasPlayingRecently()', 'iOS 音量闪避的待恢复记录（最近 3s 在播时间窗）'],
+      // 第 22 轮：时间窗再叠手动暂停闸门 —— 手动暂停后「最近 3s 在播」仍为真，
+      // 不否决的话其它音频一响就把恢复意图立起来（用户报的「播完自己开始播」）
+      ['shouldResumeAfterDuck ||= !isManualPause() && wasPlayingRecently()', 'iOS 音量闪避的待恢复记录（最近 3s 在播时间窗 + 手动暂停闸门）'],
       ['clearResumeTimer()', '打断开始清掉续播补试表'],
       ['restoreConfiguredVolume()', '打断结束恢复配置音量'],
       ['scheduleAutoResume()', '打断结束按需自动续播'],
@@ -200,6 +207,20 @@ const remoteCommandInvariants = (rawFile) => {
   // ⑤ 交互标记：任何遥控命令都要续期「超时退出」交互时间
   if (!code.includes('markTimeoutExitInteraction()')) {
     reasons.push('遥控命令未调 markTimeoutExitInteraction（超时退出可能在遥控操作中途触发）')
+  }
+
+  // ⑥ 【第 22 轮】遥控「暂停」必须落「手动暂停」闸门：只清一次待恢复标记挡不住
+  // 「打断开始 / 退后台预置」这些**重新置位**的途径（用户报的「手动暂停后，播放
+  // 其它音频结束返回软件时也会自动开始播放」）。闸门见 core/player/manualPause.ts。
+  if (!code.includes("import { markManualPause } from '@/core/player/manualPause'")) {
+    reasons.push('markManualPause 未从 core/player/manualPause 引入（遥控暂停落不了手动暂停闸门）')
+  }
+  const pauseStart = code.indexOf("case 'pause':")
+  const pauseEnd = code.indexOf("case 'toggle':")
+  if (pauseStart < 0 || pauseEnd <= pauseStart) {
+    reasons.push("遥控 pause 分支缺失或抽取失败（锚点漂移 —— case 'pause' / case 'toggle' 顺序被改动）")
+  } else if (!code.slice(pauseStart, pauseEnd).includes('markManualPause()')) {
+    reasons.push('pause 分支未落手动暂停闸门（用户手动暂停后仍会被打断开始/回前台路径自动拉起）')
   }
 
   return reasons
@@ -324,9 +345,10 @@ const runCounterExamples = () => {
   '切歌去重先写戳后判定')
 
   // r6 用户手动暂停不再作废续播标记 → 报「未作废续播标记」
+  // （锚点取 pause 分支的代码三连、不取 case 头/中文注释：第 22 轮在 case 头与代码之间插了说明注释）
   check('r6 pause 分支丢 cancelResumePending', () => remoteCommandInvariants(tamper(REAL_REMOTE,
-    '      case \'pause\':\n        // 用户手动要求暂停：清除自动续播标记，避免之后被兜底逻辑误自动播放\n        cancelResumePending()\n        void pause()',
-    '      case \'pause\':\n        void pause()')),
+    '        markManualPause()\n        cancelResumePending()\n        void pause()',
+    '        markManualPause()\n        void pause()')),
   '用户手动播放/暂停未作废续播标记')
 
   // r7 删掉一个命令 case（seek）→ 报「覆盖不全」
@@ -345,6 +367,12 @@ const runCounterExamples = () => {
   check('r9 别处又挂一条 RemotePause 监听', () => srcScanInvariants([
     { file: 'src/fake/other.ts', content: "TrackPlayer.addEventListener(TPEvent.RemotePause, () => {})\n" },
   ]), '重复通路残留')
+
+  // r10 【第 22 轮】pause 分支丢手动暂停闸门 → 报「pause 分支未落手动暂停闸门」
+  check('r10 pause 分支丢 markManualPause', () => remoteCommandInvariants(tamper(REAL_REMOTE,
+    '        markManualPause()\n        cancelResumePending()\n        void pause()',
+    '        cancelResumePending()\n        void pause()')),
+  'pause 分支未落手动暂停闸门')
 
   return results
 }

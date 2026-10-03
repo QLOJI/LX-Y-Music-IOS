@@ -42,6 +42,13 @@
  *   ③ RNTP 中断结束分支缺 AVAudioSessionInterruptionOptionKey 时直接 return 不发事件：
  *      修法见 dependencies-patch.js 的 patchTrackPlayerInterruptionEndAlwaysEmit（`?? 0`）。
  *
+ * 第 22 轮（2026-10-03）：「手动暂停后，播放其他音频结束，返回软件时也会自动开始播放」。
+ * 根因：只清一次待恢复标记挡不住「打断开始 / 退后台预置」这些**重新置位**的途径
+ * （打断开始分支是无条件 `shouldResumeAfterDuck = true`）。修法：service.ts 增加
+ * 手动暂停闸门（core/player/manualPause.ts）—— 打断开始 / 退后台预置 / iOS 音量闪避 /
+ * scheduleAutoResume 兜底 / Android 恢复，五处入口全部否决；app_event 'play'
+ * （真正开始出声，含用户重新播放、点歌、切歌）是唯一复位口。
+ *
  * 本脚本从源码解析实际结构（不硬编码行号），每条关键断言配一个「改回旧实现就该判不合格」
  * 的反例自检。
  *
@@ -179,7 +186,7 @@ const evaluate = (src, js) => {
     svc_windowDefined: /const RECENT_PLAYING_WINDOW_MS = 3000/.test(svc),
     svc_windowFn: /const wasPlayingRecently = \(\) => \{[\s\S]{0,400}?lastPlayingAt > 0 && Date\.now\(\) - lastPlayingAt <= RECENT_PLAYING_WINDOW_MS/.test(svc),
     svc_heartbeatOnlyWhilePlaying: /playingHeartbeat = setInterval\(\(\) => \{[\s\S]{0,160}?if \(playerState\.isPlay\) lastPlayingAt = Date\.now\(\)[\s\S]{0,80}?else stopPlayingHeartbeat\(\)/.test(svc),
-    svc_duckUsesWindow: /shouldResumeAfterDuck \|\|= wasPlayingRecently\(\)/.test(svc),
+    svc_duckUsesWindow: /shouldResumeAfterDuck \|\|= !isManualPause\(\) && wasPlayingRecently\(\)/.test(svc),
     svc_backgroundUsesWindow: /wasBackgroundPlaying = Platform\.OS == 'ios' && wasPlayingRecently\(\)/.test(svc),
     svc_longPreemptionStaysPaused: /const SHORT_INTERRUPTION_MAX_MS = 30000/.test(svc) &&
       /if \(permanent && wasLongInterruption\) return cancelResumePending\(\)/.test(svc),
@@ -190,6 +197,14 @@ const evaluate = (src, js) => {
     svc_retryOnceAt600: /const RESUME_RETRY_DELAYS = \[600\]/.test(svc) && !svc.includes('120, 500, 1500'),
     svc_playArmsHeartbeat: /app_event\.on\('play', \(\) => \{[\s\S]{0,200}?startPlayingHeartbeat\(\)/.test(svc),
     svc_stopClearsIntent: /app_event\.on\('stop', \(\) => \{[\s\S]{0,200}?cancelResumePending\(\)/.test(svc),
+
+    // —— 第 22 轮：手动暂停闸门（用户主动暂停后任何条件都不许自动出声）——
+    svc_manualPauseImported: /import \{ clearManualPause, isManualPause \} from '@\/core\/player\/manualPause'/.test(svc),
+    svc_scheduleHonorsManualPause: /if \(isManualPause\(\)\) return cancelResumePending\(\)/.test(svc),
+    svc_interruptBeginHonorsManualPause: /if \(!global\.lx\.isPlayedStop && !isManualPause\(\)\) shouldResumeAfterDuck = true/.test(svc),
+    svc_backgroundHonorsManualPause: /if \(wasBackgroundPlaying && !global\.lx\.isPlayedStop && !isManualPause\(\)\) shouldResumeAfterDuck = true/.test(svc),
+    svc_androidFinalHonorsManualPause: /if \(!isManualPause\(\)\) play\(\)/.test(svc),
+    svc_playClearsManualPause: /app_event\.on\('play', \(\) => \{[\s\S]{0,400}?clearManualPause\(\)/.test(svc),
 
     // —— 第 21 轮·优化 1：RNTP 中断结束分支必须照发事件 ——
     patch_interruptionDefined: patcher.includes('const patchTrackPlayerInterruptionEndAlwaysEmit = async() =>'),
@@ -232,7 +247,7 @@ const LABELS = {
   svc_windowDefined: 'service.ts 定义 RECENT_PLAYING_WINDOW_MS = 3000（最近在播时间窗）',
   svc_windowFn: 'wasPlayingRecently()：此刻在播，或最后一次确认在播在 3s 之内',
   svc_heartbeatOnlyWhilePlaying: '心跳只在播放期间存在（一发现不在播就停表，lastPlayingAt 留着跨过这次暂停）',
-  svc_duckUsesWindow: 'iOS ducking 分支用时间窗记待恢复（不再用瞬间 isPlay 快照）',
+  svc_duckUsesWindow: 'iOS ducking 分支用时间窗记待恢复，且带手动暂停闸门（第 22 轮）',
   svc_backgroundUsesWindow: '退后台预置待续播也用时间窗（车机蓝牙下 isPlay 可能刚被路由暂停置 false）',
   svc_longPreemptionStaysPaused: '打断结束：permanent 且超过 30s 的长时间抢占保持暂停（不跟导航/通话抢音频）',
   svc_recordsInterruptionStart: '打断开始（ducking / paused）记下 interruptedAt，结束分支据此算抢占时长',
@@ -240,6 +255,14 @@ const LABELS = {
   svc_retryOnceAt600: '恢复后 600ms 只补试一次（旧的 120/500/1500 三连退避已撤）',
   svc_playArmsHeartbeat: 'app_event play → 起「确实在播」心跳',
   svc_stopClearsIntent: 'app_event stop → 作废待续播标记（用户明确停止后不许自动拉起）',
+
+  // —— 第 22 轮：手动暂停闸门 ——
+  svc_manualPauseImported: 'service.ts 引入手动暂停闸门（isManualPause / clearManualPause，core/player/manualPause.ts）',
+  svc_scheduleHonorsManualPause: 'scheduleAutoResume 兜底先查手动暂停闸门（手动暂停后不许被拉起）',
+  svc_interruptBeginHonorsManualPause: '打断开始置恢复意图前先查手动暂停闸门（用户报的「别的音频播完自己开始播」主源）',
+  svc_backgroundHonorsManualPause: '退后台预置恢复意图前先查手动暂停闸门（暂停后 3s 内切后台不预置）',
+  svc_androidFinalHonorsManualPause: 'Android 恢复分支先查手动暂停闸门（与 iOS 同一口径）',
+  svc_playClearsManualPause: 'app_event play → 复位手动暂停闸门（重新播放才恢复自动续播）',
 
   // —— 第 21 轮·优化 1（三）：RNTP 中断结束必须照发事件 ——
   patch_interruptionDefined: 'dependencies-patch.js 新增 patchTrackPlayerInterruptionEndAlwaysEmit',
@@ -366,6 +389,29 @@ const m11s = JS.service.replace('if (paused && !permanent) {', 'if (paused) {')
 const m11r = evaluate(src, { service: m11s, patch: JS.patch })
 neg('反例 m11：iOS 分流退回「只看 paused」（打断结束被当成新的开始）被拦下',
   m11s !== JS.service && !m11r.svc_endedNotMistakenForStart)
+
+// —— 第 22 轮：手动暂停闸门的反例 ——
+
+// m12 拆掉 scheduleAutoResume 的闸门（手动暂停后仍会被兜底逻辑拉起）
+const m12s = JS.service.replace('  if (isManualPause()) return cancelResumePending()\n', '')
+const m12r = evaluate(src, { service: m12s, patch: JS.patch })
+neg('反例 m12：拆掉 scheduleAutoResume 的手动暂停闸门被拦下',
+  m12s !== JS.service && !m12r.svc_scheduleHonorsManualPause)
+
+// m13 拆掉 play 事件的闸门复位（一次手动暂停后永远不出声）
+const m13s = JS.service.replace('    clearManualPause()\n', '')
+const m13r = evaluate(src, { service: m13s, patch: JS.patch })
+neg('反例 m13：拆掉 play 事件的闸门复位（手动暂停后永远不出声）被拦下',
+  m13s !== JS.service && !m13r.svc_playClearsManualPause)
+
+// m14 打断开始退回无条件置位（用户报的「其它音频播完自己开始播」的旧实现）
+const m14s = JS.service.replace(
+  'if (!global.lx.isPlayedStop && !isManualPause()) shouldResumeAfterDuck = true',
+  'if (!global.lx.isPlayedStop) shouldResumeAfterDuck = true',
+)
+const m14r = evaluate(src, { service: m14s, patch: JS.patch })
+neg('反例 m14：打断开始退回无条件置恢复意图（手动暂停被覆盖）被拦下',
+  m14s !== JS.service && !m14r.svc_interruptBeginHonorsManualPause)
 
 const negFailed = negResults.filter(ok => !ok).length
 
