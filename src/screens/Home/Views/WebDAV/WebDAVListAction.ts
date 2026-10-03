@@ -1,5 +1,5 @@
 import { findMusic } from '@/utils/musicSdk'
-import { getWebDAVConfig, updateWebDAVMusicMeta, getWebDAVDownloadUrl, saveWebDAVConfig, downloadWebDAVFile, getWebDAVAuthHeaders, getWebDAVFileState } from '@/core/webdavMusic/drive'
+import { getWebDAVConfig, updateWebDAVMusicMeta, getWebDAVDownloadUrl, saveWebDAVConfig, downloadWebDAVFile, getWebDAVAuthHeaders, getWebDAVFileState, type WebDAVFileState } from '@/core/webdavMusic/drive'
 import { mkdir, unlink, getWebDAVPrivateDirectory } from '@/utils/fs'
 import { toast, requestStoragePermission } from '@/utils/tools'
 import settingState from '@/store/setting/state'
@@ -369,20 +369,34 @@ const buildLocalMusicInfoByFilePath = (filePath: string): LX.Music.MusicInfoLoca
 export const handleWebDAVDownload = async(
   musicInfo: LX.WebDAV.MusicInfo,
 ): Promise<string | undefined> => {
-  const downloadDir = getDefaultDownloadDir()
-  const fileName = musicInfo.meta.fileName
+  // 【第 29 轮】入口日志提到函数第一行，并且整段「下载前的准备」都套上 try/catch。
+  // 原来日志排在 `musicInfo.meta.fileName` 之后：meta 缺字段时第一行就抛错 —— 日志一行没有、
+  // toast 一句没有，调用方（列表页 handleDownload）当时也没有 catch，用户看到的就是
+  // 「下载按钮按了没反应」。现在无论哪一步失败，都落日志 + 弹出具体原因。
+  webDAVLog.info('handleWebDAVDownload: invoked', { musicId: musicInfo?.id, fileName: musicInfo?.meta?.fileName })
 
-  webDAVLog.info('handleWebDAVDownload: invoked', { fileName })
-
-  if (!fileName) {
-    webDAVLog.warn('handleWebDAVDownload: missing fileName')
-    toast('无法获取文件名')
+  let downloadDir = ''
+  let fileName = ''
+  let filePath = ''
+  let fileState: WebDAVFileState
+  try {
+    downloadDir = getDefaultDownloadDir()
+    fileName = musicInfo?.meta?.fileName ?? ''
+    if (!fileName) {
+      webDAVLog.warn('handleWebDAVDownload: missing fileName')
+      toast('无法获取文件名')
+      return undefined
+    }
+    filePath = `${downloadDir}/${fileName}`
+    // 【第 28 轮】半截文件当「没下过」处理（判定统一走 drive.ts 的 getWebDAVFileState）
+    fileState = await getWebDAVFileState(filePath, musicInfo.meta.size)
+  } catch (error: any) {
+    const message = getErrorMessage(error)
+    webDAVLog.error('handleWebDAVDownload: prepare failed', { message, error })
+    toast(`下载失败：${message}`, 'long')
     return undefined
   }
 
-  const filePath = `${downloadDir}/${fileName}`
-  // 【第 28 轮】半截文件当「没下过」处理（判定统一走 drive.ts 的 getWebDAVFileState）
-  const fileState = await getWebDAVFileState(filePath, musicInfo.meta.size)
   const exists = fileState === 'complete'
   if (fileState === 'incomplete') {
     webDAVLog.warn('handleWebDAVDownload: incomplete file found, removing and re-downloading', { filePath })
