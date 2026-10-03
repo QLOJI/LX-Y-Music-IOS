@@ -11,6 +11,7 @@ import {
   type ListRenderItem,
 } from 'react-native'
 import Text from '@/components/common/Text'
+import MarqueeText from '@/components/common/MarqueeText'
 import Button from '@/components/common/Button'
 import Image from '@/components/common/Image'
 import { Icon } from '@/components/common/Icon'
@@ -60,11 +61,14 @@ import WebDAVListMenu, { type WebDAVListMenuType, type SelectInfo as WebDAVSelec
 import WebDAVDownloadPath from './components/WebDAVDownloadPath'
 import MetadataEditModal from '@/components/MetadataEditModal'
 import {
-  handleWebDAVDownload,
   handleFetchWebDAVPicFromOnline,
   handleWebDAVRemove,
-  handleWebDAVDownloadAndImport,
 } from './WebDAVListAction'
+// 【第 30 轮】本页的下载入口（⋮ 菜单「下载」/ 头部「扫描并下载」）统一走下载管理器：
+// 与「我的 / 歌单 / 搜索结果 / 播放列表」里的下载按钮完全同一条路径（任务列表可见、有进度、
+// 能取消、自动写封面/歌词/标签），不再走 WebDAVListAction 那条「静默下到网盘目录、
+// 界面上看不到任何动静」的老链路（老函数保留未删，本轮起无调用点，见改动清单）。
+import { batchDownload, downloadMusicAsync } from '@/core/download'
 import { readMetadata, readPic } from '@/utils/localMediaMetadata'
 import { existsFile } from '@/utils/fs'
 
@@ -196,14 +200,13 @@ const SongItem = memo(
             )}
           </View>
           <View style={songRowStyles.itemInfo}>
-            <Text
+            {/* 【第 30 轮·图十】歌名过长改为从右到左滚动（原先截断成「...」） */}
+            <MarqueeText
+              text={item.name || item.meta.fileName}
               size={designTypography.body}
               style={songRowStyles.songName}
               color={isPlaying ? theme['c-primary-font'] : theme['c-font']}
-              numberOfLines={1}
-            >
-              {item.name || item.meta.fileName}
-            </Text>
+            />
             <View style={songRowStyles.listItemSingle}>
               <Text
                 style={songRowStyles.listItemSingleText}
@@ -266,7 +269,9 @@ export default memo(() => {
   const [scanText, setScanText] = useState('')
   const [searchVisible, setSearchVisible] = useState(false)
   const [searchText, setSearchText] = useState('')
-  const [batchLoadingText, setBatchLoadingText] = useState('')
+  // 【第 30 轮】原来的 batchLoadingText（「正在下载 x/y」页头 + 两个按钮的禁用条件）已移除：
+  // 下载改由下载管理器接管，进度在「我的 → 下载」里看，按钮不再被批量下载长时间禁用
+  // （旧链路下几百首要下很久，按钮一直灰着 —— 那也是「点了没反应」的一部分）。
   const listRef = useRef<FlatList<LX.WebDAV.MusicInfo>>(null)
   const searchInputRef = useRef<TextInput>(null)
   const pendingJumpIdRef = useRef<string | null>(null)
@@ -347,6 +352,10 @@ export default memo(() => {
   //      否则一首歌失败过一次就再也不会被补上（第 28 轮的备忘原本是会话级的）；
   //   ③ 刷新（下拉）是一次「连封面是不是最新的都重查」：forceCoverRefresh 置位后这批请求走
   //      isRefresh，绕过内存缓存与在线源的缓存重新匹配（用户：刷新列表后也要刷新封面是否最新或者缺失）。
+  //   ④ 【第 30 轮】「点扫描」也并入 ③ 这条路（handleScan 同样置位 forceCoverRefresh），
+  //      并且 isRefresh 时不再看内存缓存（上一轮只跳过了源侧缓存，同歌名/歌手的本地缓存仍会把
+  //      重新选目录后的新歌单整份挡掉 —— 图七/图八的「歌单切了封面不刷新」）。另外每次从别的
+  //      页面切进本页都会重新 loadConfig 一次 ⇒ 随即按列表顺序从上到下起一轮巡检（图六）。
   // 请求量仍由 coverUrl.ts 的 4 并发全局队列 + local.ts 的 2 并发搜索闸 + 这里的分批收口。
   const prefetchedCoverIds = useRef(new Set<string>())
   // 巡检轮次号：每轮 +1。上一轮的异步结果落地前先核对轮次，避免把上一份列表的封面写进新列表。
@@ -370,9 +379,12 @@ export default memo(() => {
         if (!rawSong?.id || !rawSong.meta) continue
         let song = rawSong
         if (song.meta.picUrl) {
-          // 只有本地封面能在巡检里校验；远程 http(s) 封面留着，等行内加载失败时由 Image 的
-          // onError 自愈（handleCoverError），那才是它的真实状态。
+          // 远程 http(s) 封面留着（两种模式都一样）：巡检里逐个探活代价太大（几百次 HEAD），
+          // 它是不是还活着，行内 Image 的 onError 最清楚 —— 那条路走 handleCoverError 自愈。
           if (!song.meta.picUrl.startsWith('file://')) continue
+          // 本地 file:// 封面必须探活：文件被系统清掉后状态里那个 URL 会让行内 useCoverUrl
+          // 直接短路（认为有封面），列表上就是永远的空占位。刷新模式同样要查（否则「扫描一次
+          // 刷新一次封面」对这类失效封面无效）。
           const alive = await existsFile(song.meta.picUrl.replace('file://', '')).catch(() => false)
           if (alive) continue
           webDAVLog.info('prefetchCovers: cached local cover is gone, re-fetch', { musicId: song.id, picUrl: song.meta.picUrl })
@@ -383,7 +395,11 @@ export default memo(() => {
           ))
         }
         if (prefetchedCoverIds.current.has(song.id)) continue
-        if (getCachedCoverUrl(song)) continue
+        // 【第 30 轮】刷新（点扫描 / 下拉）不看内存缓存：原先对「内存里已经有封面结果」的歌
+        // 一律跳过 —— 用户重新选目录后点扫描，同歌名/歌手的缓存会把新歌单里的歌挡在门外，
+        // 观感就是「歌单切了，封面没有刷新加载」（图七/图八）。刷新模式重新走一遍 getPicPath，
+        // 并把 isRefresh 透传给在线源（见 fetchCoverUrl），绕过源侧缓存重新匹配。
+        if (!isRefresh && getCachedCoverUrl(song)) continue
         prefetchedCoverIds.current.add(song.id)
         queue.push(song)
       }
@@ -569,18 +585,14 @@ export default memo(() => {
       musicId: info.musicInfo.id,
       fileName: info.musicInfo.meta?.fileName,
     })
-    void handleWebDAVDownload(info.musicInfo).then((newPicUrl) => {
-      if (newPicUrl) {
-        setSongs(prevSongs => prevSongs.map(song =>
-          song.id === info.musicInfo.id
-            ? { ...song, meta: { ...song.meta, picUrl: newPicUrl } }
-            : song,
-        ))
-      }
-    }).catch((err: any) => {
-      // 【第 29 轮】原来这里没有 catch：handleWebDAVDownload 在进入内部 try 之前抛错
-      // （目录/文件状态解析、meta 缺字段等）时整个 Promise 静默 reject —— 点了下载什么都不会发生，
-      // 日志里也一行没有，正是「按了没反应」。现在一律落日志 + 把原因告诉用户。
+    // 【第 30 轮·图五】下载动作交给下载管理器 —— 与其他列表的下载按钮「效果一样」：
+    // 同一份任务模型、同一个下载列表、同样的失败提示，而且 WebDAV 歌曲的落盘目录由
+    // core/download.ts 的 resolveDownloadDir 优先取 webdav.downloadPath（配置页里选的那个目录）。
+    // 老链路（handleWebDAVDownload）是「静默下到网盘目录 + 写一条下载列表」，没有进度也没有失败回声，
+    // 用户看到的就是「点了不开始下载」；它仍保留在 WebDAVListAction 里没删（见改动清单）。
+    void downloadMusicAsync(info.musicInfo).catch((err: any) => {
+      // 【第 29 轮】这里原来没有 catch：准备阶段抛错时整个 Promise 静默 reject —— 点了下载什么都
+      // 不会发生，日志里也一行没有，正是「按了没反应」。现在一律落日志 + 把原因告诉用户。
       const message = err?.message ?? String(err)
       webDAVLog.error('handleDownload: download failed', { message, err })
       toast(`下载失败：${message}`, 'long')
@@ -667,6 +679,8 @@ export default memo(() => {
           setScannedAt(config.scannedAt)
           setScanText('')
           // 【第 27 轮】扫描完立刻自动补在线封面（有上限，见 MAX_PREFETCH_COVERS）
+          // 【第 30 轮】同 handleScan：这是「点了一次扫描」，封面也强制刷新一轮
+          forceCoverRefresh.current = true
           prefetchCovers(scannedSongs)
 
           if (scannedSongs.length === 0) {
@@ -674,7 +688,16 @@ export default memo(() => {
             return
           }
 
-          void handleWebDAVDownloadAndImport(scannedSongs, setBatchLoadingText)
+          // 【第 30 轮·图五】「扫描并下载」也交给下载管理器：扫描结果整份进下载队列，
+          // 进度 / 取消 / 写封面歌词标签 / 失败原因全部复用其他下载按钮那一条链路，
+          // 用户在「我的 → 下载」里看得见每一首。老链路
+          // （handleWebDAVDownloadAndImport）是边下边把进度写进页头、并靠 batchLoadingText
+          // 把两个按钮一直禁用着 —— 几百首要下很久，按钮长期灰着，观感同样像「点了没反应」。
+          void batchDownload(scannedSongs).catch((err: any) => {
+            const message = err?.message ?? String(err)
+            webDAVLog.error('handleBatchDownload: batch add failed', { message, err })
+            toast(`添加到下载列表失败：${message}`, 'long')
+          })
         })
         .catch((err: any) => {
           const message = err.message ?? String(err)
@@ -708,6 +731,22 @@ export default memo(() => {
 
   useEffect(() => {
     loadConfig()
+  }, [loadConfig])
+
+  // 【第 30 轮·图六】每次从别的页面切进 WebDAV 歌单，都重新读一次配置并立刻按列表顺序从上到
+  // 下起一轮封面巡检。本页是 useHomeLazyPage 常驻挂载（切走不卸载）：只有上面那条挂载 effect
+  // 的话，第二次之后进来页面一行都不跑，新缺的封面（比如播放链路/自愈清掉的那几张）永远等不到
+  // 巡检。惰性挂载发生在导航事件之后一帧，所以「首次进入」由挂载 effect 负责、这条只管后续切换，
+  // 两条不重不漏。prefetchCovers 内部按列表顺序入队、每批 20 首推进，天然是「由上到下秒加载」。
+  useEffect(() => {
+    const handleNavChange = (id: string) => {
+      if (id !== 'nav_webdav') return
+      void loadConfig()
+    }
+    global.state_event.on('navActiveIdUpdated', handleNavChange)
+    return () => {
+      global.state_event.off('navActiveIdUpdated', handleNavChange)
+    }
   }, [loadConfig])
 
   useEffect(() => {
@@ -750,6 +789,10 @@ export default memo(() => {
           setActiveTab('list')
           toast(`扫描完成：${config.songs.length} 首`)
           // 【第 27 轮】扫描完立刻自动补在线封面（有上限，见 MAX_PREFETCH_COVERS）
+          // 【第 30 轮·图七/图八】扫描是一次强制刷新：用户重新选目录后点扫描，歌单立刻切了，
+          // 但封面还是老样子（内存缓存按 歌名|歌手 命中，把新歌单整份挡住）。置位后这一轮巡检
+          // 不看缓存、并把 isRefresh 透传到在线源 —— 「点一次扫描，刷新一次封面」。
+          forceCoverRefresh.current = true
           prefetchCovers(scannedSongs)
         })
         .catch((err: any) => {
@@ -862,10 +905,9 @@ export default memo(() => {
   )
 
   const headerText = useMemo(() => {
-    if (batchLoadingText) return batchLoadingText
     if (searchText.trim()) return `${filteredSongs.length}/${songs.length} 首`
     return `${songs.length} 首${scannedAt ? ` · ${formatTime(scannedAt)}` : ''}`
-  }, [batchLoadingText, filteredSongs.length, scannedAt, searchText, songs.length])
+  }, [filteredSongs.length, scannedAt, searchText, songs.length])
 
   const handleToggleSearch = useCallback(() => {
     setSearchVisible((visible) => {
@@ -1136,7 +1178,9 @@ export default memo(() => {
                 // 【第 29 轮】不再把 !hasConfig 放进 disabled：未配置时按钮被禁用，按下去
                 // 一点反馈都没有（用户读到的就是「按钮按了没反应」）。交给 handleScan 自己弹
                 // 「请先在设置中配置 WebDAV」并跳到配置页。
-                disabled={loading || !!batchLoadingText}
+                // 【第 30 轮】去掉 !!batchLoadingText：下载交给下载管理器后不再有「批量下载中」
+                // 这个页面态，按钮只在扫描/选目录这类真正的页面忙碌时禁用。
+                disabled={loading}
                 onPress={handleScan}
               >
                 <Text color={theme['c-button-font']}>扫描</Text>
@@ -1148,7 +1192,8 @@ export default memo(() => {
                   { borderRadius: buttonRadius(29) },
                 ]}
                 // 【第 29 轮】同上：未配置时也让按得动，由 handleBatchDownload 提示 + 跳配置页
-                disabled={loading || !!batchLoadingText}
+                // 【第 30 轮】同上：不再被批量下载的 loading text 长期禁用
+                disabled={loading}
                 onPress={handleBatchDownload}
               >
                 <Text color={theme['c-primary-font']}>扫描并下载</Text>

@@ -9,6 +9,7 @@ import { useAssertApiSupport } from '@/store/common/hook'
 import { scaleSizeH } from '@/utils/pixelRatio'
 import { applyOpacity } from '@/utils/colorOpacity'
 import Text from '@/components/common/Text'
+import MarqueeText from '@/components/common/MarqueeText'
 import Badge, { type BadgeType } from '@/components/common/Badge'
 import Image from '@/components/common/Image'
 import PlayingIcon from '@/components/common/PlayingIcon'
@@ -185,15 +186,17 @@ const ListItem = memo(
             )}
           </View>
           <View style={styles.itemInfo}>
-            <Text
+            {/* 【第 30 轮·图十】歌名过长不再截断成「...」：跑马灯从右到左滚动。
+                别名保留原来的灰字样式，故走 children（变更检测仍看 text）。 */}
+            <MarqueeText
+              text={info.alias ? `${info.name} (${info.alias})` : info.name}
               color={active ? theme['c-primary-font'] : theme['c-font']}
               size={designTypography.body}
               style={styles.songName}
-              numberOfLines={1}
             >
               {info.name}
               {info.alias ? <Text color={theme['c-font-label']}> ({info.alias})</Text> : null}
-            </Text>
+            </MarqueeText>
             <View style={styles.listItemSingle}>
               {/* 【第 22 轮】source 必须带存在性判断：任务项在极端情况（metadata 缺失）下取不到
                   音源，不能让一个徽标把整页渲染打崩（用户报的崩溃点就是这行 .toUpperCase()） */}

@@ -2,6 +2,7 @@ import { memo, useCallback, useEffect, useMemo, useState } from 'react'
 import { FlatList, StyleSheet, TouchableOpacity, View } from 'react-native'
 import LandscapeDetailLayout from '@/components/LandscapeDetailLayout'
 import Text from '@/components/common/Text'
+import MarqueeText from '@/components/common/MarqueeText'
 import { useTheme } from '@/store/theme/hook'
 import { useHorizontalMode } from '@/utils/hooks'
 import { useI18n } from '@/lang'
@@ -128,14 +129,13 @@ const SongRow = memo(
         onPress={onPress}
       >
         <View style={styles.itemInfo}>
-          <Text
+          {/* 【第 30 轮·图十】本地/下载列表的歌名过长同样改为从右到左滚动（原先是「...」） */}
+          <MarqueeText
+            text={title}
             size={designTypography.body}
             style={styles.songTitle}
             color={isPlaying ? theme['c-primary-font'] : theme['c-font']}
-            numberOfLines={1}
-          >
-            {title}
-          </Text>
+          />
           <Text
             size={designTypography.caption}
             color={isPlaying ? theme['c-primary-alpha-200'] : theme['c-500']}

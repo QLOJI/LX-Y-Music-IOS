@@ -23,19 +23,29 @@ export default forwardRef<MusicListType, { header?: OnlineListProps['ListHeaderC
     () => ({
       async loadList(text, source) {
         // const listDetailInfo = searchMusicState.listDetailInfo
-        listRef.current?.setList([], false, source == 'all')
+        // 【第 30 轮·图十】这里原来有一句**无条件**的清空：
+        //     listRef.current?.setList([], false, source == 'all')
+        // 列表先被清成空，再在一个 requestAnimationFrame 之后从缓存把整份列表设回来 ——
+        // 每次切走再切回搜索页（Search/index.tsx 的 navActiveIdUpdated 会调本方法）都会
+        // 真的渲染出一帧空列表，用户看到的就是「歌曲区域闪一下」。现在不清了：
+        //   · 命中缓存 → 同步设回（List.setList 对同一个数组引用直接跳过，连重渲染都没有）；
+        //   · 真要重新搜 → 旧结果留在屏幕上，由 setStatus('loading') 的加载态表示正在查，
+        //     新结果到了再整表替换（与下拉刷新的表现一致）。
+        // 唯一保留「立刻清空」的是取消搜索（text 为空）：那是用户明确的清空动作，而且清空后
+        // 走的就是下面这条空文本分支。
+        if (text === '') {
+          listRef.current?.setList([], false, source == 'all')
+        }
         if (
           searchMusicState.searchText == text &&
           searchMusicState.source == source &&
           searchMusicState.listInfos[searchMusicState.source]!.list.length
         ) {
-          requestAnimationFrame(() => {
-            listRef.current?.setList(
-              searchMusicState.listInfos[searchMusicState.source]!.list,
-              false,
-              source == 'all',
-            )
-          })
+          listRef.current?.setList(
+            searchMusicState.listInfos[searchMusicState.source]!.list,
+            false,
+            source == 'all',
+          )
         } else {
           listRef.current?.setStatus('loading')
           const page = 1

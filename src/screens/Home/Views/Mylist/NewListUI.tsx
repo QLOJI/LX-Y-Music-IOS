@@ -1,5 +1,5 @@
 import { memo, useCallback, useMemo, useState, useEffect, useRef } from 'react'
-import { View, TouchableOpacity, FlatList, ActivityIndicator, RefreshControl, Animated, PanResponder, BackHandler, StyleSheet } from 'react-native'
+import { View, TouchableOpacity, FlatList, RefreshControl, Animated, PanResponder, BackHandler, StyleSheet } from 'react-native'
 import { useMyList, useActiveListId, useListFetching } from '@/store/list/hook'
 import { useSettingValue } from '@/store/setting/hook'
 import { setActiveList, updateUserListPosition } from '@/core/list'
@@ -385,17 +385,25 @@ export default memo(() => {
   const listVisibility = useSettingValue('list.myListVisibility')
 
   const [listInfoMap, setListInfoMap] = useState<Map<string, { cover: string, total: number }>>(new Map())
-  const [isLoading, setIsLoading] = useState(true)
-  // 下拉刷新动画只认「用户真的下拉过」（用户第 16 轮第 7 条）。isLoading 除了首载之外还有
-  // 一条后台路径：refreshListInfo 的 useCallback 依赖 allList，列表内容一变（别处增删歌曲）
-  // 它就会换新引用 → 挂载 effect 重跑 → setIsLoading(true)。旧写法 refreshing={isLoading}
-  // 会让刷新控件在这类程序触发里被点亮，把已挂载的列表压下去再弹回来（「向上刷新」）。
-  // refreshing 只在用户下拉那一刻置位，本次加载（isLoading true→false）落地后清除。
+  // 【第 30 轮·图九】中心刷新动画取消（原 isLoading）：它原来既当「首载中」又当渲染分支的
+  // 开关 —— 一旦为 true，整棵列表会被换成一枚居中的 ActivityIndicator（见下面渲染分支）。
+  // 而它除首载之外还有一条静默的后台路径：refreshListInfo 的 useCallback 依赖 allList，
+  // 列表内容一变（别处增删歌曲 / 同步落地）就换新引用 → 挂载 effect 重跑 → setIsLoading(true)：
+  // 用户每次进入或返回「我的」都会看到整页闪成转圈。现在只留「下拉刷新」这一种可见动画：
+  // fetching 只用来在本次加载落地后收起下拉控件（见下面 refreshing 的 effect），不参与渲染。
+  const [fetching, setFetching] = useState(false)
+  // 下拉刷新动画只认「用户真的下拉过」（用户第 16 轮第 7 条）。refreshing 只在用户下拉那一刻
+  // 置位，本次加载（fetching true→false）落地后清除。
   const [refreshing, setRefreshing] = useState(false)
   const [hasError, setHasError] = useState(false)
   const [showMusicList, setShowMusicList] = useState(false)
   const [isTouchingDragHandle, setIsTouchingDragHandle] = useState(false)
   const isFirstLoadRef = useRef(true)
+  // 成功加载过一次之后就不再整页切「加载失败」：第 30 轮起刷新更频繁（进页面 / 返回都刷），
+  // 一次网络抖动不该把用户已经看到的列表抹掉；首载就失败才给重试入口。
+  const hasLoadedOnceRef = useRef(false)
+  // handleBackToList 定义在 refreshListInfo 之前（顺序不能反），用 ref 拿最新实现。
+  const refreshListInfoRef = useRef<(() => void) | null>(null)
 
   const showMusicListRef = useRef(false)
   useEffect(() => {
@@ -421,6 +429,9 @@ export default memo(() => {
     openListIdRef.current = null
     setShowMusicList(false)
     setActiveList(LIST_IDS.DEFAULT)
+    // 【第 30 轮·图九】从歌单详情返回也算「回到我的」：详情里可能刚增删过歌曲，列表行的
+    // 封面 / 歌曲数得跟上 —— 静默刷一次（不转圈，见 refreshListInfo 注释）。
+    refreshListInfoRef.current?.()
   }, [])
 
   const handleOpenImportedDetail = useCallback((item: any) => {
@@ -501,11 +512,10 @@ export default memo(() => {
     }
   }, [])
 
-  const refreshListInfo = useCallback(async(isBackgroundRefresh = false) => {
-    // 首次加载显示 loading，后台刷新保留已有数据避免闪烁
-    if (!isBackgroundRefresh) {
-      setIsLoading(true)
-    }
+  const refreshListInfo = useCallback(async() => {
+    // 【第 30 轮·图九】不再有「前台加载」这一档：每次刷新都是静默的（列表始终拿已有数据渲染），
+    // fetching 只为收起下拉控件。
+    setFetching(true)
     setHasError(false)
     try {
       // fetchListInfo 失败时返回 null（见其 catch 分支），Map 的类型必须允许 null，
@@ -529,32 +539,56 @@ export default memo(() => {
         }
         return next
       })
+      hasLoadedOnceRef.current = true
     } catch {
-      setHasError(true)
+      // 已经有数据时不再整页切「加载失败」（第 30 轮起刷新更频繁：进页面 / 返回都刷，
+      // 一次网络抖动不该把用户已经看到的列表抹掉）；首载失败才给重试入口。
+      if (!hasLoadedOnceRef.current) setHasError(true)
     } finally {
-      setIsLoading(false)
+      setFetching(false)
       isFirstLoadRef.current = false
     }
   }, [allList, fetchListInfo])
+
+  // handleBackToList（定义在本函数之前）通过它拿到最新实现
+  useEffect(() => {
+    refreshListInfoRef.current = () => { void refreshListInfo() }
+  }, [refreshListInfo])
 
   useEffect(() => {
     void refreshListInfo()
   }, [refreshListInfo])
 
-  // 用户下拉后，等这次加载落地（isLoading true→false）再收起刷新动画（见 refreshing 注释）
+  // 用户下拉后，等这次加载落地（fetching true→false）再收起刷新动画（见 refreshing 注释）
   useEffect(() => {
-    if (refreshing && !isLoading) setRefreshing(false)
-  }, [refreshing, isLoading])
+    if (refreshing && !fetching) setRefreshing(false)
+  }, [refreshing, fetching])
 
 
   useEffect(() => {
     const subscription = Navigation.events().registerComponentDidAppearListener(({ componentId: appearedId }) => {
       const homeId = commonState.componentIds.find(c => c.name === 'home')?.id
       if (appearedId === homeId && !isFirstLoadRef.current) {
-        void refreshListInfo(true)
+        void refreshListInfo()
       }
     })
     return () => { subscription.remove() }
+  }, [refreshListInfo])
+
+  // 【第 30 轮·图九】每次回到「我的」都刷一次。nav_love 是首页 pager 里的一个 tab（也是
+  // 「我的」下所有子页返回时的落点：WebDAV / 本地与下载 / 我的歌单 / 收藏歌手 / 收藏专辑…），
+  // 而上面 componentDidAppear 那条只在 home 这个 Navigation 页面整页重新出现时才触发 ——
+  // tab 之间切换、以及子页返回时 setNavActiveId('nav_love')，都不会让 home 重新 appear。
+  // 这里补上 tab 级入口（刷新是静默的，不会转圈；见 fetching 注释）。
+  useEffect(() => {
+    const handleNavChange = (id: string) => {
+      if (id !== 'nav_love') return
+      void refreshListInfo()
+    }
+    global.state_event.on('navActiveIdUpdated', handleNavChange)
+    return () => {
+      global.state_event.off('navActiveIdUpdated', handleNavChange)
+    }
   }, [refreshListInfo])
 
   const resetAllAnims = useCallback(() => {
@@ -859,10 +893,6 @@ export default memo(() => {
             <Text size={14} color={theme['c-primary-font']}>点击尝试重新加载</Text>
           </TouchableOpacity>
         </View>
-      ) : isLoading ? (
-        <View style={styles.loadingContainer}>
-          <ActivityIndicator color={theme['c-primary-font']} size="large" />
-        </View>
       ) : (
         <>
           <FlatList
@@ -1055,11 +1085,6 @@ const styles = createStyle({
     height: 40,
     marginLeft: designSpacing.xs,
     borderRadius: 999,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  loadingContainer: {
-    flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
   },

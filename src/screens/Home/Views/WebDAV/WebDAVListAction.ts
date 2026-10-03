@@ -308,7 +308,10 @@ export const handleWebDAVDownloadAndImport = async(
 
 const getDefaultDownloadDir = () => {
   const settings = settingState.setting
-  const webdavPath = settings['sync.webdav.downloadPath']
+  // 【第 30 轮】键名改对：设置里叫 'webdav.downloadPath'（见 WebDAVDownloadPath 组件与
+  // defaultSetting.ts:198）—— 这里原来读的是 'sync.webdav.downloadPath'，那个键根本不存在，
+  // 于是用户在配置页选的下载目录从来没被这条链路用上，一路静默回退到 WebDAV 私有目录。
+  const webdavPath = settings['webdav.downloadPath']
   if (webdavPath && typeof webdavPath === 'string' && webdavPath.trim()) {
     return webdavPath.trim()
   }
