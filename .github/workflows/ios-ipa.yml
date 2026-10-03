@@ -115,7 +115,7 @@ jobs:
           rm -rf build/Payload
           mkdir -p build/Payload
           cp -R "$APP_PATH" build/Payload/
-          IPA_NAME="LX-Y Music-v${PACKAGE_VERSION}-ios-unsigned.ipa"
+          IPA_NAME="LX-Y-Music-v${PACKAGE_VERSION}-ios-unsigned.ipa"
           (
             cd build
             zip -qry "$IPA_NAME" Payload
@@ -125,7 +125,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ios-ipa-LX-Y-Music-v${{ env.PACKAGE_VERSION }}-unsigned
-          path: build/LX-Y Music-v${{ env.PACKAGE_VERSION }}-ios-unsigned.ipa
+          path: build/LX-Y-Music-v${{ env.PACKAGE_VERSION }}-ios-unsigned.ipa
 
       - name: Publish unsigned IPA to rolling "latest" release
         if: github.ref == 'refs/heads/master' || github.ref == 'refs/heads/ios-adaptation'
@@ -133,7 +133,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          IPA_NAME="LX-Y Music-v${PACKAGE_VERSION}-ios-unsigned.ipa"
+          IPA_NAME="LX-Y-Music-v${PACKAGE_VERSION}-ios-unsigned.ipa"
           NOTES="Automated unsigned IPA build from ${{ github.ref_name }} @ ${{ github.sha }}. Built on ${{ github.run_id }} — do not use as a stable release."
           # 用 gh CLI（原生二进制，不受 Node 24 运行时影响）更新 rolling "latest" release。
           # 原先 softprops/action-gh-release 在 Node 24 强制环境下上传大文件会报
@@ -147,6 +147,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          IPA_NAME="LX-Y Music-v${PACKAGE_VERSION}-ios-unsigned.ipa"
+          IPA_NAME="LX-Y-Music-v${PACKAGE_VERSION}-ios-unsigned.ipa"
           gh release create "v${PACKAGE_VERSION}" "build/${IPA_NAME}" \
             --title "v${PACKAGE_VERSION}" --prerelease=false || true
