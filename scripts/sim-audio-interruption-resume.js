@@ -49,6 +49,13 @@
  * scheduleAutoResume 兜底 / Android 恢复，五处入口全部否决；app_event 'play'
  * （真正开始出声，含用户重新播放、点歌、切歌）是唯一复位口。
  *
+ * 第 31 轮·追加（2026-10-04）：「按电源键 / 系统提示音时音乐会短暂声音变化」——短促系统音
+ * 的「Began → Ended」也会被立刻处理成停引擎 / 让出会话。修法见
+ * scripts/sim-short-interruption-ignore.js（两侧同值 1.5s 忽略窗口）：Began 只立即无条件置
+ * interruptedBySystem，「停引擎 / 让出会话 / 呈现暂停」整段推迟到窗口到期。本脚本跟着把
+ * 「Began 执行体」的锚点从 case 块改到 performInterruptionBeganHandling 方法体（上面这些
+ * 要求语义一个不变）；case 块的「立即置标记 + 推迟调度」另由短窗口脚本断言。
+ *
  * 本脚本从源码解析实际结构（不硬编码行号），每条关键断言配一个「改回旧实现就该判不合格」
  * 的反例自检。
  *
@@ -114,17 +121,23 @@ const evaluate = (src, js) => {
   const handler = methodBody(src, '- (void)handleAudioSessionInterruption:(NSNotification *)notification {')
   const began = handler && caseBody(handler, 'case AVAudioSessionInterruptionTypeBegan: {', 'case AVAudioSessionInterruptionTypeEnded:')
   const ended = handler && caseBody(handler, 'case AVAudioSessionInterruptionTypeEnded: {', 'default:')
+  // 【第 31 轮·追加】Began 的实际执行体（推迟到忽略窗口到期才跑；原 Began 分支整段搬来）。
+  // case 块只负责「立即置标记 + 推迟调度」—— 上面这些要求断言锚点改到本方法体。
+  const beganExec = methodBody(src, '- (void)performInterruptionBeganHandling {')
   const pause = methodBody(src, 'RCT_REMAP_METHOD(pause, pauseStreamWithResolver:')
   const stop = methodBody(src, 'RCT_REMAP_METHOD(stop, stopStreamWithResolver:')
   const active = notificationBlock(src, 'UIApplicationDidBecomeActiveNotification')
   const beganCode = began ? stripComments(began) : null
+  const beganExecCode = beganExec ? stripComments(beganExec) : null
   const endedCode = ended ? stripComments(ended) : null
   const pauseCode = pause ? stripComments(pause) : null
   const stopCode = stop ? stripComments(stop) : null
   const activeCode = active ? stripComments(active) : null
 
-  const atMarker = beganCode ? beganCode.indexOf('self.interruptedBySystem = YES;') : -1
-  const atEarlyReturn = beganCode ? beganCode.indexOf('if (!shouldEmitPause) return;') : -1
+  const atMarker = beganExecCode ? beganExecCode.indexOf('self.interruptedBySystem = YES;') : -1
+  const atEarlyReturn = beganExecCode ? beganExecCode.indexOf('if (!shouldEmitPause) return;') : -1
+  const atCaseMarker = beganCode ? beganCode.indexOf('self.interruptedBySystem = YES;') : -1
+  const atCaseDeferral = beganCode ? beganCode.indexOf('[self scheduleDeferredInterruptionBeganHandling];') : -1
   const atManualGate = endedCode ? endedCode.indexOf('if (self.manualPause) return;') : -1
   const atReacquire = endedCode ? endedCode.indexOf('[self prepareAudioSession:&sessionError]') : -1
 
@@ -141,12 +154,16 @@ const evaluate = (src, js) => {
   const patcher = patchSrc
 
   return {
-    // —— Began：无条件置标记 + 让出会话 ——
-    began_noLegacyReturn: !!beganCode && !beganCode.includes('if (!shouldHandle || self.manualPause) return;'),
+    // —— Began：立即无条件置标记 + 推迟执行（第 31 轮·追加）+ 让出会话（执行体）——
+    began_noLegacyReturn: !!beganExecCode && !beganExecCode.includes('if (!shouldHandle || self.manualPause) return;'),
     began_markerBeforeReturn: atMarker >= 0 && atEarlyReturn >= 0 && atMarker < atEarlyReturn,
-    began_releasesSession: !!beganCode && beganCode.includes('setActive:NO withOptions:AVAudioSessionSetActiveOptionNotifyOthersOnDeactivation'),
-    began_releaseGuarded: !!beganCode && /if \(canReleaseSession\) \{/.test(beganCode),
-    began_releaseNeedsEngineStopped: !!beganCode && /canReleaseSession = self\.sourceNode != nil && \(self\.engine == nil \|\| !self\.engine\.isRunning\);/.test(beganCode),
+    // 【第 31 轮·追加】case 块本身：收到通知就立即置标记并把完整处理推迟 —— 块内不许再有
+    // 任何 return（早退只可能发生在推迟执行体里，那里的顺序由上行断言守着）。
+    began_immediateDeferral: atCaseMarker >= 0 && atCaseDeferral >= 0 && atCaseMarker < atCaseDeferral &&
+      !!beganCode && !/\breturn;/.test(beganCode),
+    began_releasesSession: !!beganExecCode && beganExecCode.includes('setActive:NO withOptions:AVAudioSessionSetActiveOptionNotifyOthersOnDeactivation'),
+    began_releaseGuarded: !!beganExecCode && /if \(canReleaseSession\) \{/.test(beganExecCode),
+    began_releaseNeedsEngineStopped: !!beganExecCode && /canReleaseSession = self\.sourceNode != nil && \(self\.engine == nil \|\| !self\.engine\.isRunning\);/.test(beganExecCode),
 
     // —— Ended：门槛 = interruptedBySystem && !manualPause ——
     ended_guardIsMarkerOnly: !!endedCode && endedCode.includes('if (!self.interruptedBySystem) return;'),
@@ -223,7 +240,8 @@ const evaluate = (src, js) => {
 
 const LABELS = {
   began_noLegacyReturn: 'Began 不再因「未出声 / 手动暂停」提前 return（旧写法会让 Ended 整单作废）',
-  began_markerBeforeReturn: 'Began 的 interruptedBySystem = YES 在 shouldEmitPause 早退之前（无条件置位）',
+  began_markerBeforeReturn: 'Began 的执行体里 interruptedBySystem = YES 在 shouldEmitPause 早退之前（无条件置位）',
+  began_immediateDeferral: 'Began 收到通知立即无条件置标记并把完整处理推迟到忽略窗口到期（第 31 轮·追加）',
   began_releasesSession: 'Began 主动让出音频会话 setActive:NO + NotifyOthersOnDeactivation',
   began_releaseGuarded: '让出会话由 canReleaseSession 守着（不是无条件调用）',
   began_releaseNeedsEngineStopped: 'canReleaseSession 要求引擎已停下（否则掐断 IO，恢复后无声）',
@@ -302,9 +320,10 @@ const neg = (label, ok) => {
 }
 
 // m1 旧 Began：早退再置标记（手动暂停 / 未出声时标记不置位）
+// 【第 31 轮·追加】锚点改到推迟执行体（2 空格）；case 块的「立即置标记」由 m15 守着。
 const m1 = src.replace(
-  '      self.interruptedBySystem = YES;\n      if (canReleaseSession) {',
-  '      if (!shouldEmitPause) return;\n      self.interruptedBySystem = YES;\n      if (canReleaseSession) {',
+  '  self.interruptedBySystem = YES;\n  if (canReleaseSession) {',
+  '  if (!shouldEmitPause) return;\n  self.interruptedBySystem = YES;\n  if (canReleaseSession) {',
 )
 const m1r = evaluate(m1, JS)
 neg('反例 m1：early-return 早于标记（旧 Began 语义）被拦下',
@@ -421,6 +440,16 @@ const m14s = JS.service.replace(
 const m14r = evaluate(src, { service: m14s, patch: JS.patch })
 neg('反例 m14：打断开始退回无条件置恢复意图（手动暂停被覆盖）被拦下',
   m14s !== JS.service && !m14r.svc_interruptBeginHonorsManualPause)
+
+// m15 第 31 轮·追加：Began 的标记挪到推迟调度之后（不再「立即置位」—— 窗口期路由自愈
+// 会去抢被打断的会话，用户手动暂停期间也没有标记兜底）
+const m15 = src.replace(
+  '      self.interruptedBySystem = YES;\n      [self scheduleDeferredInterruptionBeganHandling];',
+  '      [self scheduleDeferredInterruptionBeganHandling];\n      self.interruptedBySystem = YES;',
+)
+const m15r = evaluate(m15, JS)
+neg('反例 m15：Began 的标记挪到推迟调度之后（不再立即置位）被拦下',
+  m15 !== src && !m15r.began_immediateDeferral)
 
 const negFailed = negResults.filter(ok => !ok).length
 

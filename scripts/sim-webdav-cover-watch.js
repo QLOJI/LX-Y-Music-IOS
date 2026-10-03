@@ -33,8 +33,10 @@
  *        并把 isRefresh 透传给 local.ts 的在线匹配（复核「未更新」）；
  *     ⑤ 行内自愈：Image 的 onError → 列表页 handleCoverError，作废缓存 + 清 picUrl +
  *        单首重补；同一 (id,url) 只重试一次，防死图来回换造成请求风暴。
+ *        【第 31 轮】单首重补的落点从 prefetchCovers([target]) 换成 WebDAVListAction 的
+ *        refreshWebdavCover（加法式），见下。
  *   条二（下载按钮）
- *     ① hasConfig 改成响应式（useSettingValue('sync.webdav.url'/'sync.webdav.username')），
+ *     ① hasConfig 改成响应式（useSettingValue('sync.webdav.url')/useSettingValue('sync.webdav.username')），
  *        不再是一次性快照；两个下载按钮的 disabled 里去掉 !hasConfig（未配置时按得动，
  *        由 handleBatchDownload 提示并跳配置页），不靠 disabled 静默吞点击；
  *     ② ⋮ 菜单 handleDownload：入口先落日志（分辨「没进回调」还是「进了回调静默失败」），
@@ -51,6 +53,18 @@
  *   于是本轮把不变量②的锚点换成 `disabled={loading}`，并新加一条「页面不许再出现
  *   batchLoadingText」的守卫（几百首的批量任务期间按钮长期灰着同样属于「按了没反应」）。
  *   老函数本体保留未删，其内部形状仍由 sim-webdav-menu-download-ladder.js 守着。
+ *
+ * 第 31 轮补记（用户图一「WebDAV 还是存在不自动加载在线封面的情况……进入 WebDAV 歌单界面
+ * 也是会刷新该列表下所有歌曲的在线封面，请强化」）：
+ *   ① 「进列表」并入强制刷新：loadConfig（挂载 + 每次切页两条入口都走它）也置位
+ *      forceCoverRefresh。第 30 轮只把扫描/下拉接上了 force，入口没接 ⇒ 进来那一轮
+ *      isRefresh=false，内存里有结果的歌被 getCachedCoverUrl 挡掉，「进来还是灰占位」照旧。
+ *   ② 行内自愈改为加法式：原来的 prefetchCovers([target]) 是整轮巡检入口（clear 已试名单 +
+ *      清空全部失败备忘 + 轮次 +1），在巡检推进中被行内失败触发时，会把**正在飞的那一轮**
+ *      判成「上一轮过期」而整体中止 —— 一首歌的行内失败就能掐死后面所有歌的封面补全。
+ *      现在走 refreshWebdavCover：只作废这一首的内存缓存与失败备忘（local.ts 新增单曲版
+ *      clearWebdavCoverMiss）、单取一次；不碰轮次、不清别人进度。本脚本不变量⑤与反例 c27–c30
+ *      钉住这条分工（含「不许出现 prefetchCovers( / clearWebdavCoverMisses(」）。
  *
  * 为什么必须靠契约脚本：「整表分批 / 先探活再当缺失 / 每轮清备忘 / 刷新带 isRefresh /
  * onError 只重试一次 / 按钮不再被 disabled 吞掉 / 失败一定有日志和提示」全是形状与顺序，
@@ -224,17 +238,57 @@ const inlineHealInvariants = (files) => {
   if (!heal.includes('coverErrorRetriedKeys.current.add(key)')) {
     reasons.push('handleCoverError 没有把重试过的键记下来（守卫形同虚设）')
   }
-  if (!heal.includes('invalidateCoverCache(song)')) {
-    reasons.push('handleCoverError 没有作废内存缓存（重补时还会拿到那张挂掉的图）')
+  // 【第 31 轮】自愈落点：refreshWebdavCover（加法式单曲补齐），且不许再借道整轮巡检入口。
+  // prefetchCovers 一进来就 clear 已试名单 + 清空全部失败备忘 + 轮次 +1 —— 行内失败发生在
+  // 巡检推进过程中，这一下会把正在飞的那一轮判成「上一轮过期」整体中止：一首歌的行内失败
+  // 就能掐死后面所有歌的封面补全（用户第 31 轮报的「还是不自动加载在线封面」的另一半成因）。
+  if (!heal.includes('refreshWebdavCover(song)')) {
+    reasons.push('handleCoverError 没有触发单曲自愈（清了 picUrl 却没人去补，行内会空占位）')
   }
-  if (!heal.includes('prefetchCovers([target])')) {
-    reasons.push('handleCoverError 没有触发单首重补（清了 picUrl 却没人去补，行内会空占位）')
+  if (heal.includes('prefetchCovers(')) {
+    reasons.push('handleCoverError 仍借道整轮巡检入口 prefetchCovers（会把在飞的那一轮掐死，见第 31 轮说明）')
   }
 
   // 页面里 fetchCoverUrl( 只该出现在巡检那一处：别在渲染/自愈路径上新增逐首直调（绕开缓存与并发闸）
   const fetchCount = countOf(page, 'fetchCoverUrl(')
   if (fetchCount !== 1) {
-    reasons.push(`页面里 fetchCoverUrl( 出现 ${fetchCount} 次（应当只有巡检那一处，自愈路径要走 prefetchCovers）`)
+    reasons.push(`页面里 fetchCoverUrl( 出现 ${fetchCount} 次（应当只有巡检那一处，自愈路径要走 refreshWebdavCover）`)
+  }
+
+  // 单曲自愈 helper 本体（WebDAVListAction.ts）：必须是「加法式」的
+  const actionCode = stripComments(files.action)
+  const healFn = slice(actionCode, 'export const refreshWebdavCover = async(', 'export const handleFetchWebDAVPicFromOnline = async(')
+  if (!healFn) {
+    reasons.push('WebDAVListAction 没有导出 refreshWebdavCover（行内自愈没有加法式实现）')
+  } else {
+    if (!healFn.includes('invalidateCoverCache(')) {
+      reasons.push('refreshWebdavCover 没有作废这一首的内存缓存（重取还会拿到挂掉的那张）')
+    }
+    if (!healFn.includes('clearWebdavCoverMiss(')) {
+      reasons.push('refreshWebdavCover 没有清这一首的失败备忘（搜过没结果的歌自愈会被直接跳过）')
+    }
+    if (!healFn.includes('isRefresh: true')) {
+      reasons.push('refreshWebdavCover 没有带 isRefresh 重取（自愈只是再吃一遍缓存，换不到新图）')
+    }
+    if (!healFn.includes("picUrl: ''")) {
+      reasons.push('refreshWebdavCover 没有把 picUrl 清空再取（local.ts 见 picUrl 直接返回，走不到在线兜底搜索）')
+    }
+    if (healFn.includes('prefetchCovers(')) {
+      reasons.push('refreshWebdavCover 借道整轮巡检入口（会打断正在飞的那一轮）')
+    }
+    if (healFn.includes('clearWebdavCoverMisses(')) {
+      reasons.push('refreshWebdavCover 清空了全部失败备忘（其他歌的巡检进度被重置，搜索风暴会回来）')
+    }
+  }
+
+  // local.ts：单曲备忘清除必须只删自己那一条 key（整表清空会把别人的进度一起抹掉）
+  const localCode = stripComments(files.local)
+  if (!localCode.includes('export const clearWebdavCoverMiss = (')) {
+    reasons.push('local.ts 没有导出单曲版 clearWebdavCoverMiss（自愈只能清整表，别的歌进度被重置）')
+  }
+  const missFn = slice(localCode, 'export const clearWebdavCoverMiss = (', '\n}')
+  if (!missFn || !missFn.includes('webdavCoverSearchMisses.delete(getWebdavCoverMissKey(musicInfo))')) {
+    reasons.push('local.ts 的 clearWebdavCoverMiss 没有按单曲 key 真删（这一首仍会被备忘跳过）')
   }
 
   return reasons
@@ -439,9 +493,15 @@ const runCounterExamples = () => {
   '刷新标记')
 
   // c10 下拉刷新没有置位刷新标记
+  // 【第 31 轮】锚点从单行 `    forceCoverRefresh.current = true` 扩成两行：loadConfig（进列表）
+  // 从本轮起也置位同一个标记，而 tamper 是 String.replace（只替第一处）—— 单行锚点会被
+  // 文本更靠前的 loadConfig 那一处抢走，替完 handleRefresh 还是原样，c10 就成了假通过。
+  // 带上后面那行 `void Promise.all(` 后锚点唯一（loadConfig 后面那行是 prefetchCovers(songs)）。
   check('c10 刷新不置位标记', coverWatchInvariants({
     ...REAL,
-    page: tamper(REAL.page, '    forceCoverRefresh.current = true', '    forceCoverRefresh.current = false'),
+    page: tamper(REAL.page,
+      '    forceCoverRefresh.current = true\n    void Promise.all(',
+      '    forceCoverRefresh.current = false\n    void Promise.all('),
   }),
   '没有置位 forceCoverRefresh')
 
@@ -485,9 +545,46 @@ const runCounterExamples = () => {
   // c16 自愈清了 picUrl 却没人补
   check('c16 自愈不触发重补', inlineHealInvariants({
     ...REAL,
-    page: tamper(REAL.page, '    prefetchCovers([target])', '    void target'),
+    page: tamper(REAL.page, '    void refreshWebdavCover(song).then((newPicUrl) => {', '    void song'),
   }),
-  '没有触发单首重补')
+  '没有触发单曲自愈')
+
+  // c27 自愈又借道整轮巡检入口（会把正在飞的那一轮判成过期、整体中止）
+  check('c27 自愈借道整轮巡检', inlineHealInvariants({
+    ...REAL,
+    page: tamper(REAL.page,
+      '    void refreshWebdavCover(song).then((newPicUrl) => {',
+      '    prefetchCovers([song])\n    void Promise.resolve().then((newPicUrl: string) => {'),
+  }),
+  '仍借道整轮巡检入口')
+
+  // c28 自愈不带 isRefresh（只是再吃一遍缓存，换不到新图）
+  check('c28 自愈不带刷新标记', inlineHealInvariants({
+    ...REAL,
+    action: tamper(REAL.action, 'fetchCoverUrl(target, { isRefresh: true })', 'fetchCoverUrl(target)'),
+  }),
+  '没有带 isRefresh')
+
+  // c29 自愈把全部失败备忘一起清掉（其他歌的进度被重置，第 28 轮搜索风暴回来）
+  check('c29 自愈清空全部备忘', inlineHealInvariants({
+    ...REAL,
+    action: tamper(REAL.action, '  clearWebdavCoverMiss(song)', '  clearWebdavCoverMisses()'),
+  }),
+  '清空了全部失败备忘')
+
+  // c30 单曲失败备忘没有真删（锚点带 key 函数：整表 clear() 那处是另一个名字）
+  check('c30 单曲备忘没真删', inlineHealInvariants({
+    ...REAL,
+    local: tamper(REAL.local, '  webdavCoverSearchMisses.delete(getWebdavCoverMissKey(musicInfo))', '  void musicInfo'),
+  }),
+  '没有按单曲 key 真删')
+
+  // c31 自愈不清 picUrl 就直接取（local.ts 见 picUrl 直接返回，走不到在线兜底搜索）
+  check('c31 自愈不清 picUrl', inlineHealInvariants({
+    ...REAL,
+    action: tamper(REAL.action, "const target = { ...song, meta: { ...song.meta, picUrl: '' } }", 'const target = song'),
+  }),
+  '没有把 picUrl 清空再取')
 
   // c17 渲染/自愈路径上新增 fetchCoverUrl 直调（绕开缓存与并发闸）
   check('c17 页面新增 fetchCoverUrl 直调', inlineHealInvariants({

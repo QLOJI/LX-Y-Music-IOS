@@ -58,12 +58,25 @@
  *       单首重补，同一 (id,url) 只重试一次，避免死图抖动刷请求）。
  *   请求量仍由 coverUrl.ts 的 4 并发全局队列 + local.ts 的 2 并发搜索闸 + 分批收口。
  *
+ * 第 31 轮增量（需求原话：「WebDAV 还是存在不自动加载在线封面的情况，需要强化这个功能，
+ * 点击扫描或者下滑刷新都会刷新该列表下所有歌曲的在线封面，**进入 WebDAV 歌单界面也是会
+ * 刷新该列表下所有歌曲的在线封面**，请强化」）：
+ *   · 进列表并入强制刷新：loadConfig（挂载 effect + 每次切页的导航 effect 都走它）也置位
+ *     forceCoverRefresh —— 第 30 轮只把「扫描 / 下拉」接上了 force，进列表那一轮仍是
+ *     isRefresh=false，内存里已有封面结果的歌被 getCachedCoverUrl 挡掉，「进来还是灰占位」；
+ *   · 行内自愈改为加法式：单首重补不再调 prefetchCovers([target])（那是整轮巡检入口：
+ *     clear 已试名单 + 清空全部失败备忘 + 轮次 +1，会把**正在飞的那一轮**判成过期整体中止，
+ *     一首歌的行内失败就能掐死后面所有歌的补全），改走 WebDAVListAction.refreshWebdavCover
+ *     （只作废这一首的内存缓存与失败备忘单曲版 clearWebdavCoverMiss、单取一次）。
+ *   新增断言：loadConfig 三个形状、页面不许出现 prefetchCovers([...])、必须调用
+ *   refreshWebdavCover；新增反例 c23–c25。
+ *
  * 为什么必须靠契约脚本：这几条全是「形状 / 顺序 / 上限」而非类型 —— 把无条件 return 放回去、
  * 把兜底删掉、把 onToggleSource 换成真的换源、把空串 return 提到兜底之前、把上限改成整表、
  * 把去重删掉、把 fallback 挪到空歌词之后，或者把第 29 轮的 file:// 校验 / 失败备忘清空 /
  * 分批推进删掉，tsc/eslint 全是绿的，只在真机上表现为
  * 「扫完还是灰占位 / 播到某首还是无歌词 / 扫一次发几百个请求 / 封面挂了就再也回不来」。
- * 带反例自检（c1–c22）。
+ * 带反例自检（c1–c25）。
  *
  * 运行：node scripts/sim-webdav-auto-cover-lyric.js
  * 退出码：不变量全过、且全部反例被拦下时为 0，否则 1。
@@ -340,10 +353,39 @@ const prefetchInvariants = (rawPage) => {
       reasons.push(`缺少预热调用点 ${anchor}（进列表 / 下拉刷新 / 扫描 / 播放回填 里少了一处）`)
     }
   }
-  // 第 29 轮把行内 onError 自愈也算一个调用点（handleCoverError → prefetchCovers([target])），
-  // 所以下限从 5 提到 6：进列表 / 扫描 / 扫描并下载 / 下拉刷新 / 播放回填 / 行内自愈。
-  if (countOf(code, 'prefetchCovers(') < 6) {
-    reasons.push(`预热调用点不足：prefetchCovers( 只有 ${countOf(code, 'prefetchCovers(')} 处（进列表/扫描/扫描并下载/刷新/播放回填/行内自愈 至少 6 处）`)
+  // 第 29 轮曾把行内 onError 自愈也算一个调用点（handleCoverError → prefetchCovers([target])），下限提到 6。
+  // 【第 31 轮】自愈不再借道 prefetchCovers，改走 WebDAVListAction.refreshWebdavCover（加法式
+  // 单曲补齐，见 sim-webdav-cover-watch.js 不变量⑤）：prefetchCovers 一进来就清已试名单 +
+  // 清空全部失败备忘 + 轮次 +1，而行内失败发生在**巡检推进过程中**，这一下会把正在飞的那一轮
+  // 判成「上一轮过期」整体中止 —— 一首歌的行内失败就能掐死后面所有歌的封面补全。所以：
+  //   ① 计数下限回到 5：进列表 / 扫描 / 扫描并下载 / 下拉刷新 / 播放回填（实现体那一处仍计入）；
+  //   ② 页面里不许再出现单首形式的 prefetchCovers([...])；
+  //   ③ 页面必须走 refreshWebdavCover（行内封面挂了得有人补）。
+  if (countOf(code, 'prefetchCovers(') < 5) {
+    reasons.push(`预热调用点不足：prefetchCovers( 只有 ${countOf(code, 'prefetchCovers(')} 处（进列表/扫描/扫描并下载/刷新/播放回填 至少 5 处）`)
+  }
+  if (code.includes('prefetchCovers([')) {
+    reasons.push('页面里又出现单首形式的 prefetchCovers([...])（行内自愈不许再借整轮巡检入口：会打断在飞的那一轮）')
+  }
+  if (!code.includes('refreshWebdavCover(')) {
+    reasons.push('页面没有走单曲自愈 helper refreshWebdavCover（行内封面加载失败后没人补）')
+  }
+
+  // 【第 31 轮·图一】进列表（loadConfig：挂载 effect + 每次切页的导航 effect 都走它）并入强制
+  // 刷新，否则内存里已有封面结果的歌会被上面的 getCachedCoverUrl 挡掉 —— 用户的「进入 WebDAV
+  // 歌单界面也是会刷新该列表下所有歌曲的在线封面」就落空。切片到 loadConfig 本体再断言。
+  const loadStart = code.indexOf('const loadConfig = useCallback(')
+  const loadEnd = code.indexOf('}, [prefetchCovers])', loadStart)
+  if (loadStart < 0 || loadEnd <= loadStart) {
+    reasons.push('loadConfig 切片失败（锚点漂移：loadConfig / deps）')
+  } else {
+    const loadBody = code.slice(loadStart, loadEnd)
+    if (!loadBody.includes('forceCoverRefresh.current = true')) {
+      reasons.push('进列表没有置位 forceCoverRefresh（进入 WebDAV 歌单界面时封面不复核最新/缺失）')
+    }
+    if (!loadBody.includes('prefetchCovers(songs)')) {
+      reasons.push('loadConfig 没有起一轮封面巡检（进列表后不自动补封面）')
+    }
   }
 
   // 第 25 轮删掉的整表批量下载不能回来，也不能再引 fetchWebDAVPic 做封面
@@ -588,6 +630,26 @@ const runCounterExamples = () => {
     '      for (let i = 0; i < queue.length; i += MAX_PREFETCH_COVERS) {',
     '      for (const song of queue) {')),
   '分批推进整份列表')
+
+  // ---- 第 31 轮新增反例：进列表强制刷新 + 自愈不借整轮巡检入口 ----
+
+  // c23 进列表那一轮不再是强制刷新（内存里有封面结果的歌被缓存挡掉：进来还是灰占位/老封面）
+  check('c23 进列表不强制刷新', prefetchInvariants(tamper(REAL.page,
+    '      forceCoverRefresh.current = true\n      prefetchCovers(songs)',
+    '      prefetchCovers(songs)')),
+  '进列表没有置位 forceCoverRefresh')
+
+  // c24 自愈又借道整轮巡检入口（会把正在飞的那一轮判成过期整体中止）
+  check('c24 自愈借道整轮巡检', prefetchInvariants(tamper(REAL.page,
+    '    void refreshWebdavCover(song).then((newPicUrl) => {',
+    '    void prefetchCovers([song]).then((newPicUrl) => {')),
+  '单首形式的 prefetchCovers')
+
+  // c25 自愈 helper 被删（清了 picUrl 却没人去补）
+  check('c25 自愈 helper 被删', prefetchInvariants(tamper(REAL.page,
+    '    void refreshWebdavCover(song).then((newPicUrl) => {',
+    '    void Promise.resolve(song).then((newPicUrl) => {')),
+  'refreshWebdavCover')
 
   return results
 }
