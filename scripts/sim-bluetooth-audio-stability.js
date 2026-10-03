@@ -261,7 +261,7 @@ const bluetoothStabilityInvariants = (files) => {
   }
 
   // —— ⑧ 硬件采样率记录的生命周期 ——
-  if (!/self\.streamError = error \?: LXError\(@"streaming_flac_engine", @"Failed to start AVAudioEngine"\);[\s\S]{0,400}?self\.configuredHardwareSampleRate = self\.engine\.outputNode\.inputFormat\(forBus:0\)\.sampleRate;/.test(code)) {
+  if (!/self\.streamError = error \?: LXError\(@"streaming_flac_engine", @"Failed to start AVAudioEngine"\);[\s\S]{0,400}?self\.configuredHardwareSampleRate = \[AVAudioSession sharedInstance\]\.sampleRate;/.test(code)) {
     reasons.push('建图成功时没记 configuredHardwareSampleRate（无法判断硬件格式有没有变）')
   }
   const cleanup = objcBody(code, '- (void)cleanupAudioGraphLocked {')
@@ -273,6 +273,19 @@ const bluetoothStabilityInvariants = (files) => {
   if (!code.includes('@property (nonatomic, assign) double configuredHardwareSampleRate;') ||
       !code.includes('@property (nonatomic, assign) int64_t renderFramesAtLivenessProbe;')) {
     reasons.push('两个新状态属性没声明（configuredHardwareSampleRate / renderFramesAtLivenessProbe）')
+  }
+
+  // —— ⑩ 原生语法形态自查：ObjC 源码里不许出现 Swift 风格的 obj.method(arg:) 调用 ——
+  // 第 31 轮 CI 实锤（BUILD FAILED，编译目标 AppDelegate.mm）：这里曾写成
+  // 「self.engine.outputNode.inputFormat(forBus:0).sampleRate」——那是 Swift 写法，
+  // ObjC 里 clang 直接语法报错。当时本脚本用纯文本正则把**这个坏写法本身**钉住了还报绿，
+  // 正是纯文本契约的盲区：查得出「形状在不在」，查不出「形状合不合法」。这条按形态兜底，
+  // 先把该写法挡在门外（ObjC 正确写法是消息发送 + inputFormatForBus: 或会话 sampleRate）。
+  // 匹配前先去掉行尾 `//` 注释（注释里提写法是允许的）；`std::x(` 这类 C++ 限定名用 (?!:) 排除。
+  const syntaxCode = code.replace(/\/\/[^\n]*/g, '')
+  const swiftStyleCall = syntaxCode.match(/\.[A-Za-z_][A-Za-z0-9_]*\([A-Za-z_][A-Za-z0-9_]*:(?!:)/)
+  if (swiftStyleCall != null) {
+    reasons.push(`原生源码里出现 Swift 风格的 obj.method(arg:) 调用（ObjC 不合法，clang 会直接语法报错）：${swiftStyleCall[0]}`)
   }
 
   // —— ⑨ JS 侧口径：warning 不暂停 / error 才暂停 / 真断连仍由 JS 暂停 ——
@@ -506,6 +519,14 @@ const runCounterExamples = () => {
   ce('n13 warning 也改播放态', '自愈告警把播放态改成暂停',
     n13 !== REAL.nativeFlac && bluetoothStabilityInvariants({ ...REAL, nativeFlac: n13 }).length > 0 &&
     bluetoothStabilityInvariants({ ...REAL, nativeFlac: n13 }).some((r) => r.includes('warning')))
+
+  // n14 原生混入 Swift 风格调用（第 31 轮 CI 实锤：.inputFormat(forBus:0) → clang 语法报错）
+  const n14 = src.replace(
+    'double hardwareSampleRate = [AVAudioSession sharedInstance].sampleRate;',
+    'double hardwareSampleRate = self.engine.outputNode.inputFormat(forBus:0).sampleRate;',
+  )
+  ce('n14 原生混入 Swift 风格调用', 'ObjC 里不合法（CI 直接 BUILD FAILED），契约至少要拦住它回来',
+    n14 !== src && bluetoothStabilityInvariants(withNative(n14)).some((r) => r.includes('Swift 风格')))
 
   // —— 条六：蓝牙接入 / 移除 → 暂停 ——
   const btEmitStmt = '[self sendEventWithName:@"bluetooth-device-changed" body:nil];'
