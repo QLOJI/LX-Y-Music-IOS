@@ -116,7 +116,8 @@ const LeaderboardPage = () => {
       } else {
         // 离开排行榜页即卸载。此前只置 true 从不置 false，用户进过一次后本页会
         // 永久挂载在 PagerView 中（offscreenPageLimit=1，离屏相邻页仍在内存里），
-        // 白白占着一份完整歌曲列表 + 一个左侧 12pt 全高的透明手势层（SwipeBackArea）。
+        // 白白占着一份完整歌曲列表 + 一个左缘全高的透明手势层（SwipeBackArea，第 20 轮起
+        // 手势带 20pt 宽）。
         // 本页无需要跨切页保留的状态：当前榜单由 getLeaderboardSetting 持久化兜底，
         // 重新挂载后按最近一次选择恢复。
         setVisible(false)
