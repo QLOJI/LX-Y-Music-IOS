@@ -49,6 +49,8 @@ interface NativeStreamingFlacModule {
   seekTo?: (position: number) => Promise<number>
   setVolume?: (volume: number) => Promise<void>
   setRate?: (rate: number) => Promise<void>
+  /** 【第 24 轮】下发「与其他应用同时播放」策略：true = 不因其它音频自我暂停（打断时对外不呈现暂停） */
+  setPlayWithOthers?: (enabled: boolean) => Promise<void>
   getPosition?: () => Promise<number>
   /** 带原生时钟戳的位置快照：snapshotAt = 快照产生时的 CACurrentMediaTime 毫秒 */
   getPositionStamped?: () => Promise<StreamingFlacStampedPosition>
@@ -98,6 +100,8 @@ export const resetStreamingFlac = async() => assertSupported('reset')()
 export const seekStreamingFlac = async(position: number) => assertSupported('seekTo')(position)
 export const setStreamingFlacVolume = async(volume: number) => assertSupported('setVolume')(volume)
 export const setStreamingFlacRate = async(rate: number) => assertSupported('setRate')(rate)
+// 【第 24 轮】「与其他应用同时播放」策略开关（只写原生标记，不碰播放器 / 音频会话）
+export const setStreamingFlacPlayWithOthers = async(enabled: boolean) => assertSupported('setPlayWithOthers')(enabled)
 export const getStreamingFlacPosition = async() => assertSupported('getPosition')()
 export const getStreamingFlacPositionStamped = async(): Promise<StreamingFlacStampedPosition> => assertSupported('getPositionStamped')()
 export const getStreamingFlacBufferedPosition = async() => assertSupported('getBufferedPosition')()
