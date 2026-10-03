@@ -355,13 +355,52 @@ export const getPicUrl = async({
         }
       })()
     }
-    return result.url
+    // 【第 27 轮】原来是 `return result.url` 无条件返回 —— 自定义源匹配到歌曲但拿不到封面时
+    // url 是空串，也会照样 return，把下面的搜索兜底整条跳过。现在空串就往下走。
+    if (result.url) return result.url
   } catch (err) {
     webDAVLog?.warn('getPicUrl: getOnlineOtherSourcePicByLocal failed', { err })
   }
 
-  // 云盘（WebDAV）不走自定义源换源，返回空；普通本地音乐走自定义源换源回退
-  if (isWebDAVMusic) return ''
+  // 【第 27 轮】WebDAV 自动在线封面兜底。apis('local')（getOnlineOtherSourcePicByLocal）只在
+  // 用户加载了声明 local 源的自定义源脚本时才有实现，没有就是 `Api is not found` 直接抛错，
+  // 于是「扫描/刷新自动补封面」永远走空 —— 只有 ⋮ 菜单「从在线获取封面」能用，因为那条路走的是
+  // findMusic + 内置平台接口。这里把兜底换成和菜单同一条链路：
+  //   getOtherSourceByLocal = getOtherSource（findMusic 跨平台搜索）+ 内置平台 getPic，
+  //   并且自带 歌名/歌手 互换、文件名拆分、"歌名-歌手"拆分、模糊搜索 多轮重试
+  //   （见本文件 getOtherSourceByLocal，与普通本地音乐用的是同一个函数）。
+  // onToggleSource 传空函数：WebDAV 歌曲不换源，只要封面（与菜单 allowToggleSource:false 同口径）。
+  // 匹配到的封面同样写回 meta 并落盘（updateWebDAVMusicMeta + webdavPicUpdated 广播），
+  // 所以列表行立刻换图、下次进列表不再重发、试听列表也跟着显示。
+  if (isWebDAVMusic) {
+    const matchedUrl = await getOtherSourceByLocal(musicInfo, async(otherSource) => {
+      const { url } = await getOnlineOtherSourcePicUrl({
+        musicInfos: [...otherSource],
+        onToggleSource: () => {},
+        isRefresh,
+      })
+      // 空串当失败处理，好让 getOtherSourceByLocal 继续用下一套 歌名/歌手 组合重试
+      if (!url) throw new Error('empty cover url')
+      return url
+    }).catch(() => '')
+
+    if (matchedUrl) {
+      webDAVLog?.info('getPicUrl: WebDAV cover matched by online search', { url: matchedUrl })
+      void (async() => {
+        try {
+          const module = await loadWebDAVModule()
+          await module.updateWebDAVMusicMeta(musicInfo.id, { picUrl: matchedUrl })
+          appEvent.webdavPicUpdated(musicInfo.id, matchedUrl)
+        } catch (err) {
+          webDAVLog?.warn('getPicUrl: persist searched cover failed', { err })
+        }
+      })()
+      return matchedUrl
+    }
+
+    // 云盘（WebDAV）不走自定义源换源，搜索兜底也空就返回空
+    return ''
+  }
 
   onToggleSource()
   return getOtherSourceByLocal(musicInfo, async(otherSource) => {
@@ -480,7 +519,31 @@ export const getLyricInfo = async({
         webDAVLog?.warn('getLyricInfo: WebDAV music online lyric fetch failed', { err })
       }
 
-      // 云盘（WebDAV）不走自定义源换源，返回空歌词
+      // 【第 27 轮】歌词补齐兜底。上面 getOnlineOtherSourceLyricByLocal 内部走的也是 apis('local')
+      // （只在用户加载了声明 local 源的自定义源脚本时才有实现），没有就是 `Api is not found`，
+      // 于是 WebDAV 歌曲永远落回下面那句空歌词 —— 播放时列表里就是"无歌词"。
+      // 这里补上与普通本地音乐同一条链路（见本文件末尾普通本地分支）：
+      //   getOtherSourceByLocal = getOtherSource（findMusic 跨平台搜索）+ 内置平台 getLyric，
+      //   自带 歌名/歌手 互换、文件名拆分、"歌名-歌手"拆分、模糊搜索 多轮重试。
+      // getOnlineOtherSourceLyricInfo 会用 existTimeExp 校验"必须带时间轴"，纯文本歌词自动判失败
+      // 并换下一个候选；拿到的歌词 saveLyric 落在 musicInfo.id 上，下次进来 :435 的缓存直接命中。
+      const matchedLyricInfo = await getOtherSourceByLocal(musicInfo, async(otherSource) => {
+        const { lyricInfo: matchedLyric, isFromCache } = await getOnlineOtherSourceLyricInfo({
+          musicInfos: [...otherSource],
+          onToggleSource: () => {},
+          isRefresh,
+        })
+        if (!matchedLyric?.lyric) throw new Error('empty lyric')
+        if (!isFromCache) void saveLyric(musicInfo, matchedLyric)
+        return buildLyricInfo(matchedLyric)
+      }).catch(() => null)
+
+      if (matchedLyricInfo) {
+        webDAVLog?.info('getLyricInfo: WebDAV music lyric matched by online search', { musicId: musicInfo.id })
+        return matchedLyricInfo
+      }
+
+      // 云盘（WebDAV）不走自定义源换源，搜索兜底也空就返回空歌词
       return buildLyricInfo({ lyric: '' })
     }
 
