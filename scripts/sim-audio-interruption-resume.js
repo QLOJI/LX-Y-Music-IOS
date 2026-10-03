@@ -193,7 +193,10 @@ const evaluate = (src, js) => {
     svc_recordsInterruptionStart: (svc.match(/interruptedAt = Date\.now\(\)/g) || []).length >= 2,
     // iOS 三分流：began={paused:true} / ended 应恢复={paused:false} / ended 不该恢复={paused:true,permanent:true}。
     // 只看 paused 会把第三种（结束）当成新的开始 → 永远走不到恢复那一步。
-    svc_endedNotMistakenForStart: /if \(paused && !permanent\) \{/.test(svc),
+    // 【第 24 轮】按 6 空格缩进锚定**独占分支**：第 24 轮新增的「与其他应用同时播放」策略分支
+    // 里也有一句同形状的 `if (paused && !permanent) {`（8 空格）。不锚定的话，本断言会被那一支
+    // 满足，m11 反例（篡改独占分支）就拦不下来（本轮实测）。
+    svc_endedNotMistakenForStart: /^      if \(paused && !permanent\) \{/m.test(svc),
     svc_retryOnceAt600: /const RESUME_RETRY_DELAYS = \[600\]/.test(svc) && !svc.includes('120, 500, 1500'),
     svc_playArmsHeartbeat: /app_event\.on\('play', \(\) => \{[\s\S]{0,200}?startPlayingHeartbeat\(\)/.test(svc),
     svc_stopClearsIntent: /app_event\.on\('stop', \(\) => \{[\s\S]{0,200}?cancelResumePending\(\)/.test(svc),
@@ -201,7 +204,8 @@ const evaluate = (src, js) => {
     // —— 第 22 轮：手动暂停闸门（用户主动暂停后任何条件都不许自动出声）——
     svc_manualPauseImported: /import \{ clearManualPause, isManualPause \} from '@\/core\/player\/manualPause'/.test(svc),
     svc_scheduleHonorsManualPause: /if \(isManualPause\(\)\) return cancelResumePending\(\)/.test(svc),
-    svc_interruptBeginHonorsManualPause: /if \(!global\.lx\.isPlayedStop && !isManualPause\(\)\) shouldResumeAfterDuck = true/.test(svc),
+    // 【第 24 轮】同样按 8 空格缩进锚定独占分支（混音分支同一句是 10 空格缩进）
+    svc_interruptBeginHonorsManualPause: /^        if \(!global\.lx\.isPlayedStop && !isManualPause\(\)\) shouldResumeAfterDuck = true/m.test(svc),
     svc_backgroundHonorsManualPause: /if \(wasBackgroundPlaying && !global\.lx\.isPlayedStop && !isManualPause\(\)\) shouldResumeAfterDuck = true/.test(svc),
     svc_androidFinalHonorsManualPause: /if \(!isManualPause\(\)\) play\(\)/.test(svc),
     svc_playClearsManualPause: /app_event\.on\('play', \(\) => \{[\s\S]{0,400}?clearManualPause\(\)/.test(svc),
@@ -385,7 +389,11 @@ neg('反例 m10：RNTP 补丁退回「缺 key 直接 return」（播报结束事
 
 // m11 iOS 分流退回「只看 paused」：{paused:true, permanent:true}（打断结束·不该自动恢复）
 // 被当成新的打断开始 → 永远走不到恢复那一步
-const m11s = JS.service.replace('if (paused && !permanent) {', 'if (paused) {')
+// 【第 24 轮】锚点必须用 /m 的 ^ 行首限定到**独占分支**：第 24 轮在同一 handler 里新增了
+// 「与其他应用同时播放」策略分支（同形状、8 空格缩进）。纯字符串 replace('      if (paused…')
+// 会先在 8 空格那行里从第 2 列开始匹配（6 空格 + if… 是它的子串），篡改落到混音分支上，
+// 反例就失去拦截意义（本轮实测 m11/m14 未拦下）。
+const m11s = JS.service.replace(/^      if \(paused && !permanent\) \{/m, '      if (paused) {')
 const m11r = evaluate(src, { service: m11s, patch: JS.patch })
 neg('反例 m11：iOS 分流退回「只看 paused」（打断结束被当成新的开始）被拦下',
   m11s !== JS.service && !m11r.svc_endedNotMistakenForStart)
@@ -405,9 +413,10 @@ neg('反例 m13：拆掉 play 事件的闸门复位（手动暂停后永远不�
   m13s !== JS.service && !m13r.svc_playClearsManualPause)
 
 // m14 打断开始退回无条件置位（用户报的「其它音频播完自己开始播」的旧实现）
+// 【第 24 轮】同样用 /m 的 ^ 行首锚定独占分支（混音分支同一句是 10 空格缩进，见 m11 的说明）
 const m14s = JS.service.replace(
-  'if (!global.lx.isPlayedStop && !isManualPause()) shouldResumeAfterDuck = true',
-  'if (!global.lx.isPlayedStop) shouldResumeAfterDuck = true',
+  /^        if \(!global\.lx\.isPlayedStop && !isManualPause\(\)\) shouldResumeAfterDuck = true/m,
+  '        if (!global.lx.isPlayedStop) shouldResumeAfterDuck = true',
 )
 const m14r = evaluate(src, { service: m14s, patch: JS.patch })
 neg('反例 m14：打断开始退回无条件置恢复意图（手动暂停被覆盖）被拦下',

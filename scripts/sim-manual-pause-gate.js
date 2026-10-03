@@ -151,12 +151,18 @@ const serviceInvariants = (raw) => {
   }
   for (const [needle, label] of [
     ['if (isManualPause()) return cancelResumePending()', 'scheduleAutoResume 兜底'],
-    ['if (!global.lx.isPlayedStop && !isManualPause()) shouldResumeAfterDuck = true', 'iOS 打断开始置恢复意图'],
     ['if (wasBackgroundPlaying && !global.lx.isPlayedStop && !isManualPause()) shouldResumeAfterDuck = true', '退后台预置恢复意图'],
     ['shouldResumeAfterDuck ||= !isManualPause() && wasPlayingRecently()', 'iOS 音量闪避记恢复意图'],
     ['if (!isManualPause()) play()', 'Android 恢复分支'],
   ]) {
     if (!code.includes(needle)) reasons.push(`自动续播入口未过手动暂停闸门（${label}：缺 ${needle}）`)
+  }
+  // 【第 24 轮】这句话在 service.ts 里出现了两次：独占分支（8 空格）与新增的「与其他应用同时
+  // 播放」策略分支（10 空格）。只用 includes 的话，篡改独占分支那句会被混音分支那句满足 ——
+  // t8 反例（用户报的 bug 原文）就拦不下来（本轮实测）。闸门是「取消勾选后正常暂停」的
+  // 前置条件，必须按行首缩进锁定独占分支。
+  if (!/^        if \(!global\.lx\.isPlayedStop && !isManualPause\(\)\) shouldResumeAfterDuck = true/m.test(code)) {
+    reasons.push('自动续播入口未过手动暂停闸门（iOS 打断开始置恢复意图：独占分支那句不见了/被改写）')
   }
   if (!/app_event\.on\('play', \(\) => \{[\s\S]{0,400}?clearManualPause\(\)/.test(code)) {
     reasons.push("app_event 'play' 未复位闸门（用户重新播放后自动续播仍被永久否决）")
@@ -236,9 +242,11 @@ const runCounterExamples = () => {
   "app_event 'play' 未复位闸门")
 
   // t8 打断开始退回无条件置位（用户报的 bug 原文）
-  check('t8 打断开始退回无条件置位', () => serviceInvariants(tamper(REAL.service,
-    'if (!global.lx.isPlayedStop && !isManualPause()) shouldResumeAfterDuck = true',
-    'if (!global.lx.isPlayedStop) shouldResumeAfterDuck = true')),
+  // 【第 24 轮】同样按行首 8 空格锚定独占分支：纯字符串锚点会先命中混音分支那句（10 空格，
+  // 从第 2 列开始就是目标子串），篡改落到无关分支上，反例失去拦截意义。
+  check('t8 打断开始退回无条件置位', () => serviceInvariants(REAL.service.replace(
+    /^        if \(!global\.lx\.isPlayedStop && !isManualPause\(\)\) shouldResumeAfterDuck = true/m,
+    '        if (!global.lx.isPlayedStop) shouldResumeAfterDuck = true')),
   'iOS 打断开始置恢复意图')
 
   return results
