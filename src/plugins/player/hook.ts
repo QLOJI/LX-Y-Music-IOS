@@ -170,11 +170,53 @@ export function useProgress(updateInterval: number) {
     // @ts-expect-error
     if (!pollTrackPlayerStates.includes(playerState)) return
 
-    void getProgress()
+    // 【第 20 轮·耗电契约 ①（2026-10-03）】「该不该轮询」由播放状态机决定（Playing /
+    // Buffering 才往下走，上面那行早退）；「现在能不能轮询」还要求 App 在前台。
+    // 真正的 setInterval 与起表前的补测**只此一处**（syncItv），所以「退后台就不轮询」
+    // 只需在这一个判定点成立，不必在每个分支各写一遍 —— 与同文件 useBufferProgress
+    // 同一套写法（那边的「该不该轮询」是随播放事件变化的 wantPolling，这边是 effect
+    // 依赖里的 playerState，效果等价：状态一变本 effect 重建，起表点重新过门）。
+    // 背景：本 hook 每秒做 3 次原生桥往返（getPosition / getDuration /
+    // getBufferedPosition，nativeFlac 路径同样 3 次）再 setState；音频后台播放时
+    // 进程常驻，此前完全没有前台门，锁屏后仍整夜空转。同文件的 useBufferProgress 与
+    // core/init/player/playProgress.ts 都有前台门（isActive / AppState 守卫），
+    // 唯独这一处漏了 —— 现在三处同一口径。位置/时长/缓冲都是实测值，后台不需要推算，
+    // 回前台重新测一次即可，状态无残留。
+    let interval: ReturnType<typeof setInterval> | null = null
+    const clearItv = () => {
+      if (!interval) return
+      clearInterval(interval)
+      interval = null
+    }
+    const syncItv = () => {
+      clearItv()
+      if (!isActive()) return
+      // 起表前先补一次实测（首帧 / 回前台立即有值，不用等一个周期）；它与
+      // setInterval 共用同一道前台门 —— 后台一次桥往返都不发。
+      void getProgress()
+      // eslint-disable-next-line @typescript-eslint/no-misused-promises
+      interval = setInterval(getProgress, updateInterval || 1000)
+    }
 
-    // eslint-disable-next-line @typescript-eslint/no-misused-promises
-    const poll = setInterval(getProgress, updateInterval || 1000)
-    return () => { clearInterval(poll) }
+    syncItv()
+
+    // 前后台订阅：退到后台立即停表（省电）；回到前台补一次实测再起表。
+    // 用跨行参数写法与 useBufferProgress 里的订阅区分，便于脚本与日志各自定位。
+    const appStateSubscription = AppState.addEventListener(
+      'change',
+      (nextState) => {
+        if (nextState === 'active') {
+          syncItv()
+        } else {
+          clearItv()
+        }
+      },
+    )
+
+    return () => {
+      clearItv()
+      appStateSubscription.remove()
+    }
   }, [playerState, updateInterval])
 
   return state

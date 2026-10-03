@@ -1,8 +1,9 @@
 /* eslint-disable @typescript-eslint/no-misused-promises */
 import TrackPlayer, { Event as TPEvent } from 'react-native-track-player'
 import { AppState, Platform } from 'react-native'
-import { pause, play, playNext, playPrev } from '@/core/player/player'
-import { markTimeoutExitInteraction } from '@/core/player/timeoutExit'
+// 切歌（playNext/playPrev）与 markTimeoutExitInteraction 已随重复监听一并移出本文件：
+// 现在只由唯一入口 remoteCommand.ts 调用（第 20 轮·遥控命令单一通路）。
+import { pause, play } from '@/core/player/player'
 import { initUnifiedPlayerController } from './controller'
 import { exitApp } from '@/core/common'
 import playerState from '@/store/player/state'
@@ -32,7 +33,11 @@ const clearResumeTimer = () => {
   }
 }
 
-const cancelResumePending = () => {
+// 【第 20 轮·遥控命令单一通路（2026-10-03）】导出给唯一入口 remoteCommand.ts 调用：
+// 用户手动播放/暂停（锁屏 / 控制中心 / 车机方向盘）后必须现场作废「被抢占自动续播」
+// 的待恢复标记，否则用户手动暂停后仍会被 scheduleAutoResume 兜底逻辑重新拉起。
+// 不能改挂到 app_event 'pause' 上：缓冲时的暂停也发那个事件，会把标记误清。
+export const cancelResumePending = () => {
   shouldResumeAfterDuck = false
   resumeRetryCount = 0
   clearResumeTimer()
@@ -74,34 +79,24 @@ const registerPlaybackService = async() => {
 
   console.log('reg services...')
   initUnifiedPlayerController()
-  TrackPlayer.addEventListener(TPEvent.RemotePlay, () => {
-    // console.log('remote-play')
-    // 用户手动(锁屏/通知栏/耳机)要求播放：取消“被抢占后自动续播”的待恢复标记，直接播放
-    cancelResumePending()
-    markTimeoutExitInteraction()
-    play()
-  })
 
-  TrackPlayer.addEventListener(TPEvent.RemotePause, () => {
-    // console.log('remote-pause')
-    // 用户手动要求暂停：清除自动续播标记，避免之后被兜底逻辑误自动播放
-    cancelResumePending()
-    markTimeoutExitInteraction()
-    void pause()
-  })
-
-  TrackPlayer.addEventListener(TPEvent.RemoteNext, () => {
-    // console.log('remote-next')
-    markTimeoutExitInteraction()
-    void playNext()
-  })
-
-  TrackPlayer.addEventListener(TPEvent.RemotePrevious, () => {
-    // console.log('remote-previous')
-    markTimeoutExitInteraction()
-    void playPrev()
-  })
-
+  // 【第 20 轮·遥控命令单一通路（2026-10-03）】这里**不再**监听 RNTP 的
+  // RemotePlay / RemotePause / RemoteNext / RemotePrevious / RemoteSeek
+  //（原来的五段监听已删除）。
+  //
+  // 根因（用户实锤，越狱 CarPlay）：同一批 MPRemoteCommandCenter 命令被挂了两套
+  // target —— ① RNTP 原生侧（SwiftAudioEx RemoteCommandController）→ remote-* 事件
+  // → 本文件；② 本工程原生侧（AppDelegate.mm 的 LXInstallRemoteCommandHandlers）
+  // → 'remote-command' 事件 → core/init/player/remoteCommand.ts。一次物理按键两条
+  // 通路各跑一遍 playNext() ⇒ 一次跳两首（短列表就成了「只在少数几首之间循环」）；
+  // 播放/暂停则是开关两下互相抵消；控制中心进度条重复 seek。
+  //
+  // 现在的唯一入口是 remoteCommand.ts。RNTP 原生侧的 target 仍在、也仍会往 JS 发
+  // remote-* 事件（命令能力由 plugins/player/utils.ts 的 defaultUpdateOptions 统一
+  // 写入，两侧共享同一批命令对象，不要动它），但这里已无监听者，静默即无害。
+  //
+  // 只保留两个 RNTP 独有、本工程原生侧不转发的：RemoteStop（停止退出）与
+  // RemoteDuck（来电/路由打断的音量闪避与自动续播见下方 autoResume 兜底注释）。
   TrackPlayer.addEventListener(TPEvent.RemoteStop, () => {
     // console.log('remote-stop')
     cancelResumePending()
@@ -167,10 +162,8 @@ const registerPlaybackService = async() => {
     }
   })
 
-  TrackPlayer.addEventListener(TPEvent.RemoteSeek, async({ position }) => {
-    markTimeoutExitInteraction()
-    global.app_event.setProgress(position as number)
-  })
+  // （原 RemoteSeek 监听同样已删除：seek 现在只走 remoteCommand.ts 的 'seek' 分支，
+  //   两条通路重复 seek 会互相覆盖，控制中心拖一下进度条实际跳两次。）
   isInitialized = true
 }
 
@@ -185,8 +178,10 @@ export default () => {
   // 1) 进入后台瞬间若正在播放，先“预置”待续播标记：native 可能在应用被挂起期间因其它
   //    App 抢占而直接暂停，此时 RemoteDuck/JS 事件收不到；回到前台后据此自动续播。
   // 2) RemoteDuck 的“中断结束”事件若没能送达 JS，回到前台时也据此补一次续播。
-  // 清除时机：用户手动暂停(RemotePause)、手动播放、真正开始播放(play)、切歌(musicToggled)、
-  // 歌曲自然结束(playerEnded)、停止退出(RemoteStop/isPlayedStop) 都会取消，不会误自动播放。
+  // 清除时机：用户手动暂停/播放（锁屏、控制中心、车机 —— 第 20 轮起由唯一入口
+  // remoteCommand.ts 调用 cancelResumePending，本文件不再监听 remote-* 事件）、
+  // 真正开始播放(play)、切歌(musicToggled)、歌曲自然结束(playerEnded)、
+  // 停止退出(RemoteStop/isPlayedStop) 都会取消，不会误自动播放。
   AppState.addEventListener('change', (state) => {
     if (state == 'background') {
       // iOS：退到后台瞬间若正在播放先预置续播标记；Android 有自己的 audio focus 流程，不在此预置
