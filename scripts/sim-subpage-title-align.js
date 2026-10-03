@@ -27,13 +27,21 @@
  *   F1 「网易收藏专辑 / WebDAV 上方出现两个相同标题」的防复发（用户第 19 轮第 1 条）：
  *      getEffectiveFlatOrder 保序去重 —— 持久化顺序里同一 id 出现两次时，Main.tsx 的
  *      detailNavs 会拿同一 id 挂两层详情层（同 key 兄弟节点），页面被挂两遍。
- *   F2 竖屏 / 横屏 PAGE_OWNED_HEADER_IDS 都覆盖全部 NAV_MENUS id：任何一页都不会
- *      出现「共享页头 + 页面标题」两个标题。
+ *   F2 「页面自管页头」名单覆盖全部 NAV_MENUS id：任何一页都不会出现「共享页头 +
+ *      页面标题」两个标题。
  *   F3 七个「我的」二级页标题到顶距离 = 推荐页的：唯一来源是共享组件
  *      DetailPageTitle.row.paddingTop = designSpacing.sm；三个每日推荐页不得再写
  *      headerExtraTop（此前只有它们垫这一下，其余七个页面标题离顶部近 12pt）。
  *   F4 「我的」歌单详情标题栏三段式：左端返回箭头 / 正中标题（绝对定位 + 左右对称
  *      内边距 + textAlign center）/ 右端「封面开关 + 搜索」（靠弹性占位顶到栏尾）。
+ *
+ * 【第 20 轮（2026-10-03）·图三】F2 改写：名单此前在竖屏 Vertical/Content.tsx 与横屏
+ *   Horizontal/index.tsx **各内联一份相同的 Set**，任一处的漂移都会让某页同时出现
+ *   「共享页头 + 页面标题」两行标题（图三 WebDAV 双标题的根因面）。现在收敛到唯一真值源
+ *   src/screens/Home/pageOwnedHeaders.ts：两个消费方只准 `isPageOwnedHeader(...)`、
+ *   不得再内联名单；且两个 Header 组件自身也判一次（纵深防御——不管谁、从哪渲染 Header，
+ *   页面自管页头都不会叠出第二行标题）。本脚本随之改钉「唯一真值源 + 两个消费方 +
+ *   两个 Header 防御」四件事，不再分别解析两份名单。
  *
  * 本脚本从源码解析结构（不硬编码行号），每条关键断言配一个「改回旧实现就该判不合格」的反例。
  *
@@ -93,8 +101,17 @@ const tokensSrc = read('src/theme/DesignTokens.ts')
 const detailSrc = read('src/components/common/DetailPageTitle.tsx')
 const headerSrc = read('src/screens/Home/Vertical/Header.tsx')
 const loveIdsSrc = read('src/core/common.ts')
-const verticalSetSrc = read('src/screens/Home/Vertical/Content.tsx')
-const horizontalSetSrc = read('src/screens/Home/Horizontal/index.tsx')
+// 【第 20 轮·图三】「页面自管页头」名单的唯一真值源；竖屏/横屏此前各内联一份相同 Set
+// （漂移 = 某页同时出现共享页头 + 页面标题两行标题），现在只保留这一份。
+const ownedSetSrc = read('src/screens/Home/pageOwnedHeaders.ts')
+const consumerSrcs = [
+  { name: '竖屏 Vertical/Content.tsx', src: read('src/screens/Home/Vertical/Content.tsx') },
+  { name: '横屏 Horizontal/index.tsx', src: read('src/screens/Home/Horizontal/index.tsx') },
+]
+const headerGuardSrcs = [
+  { name: '竖屏 Vertical/Header.tsx', src: read('src/screens/Home/Vertical/Header.tsx') },
+  { name: '横屏 Horizontal/Header.tsx', src: read('src/screens/Home/Horizontal/Header.tsx') },
+]
 // —— 第 19 轮增量 ——
 const constantSrc = read('src/config/constant.ts')
 const activeListSrc = read('src/screens/Home/Views/Mylist/MusicList/ActiveList.tsx')
@@ -173,9 +190,27 @@ const idList = (src) => {
   return m ? [...m[1].matchAll(/'([^']+)'/g)].map(x => x[1]) : null
 }
 const loveIds = idList(loveIdsSrc)
-const setHasAll = (src) => PAGES.every(p => new RegExp(`'${p.navId}'`).test(src))
-const verticalAll = setHasAll(verticalSetSrc)
-const horizontalAll = setHasAll(horizontalSetSrc)
+// 【第 20 轮·图三】名单解析改指唯一真值源 pageOwnedHeaders.ts（竖/横不再各写一份）。
+const OWNED_SET_RE = /PAGE_OWNED_HEADER_IDS[^=]*=\s*new Set\(\[([\s\S]*?)\]\)/
+const setIds = (src) => {
+  const m = OWNED_SET_RE.exec(stripComments(src))
+  return m ? [...m[1].matchAll(/'([^']+)'/g)].map((x) => x[1]) : []
+}
+const ownedSetIds = setIds(ownedSetSrc)
+const setHasAll = (ids) => PAGES.every(p => ids.includes(p.navId))
+const ownedAll = setHasAll(ownedSetIds)
+// 两个消费方（竖屏 Content / 横屏 index）只准消费 isPageOwnedHeader；自身再出现内联名单
+// 定义 = 第二个真值源，漂移时静默叠出第二行标题（图三的形态）。
+const consumerInlinesSet = consumerSrcs
+  .filter((c) => OWNED_SET_RE.test(stripComments(c.src)))
+  .map((c) => c.name)
+const consumerGuards = consumerSrcs
+  .filter((c) => /isPageOwnedHeader\(activeNavId\)/.test(stripComments(c.src)))
+  .map((c) => c.name)
+// 纵深防御：两个 Header 组件自身也判名单（从任意容器、任意分支渲染 Header 都不叠标题）。
+const headerGuards = headerGuardSrcs
+  .filter((c) => /isPageOwnedHeader\(id\)/.test(stripComments(c.src)))
+  .map((c) => c.name)
 const loveIdsMatch = !!loveIds && loveIds.length === PAGES.length && PAGES.every(p => loveIds.includes(p.navId))
 
 // —— E. 反例自检：每条修复改回旧实现 / 拆掉接线，都必须被拦下 ——
@@ -204,9 +239,18 @@ const m4Caught = m4 !== detailSrc && !propVia(m4, 'title', 'lineHeight', 'pageTi
 const m5LineHeight = 20
 const m5Caught = !(m5LineHeight >= designTitle * controlRatio)
 
-// m6 某个页面从页头接管名单里去掉（会和共享页头重复一行标题 / 或落回旧位置）被拦下
-const m6 = verticalSetSrc.replace("  'nav_webdav',\n", '')
-const m6Caught = m6 !== verticalSetSrc && !setHasAll(m6)
+// m6 某个页面从页头接管名单里去掉（该页会同时出现共享页头 + 页面标题两个标题）被 D/F2 拦下
+const m6 = ownedSetSrc.replace("  'nav_webdav',\n", '')
+const m6Caught = m6 !== ownedSetSrc && !setHasAll(setIds(m6))
+// m6b 某个消费方把名单重新内联一份（第二个真值源，漂移时静默叠标题）被 F2 拦下
+const m6b = consumerSrcs[0].src.replace(
+  "import { isPageOwnedHeader } from '../pageOwnedHeaders'",
+  "import { isPageOwnedHeader } from '../pageOwnedHeaders'\nconst PAGE_OWNED_HEADER_IDS = new Set(['nav_discovery'])\nvoid PAGE_OWNED_HEADER_IDS",
+)
+const m6bCaught = m6b !== consumerSrcs[0].src && OWNED_SET_RE.test(stripComments(m6b))
+// m6c 某个 Header 组件拆掉纵深防御（容器漏判时第二行标题就会重新出现）被 F2 拦下
+const m6c = headerGuardSrcs[0].src.replace('isPageOwnedHeader(id)', 'false')
+const m6cCaught = m6c !== headerGuardSrcs[0].src && !/isPageOwnedHeader\(id\)/.test(stripComments(m6c))
 
 // m7 页面里塞回旧的 34pt 标题被拦下
 const m7 = pageSrc['nav_my_playlist'].replace(
@@ -256,21 +300,14 @@ const flatOrderReasons = (src) => {
 }
 const flatOrderHits = flatOrderReasons(constantSrc)
 
-// F2 每个导航页都接管页头（PAGE_OWNED_HEADER_IDS ⊇ 全部 NAV_MENUS id）：
-// 共享页头与页面自带标题只允许存在一个，不会再叠出「两个标题」。
+// F2 每个导航页都接管页头（名单 ⊇ 全部 NAV_MENUS id）：共享页头与页面自带标题只允许
+// 存在一个，不会再叠出「两个标题」。第 20 轮起名单只有 pageOwnedHeaders.ts 一份。
 const navIds = (() => {
   const m = /export const NAV_MENUS = \[([\s\S]*?)\] as const/.exec(constantSrc)
   return m ? [...m[1].matchAll(/\{ id: '([^']+)'/g)].map((x) => x[1]) : []
 })()
-const setIds = (src) => {
-  const m = /PAGE_OWNED_HEADER_IDS = new Set\(\[([\s\S]*?)\]\)/.exec(stripComments(src))
-  return m ? [...m[1].matchAll(/'([^']+)'/g)].map((x) => x[1]) : []
-}
-const verticalSetIds = setIds(verticalSetSrc)
-const horizontalSetIds = setIds(horizontalSetSrc)
 const missingIn = (ids, set) => ids.filter((id) => !set.includes(id))
-const verticalMissing = missingIn(navIds, verticalSetIds)
-const horizontalMissing = missingIn(navIds, horizontalSetIds)
+const ownedMissing = missingIn(navIds, ownedSetIds)
 
 // F3 七个「我的」二级页标题到顶距离 = 三个推荐页的（用户第 19 轮第 2 条）：
 // 唯一来源是共享组件 DetailPageTitle.row.paddingTop；三个推荐页不得再各自垫。
@@ -397,14 +434,15 @@ for (const c of pageChecks) {
 }
 
 // D
-check('竖屏 Content.tsx 的 PAGE_OWNED_HEADER_IDS 含全部 7 个二级页（共享页头不再重复一行）', verticalAll)
-check('横屏 index.tsx 的 PAGE_OWNED_HEADER_IDS 含全部 7 个二级页（口径一致）', horizontalAll)
+check('唯一真值源 pageOwnedHeaders.ts 的名单含全部 7 个二级页（共享页头不再重复一行）', ownedAll, ownedAll ? '' : '缺 ' + missingIn(PAGES.map(p => p.navId), ownedSetIds).join('/'))
+check('竖屏/横屏消费方不再各自内联名单（内联 = 第二个真值源，漂移即双标题）', consumerInlinesSet.length === 0, consumerInlinesSet.length ? '仍内联：' + consumerInlinesSet.join('/') : '只消费 isPageOwnedHeader')
+check('竖屏/横屏消费方都按名单跳过共享页头（isPageOwnedHeader(activeNavId)）', consumerGuards.length === 2, consumerGuards.length === 2 ? '' : '缺 ' + (2 - consumerGuards.length) + ' 处')
 check(`7 个页面 = core/common.ts 的 LOVE_SUBPAGE_IDS 名单（${(loveIds || []).length} 个）`, loveIdsMatch)
 
-// F（第 19 轮增量）
+// F（第 19 轮增量；F2 于第 20 轮改写为「唯一真值源」口径）
 check('F1 扁平顺序保序去重：seen 集合 + push 跳过重复项 + 末尾补齐也按 seen 过滤', flatOrderHits.length === 0, flatOrderHits[0] || '第一次出现的位置为准，重复项丢弃')
-check(`F2 竖屏接管名单含全部 ${navIds.length} 个导航页（共享页头不再叠标题）`, navIds.length > 0 && verticalMissing.length === 0, verticalMissing.length ? '缺 ' + verticalMissing.join('/') : `${verticalSetIds.length} 项`)
-check('F2 横屏接管名单与竖屏口径一致（含全部导航页）', navIds.length > 0 && horizontalMissing.length === 0, horizontalMissing.length ? '缺 ' + horizontalMissing.join('/') : `${horizontalSetIds.length} 项`)
+check(`F2 名单（唯一真值源 pageOwnedHeaders.ts）含全部 ${navIds.length} 个导航页（共享页头不再叠标题）`, navIds.length > 0 && ownedMissing.length === 0, ownedMissing.length ? '缺 ' + ownedMissing.join('/') : `${ownedSetIds.length} 项`)
+check('F2 纵深防御：竖/横 Header 组件自身也判名单（从任意容器渲染都不会叠标题）', headerGuards.length === 2, headerGuards.length === 2 ? '' : '缺 ' + (2 - headerGuards.length) + ' 处')
 check(`F3 DetailPageTitle.row.paddingTop 走 designSpacing.sm（${spacing.sm}，到顶间距唯一来源）`, rowTop.ok, rowTop.why)
 check('F3 三个每日推荐页不再各自写 headerExtraTop（唯一来源，注释提到不算）', dailyRecExtraTop.length === 0, dailyRecExtraTop.length ? '仍有 ' + dailyRecExtraTop.join('/') : '')
 check('F4 歌单详情标题栏：弹性占位在按钮之前（按钮顶到右端）', activeListHits.length === 0, activeListHits[0] || '左端箭头 / 正中标题 / 右端封面开关 + 搜索')
@@ -415,7 +453,9 @@ neg('反例 m2：共享页头改回 size={20} 字面量，被 A 组判红', m2Ca
 neg('反例 m3：DetailPageTitle 退回裸 StyleSheet.create（字体调大即裁），被 B7 判红', m3Caught)
 neg('反例 m4：标题行高改回硬编码 42，被 B6 判红', m4Caught)
 neg(`反例 m5：行高若降到 ${m5LineHeight}（< ${designTitle} × ${controlRatio}），不裁断言判红`, m5Caught)
-neg('反例 m6：从竖屏接管名单里去掉 nav_webdav，被 D 组判红', m6Caught)
+neg('反例 m6：从名单里去掉 nav_webdav（该页叠出两行标题），被 D/F2 判红', m6Caught)
+neg('反例 m6b：消费方重新内联一份名单（第二个真值源），被 D 组判红', m6bCaught)
+neg('反例 m6c：Header 组件拆掉纵深防御（容器漏判即叠标题），被 F2 判红', m6cCaught)
 neg('反例 m7：页面里塞回旧的 34pt 标题，被 C 组判红', m7Caught)
 neg('反例 m8：标题前拆掉 PageTopInset，被 C 组判红', m8Caught)
 neg('反例 m9：行内容区 inner 改成 column（标题与按钮不再同一水平行 / 同一中线），被 B 组判红', m9Caught)

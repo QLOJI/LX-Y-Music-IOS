@@ -9,7 +9,11 @@
  *      标题实现：返回按钮（箭头）在左端、搜索与封面开关两个按钮在右端、标题恒在栏正中。
  *      第 16 轮只在返回态显示（用户原话「不然我都不知道进哪个列表了」）；第 19 轮第 3 条把
  *      非返回态也并过来 —— 用户原话「搜索和显示/关闭封面显示按钮应该在右端，返回按钮在
- *      左端，中心是标题」。
+ *      左端，中心是标题」。第 20 轮第 9 条再把「整栏点击 → 返回」收窄到左端箭头：行根
+ *      onPress 在返回态置空（onBack ? undefined : showList），返回只由箭头自己的
+ *      TouchableOpacity（currentListBack，槽位左右内边距 12/10 从 Icon 挪到它身上）承担
+ *      —— 用户原话「我点击顶部的列表标题也会返回我的主界面，只保留点击左上角的返回才会
+ *      返回我的主界面，点击顶部的列表标题不会返回」。glyph 几何逐像素不变（[12, 32]）。
  *
  * 脚本从源码解析实际取值（不硬编码数字），复算「基本设置返回按钮」与「我的详情
  * 返回栏」两处的顶边 / 垂直中心 / 图标 glyph 左缘并比对；同时断言结构事实：
@@ -120,11 +124,18 @@ const iListArea = listCode.indexOf('onLayout={onLayout}')
 const listTag = /<List\b[\s\S]*?\/>/.exec(listCode)
 const listHasHeaderProp = !!listTag && /\bheader=/.test(listTag[0])
 
-// --- ActiveList.tsx：返回栏行高 / 图标 ---
+// --- ActiveList.tsx：返回栏行高 / 箭头槽 ---
+// 【第 20 轮第 9 条】箭头槽位包了一层 TouchableOpacity（currentListBack）：左右内边距
+// 12/10 从 Icon 的 style 挪到槽上，glyph 落点公式不变（外框 12 + 槽位 12 = 24）。
 const currentListBlock = styleBlock(activeCode, 'currentList')
-const iconBlock = styleBlock(activeCode, 'currentListIcon')
+const backSlotBlock = styleBlock(activeCode, 'currentListBack')
 const myBarH = numIn(currentListBlock, 'height')
-const myIconPadLeft = numIn(iconBlock, 'paddingLeft')
+const mySlotPadLeft = numIn(backSlotBlock, 'paddingLeft')
+const mySlotPadRight = numIn(backSlotBlock, 'paddingRight')
+const mySlotFullHeight = /height:\s*'100%'/.test(backSlotBlock || '')
+// glyph 左内边距全文件只能写一处（槽位上）：Icon 上若再叠一份，脚本按单处复算的
+// glyph 左缘就会与实际渲染分叉 —— 单处计数把这种「复算假通过」堵掉。
+const glyphPadSites = (activeCode.match(/paddingLeft:\s*12\b/g) || []).length
 const myIconSizeB = (/size=\{onBack \? (\d+) : \d+\}/.exec(activeCode) || [])[1]
 const myIconNameExpr = /name=\{onBack \? 'chevron-left' : 'chevron-right'\}/.test(activeCode)
 
@@ -153,7 +164,7 @@ const refGlyphLeft = (refPadH ? refPadH.value : NaN) + ((refBtnW || 0) - Number(
 
 const myTop = alignConst ? S + alignConst.value : NaN
 const myCenter = myTop + (myBarH || 0) / 2
-const myGlyphLeft = (myPadH ? myPadH.value : NaN) + (myIconPadLeft || 0)
+const myGlyphLeft = (myPadH ? myPadH.value : NaN) + (mySlotPadLeft || 0)
 
 console.log('='.repeat(96))
 console.log('需求8 契约：「我的」详情返回栏 ↔「设置 → 基本设置」返回按钮 对齐模型（摘自源码，单位 pt）')
@@ -162,7 +173,7 @@ console.log(`  DesignTokens: ${Object.entries(tokens).map(([k, v]) => `${k}=${v}
 console.log(`  样例机身原生状态栏 ${RAW_SB}pt → useStatusbarHeight() = ${S}pt（内部已含 +6，两处都不得再加）`)
 console.log()
 console.log(`  基本设置 返回按钮：顶边 = ${S} + ${refPadTop && refPadTop.value} = ${refTop}   高 ${refBtnH}   中心 y=${refCenter}   图标 glyph 左缘 = ${refPadH && refPadH.value} + (${refBtnW}-${refIconSize})/2 = ${refGlyphLeft}`)
-console.log(`  我的详情 返回栏  ：顶边 = ${S} + ${alignConst && alignConst.value} = ${myTop}   高 ${myBarH}   中心 y=${myCenter}   图标 glyph 左缘 = ${myPadH && myPadH.value} + ${myIconPadLeft} = ${myGlyphLeft}`)
+console.log(`  我的详情 返回栏  ：顶边 = ${S} + ${alignConst && alignConst.value} = ${myTop}   高 ${myBarH}   中心 y=${myCenter}   图标 glyph 左缘 = ${myPadH && myPadH.value} + ${mySlotPadLeft} = ${myGlyphLeft}`)
 console.log()
 console.log(`  槽位下缘间隙（fixedBar.paddingBottom）= ${myPadB && myPadB.value}（基本设置 header.paddingBottom = ${refPadB && refPadB.value}，同源）`)
 console.log()
@@ -204,8 +215,12 @@ check('槽位本体为相对定位（绝对铺满的两根替换栏以它为基�
 check('返回栏行高 = 基本设置返回按钮高度（44）', myBarH === refBtnH, `我的=${myBarH} 设置=${refBtnH}`)
 check('返回栏图标 = chevron-left（返回态）且尺寸与设置页一致（20）', myIconNameExpr && Number(myIconSizeB) === Number(refIconSize),
   `我的=${myIconSizeB} 设置=${refIconSize}`)
-check('图标左内边距 = 按钮内图标留白 (44-20)/2 = 12（glyph 左缘与设置页重合）',
-  myIconPadLeft === (refBtnW - Number(refIconSize)) / 2, `${myIconPadLeft} vs ${(refBtnW - Number(refIconSize)) / 2}`)
+check('箭头槽左内边距 = 按钮内图标留白 (44-20)/2 = 12（glyph 左缘与设置页重合）',
+  mySlotPadLeft === (refBtnW - Number(refIconSize)) / 2, `${mySlotPadLeft} vs ${(refBtnW - Number(refIconSize)) / 2}`)
+check('箭头槽右内边距沿用 10（glyph 占位 [12, 32] 与旧实现逐像素相同）',
+  mySlotPadRight === 10, `paddingRight=${mySlotPadRight}`)
+check('箭头槽命中区吃满行高 44（height: 100%），且 glyph 左内边距全文件只写一处（不叠在 Icon 上）',
+  mySlotFullHeight && glyphPadSites === 1, `height100=${mySlotFullHeight} 全文件 paddingLeft:12 ${glyphPadSites} 处`)
 check('我的详情使用 useStatusbarHeight 且不再叠加 +6（避免两处各加一次而错位）',
   myUsesStatusbarHook && !/STATUSBAR_TOP_OFFSET/.test(listCode) && !/statusBarHeight\s*\+\s*6\b/.test(listCode), '')
 check(`【核心】返回按钮顶边一致（均 ${refTop}pt）`, myTop === refTop, `我的=${myTop} 设置=${refTop}`)
@@ -223,7 +238,8 @@ check('取消按钮 onPress 接到 onExitSearch', cancelWired, '')
 check('handleExitSearch 隐藏搜索结果与搜索栏、并恢复返回栏（原列表界面）',
   exitHidesSearch && exitRestoresBar, `hide=${exitHidesSearch} restore=${exitRestoresBar}`)
 
-// —— E) 【第 16 轮第 4 条 + 第 19 轮第 3 条】栏正中显示列表名；左端箭头、右端两个按钮 ——
+// —— E) 【第 16 轮第 4 条 + 第 19 轮第 3 条 + 第 20 轮第 9 条】栏正中显示列表名；
+//        左端箭头（独占返回）、右端两个按钮 ——
 // 结构断言全部在去注释后的源码上做，且整组写成「源码 → 事实」的纯函数，
 // 反例用当前源码变异后重跑整组（任一条判红即算拦下）。
 const eFacts = (raw) => {
@@ -233,14 +249,18 @@ const eFacts = (raw) => {
   const btnBlock = styleBlock(code, 'currentListBtns')
   const spacerBlock = styleBlock(code, 'currentListSpacer')
   // 返回栏那一行的 JSX：三段定位（左箭头 / 中标题 / 右按钮）的先后顺序都在这段里看。
-  // 起止不能各取「第一个 <TouchableOpacity …>」：行里还嵌着两个按钮自己的标签，
-  // 非贪婪匹配到第一个 </TouchableOpacity> 就断了（只圈进一个按钮）。
-  // 起 = 行首那个带 onPress={onBack || showList} 的标签，止 = 文件里最后一个 </TouchableOpacity>（本行自己的）。
-  const rowStartMatch = /<TouchableOpacity\s+onPress=\{onBack \|\| showList\}/.exec(code)
+  // 起止不能各取「第一个 <TouchableOpacity …>」：行里现在还嵌着三个 TouchableOpacity
+  // （箭头槽 + 两个按钮），非贪婪匹配到第一个 </TouchableOpacity> 就断了。
+  // 起 = 行根标签（onPress + onLongPress={onScrollToTop} 的组合为行根独有），
+  // 止 = 文件里最后一个 </TouchableOpacity>（本行自己的）。行根 onPress 的具体值由
+  // E11 单独断言，不拿它当寻址锚 —— 换回旧值时寻址失败会把 E1/E9/E10 一起拖红，
+  // 反例就分不清坏的是哪种结构。
+  const rowStartMatch = /<TouchableOpacity\s+onPress=\{[^}]*\}\s+onLongPress=\{onScrollToTop\}/.exec(code)
   const iRowStart = rowStartMatch ? rowStartMatch.index : -1
   const iRowEnd = code.lastIndexOf('</TouchableOpacity>')
   const rowJsx = iRowStart > -1 && iRowEnd > iRowStart ? code.slice(iRowStart, iRowEnd) : null
-  const iIcon = rowJsx ? rowJsx.indexOf('styles.currentListIcon') : -1
+  // 【第 20 轮第 9 条】左端箭头槽 = currentListBack（包着 Icon 的 TouchableOpacity）
+  const iBackSlot = rowJsx ? rowJsx.indexOf('styles.currentListBack') : -1
   const iName = rowJsx ? rowJsx.indexOf('styles.currentListName') : -1
   const iSpacer = rowJsx ? rowJsx.indexOf('styles.currentListSpacer') : -1
   const iBtn = rowJsx ? rowJsx.indexOf('styles.currentListBtns') : -1
@@ -258,8 +278,13 @@ const eFacts = (raw) => {
     // 旧的非返回态行内文字 currentListText 在全文件里已不存在。
     titleAlwaysRendered: !!rowJsx && iName > -1 && !/currentListText/.test(code) &&
       !/onBack\s*\?[\s\S]{0,80}?\(/.test(rowJsx),
-    // 左端箭头：图标槽排在标题容器之前（行内第一个元素）
-    iconLeft: iIcon > -1 && iIcon < iName,
+    // 左端箭头：箭头槽排在标题容器之前（行内第一个元素）
+    iconLeft: iBackSlot > -1 && iBackSlot < iName,
+    // 【第 20 轮第 9 条】返回收窄到左端箭头：行根 onPress 在返回态置空（点标题 /
+    // 整栏不再返回），箭头槽自己的 onPress 才接返回（非返回态退化为开列表）；
+    // 长按整栏滚动到顶部保留在行根（onLongPress，不受影响）。
+    rowPressGuarded: /onPress=\{onBack \? undefined : showList\}/.test(code) &&
+      /style=\{styles\.currentListBack\}[\s\S]{0,80}?onPress=\{onBack \|\| showList\}/.test(code),
     // 右端按钮：两个按钮都排在标题容器之后，且中间有 flex:1 弹性占位把按钮顶到栏尾
     btnsRight: iName > -1 && iBtn > iName && iSpacer > iName && iSpacer < iBtn && !!spacerBlock &&
       /flex:\s*1/.test(spacerBlock),
@@ -298,12 +323,14 @@ const GROUP_E = [
     }],
   ['E7 长名截断（numberOfLines={1}，容器 textAlign: center）',
     (f) => f.nameTextLines && !!f.nameTextBlock && /textAlign:\s*'center'/.test(f.nameTextBlock)],
-  ['E8 名称容器不拦截触摸（pointerEvents="none"），点整行仍走返回',
+  ['E8 名称容器不拦截触摸（pointerEvents="none"）：点标题穿透到整行，由行根 onPress 决定行为（返回态置空 → 不返回）',
     (f) => !!f.nameViewTag && /pointerEvents="none"/.test(f.nameViewTag)],
-  ['E9 左端箭头：图标槽是行内第一个元素、排在标题容器之前（返回态 chevron-left / 非返回态 chevron-right，位置不动）',
+  ['E9 左端箭头：箭头槽（currentListBack）是行内第一个元素、排在标题容器之前（返回态 chevron-left / 非返回态 chevron-right，位置不动）',
     (f) => f.iconLeft],
   ['E10 右端按钮：两个 46pt 图标按钮都排在标题容器之后，中间隔一个 flex:1 弹性占位顶到栏尾',
     (f) => f.btnsRight && f.btnCount === 2],
+  ['E11 【第 20 轮第 9 条】返回只由左端箭头承担：行根 onPress 返回态置空（onBack ? undefined : showList），箭头槽 onPress={onBack || showList}（非返回态仍点整行开列表）',
+    (f) => f.rowPressGuarded],
 ]
 const eRes = GROUP_E.map(([label, fn]) => ({ label, ok: !!fn(E_FACTS) }))
 
@@ -327,6 +354,9 @@ const m10 = mutE('<Text style={styles.currentListNameText} numberOfLines={1}', '
 const m11 = mutE('<View style={styles.currentListName} pointerEvents="none">', '<View style={styles.currentListName}>')
 // m12: 拿掉弹性占位（两个按钮跟着箭头挤到左边，「按钮在右端」没了）
 const m12 = mutE('        <View style={styles.currentListSpacer} />\n', '')
+// m13: 行根 onPress 退回第 19 轮写法（返回态也触发返回 —— 点列表标题就返回，
+// 正是第 20 轮第 9 条要修的那个 bug）
+const m13 = mutE('onPress={onBack ? undefined : showList}', 'onPress={onBack || showList}')
 
 // E 组断言用源码复算出的 barSlot 遮挡宽度，标签里已带 E1..E10 前缀，不再单独打分组标题
 for (const r of eRes) check(r.label, r.ok)
@@ -337,6 +367,7 @@ check(`反例 m9：名称容器改回 flex 参与布局（被按钮挤压），�
 check(`反例 m10：去掉 numberOfLines（长名换行撑变形），被 E 判红`, m10.changed && caughtE(m10.src))
 check(`反例 m11：去掉 pointerEvents（点名称不返回），被 E 判红`, m11.changed && caughtE(m11.src))
 check(`反例 m12：拿掉弹性占位（按钮挤到左边，不在右端），被 E 判红`, m12.changed && caughtE(m12.src))
+check(`反例 m13：行根 onPress 退回 onBack || showList（点标题又返回），被 E 判红`, m13.changed && caughtE(m13.src))
 
 console.log()
 const pad = Math.max(...results.map((r) => r.label.length))

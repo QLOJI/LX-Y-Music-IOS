@@ -41,6 +41,7 @@
  *      采信）、**无外观逃逸**（代码里不得出现 traitCollection / isDarkAppearance；
  *      注释里解释「为什么删」不算）、全网格阈值低于 1 格边环占比下限、外圈阈值低于
  *      单侧黑带占比下限、外圈像素门槛严格宽于全网格口径（防深灰黑带照漏）；
+ *      analyzeCapture（分析层）不得再出现帧率赋值或变化检测残迹（第 20 轮反向断言）；
  *   A3 三条窗口锚点齐全（backdrop 插入 / didMoveToWindow / beginLiveCapture），
  *      且 draw() 的「backgroundTexture == nil 则跳过本帧」guard 仍在；
  *   A4 放行出口唯一：非 hold 分支恰一处 backgroundTexture = texture，且不在 shouldHold
@@ -49,13 +50,14 @@
  *   A5 开窗点（beginCaptureSettleWindow）恰 4 处调用（三条锚点 + 暂停恢复复位，
  *      2026-10-02 第 16 轮第 1 条补上 handleResumeFromPause）、起点（captureSettleStartedAt）
  *      写入唯一：每帧路径再塞一处开窗/重置必须被拦下（否则窗口永不关闭、永久 hold）；
- *   B  既有事实未被改坏：自适应刷新率三常量（30/120/0.4）、采样基准锁定语义、
- *      均匀沿用修复（previous 非空条件不得再出现）、采景几何与 drawHierarchy 调用方式、
+ *   B  既有事实未被改坏：**渲染帧率 = 采景档**（第 20 轮起：静止 30fps / 实时 60fps，
+ *      全类唯一赋值点 syncRenderFrameRate；旧的自适应升降档 30/120/0.4 已整条删除）、
+ *      采样基准锁定语义、均匀沿用修复（previous 非空条件不得再出现）、
+ *      采景几何与 drawHierarchy 调用方式、
  *      透镜链路（liftUp → beginLiveCapture；「对透镜/收起圆钮同样生效」的前提是
  *      iOS 14~26.1 且 theme.liquidGlass 开（默认），26.2+ JS 已强制磨砂、透镜不渲染）；
  *      B7 采景节流（2026-10-02，用户第 5 条）：每实例最小采景间隔（常驻 30fps /
- *      实时会话 60fps），captureBackdrop 实际接入、首帧放行、按会话分档、回写时刻。
- *      注意这只压「采景」频率，rendering 自适应升/降档（B1）不动；
+ *      实时会话 60fps），captureBackdrop 实际接入、首帧放行、按会话分档、回写时刻；
  *      B8 实时采景会话 + 暂停恢复复位（2026-10-02，用户第 2 条 / 第 9 条与中途追加）：
  *      两路会话标志分开记（liveCaptureRequested / realtimeCaptureRequested，会同时为真）、
  *      isLiveCaptureActive = 两者 OR（降档门控与采景分档的唯一判据）、
@@ -63,6 +65,14 @@
  *      handleResumeFromPause（丢旧纹理 / 清沿用痕迹 / 立刻采一次）与 setPaused 恢复路径；
  *   C  反例自检：任一条修复被拆掉一点，本脚本必须判不合格；替换未命中 = 失败
  *      （防止用例指向的代码被改名后脚本退化成永真）。
+ *
+ * 【第 20 轮（2026-10-03）】B1 随用户优化项 ②① 改写：旧的「自适应刷新率三常量
+ *   （30/120/0.4）+ 背景一变化就升档」整条链路已删除 —— 背景捕获有全局 33ms（≈30Hz）
+ *   节流，升上去的渲染帧画的都是同一张纹理（shader 没有随时间变化的 uniform），
+ *   纯属重复绘制。现在渲染帧率只跟采景档（静止 30fps ↔ captureMinInterval、
+ *   实时 60fps ↔ liveCaptureMinInterval，全类唯一赋值点在 syncRenderFrameRate）；
+ *   完整口径另见 scripts/sim-glass-render-rate.js。A2 随之反向钉住：analyzeCapture
+ *   （分析层）不得再出现帧率赋值或变化检测残迹。
  *
  * 运行：node scripts/sim-glass-firstmount-contract.js
  *   （本机没有 node，真跑法用 %TEMP% 下的浏览器版迷你运行器（headless Edge/Chrome +
@@ -281,9 +291,14 @@ const partialFrameInvariants = (f) => {
     if (!/lastCaptureHadPartialBlack = totalRatio >= Self\.partialBlackRatioThreshold \|\|\s*\n?\s*edgeRatio >= Self\.partialBlackEdgeRatioThreshold/.test(analyze)) {
       reasons.push('analyzeCapture 未按「近黑占比：全网格 ≥ partialBlackRatioThreshold 或 外圈 ≥ partialBlackEdgeRatioThreshold」写入 lastCaptureHadPartialBlack（半成品判据没有数据源）')
     }
-    // 帧间变化检测（自适应刷新率）必须仍在同一次扫描里，不许被顺手拆掉
-    if (!/lastCaptureChangeAt = now/.test(analyze) || !/motionHoldDuration/.test(analyze)) {
-      reasons.push('analyzeCapture 的帧间变化检测/降档逻辑被改坏（自适应刷新率依赖它）')
+    // 第 20 轮（用户优化项 ②①）反向断言：帧间变化检测 / 自适应升降档整条已删除 ——
+    // 渲染帧率只跟采景档（syncRenderFrameRate 是全类唯一赋值点）。分析层若再碰帧率，
+    // 「渲染帧率 = 采景档」的模型当场失效（采景被全局 33ms 节流压住时升上去全是重复绘制）。
+    if (/preferredFramesPerSecond/.test(analyze)) {
+      reasons.push('analyzeCapture 里又出现 preferredFramesPerSecond（自适应升降档复活 → 渲染帧率不再等于采景档，重复绘制又回来了）')
+    }
+    if (/lastCaptureGrid|lastCaptureChangeAt|motionHoldDuration/.test(analyze)) {
+      reasons.push('analyzeCapture 里出现自适应升降档残迹（lastCaptureGrid / lastCaptureChangeAt / motionHoldDuration 应已整条删除）')
     }
   }
 
@@ -456,24 +471,43 @@ const existingStructureInvariants = (f) => {
   const lens = f.lens
   const effect = f.effect
 
-  // B1 自适应刷新率三常量与升降档逻辑
+  // B1 渲染帧率 = 采景档（第 20 轮，用户优化项 ②①；完整口径见 scripts/sim-glass-render-rate.js）
+  //
+  // 旧模型「背景一变化就升到 120fps、静默 0.4s 降回」已整条删除：背景捕获有全局
+  // 33ms（≈30Hz）节流，升上去的渲染帧画的都是同一张纹理（shader 无随时间变化的
+  // uniform），纯属重复绘制。新模型：静止 30fps（与 captureMinInterval 同速）/
+  // 实时 60fps（与 liveCaptureMinInterval 同速），两档只由 isLiveCaptureActive 决定，
+  // 且 syncRenderFrameRate 是**全类唯一**给 preferredFramesPerSecond 赋值的地方。
   const idle = swiftNumber(glass, 'idleFramesPerSecond')
   const live = swiftNumber(glass, 'liveFramesPerSecond')
-  const hold = swiftNumber(glass, 'motionHoldDuration')
   if (idle !== 30) reasons.push('idleFramesPerSecond 不再是 30（实际 ' + idle + '）')
-  if (live !== 120) reasons.push('liveFramesPerSecond 不再是 120（实际 ' + live + '）')
-  if (hold !== 0.4) reasons.push('motionHoldDuration 不再是 0.4（实际 ' + hold + '）')
-  // liveCaptureRequested 不能只查「标识符是否出现」——它在声明/赋值/门控处共出现 4 次，
-  // 随便留一处就能骗过裸检查（无区分力）。改钉三处载荷点：降档 guard 实际读该会话标志、
-  // 以及抬起/落下两个赋值点。
-  // 2026-10-02（用户第 9 条）：降档 guard 的判据从 liveCaptureRequested 扩成
-  // isLiveCaptureActive（= 透镜会话 OR RN live 会话，见 B8）——横滑期间同样不许降档。
-  if (!/preferredFramesPerSecond != Self\.liveFramesPerSecond/.test(glass) ||
-      !/now - lastCaptureChangeAt > Self\.motionHoldDuration/.test(glass) ||
-      !/if !isLiveCaptureActive,/.test(glass) ||
-      !/liveCaptureRequested = true/.test(glass) ||
-      !/liveCaptureRequested = false/.test(glass)) {
-    reasons.push('自适应升降档逻辑被改坏（提档/降档/liveCaptureRequested 赋值/实时会话门控缺一）')
+  if (live !== 60) reasons.push('liveFramesPerSecond 不再是 60（实际 ' + live + '）')
+  const fpsAssignments = countOf(glass, 'preferredFramesPerSecond =')
+  if (fpsAssignments !== 1) {
+    reasons.push('preferredFramesPerSecond 赋值点不是恰 1 处（实际 ' + fpsAssignments + ' 处）——第二处赋值会在会话切换时把档位写歪，渲染帧率不再唯一跟采景档')
+  }
+  if (!/preferredFramesPerSecond = isLiveCaptureActive \? Self\.liveFramesPerSecond : Self\.idleFramesPerSecond/.test(glass)) {
+    reasons.push('syncRenderFrameRate 的档位三元被改坏（静止/实时两档不再由 isLiveCaptureActive 唯一决定）')
+  }
+  if (/motionHoldDuration|lastCaptureChangeAt|lastCaptureGrid/.test(glass)) {
+    reasons.push('自适应升降档残迹复活（motionHoldDuration / lastCaptureChangeAt / lastCaptureGrid 应已整条删除）')
+  }
+  // liveCaptureRequested 不能只查「标识符是否出现」——声明处就写着 `= false`，裸检查
+  // 没有区分力。改钉赋值点所在的两个函数体：抬起置 true、落下置 false。
+  const beginLiveForRate = fnBody(glass, /func beginLiveCapture\(\)\s*\{/)
+  if (!beginLiveForRate || !/liveCaptureRequested = true/.test(beginLiveForRate)) {
+    reasons.push('beginLiveCapture 未开启透镜会话标志（liveCaptureRequested = true 缺失）')
+  }
+  const endLiveForRate = fnBody(glass, /func endLiveCapture\(\)\s*\{/)
+  if (!endLiveForRate || !/liveCaptureRequested = false/.test(endLiveForRate)) {
+    reasons.push('endLiveCapture 未落回透镜会话标志（liveCaptureRequested = false 缺失）')
+  }
+  // 五个会话切换点一个都不能漏同步（漏一处 = 帧率挂在旧档：透镜落下了玻璃还在
+  // 60fps 白烧、或横滑开始了玻璃还压在 30fps 跟不上手）。计数 = 定义行之外的调用数。
+  const rateDefs = countOf(glass, 'func syncRenderFrameRate()')
+  const rateCalls = countOf(glass, 'syncRenderFrameRate()') - rateDefs
+  if (rateDefs !== 1 || rateCalls !== 5) {
+    reasons.push('syncRenderFrameRate 定义/调用数不对（定义 ' + rateDefs + ' 处、调用 ' + rateCalls + ' 处，应为 1/5：init + beginLiveCapture + endLiveCapture + setRealtimeCapture + handleResumeFromPause）')
   }
 
   // B2 采样基准锁定语义（captureReferenceSize / captureBaseSize）
@@ -573,15 +607,17 @@ const existingStructureInvariants = (f) => {
   // ① 两个会话标志必须分开记：横滑（RN `live` prop → realtimeCaptureRequested）与透镜
   //    抬起（liveCaptureRequested）**会同时为真**，合并成一个标志会让先结束的一方
   //    把另一方也关掉（横滑收尾把仍抬起的透镜压回 30fps：透镜跟手又变回一卡一卡）。
-  // ② isLiveCaptureActive 是两者 OR —— 降档门控（B1 guard）与采景分档（B7）都只读它，
+  // ② isLiveCaptureActive 是两者 OR —— 采景分档（B7）与渲染档（B1 的档位三元）都只读它，
   //    收成单路就会漏掉另一路会话。
   // ③ 会话开始/结束都 lastCaptureAt = 0：开始那一刻若正卡在 30fps 节流窗口里，本次
   //    会话的第一帧真实内容要再等最多 33ms —— 那正是「滑动刚开始玻璃里还是旧位置的
   //    画面、然后猛地跳一下」（用户第 9 条「延迟很高」的起点）。
-  // ④ 退会话只在「透镜也没抬起」时交回 idle（else if !liveCaptureRequested）。
+  // ④ 退会话不手写分档：档位统一由 syncRenderFrameRate 按 isLiveCaptureActive 现算，
+  //    透镜仍抬起时收掉 realtime 标志也不会被压回静止档（第 20 轮；旧的
+  //    else if !liveCaptureRequested 已被这个唯一判据取代）。
   // ⑤ 暂停恢复复位（handleResumeFromPause）：暂停只是停 draw，CAMetalLayer 上仍留着
   //    暂停前那帧；不复位就会先把旧画面画出去（用户第 2 条「返回主界面时先闪一帧旧
-  //    画面」）。复位 = 丢旧纹理 + 清沿用痕迹 + 立刻同步采一次 + 提档。
+  //    画面」）。复位 = 丢旧纹理 + 清沿用痕迹 + 立刻同步采一次 + 同步渲染档。
   if (!/private var realtimeCaptureRequested = false/.test(glass)) {
     reasons.push('缺 realtime 会话的独立开关（与透镜会话合并成一个标志会互相覆盖）')
   }
@@ -598,11 +634,14 @@ const existingStructureInvariants = (f) => {
     if (!/lastCaptureAt = 0/.test(realtimeBody)) {
       reasons.push('setRealtimeCapture 未放行下一次采景（会话首帧仍等满上一档节流窗口 → 滑动开头还是旧画面）')
     }
-    if (!/preferredFramesPerSecond = Self\.liveFramesPerSecond/.test(realtimeBody)) {
-      reasons.push('setRealtimeCapture 进会话时未提渲染帧率（玻璃跟不上手）')
+    if (!/syncRenderFrameRate\(\)/.test(realtimeBody)) {
+      reasons.push('setRealtimeCapture 会话切换未同步渲染帧率（渲染档与采景档脱节）')
     }
-    if (!/else if !liveCaptureRequested \{/.test(realtimeBody)) {
-      reasons.push('setRealtimeCapture 退会话时未避让透镜会话（横滑收尾会把仍抬起的透镜压回低刷）')
+    // 第 20 轮：退会话不再手写 else-if 分档 —— syncRenderFrameRate 按 isLiveCaptureActive
+    // （两路会话 OR）统一算档，透镜仍抬起时收掉 realtime 标志也不会被压回静止档。
+    // 反向钉住：函数体里不得再直接写帧率（唯一赋值点在 syncRenderFrameRate 内）。
+    if (/preferredFramesPerSecond/.test(realtimeBody)) {
+      reasons.push('setRealtimeCapture 里又直接写帧率（唯一赋值点被绕开，档位可能挂歪）')
     }
   }
   const resumeBody = fnBody(glass, /func handleResumeFromPause\(\)\s*\{/)
@@ -612,11 +651,16 @@ const existingStructureInvariants = (f) => {
     if (!/backgroundTexture = nil/.test(resumeBody)) {
       reasons.push('handleResumeFromPause 未丢弃暂停前的旧纹理')
     }
-    if (!/consecutiveUniformFrames = 0/.test(resumeBody) || !/lastCaptureGrid = nil/.test(resumeBody)) {
-      reasons.push('handleResumeFromPause 未清沿用痕迹（均匀帧计数/变化检测基准）')
+    // 第 20 轮：变化检测基准（lastCaptureGrid）已随自适应升降档整条删除，沿用痕迹只剩
+    // 均匀帧计数与半成品标记两处，都要清。
+    if (!/consecutiveUniformFrames = 0/.test(resumeBody) || !/lastCaptureHadPartialBlack = false/.test(resumeBody)) {
+      reasons.push('handleResumeFromPause 未清沿用痕迹（均匀帧计数/半成品标记）')
     }
     if (!/lastCaptureAt = 0/.test(resumeBody) || !/captureBackground\(\)/.test(resumeBody)) {
       reasons.push('handleResumeFromPause 未立刻同步采一次（恢复后第一帧仍是旧画面）')
+    }
+    if (!/syncRenderFrameRate\(\)/.test(resumeBody)) {
+      reasons.push('handleResumeFromPause 未同步渲染档（恢复后帧率可能仍挂在暂停前的档位）')
     }
   }
   if (!/if !paused, liquidGlassView\?\.isPaused == true \{/.test(effect) ||
@@ -632,11 +676,11 @@ const existingStructureInvariants = (f) => {
 
 const assertions = [
   { name: 'A1 沉降窗口：墙钟口径 + 墙钟硬上限（不是帧数）', hits: settleWindowInvariants(REAL) },
-  { name: 'A2 半成品判据（全网格 + 外圈近黑占比，无外观逃逸）', hits: partialFrameInvariants(REAL) },
+  { name: 'A2 半成品判据（全网格 + 外圈近黑占比，无外观逃逸；分析层不得再碰渲染帧率）', hits: partialFrameInvariants(REAL) },
   { name: 'A3 三条窗口锚点 + draw() 无纹理 guard', hits: anchorInvariants(REAL) },
   { name: 'A4 放行出口：非 hold 分支恰一处 backgroundTexture = texture（不在 shouldHold 内）', hits: releaseExitInvariants(REAL) },
   { name: 'A5 开窗点恰 4 处调用（含暂停恢复）+ 起点写入唯一（beginCaptureSettleWindow 内）', hits: settleReopenInvariants(REAL) },
-  { name: 'B 既有结构未改坏（刷新率/采样基准/均匀沿用/采景几何/透镜链路/采景节流/实时会话/暂停复位）', hits: existingStructureInvariants(REAL) },
+  { name: 'B 既有结构未改坏（渲染帧率=采景档 30/60 唯一赋值点/采样基准/均匀沿用/采景几何/透镜链路/采景节流/实时会话/暂停复位）', hits: existingStructureInvariants(REAL) },
 ]
 
 // ---------------------------------------------------------------------------
@@ -766,10 +810,30 @@ CE('C10 透镜抬起链路不再接 beginLiveCapture', existingStructureInvarian
   'liquidGlassView.endLiveCapture()'
 ), '透镜抬起链路')
 
-CE('C11 实时会话不再门控降档（透镜抬起/横滑跟手期间会被降回低刷）', existingStructureInvariants, tamperGlass(
-  'if !isLiveCaptureActive,',
-  'if true,'
-), 'liveCaptureRequested')
+CE('C11 帧率赋值被铺回会话切换处（唯一赋值点被破坏 → 档位可与会话脱节）', existingStructureInvariants, tamperGlass(
+  '    func endLiveCapture() {\n        liveCaptureRequested = false\n        syncRenderFrameRate()',
+  '    func endLiveCapture() {\n        liveCaptureRequested = false\n        preferredFramesPerSecond = Self.idleFramesPerSecond'
+), '赋值点不是恰 1 处')
+
+CE('C11b 档位三元丢掉实时分支（横滑/透镜会话不再提档，玻璃跟不上手）', existingStructureInvariants, tamperGlass(
+  'preferredFramesPerSecond = isLiveCaptureActive ? Self.liveFramesPerSecond : Self.idleFramesPerSecond',
+  'preferredFramesPerSecond = Self.idleFramesPerSecond'
+), '档位三元被改坏')
+
+CE('C11c 会话切换漏同步（endLiveCapture 不调用 syncRenderFrameRate，透镜落下还挂在 60fps）', existingStructureInvariants, tamperGlass(
+  '    func endLiveCapture() {\n        liveCaptureRequested = false\n        syncRenderFrameRate()\n    }',
+  '    func endLiveCapture() {\n        liveCaptureRequested = false\n    }'
+), '定义/调用数不对')
+
+CE('C11d 自适应升降档残迹被塞回来（渲染帧率不再只跟采景档）', existingStructureInvariants, tamperGlass(
+  '    private static let liveFramesPerSecond = 60',
+  '    private static let liveFramesPerSecond = 60\n    private var motionHoldDuration: TimeInterval = 0.4'
+), '残迹复活')
+
+CE('C11e 落下时不清透镜会话标志（liveCaptureRequested 永远为真 → 档位永远挂在实时档）', existingStructureInvariants, tamperGlass(
+  '        liveCaptureRequested = false\n        syncRenderFrameRate()',
+  '        syncRenderFrameRate()'
+), '未落回透镜会话标志')
 
 // —— 2026-10-01 契约加固：放行出口 / 开窗计数 / 锚点①②③全覆盖（C12~C17）——
 
@@ -857,14 +921,14 @@ CE('C19 两路会话被合并成一个标志（isLiveCaptureActive 只看透镜�
 ), '两路会话的 OR')
 
 CE('C20 会话开始不放行下一次采景（滑动开头玻璃里仍是旧位置的画面）', existingStructureInvariants, tamperGlass(
-  '        lastCaptureAt = 0\n        consecutiveUniformFrames = 0\n        if realtime {',
-  '        consecutiveUniformFrames = 0\n        if realtime {'
+  '        lastCaptureAt = 0\n        consecutiveUniformFrames = 0',
+  '        consecutiveUniformFrames = 0'
 ), '未放行下一次采景')
 
-CE('C21 退会话不再避让透镜会话（横滑收尾把仍抬起的透镜压回低刷）', existingStructureInvariants, tamperGlass(
-  '        } else if !liveCaptureRequested {',
-  '        } else {'
-), '未避让透镜会话')
+CE('C21 采景分档丢掉透镜会话（透镜抬起/跟手被压回静止档 —— 滑动跟手的延迟复发出处）', existingStructureInvariants, tamperGlass(
+  '        let interval = isLiveCaptureActive ? Self.liveCaptureMinInterval : Self.captureMinInterval',
+  '        let interval = realtimeCaptureRequested ? Self.liveCaptureMinInterval : Self.captureMinInterval'
+), '未按实时会话区分间隔')
 
 CE('C22 暂停恢复不再复位（返回主界面时先把暂停前那帧旧画面画出去）', existingStructureInvariants, tamperEffect(
   '        if !paused, liquidGlassView?.isPaused == true {\n            liquidGlassView?.handleResumeFromPause()\n        }',
@@ -909,13 +973,13 @@ console.log('='.repeat(92))
 console.log('玻璃首次挂载/重新入层级提交门（LiquidGlassView.commitCapturedTexture，2026-10-01）')
 console.log('='.repeat(92))
 console.log('  A1 沉降窗口 = 墙钟口径（不是帧数）+ 墙钟硬上限（窗口关闭后均匀帧仍走 ≤4 帧的统一帧数上限，非到点即接受）')
-console.log('  A2 半成品判据：全网格 + 外圈近黑占比，无外观逃逸（阈值须低于对应形态占比下限）')
+console.log('  A2 半成品判据：全网格 + 外圈近黑占比，无外观逃逸（阈值须低于对应形态占比下限；分析层不得再碰渲染帧率）')
 console.log('  A3 三条窗口锚点（backdrop 插入 / didMoveToWindow / beginLiveCapture）+ draw guard')
 console.log('  A4 放行出口唯一：非 hold 分支恰一处 backgroundTexture = texture（缺 = 玻璃永久透明）')
 console.log('  A5 开窗点恰 4 处（三条锚点 + 暂停恢复复位）+ 起点写入唯一（每帧路径不得开窗/重置）')
-console.log('  B  既有事实未改坏（刷新率 30/120/0.4、采样基准锁定、均匀沿用修复、采景几何、透镜链路、实时会话、暂停复位）')
+console.log('  B  既有事实未改坏（渲染帧率 = 采景档 30/60、唯一赋值点、采样基准锁定、均匀沿用修复、采景几何、透镜链路、实时会话、暂停复位）')
 console.log('  B7 采景节流：每实例最小采景间隔（常驻 30fps / 实时 60fps），首帧放行、按会话分档（2026-10-02）')
-console.log('  B8 实时采景会话（两路标志分开 + OR 判据 + 会话起止放行采景 + 退会话避让）+ 暂停恢复复位（2026-10-02）')
+console.log('  B8 实时采景会话（两路标志分开 + OR 判据 + 会话起止放行采景 + 退会话按 OR 统一算档）+ 暂停恢复复位（2026-10-02）')
 console.log('  C  反例自检：任一条修复拆掉一点都必须拦下（替换未命中 = 失败）')
 console.log()
 console.log('='.repeat(92))
