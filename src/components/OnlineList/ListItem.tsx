@@ -172,7 +172,9 @@ const ListItem = memo(
               {item.alias ? <Text color={theme['c-font-label']}> ({item.alias})</Text> : null}
             </Text>
             <View style={styles.listItemSingle}>
-              {showSource ? <Badge type="tertiary">{item.source.toUpperCase()}</Badge> : null}
+              {/* 【第 22 轮】source 加存在性判断：与 Mylist/MusicList/ListItem 同一条防线 ——
+                  缺 source 的数据（下载任务转播放项等）绝不能靠一个徽标把整页渲染打崩 */}
+              {showSource && item.source ? <Badge type="tertiary">{item.source.toUpperCase()}</Badge> : null}
               {tagInfo.type ? <Badge type={tagInfo.type}>{tagInfo.text}</Badge> : null}
               {meta.fee === 1 ? <Badge type="vip">VIP</Badge> : null}
               {item.source === 'wy' && meta.originCoverType === 2 ? <Badge type="normal">cover</Badge> : null}
