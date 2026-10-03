@@ -3,7 +3,7 @@ import { View, TouchableOpacity, Animated, Easing } from 'react-native'
 import * as Progress from 'react-native-progress'
 import { Icon } from '@/components/common/Icon'
 import { useTheme } from '@/store/theme/hook'
-import { useSafeAreaBottom } from '@/store/common/hook'
+import { useAboveMiniPlayerBottom } from '@/utils/tabBarCollapse'
 import { createStyle, clamp01 } from '@/utils/tools'
 import { navigations } from '@/navigation'
 import commonState from '@/store/common/state'
@@ -12,7 +12,10 @@ import DownloadTask = LX.Download.DownloadTask
 
 export default memo(() => {
   const theme = useTheme()
-  const safeAreaBottom = useSafeAreaBottom()
+  // 【第 31 轮】下载悬浮球与多选条/批量管理框同源取「迷你播放器顶边」（见
+  // useAboveMiniPlayerBottom）。原先与另两处一样写死 160 + safeAreaBottom，
+  // 改「Tab栏距离」后会与播放器裂出间距 —— 同类问题一并收敛，不留下第三个常数。
+  const aboveMiniPlayerBottom = useAboveMiniPlayerBottom()
   const [isVisible, setIsVisible] = useState(false)
   const [activeTasks, setActiveTasks] = useState<Map<string, DownloadTask>>(new Map())
   const scaleAnim = useRef(new Animated.Value(0)).current
@@ -106,9 +109,10 @@ export default memo(() => {
       style={[
         styles.container,
         {
-          // 悬浮在迷你播放器胶囊上方：胶囊 + tab 栏最高约到 safeAreaBottom + 150，
-          // 原 bottom:70 会与播放器/tab 栏重叠
-          bottom: 160 + safeAreaBottom,
+          // 悬浮在迷你播放器胶囊上方：底边 = 播放器**顶边**（紧贴，零缝）。
+          // 原 bottom:70 会与播放器/tab 栏重叠，上一版改为写死 160 + safeAreaBottom；
+          // 【第 31 轮】改取 useAboveMiniPlayerBottom（与 PlayerBar 落点同式）。
+          bottom: aboveMiniPlayerBottom,
         },
         { transform: [{ scale: scaleAnim }] },
       ]}

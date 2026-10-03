@@ -5,7 +5,7 @@ import Text from '@/components/common/Text'
 import Button from '@/components/common/Button'
 import { useTheme } from '@/store/theme/hook'
 import { useSettingValue } from '@/store/setting/hook'
-import { useSafeAreaBottom } from '@/store/common/hook'
+import { useAboveMiniPlayerBottom } from '@/utils/tabBarCollapse'
 import { applyOpacity } from '@/utils/colorOpacity'
 import { useButtonRadius } from '@/utils/buttonRadius'
 import { createStyle } from '@/utils/tools'
@@ -43,7 +43,10 @@ export default forwardRef<MultipleModeBarType, MultipleModeBarProps>(
     const buttonOpacity = useSettingValue('theme.buttonOpacity')
     // 条内按钮没有写死高度，统一按多选浮动条的高度 40（MULTI_SELECT_BAR_HEIGHT 的设计值）折算半高
     const buttonRadius = useButtonRadius()
-    const safeAreaBottom = useSafeAreaBottom()
+    // 【第 31 轮】多选浮动条的落点 = 迷你播放器顶边（与 LocalDownload 批量管理框同一来源，
+    // 见 useAboveMiniPlayerBottom）。原先 160 + safeAreaBottom 是写死算式，
+    // 改「Tab栏距离」/字体档位后与播放器之间会裂出间距。
+    const aboveMiniPlayerBottom = useAboveMiniPlayerBottom()
 
     useImperativeHandle(ref, () => ({
       show() {
@@ -108,14 +111,14 @@ export default forwardRef<MultipleModeBarType, MultipleModeBarProps>(
       () => ({
         ...styles.container,
         height: MULTI_SELECT_BAR_HEIGHT,
-        // 悬浮在迷你播放器胶囊上方：胶囊 + tab 栏最高约到 safeAreaBottom + 150
-        bottom: 160 + safeAreaBottom,
+        // 悬浮在迷你播放器胶囊上方：底边 = 播放器**顶边**（紧贴，零缝）
+        bottom: aboveMiniPlayerBottom,
         backgroundColor: theme['c-content-background'],
         borderColor: theme['c-border-background'],
         opacity: animFade, // Bind opacity to animated value
         transform: [{ translateY: animTranslateY }],
       }),
-      [animFade, animTranslateY, theme, safeAreaBottom],
+      [animFade, animTranslateY, theme, aboveMiniPlayerBottom],
     )
 
     const handleSelectAll = useCallback(() => {
