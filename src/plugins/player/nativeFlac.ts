@@ -12,6 +12,7 @@ import {
   pauseStreamingFlac,
   resetStreamingFlac,
   resumeStreamingFlac,
+  setStreamingFlacPlayWithOthers,
   setStreamingFlacRate,
   setStreamingFlacVolume,
   seekStreamingFlac,
@@ -57,6 +58,16 @@ const getMusicInfo = (musicInfo: LX.Player.PlayMusic) => 'progress' in musicInfo
 const isRemoteUrl = (url: string) => /^https?:\/\//i.test(url)
 
 export const isNativeFlacPlayerAvailable = () => Platform.OS == 'ios' && isStreamingFlacSupported
+
+// 【第 24 轮】「与其他应用同时播放」策略下发（勾选 = !player.isHandleAudioFocus）。
+// 只把标记交给原生打断分支（AppDelegate 的 LXPlayWithOthersEnabled）：勾选后系统打断时
+// 引擎照旧停摆（音频已被系统压住），但**不对外呈现暂停**——状态 / 锁屏 / 灵动岛卡片保持
+// 「在播」，打断结束分支自动重启引擎并恢复输出。原生模块缺失（非 iOS / 旧包）静默跳过：
+// 策略只在 iOS 有意义，且不能因为桥失败把设置切换变成报错。
+export const setNativePlayWithOthersPolicy = async(enabled: boolean) => {
+  if (!isNativeFlacPlayerAvailable()) return
+  await setStreamingFlacPlayWithOthers(enabled).catch(() => {})
+}
 
 const FLAC_QUALITIES = new Set<LX.Quality>(['flac', 'flac24bit', 'hires', 'master', 'atmos', 'atmos_plus'])
 

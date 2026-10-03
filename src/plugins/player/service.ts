@@ -62,6 +62,9 @@ const wasPlayingRecently = () => {
   return lastPlayingAt > 0 && Date.now() - lastPlayingAt <= RECENT_PLAYING_WINDOW_MS
 }
 
+/** 【第 24 轮】「与其他应用同时播放」是否开启（勾选 = player.isHandleAudioFocus 为 false）。 */
+const isPlayWithOthers = () => settingState.setting['player.isHandleAudioFocus'] === false
+
 // —— iOS 被其它软件抢占后“自动续播”的辅助 ——
 // 打断刚结束时音频会话未必能立刻激活、play() 也是异步的，因此补试一次（600ms 后）；
 // 期间一旦用户手动暂停/切歌/停止/真正播放，都会取消。
@@ -163,6 +166,39 @@ const registerPlaybackService = async() => {
     // 的另一半原因（另一半是 dependencies-patch.js 补上的「缺 ShouldResume 也要发事件」）。
     // Android 才有真正意义上的 permanent（永久失去 audio focus），语义见下方分支。
     if (Platform.OS == 'ios') {
+      // 【第 24 轮】「与其他应用同时播放」（勾选 = !player.isHandleAudioFocus）单独一条策略分支。
+      // 音频会话本身**始终非混音**（mixWithOthers 会让本应用失去 Now Playing 资格 —— 锁屏 /
+      // 灵动岛播放卡片当场消失；且与原生引擎的 LongFormAudio 路由策略互斥，setCategory 报 -50，
+      // 表现为「有进度没声音」。见 plugins/player/index.ts 的会话注释），所以「不因其它音频暂停
+      // 自己」只能落在策略层：
+      //   打断开始 → 不调 pause()、不对外呈现暂停（原生 Began 分支同口径不 emit paused，
+      //              锁屏 / 灵动岛保持「在播」）
+      //   打断结束 → 恢复音量 + 走自动续播（原生侧会重启引擎，两边幂等）
+      // 取消勾选即回到下面的独占分支（第 21/22 轮口径：暂停 + 短暂中断自动续播，一字未改）。
+      if (isPlayWithOthers()) {
+        if (ducking) {
+          // 仅降低音量(混合播放)：不暂停，只记时刻与待恢复意图
+          shouldResumeAfterDuck ||= !isManualPause() && wasPlayingRecently()
+          interruptedAt = Date.now()
+          clearDuckRecoveryTimeouts()
+          return
+        }
+        if (paused && !permanent) {
+          // 打断开始：**不暂停**。与独占分支的唯一区别就是去掉 void pause() —— 用户在
+          // 「同时播放」下要求其它音频不能让我们停下来（第 24 轮需求 1）。恢复意图照记，
+          // 但受手动暂停闸门约束，用户主动暂停后不会自说自话出声。
+          if (!global.lx.isPlayedStop && !isManualPause()) shouldResumeAfterDuck = true
+          interruptedAt = Date.now()
+          clearDuckRecoveryTimeouts()
+          clearResumeTimer()
+          return
+        }
+        // 打断结束 / 音量恢复：把音量拉回配置值，并给自动续播一次机会（未被手动暂停时才出声）
+        interruptedAt = 0
+        restoreConfiguredVolume()
+        scheduleAutoResume()
+        return
+      }
       if (ducking) {
         // 仅降低音量(混合播放)：暂不暂停，记录待恢复
         // 【第 21 轮·优化 1】改用「最近 3s 确实在播」：车机蓝牙下导航播报会先走一次
