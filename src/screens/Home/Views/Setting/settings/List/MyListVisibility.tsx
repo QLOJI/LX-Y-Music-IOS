@@ -13,12 +13,20 @@ import Text from '@/components/common/Text'
 import { createStyle } from '@/utils/tools'
 import { designSpacing } from '@/theme/DesignTokens'
 
+// 【第二十轮·第 5 条】加入 WebDAV 与「本地与下载」两个入口：
+// 用户原话「我的页列表显示中加入 WebDAV 和本地与下载选项，取消勾选后，我的界面隐藏
+// WebDAV 和本地与下载栏」。这两项在「我的」页是 FeatureGrid 里的固定入口（NAV_MENUS），
+// 与上面五个平台入口同一套机制 —— FeatureGrid 统一按 (myListVisibility[id] ?? true) 过滤，
+// 所以这里只需把 id 加进列表，勾选/取消即生效，不需要改 FeatureGrid。
+// 文案直接取 t(id)：nav_webdav →「WebDAV」、nav_local_download →「本地与下载」。
 const PLATFORM_ITEM_IDS = [
   'nav_my_playlist',
   'nav_kg_playlist',
   'nav_tx_playlist',
   'nav_followed_artists',
   'nav_subscribed_albums',
+  'nav_webdav',
+  'nav_local_download',
 ] as const
 
 export default memo(() => {

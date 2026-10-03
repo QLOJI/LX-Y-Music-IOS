@@ -162,7 +162,11 @@ export default memo(({ setHost }: { setHost: (host: string) => void }) => {
 const styles = createStyle({
   btn: {
     flexDirection: 'row',
-    marginLeft: designSpacing.md,
+    // 【第二十轮·图七】「历史地址」按钮原来比同页其它行多缩进 designSpacing.md(16)，
+    // 视觉上吊在中间（用户：「数据同步下面历史地址按钮设置为左对齐」）。
+    // 删掉 marginLeft：左缘 = 内容区左缘，与上面各行的整行卡对齐；
+    // 上边距同时改用与整行卡一致的 xs(8)，避免按钮紧贴上一行卡片。
+    marginTop: designSpacing.xs,
     marginBottom: designSpacing.sm,
   },
   tipText: {

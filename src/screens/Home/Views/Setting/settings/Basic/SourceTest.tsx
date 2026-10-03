@@ -1854,6 +1854,10 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: designSpacing.sm,
+    // 【第二十轮·图六】同 checkboxRow：非常大字号下「开始测试 / 终止测试 / 常见问题」
+    // 一行放不下时，原来 nowrap 会把「常见问题」挤出容器右缘（截图里被裁掉一半）。
+    // 放开换行后整卡换行，按钮与文字都完整可见。
+    flexWrap: 'wrap',
     marginBottom: designSpacing.md,
   },
 
@@ -1884,10 +1888,18 @@ const styles = StyleSheet.create({
 
   checkboxRow: {
     flexDirection: 'row',
-    alignItems: 'center',
+    // 【第二十轮·图五】「显示警告 / 显示降级 / 测试日志 不在同一直线上」的根因：
+    // 两个 CheckBox 卡片自带 marginBottom（common/CheckBox 的 contentStyle 里被强制
+    // 不低于 designSpacing.xs=8），按钮没有；本行原来 alignItems:'center' —— 居中算的是
+    // 「含外边距」的盒子，于是两张卡片被整体抬高 8/2 = 4pt，按钮原地不动，三者卡片
+    // 顶边差 4pt。改成顶部对齐：卡片等高（都是 40）时顶边必然齐平，底部外边距不再影响。
+    alignItems: 'flex-start',
     gap: designSpacing.xs,
     marginTop: designSpacing.sm,
-    flexWrap: 'nowrap',
+    // 【第二十轮·图六】「设置字体大小为非常大后按钮内文字有遮挡/按钮显示不全」：
+    // 原来 nowrap —— 一行放不下就横向挤出容器（右侧按钮被裁）+ 勾选框文字被逐字竖排挤压。
+    // 放开换行：放得下的行布局与之前完全一致，放不下的整张卡片换到下一行，绝不压缩/裁切。
+    flexWrap: 'wrap',
   },
 
   settingsLabel: {
