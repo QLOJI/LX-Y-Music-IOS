@@ -782,6 +782,11 @@ export default memo(() => {
 
   useEffect(() => {
     const handleWebdavPicUpdated = (musicId: string, picUrl: string) => {
+      // 状态边界收口：只接受字符串。picUrl 最终会交给行内 <Image url={coverUrl}>，
+      // 一旦是对象（上游音源 SDK getPic 没解包的请求对象），Image.tsx 的 `url.startsWith`
+      // 求值为 undefined 再被调用 ⇒ 渲染期致命错误「undefined is not a function」
+      // （用户截图：WebDAV 列表下滑突然弹 Fatal 错误框）。宁可这一帧不换图。
+      if (typeof picUrl !== 'string') return
       setSongs(prevSongs => prevSongs.map(song =>
         song.id === musicId
           ? { ...song, meta: { ...song.meta, picUrl } }
