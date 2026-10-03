@@ -15,6 +15,9 @@
 #import <AVFoundation/AVFoundation.h>
 #import <Accelerate/Accelerate.h>
 #import <MediaPlayer/MediaPlayer.h>
+// 【第 21 轮·优化 2】保存图片到系统相册（PHPhotoLibrary）。系统框架靠 modules 自动链接，
+// 同时在工程 Frameworks 里显式挂了 Photos.framework（与 CoreMotion.framework 同样处理）。
+#import <Photos/Photos.h>
 #import <JavaScriptCore/JavaScriptCore.h>
 #import <math.h>
 #include <alloca.h>
@@ -5772,7 +5775,11 @@ RCT_EXPORT_MODULE();
   self.hasListeners = NO;
 }
 
-- (BOOL)shouldEmitHeadphonesDisconnectedForPreviousRoute:(AVAudioSessionRouteDescription *)route {
+// 这条路由里有没有「耳机类」输出（有线 / 蓝牙 A2DP / 蓝牙 HFP / BLE）。
+// 注意：真拔线断连 与 被其它 App 抢占（导航播报、来电）在端口类型上完全一样，
+// 只凭端口类型分不出来 —— 区分靠的是看哪一条路由，见 handleAudioRouteChange:。
+- (BOOL)routeHasHeadphoneOutput:(AVAudioSessionRouteDescription *)route {
+  if (route == nil) return NO;
   for (AVAudioSessionPortDescription *output in route.outputs) {
     NSString *portType = output.portType;
     if ([portType isEqualToString:AVAudioSessionPortHeadphones] ||
@@ -5783,6 +5790,10 @@ RCT_EXPORT_MODULE();
     }
   }
   return NO;
+}
+
+- (BOOL)shouldEmitHeadphonesDisconnectedForPreviousRoute:(AVAudioSessionRouteDescription *)route {
+  return [self routeHasHeadphoneOutput:route];
 }
 
 - (void)handleAudioRouteChange:(NSNotification *)notification {
@@ -5796,6 +5807,16 @@ RCT_EXPORT_MODULE();
 
   AVAudioSessionRouteDescription *previousRoute = userInfo[AVAudioSessionRouteChangePreviousRouteKey];
   if (previousRoute == nil || ![self shouldEmitHeadphonesDisconnectedForPreviousRoute:previousRoute]) return;
+
+  // 【第 21 轮·优化 1】还要看**新**路由：关掉「与其他应用同时播放」后，车机蓝牙下
+  // 高德播报会把音频路由整体抢走，系统同样发 OldDeviceUnavailable 且 previousRoute
+  // 是蓝牙 —— 旧实现只看旧路由，于是把它误判成「耳机被拔」发 headphones-disconnected，
+  // JS 那边随即暂停播放且之后不恢复（用户实车报的 bug）。真拔线/真断连时新路由会退回
+  // 扬声器（没有耳机类输出），抢占时车机/耳机仍在（新路由里仍是 A2DP/HFP）——
+  // 用新路由有没有耳机类输出就能把两者分开：还在 → 是抢占，不发事件，交给 RNTP 的
+  // 打断流程（duck / 自动续播）处理。
+  AVAudioSessionRouteDescription *currentRoute = [AVAudioSession sharedInstance].currentRoute;
+  if (currentRoute != nil && [self routeHasHeadphoneOutput:currentRoute]) return;
 
   dispatch_async(dispatch_get_main_queue(), ^{
     [self sendEventWithName:@"headphones-disconnected" body:nil];
@@ -5884,6 +5905,67 @@ RCT_EXPORT_METHOD(endBackgroundTask:(nonnull NSNumber *)taskId) {
 // 老包上不会报错。
 RCT_EXPORT_METHOD(raiseOverlayWindows) {
   LXRaiseOverlayWindows();
+}
+
+// 【第 21 轮·优化 2（2026-10-03）】把本地图片文件写进系统相册（用户「照片」App 里直接可见）。
+// 用户报「长按封面点『下载封面』无效」的另一半原因：JS 侧旧实现只把封面写进应用沙盒的
+// Pictures 目录，用户在系统相册里永远看不到，等于没保存。这里补上真正写相册的能力。
+// 图片必须已经是磁盘上的真实文件（JS 侧先下载到缓存临时文件再调本方法，保存后自行删除）。
+// 返回 YES = 已写入相册；路径为空 / 文件不存在 / 用户拒绝权限 / 写入失败一律 reject
+//（JS 侧统一折算成 false，见 utils/nativeModules/utils.ts 的 saveImageToPhotosLibrary）。
+// 依赖 Info.plist 的 NSPhotoLibraryAddUsageDescription（只申请「新增」权限，不读相册）。
+RCT_REMAP_METHOD(saveImageToPhotosLibrary,
+                 saveImageToPhotosLibrary:(NSString *)filePath
+                 resolver:(RCTPromiseResolveBlock)resolve
+                 rejecter:(RCTPromiseRejectBlock)reject) {
+  NSString *path = [filePath isKindOfClass:[NSString class]] ? filePath : @"";
+  if ([path hasPrefix:@"file://"]) {
+    path = [NSURL URLWithString:path].path ?: path;
+  }
+  path = path.stringByStandardizingPath;
+  if (path.length == 0) {
+    reject(@"save_image_failed", @"图片路径为空", nil);
+    return;
+  }
+  if (![[NSFileManager defaultManager] fileExistsAtPath:path]) {
+    reject(@"save_image_failed", @"图片文件不存在", nil);
+    return;
+  }
+
+  void (^performSave)(void) = ^{
+    [[PHPhotoLibrary sharedPhotoLibrary] performChanges:^{
+      // 登记一次「用文件创建图片资源」的请求；真正的写入（含拷贝进相册库）由 performChanges 完成，
+      // 所以调用方在本方法返回后即可安全删除源文件。
+      [PHAssetChangeRequest creationRequestForAssetFromImageAtFileURL:[NSURL fileURLWithPath:path]];
+    } completionHandler:^(BOOL success, NSError * _Nullable error) {
+      // 回调在系统队列上，RCTPromiseResolveBlock/RejectBlock 自身线程安全，无需再切主队列
+      if (success) {
+        resolve(@(YES));
+      } else {
+        reject(@"save_image_failed", error.localizedDescription ?: @"保存到相册失败", error);
+      }
+    }];
+  };
+
+  if (@available(iOS 14.0, *)) {
+    // 只申请「新增」权限（AddOnly）：不读用户相册，弹窗文案取 NSPhotoLibraryAddUsageDescription；
+    // Limited（用户选择部分照片）对 AddOnly 而言同样意味着可写入。
+    [PHPhotoLibrary requestAuthorizationForAccessLevel:PHAccessLevelAddOnly handler:^(PHAuthorizationStatus status) {
+      if (status == PHAuthorizationStatusAuthorized || status == PHAuthorizationStatusLimited) {
+        performSave();
+      } else {
+        reject(@"save_image_denied", @"没有相册写入权限，请在系统设置中允许本应用添加照片", nil);
+      }
+    }];
+  } else {
+    [PHPhotoLibrary requestAuthorization:^(PHAuthorizationStatus status) {
+      if (status == PHAuthorizationStatusAuthorized) {
+        performSave();
+      } else {
+        reject(@"save_image_denied", @"没有相册写入权限，请在系统设置中允许本应用访问相册", nil);
+      }
+    }];
+  }
 }
 
 // 生成并缓存一张「已模糊的背景图」到本地，返回 file:// 地址；无需模糊 / 失败时返回 nil。

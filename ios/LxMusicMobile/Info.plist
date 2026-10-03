@@ -73,6 +73,10 @@
 	<string>用于局域网内获取歌词与声学指纹数据</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>用于选择自定义背景图片</string>
+	<!-- 第 21 轮·优化 2：保存封面/图片到系统相册（PHPhotoLibrary AddOnly）。
+	     只有这一条「新增」权限被申请，不读用户相册。 -->
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>用于把歌曲封面与图片保存到你的相册</string>
 	<key>UTImportedTypeDeclarations</key>
 	<array>
 		<dict>
