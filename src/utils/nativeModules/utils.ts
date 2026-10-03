@@ -205,6 +205,21 @@ export const onRemoteCommand = (
   }
 }
 
+// 【第 31 轮·条六】蓝牙音频设备接入 / 移除（原生比对路由变化前后两条路由有没有蓝牙输出：
+// A2DP / HFP / BLE，从「没有」翻成「有」或反过来才发 —— 只比有无不比端口明细，
+// 通话时的 A2DP↔HFP 换挡不算设备变化）。用户要求：连接或断开都暂停播放。
+// 只看蓝牙 —— 有线耳机插拔仍走 headphones-disconnected。
+export const onBluetoothDeviceChanged = (handler: () => void): (() => void) => {
+  if (!UtilsModule) return () => {}
+  const eventEmitter = new NativeEventEmitter(UtilsModule)
+  const eventListener = eventEmitter.addListener('bluetooth-device-changed', () => {
+    handler()
+  })
+  return () => {
+    eventListener.remove()
+  }
+}
+
 export const onHeadphonesDisconnected = (handler: () => void): (() => void) => {
   // iOS：原生 AppDelegate 监听 AVAudioSessionRouteChange，耳机拔出时转发
   // headphones-disconnected 事件。参考 Q-1515/lx-music-mobile ios-adaptation，

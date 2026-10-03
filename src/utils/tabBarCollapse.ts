@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useState } from 'react'
 import { onTabBarCollapseChanged } from '@/utils/nativeModules/utils'
-import { scaleSizeW } from '@/utils/pixelRatio'
-import { tabBarBaseHeight, designSpacing, collapsedFloatBottom, collapsedPillGap } from '@/theme/DesignTokens'
-import { useSafeAreaBottom } from '@/store/common/hook'
+import { scaleSizeH, scaleSizeW } from '@/utils/pixelRatio'
+import { tabBarBaseHeight, designSpacing, collapsedFloatBottom, collapsedPillGap, bottomFloatGap, floatDistance } from '@/theme/DesignTokens'
+import { useSafeAreaBottom, useHomeCovered } from '@/store/common/hook'
+import { useHorizontalMode } from '@/utils/hooks'
+import { useSettingValue } from '@/store/setting/hook'
 
 /**
  * 底部 Tab 栏收起状态（iOS 26 风格最小化）：
@@ -108,4 +110,40 @@ export const useCollapsedRowGeometry = (): CollapsedRowGeometry => {
     roundLeft,
     playerLeft: roundLeft + size + collapsedPillGap,
   }), [size, safeAreaBottom, roundLeft])
+}
+
+/** 迷你播放器**顶边**距屏底的距离（pt）：底部悬浮元素要「紧贴迷你播放器上沿」时
+ *  的唯一来源。返回的是顶边（不是底边），调用方直接把它当 `bottom` 用即可贴合。
+ *
+ *  2026-10-03（第 31 轮·图二）定案。此前 LocalDownload 的批量管理框、OnlineList 的
+ *  多选操作条、下载悬浮球三处都把「播放器顶边」写死成 `160 + safeAreaBottom`——
+ *  160 是「底缝 4 + Tab 栏高 56 + 滑块满程 20 + 播放器高 ≈80」在**标准字体**下
+ *  的和。用户在主题设置里把「Tab栏距离」调小后，按钮整体下移、Tab 栏高度也随字体
+ *  缩放变化，这三处却纹丝不动 ⇒ 批量管理框和播放器之间裂出一条空隙
+ *  （需求原文「未与下方迷你播放器栏紧贴……导致出现间距，需要消除间距」）。
+ *
+ *  正确做法不是再报一个常数，而是照 PlayerBar 的实际落点算 —— 公式与
+ *  PlayerBar 的 bottomExpanded / bottomCollapsed **逐字同式**：
+ *    · 展开态底边 = 安全区 + (首页 ? (横屏 ? 76 : 底缝 + scaleSizeH(tabBarBaseHeight) + floatDistance(滑块)) : 底缝)
+ *      四路输入全带：home 与否、横屏、字体缩放、滑块值；
+ *    · 收起态底边 = collapsedFloatBottom(安全区)（与左下角圆钮共用同一条公式）；
+ *    · 顶边 = 底边 + 播放器高（= 收起行几何的 size，同一份实测值）。
+ *  播放器高度取 useMiniPlayerHeight 的实测值（PlayerBar 只按展开态上报），
+ *  未测量时由 getCollapsedPillSize 的 token 兜底 —— 与圆钮同源。 */
+export const useAboveMiniPlayerBottom = (): number => {
+  const safeAreaBottom = useSafeAreaBottom()
+  const homeCovered = useHomeCovered()
+  const isHorizontalMode = useHorizontalMode()
+  const tabBarDistance = useSettingValue('theme.tabBarDistance')
+  const tabBarCollapsed = useTabBarCollapsed()
+  const measured = useMiniPlayerHeight()
+  return useMemo(() => {
+    // 与 PlayerBar 的 isHome 同义：栈顶是首页（没被压栈页盖住）时，播放器下面还有 Tab 栏这一层
+    const isHome = !homeCovered
+    const bottomExpanded = safeAreaBottom + (isHome
+      ? (isHorizontalMode ? 76 : bottomFloatGap + scaleSizeH(tabBarBaseHeight) + floatDistance(tabBarDistance))
+      : bottomFloatGap)
+    const playerBottom = isHome && tabBarCollapsed ? collapsedFloatBottom(safeAreaBottom) : bottomExpanded
+    return playerBottom + getCollapsedPillSize(measured)
+  }, [safeAreaBottom, homeCovered, isHorizontalMode, tabBarDistance, tabBarCollapsed, measured])
 }
