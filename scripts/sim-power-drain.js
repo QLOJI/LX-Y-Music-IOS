@@ -29,6 +29,16 @@
  * （Tab 栏 2 块 + 迷你播放器 1 块）、播放详情页的缓冲进度轮询（每秒一次原生桥往返
  * + setState）、RNFS 下载进度的逐数据块回调（每次串起 store 事件 + React 渲染）。
  * 共同口径：前台才做，退后台立即停，回前台再恢复。绑住：4 条不变量 + 7 条反例。
+ *
+ * 第 23 轮（2026-10-03）「亮度证据熄屏门」：用户报「亮度调到最低后看锁屏卡片，歌词
+ * 不再滚动（8.3Hz 时钟被停）」。根因：UIScreen.brightness 的 0.0 就是「最低亮度」，
+ * 用 brightness > 0 判「亮屏」→ 最低亮度被误判成熄屏；且最低亮度下亮/灭屏亮度恒为 0
+ * （可能连亮度变化通知都不发），误判后无法自愈。修法：亮度证据 LXLastNonZeroBrightness
+ * （只在读到非零亮度时更新）+ 阈值 LXScreenOffTrustBrightness = 0.3（不得低于 0.2）——
+ * 亮度 0 时只有「刚才明显亮过」才认定熄屏，其余（最低亮度 / 暗环境自动亮度 / 渐暗到 0 /
+ * 从未观测到非零亮度）一律按亮。证据挂两处：亮度变化通知（先记录再判定，顺序不能反——
+ * 硬关屏那一次通知只有这一次机会拿到依据）+ 回前台；用调用点计数而非窗口正则，避免相邻
+ * 观察者互相顶包。绑住：新增 1 组不变量（共 5 组）+ 3 条反例（共 25 条）。
  */
 
 const fs = require('fs')
@@ -256,7 +266,7 @@ const runCounterExamples = () => {
   // ③ 停钟不再被统一守卫调用（守卫删掉停钟分支）→ 报「未在非 Playing 时停钟」
   check('原生③ 守卫不停钟', () => {
     const s = tamper(REAL.appdel,
-      'if (LXNowPlayingState == MPNowPlayingPlaybackStatePlaying) {\n    LXStartNowPlayingLyricTimer();\n  } else {\n    LXStopNowPlayingLyricTimer();\n  }',
+      'if (LXNowPlayingState == MPNowPlayingPlaybackStatePlaying && !LXIsScreenTrustedOff()) {\n    LXStartNowPlayingLyricTimer();\n  } else {\n    LXStopNowPlayingLyricTimer();\n  }',
       'LXStartNowPlayingLyricTimer();')
     return nativeInvariants(s).reasons
   }, '未在非 Playing 时停钟')
@@ -532,6 +542,122 @@ const runBgCounterExamples = () => {
 }
 
 // ---------------------------------------------------------------------------
+// 「亮度证据」熄屏门（第 23 轮）：亮度 0 = 最低亮度 or 熄屏，判定必须带证据
+// ---------------------------------------------------------------------------
+
+const SCREEN_GATE_THRESHOLD_MIN = 0.2
+
+const screenGateInvariants = (src) => {
+  const reasons = []
+  const code = stripComments(src)
+
+  // ① 证据变量 + 阈值（不得低于 0.2：阈值收紧到 0 等于退回「亮度 0 即熄屏」的老错）
+  if (!/static\s+double\s+LXLastNonZeroBrightness\s*=\s*0;/.test(code)) {
+    reasons.push('缺少亮度证据 LXLastNonZeroBrightness（亮度 0 时无从判断「刚才明显亮过」）')
+  }
+  const thr = /static\s+const\s+double\s+LXScreenOffTrustBrightness\s*=\s*([0-9.]+);/.exec(code)
+  if (!thr) {
+    reasons.push('缺少阈值 LXScreenOffTrustBrightness')
+  } else if (Number(thr[1]) < SCREEN_GATE_THRESHOLD_MIN) {
+    reasons.push(`熄屏阈值 ${thr[1]} 低于 ${SCREEN_GATE_THRESHOLD_MIN}（越收越紧 = 回到「亮度 0 即熄屏」的老错）`)
+  }
+
+  // ② 判定体：亮度非零 → 按亮；亮度 0 → 必须用「最近非零亮度」证据 + 阈值比较
+  const judge = extractCFunction(code, 'static BOOL LXIsScreenTrustedOff(void)')
+  if (!judge) {
+    reasons.push('缺少 LXIsScreenTrustedOff()（熄屏判定）')
+  } else {
+    if (!/UIScreen\.mainScreen\.brightness > 0/.test(judge)) {
+      reasons.push('熄屏判定缺「亮度非零即按亮」兜底')
+    }
+    if (!/LXLastNonZeroBrightness\s*>=\s*LXScreenOffTrustBrightness/.test(judge)) {
+      reasons.push('熄屏判定未用「最近非零亮度」证据（亮度 0 被直接当成熄屏 = 用户报的最低亮度冻歌词）')
+    }
+  }
+
+  // ③ 记录函数：0 不覆盖证据（0 就是被怀疑的那一侧，不能当证据）
+  const remember = extractCFunction(code, 'static void LXRememberScreenBrightness(void)')
+  if (!remember) {
+    reasons.push('缺少 LXRememberScreenBrightness()（亮度证据收集）')
+  } else {
+    if (!/if\s*\(brightness > 0\)/.test(remember)) {
+      reasons.push('记录函数未把 0 挡在证据之外（0 会覆盖「最近非零亮度」→ 最低亮度被误判熄屏）')
+    }
+    if (!/LXLastNonZeroBrightness\s*=\s*brightness;/.test(remember)) {
+      reasons.push('记录函数未把亮度写进证据变量')
+    }
+  }
+
+  // ④ 证据必须挂在两处（用调用点计数，避免相邻观察者窗口正则互相顶包）：
+  //    亮度变化通知（先记录、后判定——顺序不能反）+ 回前台兜底
+  const recordCount = (code.match(/LXRememberScreenBrightness\(\)/g) ?? []).length
+  if (recordCount !== 2) {
+    reasons.push(`亮度证据的调用点是 ${recordCount} 处（应恰好 2：亮度变化通知 + 回前台兜底）`)
+  }
+  const brightnessAt = code.indexOf('UIScreenBrightnessDidChangeNotification')
+  if (brightnessAt < 0) {
+    reasons.push('未监听 UIScreenBrightnessDidChangeNotification（屏幕亮/灭无从取证）')
+  } else {
+    const block = code.slice(brightnessAt, code.indexOf('}];', brightnessAt))
+    const recordAt = block.indexOf('LXRememberScreenBrightness();')
+    const syncAt = block.indexOf('LXSyncNowPlayingLyricTimer();')
+    if (recordAt < 0) {
+      reasons.push('亮度变化通知里未记录证据（从亮屏硬关屏那一次通知是拿到依据的唯一机会）')
+    } else if (syncAt >= 0 && syncAt < recordAt) {
+      reasons.push('亮度通知里「先判定后记录」顺序反了（首次通知时证据还是旧值——必须先记录再判定）')
+    }
+  }
+  const activeAt = code.indexOf('UIApplicationDidBecomeActiveNotification')
+  if (activeAt < 0 || !code.slice(activeAt, code.indexOf('}];', activeAt)).includes('LXRememberScreenBrightness();')) {
+    reasons.push('回前台未记录亮度证据（最低亮度下亮/灭可能不发亮度通知，兜底取证点缺失）')
+  }
+
+  // ⑤ 门必须被统一守卫消费（否则证据齐备也只是摆设）
+  const syncBody = extractCFunction(code, 'static void LXSyncNowPlayingLyricTimer(void)')
+  if (!syncBody || !/LXIsScreenTrustedOff\s*\(\s*\)/.test(syncBody)) {
+    reasons.push('LXSyncNowPlayingLyricTimer 未消费熄屏判定（亮度门形同虚设，8.3Hz 照跑）')
+  }
+
+  return reasons
+}
+
+const runScreenGateCounterExamples = () => {
+  const results = []
+  const check = (name, fn, expectSubstr) => {
+    let reasons = []
+    try {
+      reasons = fn()
+    } catch (e) {
+      results.push({ name, ok: false, detail: `抛异常: ${e.message}` })
+      return
+    }
+    const hit = reasons.some(r => r.includes(expectSubstr))
+    results.push({ name, ok: hit, detail: hit ? '已拦下' : `未拦下（reasons=${JSON.stringify(reasons)}）` })
+  }
+
+  // G1 退回 brightness>0 判定（亮度 0 直接算熄屏——老写法）
+  check('G1 退回 brightness>0 判定', () => screenGateInvariants(tamper(REAL.appdel,
+    '  if (UIScreen.mainScreen.brightness > 0) return NO;\n  return LXLastNonZeroBrightness >= LXScreenOffTrustBrightness;',
+    '  return UIScreen.mainScreen.brightness <= 0;')),
+  '熄屏判定未用「最近非零亮度」证据')
+
+  // G2 阈值归零（亮度 0 只要有任意历史证据就算熄屏）
+  check('G2 阈值归零', () => screenGateInvariants(tamper(REAL.appdel,
+    'static const double LXScreenOffTrustBrightness = 0.3;',
+    'static const double LXScreenOffTrustBrightness = 0;')),
+  '低于 0.2')
+
+  // G3 去掉证据记录（两处都拆：硬关屏与回前台都拿不到依据）
+  check('G3 去掉证据记录', () => {
+    const s = REAL.appdel.replace(/LXRememberScreenBrightness\(\);/g, '')
+    if (s === REAL.appdel) throw new Error('tamper 锚点未命中: LXRememberScreenBrightness() 调用')
+    return screenGateInvariants(s)
+  }, '亮度证据的调用点是 0 处')
+
+  return results
+}
+
+// ---------------------------------------------------------------------------
 // 主流程
 // ---------------------------------------------------------------------------
 
@@ -539,6 +665,7 @@ const realNative = nativeInvariants(REAL.appdel)
 const realJs = jsInvariants(REAL.playProgress)
 const realPaused = pausedInvariants(readGlass())
 const realBg = bgInvariants(readBg())
+const realScreenGate = screenGateInvariants(REAL.appdel)
 
 console.log('=== sim-power-drain ===')
 console.log('\n[原生 AppDelegate.mm]')
@@ -560,18 +687,26 @@ if (realBg.length === 0) {
   realBg.forEach(r => console.log('  FAIL ' + r))
 }
 
+console.log('\n[亮度证据熄屏门（第 23 轮）]')
+if (realScreenGate.length === 0) {
+  console.log('  PASS 亮度 0 走「最近非零亮度」证据 + 阈值 ≥0.2 + 记录先于判定 + 两处取证 + 统一守卫消费')
+} else {
+  realScreenGate.forEach(r => console.log('  FAIL ' + r))
+}
+
 console.log('\n[反例自检]')
 const ceResults = runCounterExamples()
 const peResults = runPausedCounterExamples()
 const beResults = runBgCounterExamples()
+const sgResults = runScreenGateCounterExamples()
 let ceAllOk = true
-const allResults = [...ceResults, ...peResults, ...beResults]
+const allResults = [...ceResults, ...peResults, ...beResults, ...sgResults]
 for (const r of allResults) {
   console.log(`  ${r.ok ? 'PASS' : 'FAIL'} ${r.name} —— ${r.ok ? '已拦下' : `未拦下（reasons=${JSON.stringify(r.detail)}）`}`)
   if (!r.ok) ceAllOk = false
 }
 
-const invCount = [realNative.ok, realJs.ok, realPaused.length === 0, realBg.length === 0].filter(Boolean).length
-const allOk = invCount === 4 && ceAllOk
-console.log(`\n结果：${allOk ? 'ALL PASS' : '有失败项'}（不变量 ${allOk || invCount > 0 ? `${invCount}/4` : '0/4'}；反例 ${allResults.filter(r => r.ok).length}/${allResults.length}）`)
+const invCount = [realNative.ok, realJs.ok, realPaused.length === 0, realBg.length === 0, realScreenGate.length === 0].filter(Boolean).length
+const allOk = invCount === 5 && ceAllOk
+console.log(`\n结果：${allOk ? 'ALL PASS' : '有失败项'}（不变量 ${allOk || invCount > 0 ? `${invCount}/5` : '0/5'}；反例 ${allResults.filter(r => r.ok).length}/${allResults.length}）`)
 process.exit(allOk ? 0 : 1)

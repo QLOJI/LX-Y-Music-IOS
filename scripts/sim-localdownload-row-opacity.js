@@ -17,8 +17,11 @@
  *       token 与按钮（批量管理 / 刷新）**同源**。
  *   二、行自己订阅 theme.buttonOpacity（hook 值进不了 memo 却必须参与重渲染），
  *       改透明度设置时行底色立即跟随，不需要点击行才刷新。
- *   三、行底色不得再用不透明的 c-content-background（selectBar 悬浮条是页面级
- *       容器面，不在本条契约范围内）。
+ *   三、行底色不得再用不透明的 c-content-background。
+ *
+ * 第 23 轮（2026-10-03）补充：用户要求「本地与下载」批量选择浮动条（selectBar）也纳入
+ * 「和其他按钮一样（按钮透明度）」范围——它是页面级容器面，但同样跟随：
+ * applyOpacity(c-primary-background, buttonOpacity)，与页头按钮同 token 同函数。
  *
  * 带反例自检（这类回归 tsc/eslint 无感：颜色 token 换成不透明值仍是合法 TS）。
  * 运行：node scripts/sim-localdownload-row-opacity.js
@@ -75,8 +78,22 @@ const invariants = (rawFile) => {
 
   // ④ 与页头按钮同源：批量管理 / 刷新按钮的底色也是同一 token + applyOpacity
   const btnHits = (code.match(/applyOpacity\(theme\['c-primary-background'\], buttonOpacity\)/g) ?? []).length
-  if (btnHits < 3) {
-    reasons.push(`行底色未与页头按钮同源（c-primary-background + applyOpacity 全文只出现 ${btnHits} 处，应 ≥3：批量管理 / 刷新 / 普通行）`)
+  if (btnHits < 4) {
+    reasons.push(`行底色未与页头按钮同源（c-primary-background + applyOpacity 全文只出现 ${btnHits} 处，应 ≥4：批量管理 / 刷新 / 普通行 / 选择浮动条）`)
+  }
+
+  // ⑤ 选择浮动条（第 23 轮入列）：页面级容器面也跟随「按钮透明度」，不得回潮不透明底色
+  const barAt = code.indexOf('styles.selectBar,')
+  if (barAt < 0) {
+    reasons.push('selectBar 抽取失败（锚点漂移：styles.selectBar,）')
+  } else {
+    const bar = code.slice(barAt, barAt + 600)
+    if (!bar.includes("applyOpacity(theme['c-primary-background'], buttonOpacity)")) {
+      reasons.push('选择浮动条未走 applyOpacity(c-primary-background, buttonOpacity)（仍是不透明容器面，未跟随「按钮透明度」）')
+    }
+    if (/backgroundColor:[^\n]*c-content-background/.test(bar)) {
+      reasons.push('选择浮动条底色又用了不透明的 c-content-background（第 23 轮已要求跟随按钮透明度）')
+    }
   }
 
   return reasons
@@ -123,6 +140,12 @@ const runCounterExamples = (REAL) => {
     "? theme['c-primary-background-hover']")),
   '播放中/选中行未走 applyOpacity')
 
+  // c4 选择浮动条退回不透明底色（第 23 轮范围）
+  check('c4 浮动条退回不透明底色', () => invariants(tamper(REAL,
+    "backgroundColor: applyOpacity(theme['c-primary-background'], buttonOpacity),\n                    // 悬浮在迷你播放器胶囊上方",
+    "backgroundColor: theme['c-content-background'],\n                    // 悬浮在迷你播放器胶囊上方")),
+  '选择浮动条底色又用了不透明')
+
   return results
 }
 
@@ -131,13 +154,13 @@ const runCounterExamples = (REAL) => {
 // ---------------------------------------------------------------------------
 
 console.log('=== sim-localdownload-row-opacity ===')
-console.log('「本地与下载」列表行底色 = 按钮同一份透明度口径（第 22 轮·图一/图二）')
+console.log('「本地与下载」列表行底色 = 按钮同一份透明度口径（第 22 轮·图一/图二 + 第 23 轮浮动条）')
 console.log()
 
 const REAL = read(FILE)
 const reasons = invariants(REAL)
 if (reasons.length === 0) {
-  console.log('[不变量] PASS —— 行两态底色同 token + applyOpacity；行订阅 theme.buttonOpacity')
+  console.log('[不变量] PASS —— 行两态底色同 token + applyOpacity；行订阅 theme.buttonOpacity；选择浮动条同口径')
 } else {
   console.log('[不变量] FAIL')
   reasons.forEach(r => console.log('  FAIL ' + r))
