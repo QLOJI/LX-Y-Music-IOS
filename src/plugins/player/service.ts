@@ -115,6 +115,9 @@ const clearResumeTimer = () => {
 export const cancelResumePending = () => {
   shouldResumeAfterDuck = false
   resumeRetryCount = 0
+  // 【第 33 轮第 4 条】「不放停」重取阶梯同样属于「待恢复」意图：用户任何明确动作
+  //（播放、手动暂停、切歌、停止、遥控、自然播完）都会走到这里，一并撤销。
+  clearMixReclaimTimer()
   clearResumeTimer()
   // 【第 31 轮·追加】任何「用户意图 / 播放状态明确」的动作都会走到这里（播放、手动暂停、
   // 切歌、停止、遥控、自然播完）：一并撤销短暂系统音窗口里的待决暂停。
@@ -142,6 +145,43 @@ const scheduleAutoResume = () => {
     }, delay)
   }
   attempt()
+}
+
+// —— 第 33 轮第 4 条：勾选「与其他应用同时播放」期间的「不放停」兜底 ——
+// 非混音会话下系统打断仍会让底层引擎停摆（原生 Began 分支：不对外呈现暂停、但照停引擎
+// 并让出会话）；若「结束」通知因进程被挂起 / 平台异常没送达，就留下「状态在播、没有声音」，
+// 而现有各条自动续播路径都救不了（scheduleAutoResume 在 playerState.isPlay 为真时直接早退）。
+// 这里在混音分支补一条**有界**的重取阶梯：按固定延时调 play() 重取会话 / 重启引擎
+//（nativeFlac 路径 = 原生 resume：prepareAudioSession 抢回会话 + 重启引擎；引擎已在播时
+// 该调用幂等，不会重复发声）。用户任何明确动作（手动暂停 / 停止 / 切歌 / 开始播放）都会经
+// cancelResumePending 撤销整条阶梯。延时表集中在这里，真机可按需调。
+const MIX_RECLAIM_DELAYS = [1200, 3000, 7000, 15000]
+let mixReclaimTimer: ReturnType<typeof setTimeout> | null = null
+let mixReclaimCount = 0
+
+const clearMixReclaimTimer = () => {
+  if (mixReclaimTimer != null) {
+    clearTimeout(mixReclaimTimer)
+    mixReclaimTimer = null
+  }
+  mixReclaimCount = 0
+}
+
+const scheduleMixReclaim = () => {
+  if (!isPlayWithOthers()) return
+  clearMixReclaimTimer()
+  const attempt = () => {
+    mixReclaimTimer = null
+    if (global.lx.isPlayedStop || !playerState.isPlay || isManualPause() || !isPlayWithOthers()) return clearMixReclaimTimer()
+    // 与 scheduleAutoResume 同一原语：play() 在 nativeFlac 路径落到原生 resume，
+    // 引擎已在播时幂等（不会重复出声）。
+    play()
+    if (mixReclaimCount >= MIX_RECLAIM_DELAYS.length) return clearMixReclaimTimer()
+    const delay = MIX_RECLAIM_DELAYS[mixReclaimCount++]
+    mixReclaimTimer = setTimeout(attempt, delay)
+  }
+  mixReclaimTimer = setTimeout(attempt, MIX_RECLAIM_DELAYS[0])
+  mixReclaimCount = 1
 }
 
 const restoreConfiguredVolume = () => {
@@ -198,12 +238,14 @@ const registerPlaybackService = async() => {
     // Android 才有真正意义上的 permanent（永久失去 audio focus），语义见下方分支。
     if (Platform.OS == 'ios') {
       // 【第 24 轮】「与其他应用同时播放」（勾选 = !player.isHandleAudioFocus）单独一条策略分支。
-      // 音频会话本身**始终非混音**（mixWithOthers 会让本应用失去 Now Playing 资格 —— 锁屏 /
-      // 灵动岛播放卡片当场消失；且与原生引擎的 LongFormAudio 路由策略互斥，setCategory 报 -50，
-      // 表现为「有进度没声音」。见 plugins/player/index.ts 的会话注释），所以「不因其它音频暂停
-      // 自己」只能落在策略层：
-      //   打断开始 → 不调 pause()、不对外呈现暂停（原生 Began 分支同口径不 emit paused，
-      //              锁屏 / 灵动岛保持「在播」）
+      // 【第 33 轮第 4 条】会话口径更新：勾选态下**允许**混音（用户原话「退出灵动岛占用……
+      // 不论后台什么音频在播，软件音频正常播放」），落点是原生流式引擎（无损档）的
+      // prepareAudioSession 混音分支（AppDelegate.mm，由 LXPlayWithOthersEnabled 守卫）；
+      // 但 RNTP / AVPlayer 这条路径（非无损档）的会话分类仍是 setupPlayer 时定死的非混音
+      //（运行期改分类 = 第 24 轮实锤的 -50 禁区，见 plugins/player/index.ts 的会话注释），
+      // 所以这条策略分支仍要承担「不因其它音频暂停自己 + 引擎被停掉后拉回来」：
+      //   打断开始 → 不调 pause()、不对外呈现暂停（原生 Began 分支同口径不 emit paused），
+      //              并布防有界重取阶梯（scheduleMixReclaim，第 33 轮第 4 条）
       //   打断结束 → 恢复音量 + 走自动续播（原生侧会重启引擎，两边幂等）
       // 取消勾选即回到下面的独占分支（第 21/22 轮口径：暂停 + 短暂中断自动续播，一字未改）。
       if (isPlayWithOthers()) {
@@ -221,6 +263,9 @@ const registerPlaybackService = async() => {
           if (!global.lx.isPlayedStop && !isManualPause()) shouldResumeAfterDuck = true
           interruptedAt = Date.now()
           clearDuckRecoveryTimeouts()
+          // 【第 33 轮第 4 条】打断开始即布防「不放停」重取阶梯：引擎若被系统停掉而「结束」
+          // 通知丢失，这条阶梯会把声音拉回来（isPlay 仍为真时其余自动续播路径全线早退）。
+          scheduleMixReclaim()
           clearResumeTimer()
           return
         }
@@ -228,6 +273,8 @@ const registerPlaybackService = async() => {
         interruptedAt = 0
         restoreConfiguredVolume()
         scheduleAutoResume()
+        // 【第 33 轮第 4 条】结束分支也布防一次：通知顺序异常（先结束后又有残留打断）时兜底
+        scheduleMixReclaim()
         return
       }
       if (ducking) {
@@ -350,7 +397,15 @@ export default () => {
     if (state != 'active') return
     const wasBgPlaying = wasBackgroundPlaying
     wasBackgroundPlaying = false
-    if (global.lx.isPlayedStop || playerState.isPlay) return cancelResumePending()
+    if (global.lx.isPlayedStop || playerState.isPlay) {
+      // 【第 33 轮第 4 条】勾选「与其他应用同时播放」+ 状态在播：回前台补一次会话重取。
+      // 后台期间引擎被系统停掉而「结束」通知没送达时，这是把声音拉回来的兜底路径
+      //（scheduleAutoResume 在 isPlay 为真时不动作）。先 cancel 再 arm，避免刚布防就被撤销。
+      const reclaim = playerState.isPlay && !global.lx.isPlayedStop && !isManualPause() && isPlayWithOthers()
+      cancelResumePending()
+      if (reclaim) scheduleMixReclaim()
+      return
+    }
     // 回到前台且已暂停：仅在开启「返回软件时自动播放」且暂停确由系统中断/其它音频抢占造成时自动续播
     //（shouldResumeAfterDuck 只在被系统打断或退后台预置时置位，用户手动暂停/切歌/自然结束都会先清除标记）
     if (wasBgPlaying && shouldResumeAfterDuck && settingState.setting['player.autoPlayOnReturn']) scheduleAutoResume()

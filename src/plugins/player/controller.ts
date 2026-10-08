@@ -152,7 +152,10 @@ export const initUnifiedPlayerController = () => {
             if (!global.lx.isPlayedStop && playerState.musicInfo.id) startLoadingTimeout()
             global.app_event.pause()
             global.app_event.playerWaiting()
-            setStatusText(global.i18n.t('player__buffering'))
+            // 【第 33 轮第 5 条】用户原话「立即显示为缓存中，缓存下一个 10 秒」：原生引擎的
+            // buffering 事件同时覆盖「起播前累积缓存」与「播放中缓冲耗尽、重填下一个 10 秒」
+            // 两种时刻（AppDelegate.mm 的 scheduleBufferingStateForGeneration），文案统一为「缓存中...」
+            setStatusText(global.i18n.t('player__caching'))
             break
           case 'playing':
             clearLoadingTimeout()
