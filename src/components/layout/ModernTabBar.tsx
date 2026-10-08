@@ -3,6 +3,9 @@ import { Animated, Easing, PanResponder, Pressable, StyleSheet, View, type Layou
 import { useTheme } from '@/store/theme/hook'
 import { useI18n } from '@/lang'
 import { useNavActiveId, useHomeCovered, useSafeAreaReady, useNavTransitioning, useAppActive, usePagerDragging } from '@/store/common/hook'
+// 【第 35 轮第 3 条】静止槽心的「新鲜」取值源：直读 store 的 navActiveId（同步写、
+// 同步发事件），比 React state 早一整个提交周期。见 resolveRestingSlotX
+import commonState from '@/store/common/state'
 import { setNavActiveId } from '@/core/common'
 import { useSettingValue } from '@/store/setting/hook'
 import { createStyle, isIOS26_2OrAbove } from '@/utils/tools'
@@ -161,6 +164,21 @@ const TAP_FALLBACK_MS = 350
 // 一次「滑到一半停住 > 阈值」的按住就会被误判成收尾丢失（药丸提前弹回槽心）。
 const FOLLOW_SESSION_TIMEOUT_MS = 12000
 
+// 【第 35 轮第 3 条】手势收尾后「静止位重申」的时刻表（ms，相对收尾瞬间）。
+// 用户原话：「当我左右滑动主界面时，底部 tab 的椭圆形水泡边缘与我的文字不是中心对齐，
+// 左边明显大点，如果我点击就不会有这个情况，只有滑动才会出现这个问题」。
+//
+// 为什么一次重锚不够：收尾那一刻能做的只是「把药丸写回当时算出来的槽心」，而它可能
+//  ① 算在**旧的**归属 tab 上（pager 的 idle 事件与「onPageSelected 引发的 React 提交」
+//     赛跑，提交还没跑完，读到的静止槽心还是上一页的）；
+//  ② 被随后到达的迟到跟手帧 / 被点击路径的弹簧动画打断在半路 —— 而 x prop 只在**值变化**
+//     时下发，值没变就不会再发，错位就地固化（这正是「点一下就好、只有滑动才会」的成因：
+//     点击一定改变 lensX，于是重发一次 x，药丸被拽回正确槽心）。
+// 重申是幂等的：目标始终是「当下」的槽心（resolveRestingSlotX 直读 store），已经对齐时
+// LiquidLens 的 0.1pt 去重与原生同位守卫都会把它吞成零写入。任一次重申若发现新一轮跟手
+// 已经开始（lastFollowXRef ≥ 0），立刻让位 —— 绝不和手指抢位置。
+const REST_REASSERT_DELAYS = [120, 360, 800, 1600]
+
 export default memo(() => {
   const theme = useTheme()
   const t = useI18n()
@@ -282,6 +300,8 @@ export default memo(() => {
   //（pager 'idle'）时用最后写入的 follow 值判定「本次会话是否驱动过药丸」，
   // 驱动过就在收尾前补一次 setFollowX 锚回当前槽心。值 < 0 = 本次会话没驱动过。
   const lastFollowXRef = useRef(-1)
+  // 【第 35 轮第 3 条】收尾后的「静止位重申」定时器表（见 reassertRestingSlot）
+  const restReassertTimersRef = useRef<ReturnType<typeof setTimeout>[]>([])
   // A-5 会话看门狗（P0 加固，2026-10-01）：拖动锁 emitTabBarDragActive(true) 只在
   // release / terminate / 卸载三处解除。一旦某次会话收不到收尾事件（系统手势抢占、
   // 原生子视图被回收、页面在拖动中被压栈覆盖…），Main 的 pagerScrollEnabled 会被
@@ -304,6 +324,24 @@ export default memo(() => {
     resolvedActiveIdRef.current = resolvedActiveId
   })
 
+  // 【第 35 轮第 3 条】「当下」的静止槽心。与 lensX 是同一个公式（(i + 0.5) * 槽宽，
+  // 槽宽 = 栏宽 / 5），差别只在取值时机：
+  //   · lensX 来自 useNavActiveId() 这个 React state —— 要等 onPageSelected 引发的
+  //     那次提交跑完 effect（本文件 300 行那个无依赖 useEffect）才写进 lensXRef；
+  //   · 这里直读 store 的 navActiveId —— setNavActiveId 是**同步**写 state + 同步发事件的
+  //    （store/common/action.ts），比 React 提交早一整个周期。
+  // 收尾/重申都可能在提交之前发生，所以必须走这条「新鲜」的路。
+  const resolveRestingSlotX = useCallback(() => {
+    const width = barWidthRef.current
+    if (width <= 0) return lensXRef.current
+    // 子页面归属（C-2）：navActiveId 可能是 WebDAV 这类子页 id，映射回所属 tab 再取槽
+    const activeIdNow = commonState.navActiveId
+    const normalized = CHILD_TAB_PARENT[activeIdNow] ?? activeIdNow
+    const index = TAB_IDS.findIndex((tab) => tab.id === normalized)
+    if (index < 0) return lensXRef.current
+    return ((index + 0.5) * width) / TAB_IDS.length
+  }, [])
+
   // B-7 会话收尾重锚：把药丸锚回「当前归属 tab 的槽心」。
   // 目标取 lensXRef.current（由 resolvedActiveId 推导的静止槽心，唯一真源）而不是
   // 「按最后跟手位置四舍五入」——后者在「拖动中途松手、pager 自己弹回原页」与
@@ -317,8 +355,35 @@ export default memo(() => {
   const snapLensToRestingSlot = useCallback(() => {
     if (lastFollowXRef.current < 0) return
     lastFollowXRef.current = -1
-    lensRef.current?.setFollowX(lensXRef.current)
+    // 【第 35 轮第 3 条】目标改成**当下**的静止槽心（resolveRestingSlotX 直读 store），
+    // 不再是 lensXRef：后者的新鲜度取决于「onPageSelected 引发的那次 React 提交」，
+    // 而收尾事件（pager idle）可能与这次提交赛跑。提交还没跑完就收尾 ⇒ 锚回**旧槽**，
+    // 药丸就停在旧槽上 —— 且「滑回同一个 tab」根本不产生 lensX 变化，不会再有下一次
+    // 重发把它拽回来（用户第 35 轮第 3 条：只有滑动会错位、点一下就好）。
+    lensRef.current?.setFollowX(resolveRestingSlotX())
+  }, [resolveRestingSlotX])
+
+  // 【第 35 轮第 3 条】静止位重申（收尾自愈，见 REST_REASSERT_DELAYS 的注释）。
+  // 清账：新一轮会话开始时调用（手指接管期间不留任何迟到的重申）。
+  const clearRestReassert = useCallback(() => {
+    for (const timer of restReassertTimersRef.current) clearTimeout(timer)
+    restReassertTimersRef.current = []
   }, [])
+  const reassertRestingSlot = useCallback(() => {
+    clearRestReassert()
+    for (const delay of REST_REASSERT_DELAYS) {
+      restReassertTimersRef.current.push(setTimeout(() => {
+        // A-5（长按拖动）期间药丸归手势管
+        if (dragArmedRef.current || draggingRef.current) return
+        // 新一轮 B-7 跟手已经开始（有帧驱动过药丸）：让位，别和手指抢位置
+        if (lastFollowXRef.current >= 0) return
+        lensRef.current?.setFollowX(resolveRestingSlotX())
+      }, delay))
+    }
+  }, [clearRestReassert, resolveRestingSlotX])
+
+  // 【第 35 轮第 3 条】卸载时撤掉未到点的静止位重申（定时器持有一个已死的 lensRef）
+  useEffect(() => clearRestReassert, [clearRestReassert])
 
   // B-7 会话兜底收尾（2026-10-08）：与正常 idle 收尾同一套动作、同一顺序
   //（锚回槽心 → 落回静止药丸 → 复位跟手去重），供看门狗在「收尾事件丢失」时调用。
@@ -328,7 +393,10 @@ export default memo(() => {
     snapLensToRestingSlot()
     lensRef.current?.setLifted(false)
     lensRef.current?.endFollow()
-  }, [snapLensToRestingSlot])
+    // 【第 35 轮第 3 条】兜底收尾同样要走「重申」：这条路径出现时收尾事件本来就丢了，
+    // 此刻读到的归属 tab 更可能是旧值（提交没跑完），一次重锚不足以定住。
+    reassertRestingSlot()
+  }, [snapLensToRestingSlot, reassertRestingSlot])
 
   // B-7 会话看门狗（2026-10-08，用户报「椭圆与其中文字和图标没有中心对齐」的兜底）：
   // 横滑跟手期间药丸只由 followX 命令式驱动（不经过 x prop），**收尾完全依赖 Main 发出的
@@ -401,6 +469,9 @@ export default memo(() => {
       // B-7 会话开始：启动兜底看门狗（真收尾在下面的 !dragging 分支销毁它）。
       // 会话开始与首个进度帧的到达顺序不保证（都过桥），两处都 arm，幂等。
       armFollowWatchdog()
+      // 【第 35 轮第 3 条】新一轮手势开始：撤掉上一轮留下的静止位重申（否则它会在
+      // 手指还按着的时候把药丸拽回槽心）
+      clearRestReassert()
     } else {
       // 正常收尾：先销毁看门狗（这一次不再需要兜底）
       if (followWatchdogRef.current) {
@@ -412,8 +483,10 @@ export default memo(() => {
       // 情况下被去重吞掉，只有真的停在半路（值不同）才写。
       snapLensToRestingSlot()
       lensRef.current?.endFollow()
+      // 【第 35 轮第 3 条】收尾之后再重申几次静止位（见 REST_REASSERT_DELAYS 注释）
+      reassertRestingSlot()
     }
-  }), [snapLensToRestingSlot, armFollowWatchdog])
+  }), [snapLensToRestingSlot, armFollowWatchdog, clearRestReassert, reassertRestingSlot])
 
   // A-5：长按某个 tab → arm 拖动（透镜抬起，等待手指移动接管）。
   // 边界：收起态 / 液态玻璃关闭 / iOS 26.2+（透镜不渲染）→ 不 arm，长按无效果。
