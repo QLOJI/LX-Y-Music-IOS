@@ -15,6 +15,7 @@ import { useTheme } from '@/store/theme/hook'
 import Text from '@/components/common/Text'
 import { designSpacing } from '@/theme/DesignTokens'
 import { getSyncHost } from '@/utils/data'
+import { setSyncMessage } from '@/core/sync'
 import { testConnection, resetClient } from '@/utils/webdav'
 import {
   triggerWebDAVSync,
@@ -94,11 +95,20 @@ export default memo(() => {
     }
     setIsTesting(true)
     toast('正在测试连接...')
+    // 【第 35 轮第 2 条】按钮上方点完，下面的「状态」行也必须跟着动。
+    // 用户原话：「点击上面的按钮后，下面的提示还是没有」—— 这一整块 WebDAV 动作
+    // 以前只在底部弹一条 toast，而状态行只由同步客户端写（syncStatus.message），
+    // 于是点了半天下面那行字纹丝不动，用户以为没反应。这里补上开始/结束两句。
+    // 措辞只写动作本身，不含地址/账号/路径等任何信息。
+    setSyncMessage('正在测试连接...')
     try {
       await testConnection()
       toast('连接成功！')
+      setSyncMessage('连接成功')
     } catch (error: any) {
       toast(`连接失败: ${error?.message ?? error}`, 'long')
+      // 详情留在 toast 里（错误文本可能带服务器地址，不进状态行）
+      setSyncMessage('连接失败，详情见下方提示')
     } finally {
       setIsTesting(false)
     }
@@ -107,10 +117,16 @@ export default memo(() => {
   const handleSyncNow = useCallback(async() => {
     if (isSyncing) return
     setIsSyncing(true)
+    // 【第 35 轮第 2 条】状态行同步（见 handleTestConnection 的说明）。
+    // 注意写入顺序：服务端如果接着问「同步方式」，core/sync 的
+    // 「等待选择同步方式...」是在这行**之后**写的，会盖掉这一句 —— 顺序正确。
+    setSyncMessage('正在同步歌单...')
     try {
       await triggerWebDAVSync(true)
+      setSyncMessage('歌单同步完成')
     } catch (error: any) {
       toast(`同步失败: ${error?.message ?? error}`, 'long')
+      setSyncMessage('歌单同步失败，详情见下方提示')
     } finally {
       setIsSyncing(false)
     }
@@ -124,10 +140,13 @@ export default memo(() => {
   const handleUpload = useCallback(async() => {
     if (isUploading) return
     setIsUploading(true)
+    setSyncMessage('正在上传设置与音源...')
     try {
       await manualUploadSettingsAndApis()
+      setSyncMessage('设置与音源上传完成')
     } catch (error: any) {
       toast(`上传失败: ${error?.message ?? error}`, 'long')
+      setSyncMessage('设置与音源上传失败，详情见下方提示')
     } finally {
       setIsUploading(false)
     }
@@ -136,10 +155,13 @@ export default memo(() => {
   const handleDownload = useCallback(async() => {
     if (isDownloading) return
     setIsDownloading(true)
+    setSyncMessage('正在下载设置与音源...')
     try {
       await manualDownloadSettingsAndApis()
+      setSyncMessage('设置与音源下载完成')
     } catch (error: any) {
       toast(`下载失败: ${error?.message ?? error}`, 'long')
+      setSyncMessage('设置与音源下载失败，详情见下方提示')
     } finally {
       setIsDownloading(false)
     }
@@ -148,10 +170,13 @@ export default memo(() => {
   const handleUploadLists = useCallback(async() => {
     if (isUploadingLists) return
     setIsUploadingLists(true)
+    setSyncMessage('正在上传歌单...')
     try {
       await manualUploadLists()
+      setSyncMessage('歌单上传完成')
     } catch (error: any) {
       toast(`上传失败: ${error?.message ?? error}`, 'long')
+      setSyncMessage('歌单上传失败，详情见下方提示')
     } finally {
       setIsUploadingLists(false)
     }
@@ -160,10 +185,13 @@ export default memo(() => {
   const handleDownloadLists = useCallback(async() => {
     if (isDownloadingLists) return
     setIsDownloadingLists(true)
+    setSyncMessage('正在下载歌单...')
     try {
       await manualDownloadLists()
+      setSyncMessage('歌单下载完成')
     } catch (error: any) {
       toast(`下载失败: ${error?.message ?? error}`, 'long')
+      setSyncMessage('歌单下载失败，详情见下方提示')
     } finally {
       setIsDownloadingLists(false)
     }
