@@ -790,9 +790,27 @@ static void LXSyncRemoteCommandAvailability(void) {
   }
 
 
-  BOOL isPlaying = LXNowPlayingState == MPNowPlayingPlaybackStatePlaying;
-  commandCenter.playCommand.enabled = !isPlaying;
-  commandCenter.pauseCommand.enabled = isPlaying;
+  // 【第 35 轮第 1 条】有歌曲信息时**六个命令一律启用**，不再按 LXNowPlayingState
+  // 分「播放时关 play、暂停时关 pause」。
+  //
+  // 用户原话：锁屏 / 灵动岛的上一首、下一首、播放暂停「点击后无反应或者点击 2 次才能有反应」。
+  // 根因是「系统看到的播放态」与「命令的启停」被做成了两套判据：
+  //   · 系统侧显示的播放态由 MPNowPlayingInfoCenter.playbackState 决定，而本项目为了
+  //     强制锁屏卡片重绘封面/歌词，会**故意**把 playbackState 短暂切成相反值
+  //     —— LXForceNowPlayingCardRepaint()（歌词换行即触发，60ms）与
+  //     LXApplyNowPlayingArtwork()（封面就绪，150→230ms）；
+  //   · 命令的启停却读 LXNowPlayingState —— 它**不跟着那次翻转走**，仍是真实播放态。
+  // 于是「正在播放」时卡片上显示的是「▶」，而 playCommand 恰好在那一刻被置 NO：
+  // iOS 对 enabled = NO 的命令**不投递**，用户那一次点击就此消失；60ms 后翻转恢复、
+  // 按钮变回「⏸」（pauseCommand 是启用的），再点一次才生效 —— 正是「无反应 / 点两次」。
+  // 卡片重绘期间整个媒体控件的视图层级在重建，落在重建窗口里的点击同样会被丢掉。
+  //
+  // 判据统一到「信息在不在」这一条上：有信息就一直可点，动作由 JS 单一通路决定
+  // （'toggle' → togglePlay()；'play'/'pause' 幂等；见 core/init/player/remoteCommand.ts）。
+  // 系统仍会按 info 字典里的 PlaybackRate / playbackState 画出正确的按钮图标，
+  // 所以「永远启用」不会让图标失真，只是不再出现「按钮在、点了没反应」。
+  commandCenter.playCommand.enabled = YES;
+  commandCenter.pauseCommand.enabled = YES;
   // 控制中心合并的「播放/暂停」按钮对应 togglePlayPauseCommand，必须启用，否则按钮灰置不可点
   commandCenter.togglePlayPauseCommand.enabled = YES;
   commandCenter.nextTrackCommand.enabled = YES;
