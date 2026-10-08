@@ -55,6 +55,21 @@ export interface LiquidLensHandle {
   setLifted: (lifted: boolean) => void
   /** 结束跟手会话：清掉 JS 侧去重值，下一次会话从干净状态开始 */
   endFollow: () => void
+  /**
+   * 静止锚点重申（2026-10-08）：把「静止位」x 经**与 x prop 完全相同的原生通道**
+   * 写一次（RCT_CUSTOM_VIEW_PROPERTY(x) → setTargetX:animated:YES）。
+   *
+   * 为什么必须存在：`x` 是声明式 prop，React 只在**值变化**时下发 —— 而跟手通道
+   * （followX）会把药丸中心写到任意位置。一旦某次跟手会话没收住尾（idle 事件丢失，
+   * 见 ModernTabBar 的 B-7 看门狗），native 的 `_x` 就停在一个非槽心的值上，而 JS
+   * 侧 lensX 没变 → prop 永不下发 → 椭圆永久偏离图标/文字中心。本方法给父级一条
+   * 「重申静止位」的命令式出口。
+   *
+   * 成本：原生 setTargetX 有同位守卫（|x - _x| < 0.5pt 直接吞掉、不重播动画），
+   * 所以没漂移时本调用是零开销的 no-op；真漂了才播一次回位弹簧。
+   * 不与 setFollowX 共用一个去重值（两条通道语义不同：一个是直落、一个是弹簧）。
+   */
+  setRestX: (x: number) => void
 }
 
 /**
@@ -116,6 +131,16 @@ const LiquidLens = memo(forwardRef<LiquidLensHandle, LiquidLensProps>(({
     },
     endFollow: () => {
       lastFollowXRef.current = 0
+    },
+    setRestX: (nextX: number) => {
+      try {
+        const instance = nativeRef.current as unknown as NativeLensInstance | null
+        // 写的是 `x`（不是 followX）：与声明式 prop 同一条原生通道 —— 带弹簧动画、
+        // 且受同位守卫保护（值没变时原生直接吞掉，不重播任何动画）。
+        instance?.setNativeProps?.({ x: nextX })
+      } catch {
+        // 原生未重编译时静默降级（与 setFollowX 同因）
+      }
     },
   }), [])
 

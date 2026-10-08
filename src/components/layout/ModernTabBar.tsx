@@ -155,6 +155,12 @@ const CHILD_TAB_PARENT: Partial<Record<NAV_ID_Type, (typeof TAB_IDS)[number]['id
 const LONG_PRESS_MS = 150
 const TAP_FALLBACK_MS = 350
 
+// B-7 横滑跟手会话的超时兜底（见 armFollowWatchdog 的注释）。比 A-5 两道看门狗的 8s
+// 更长：本定时器会在每个跟手帧上**重新记账**（测的是「多久没有新的跟手帧」而不是
+// 「会话开了多久」），取值要足够大——手指按住不动时 pager 会停止发帧，若阈值太小，
+// 一次「滑到一半停住 > 阈值」的按住就会被误判成收尾丢失（药丸提前弹回槽心）。
+const FOLLOW_SESSION_TIMEOUT_MS = 12000
+
 export default memo(() => {
   const theme = useTheme()
   const t = useI18n()
@@ -286,6 +292,8 @@ export default memo(() => {
   const armWatchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const dragWatchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pressOutTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // B-7 跟手会话看门狗（2026-10-08）：见 armFollowWatchdog 注释
+  const followWatchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   // 「带点击回退的长按」用的按下信息（见 LONG_PRESS_MS 注释）
   const pressStartAtRef = useRef(0)
   const pressedTabIdRef = useRef<NAV_ID_Type | null>(null)
@@ -312,6 +320,54 @@ export default memo(() => {
     lensRef.current?.setFollowX(lensXRef.current)
   }, [])
 
+  // B-7 会话兜底收尾（2026-10-08）：与正常 idle 收尾同一套动作、同一顺序
+  //（锚回槽心 → 落回静止药丸 → 复位跟手去重），供看门狗在「收尾事件丢失」时调用。
+  // 顺序不可换：snap 必须在 endFollow 之前，否则 setFollowX 会走 removeAllAnimations
+  // 分支打断弹簧（同 subscribePagerDrag 里正常收尾的注释）。
+  const closePagerFollowSession = useCallback(() => {
+    snapLensToRestingSlot()
+    lensRef.current?.setLifted(false)
+    lensRef.current?.endFollow()
+  }, [snapLensToRestingSlot])
+
+  // B-7 会话看门狗（2026-10-08，用户报「椭圆与其中文字和图标没有中心对齐」的兜底）：
+  // 横滑跟手期间药丸只由 followX 命令式驱动（不经过 x prop），**收尾完全依赖 Main 发出的
+  // pager 'idle'**（subscribePagerDrag(false)）。该事件会被系统手势抢占、被压栈转场吞掉、
+  // 或随 App 退后台丢掉——A-5 的注释里已把「抬手事件丢失」记为常态并配了两道 8s 看门狗，
+  // 而 B-7 这条通道一直没有兜底。丢收尾的后果有两层，任一都在屏幕上留痕：
+  //   1) 药丸中心停在手指离开的那一帧（不是槽心）→ 椭圆与图标/文字错位，且因为
+  //      «x prop 值没变 → React 不会重发» 而**永不自愈**；
+  //   2) 透镜停在抬起态 → 原生 displayLink 不落回、逐帧在跑（白烧电），静止药丸不现身。
+  // 记账方式：会话开始 arm；每个跟手帧重新记账（refreshFollowWatchdog，测「无帧时长」）；
+  // 收到正常 idle 即销毁。超时未收尾 → closePagerFollowSession()。
+  const armFollowWatchdog = useCallback(() => {
+    if (followWatchdogRef.current) clearTimeout(followWatchdogRef.current)
+    followWatchdogRef.current = setTimeout(() => {
+      followWatchdogRef.current = null
+      // 已被 A-5 接管（长按 arm / 拖动中）：药丸归手势管，兜底立即让位——
+      // 否则会在用户按住拖动的中途把药丸锚回槽心（跟手指抢位置）。
+      if (dragArmedRef.current || draggingRef.current) return
+      closePagerFollowSession()
+    }, FOLLOW_SESSION_TIMEOUT_MS)
+  }, [closePagerFollowSession])
+
+  // 静止锚点自愈（2026-10-08）：x prop 只在**值变化**时下发，而跟手通道会把药丸中心写到
+  // 任意位置。任何一次「native `_x` 与 JS lensX 脱钩」（跟手会话丢收尾、被中断的弹簧、
+  // 重挂载后残留的位置）都会因为 prop 值不变而**永久**留着 —— 用户看到的就是椭圆与其中
+  // 图标/文字没有中心对齐（2026-10-08 报障）。这里在每一次「锚点输入」变化（含挂载、
+  // 切换 tab/子页面归属变化、栏宽变化、收起/展开、液态开关切换）都经 setRestX 重申一次
+  // 静止位：它走的是与 x prop 完全相同的原生通道（setTargetX:animated:YES），原生的
+  // 同位守卫（差 <0.5pt 直接吞掉）保证没漂移时是零开销 no-op、不重播任何动画；
+  // 真漂了才播一次回位弹簧。
+  // 注意：不能拿 setFollowX 代替 —— 那条通道是 removeAllAnimations + 直落，会在点击切页
+  // 时把「淡入 + 抬起 + 弹簧」动画打断成瞬移。A-5 会话期间不重申（药丸归手势管，且 A-5
+  // 收尾自己会把药丸锚回 lensXRef，同一个值，不依赖本效果）。
+  useEffect(() => {
+    if (!liquidGlassOn || collapsed || barWidth <= 0) return
+    if (dragArmedRef.current || draggingRef.current) return
+    lensRef.current?.setRestX(lensX)
+  }, [lensX, resolvedActiveId, barWidth, collapsed, liquidGlassOn])
+
   // Main → TabBar：PagerView 手势进度（仅真实手势会话内发出，见 Main 的
   // pagerDragSessionRef）。position/offset 的约定取「position + offset」这个两种
   // 原生约定（floor+unsigned / round+signed）下都成立的连续进度，再夹到 [0, 4]。
@@ -328,7 +384,11 @@ export default memo(() => {
     const followX = (progress + 0.5) * slot
     lastFollowXRef.current = followX
     lensRef.current?.setFollowX(followX)
-  }), [])
+    // 逐帧重新记账（见 armFollowWatchdog）：本看门狗测的是「多久没有新帧」而不是
+    // 「会话开了多久」——手指按住不动时 pager 会停止发帧，但只要会话还活着就说明
+    // 收尾事件仍有可能正常到达，阈值给足（12s）就不会误伤。
+    armFollowWatchdog()
+  }), [armFollowWatchdog])
 
   // Main → TabBar：手势会话开始/结束（抬起/放下透镜；结束时会话收尾）
   useEffect(() => subscribePagerDrag((dragging) => {
@@ -337,14 +397,23 @@ export default memo(() => {
     // finishTabDrag 里落），不会因此卡在抬起态。
     if (dragArmedRef.current || draggingRef.current) return
     lensRef.current?.setLifted(dragging)
-    if (!dragging) {
+    if (dragging) {
+      // B-7 会话开始：启动兜底看门狗（真收尾在下面的 !dragging 分支销毁它）。
+      // 会话开始与首个进度帧的到达顺序不保证（都过桥），两处都 arm，幂等。
+      armFollowWatchdog()
+    } else {
+      // 正常收尾：先销毁看门狗（这一次不再需要兜底）
+      if (followWatchdogRef.current) {
+        clearTimeout(followWatchdogRef.current)
+        followWatchdogRef.current = null
+      }
       // 收尾重锚必须在 endFollow() 之前：endFollow 会把 LiquidLens 的跟手去重值复位，
       // 之后任何 setFollowX 都必定写一次原生（含 removeAllAnimations）。先锚则正常
       // 情况下被去重吞掉，只有真的停在半路（值不同）才写。
       snapLensToRestingSlot()
       lensRef.current?.endFollow()
     }
-  }), [snapLensToRestingSlot])
+  }), [snapLensToRestingSlot, armFollowWatchdog])
 
   // A-5：长按某个 tab → arm 拖动（透镜抬起，等待手指移动接管）。
   // 边界：收起态 / 液态玻璃关闭 / iOS 26.2+（透镜不渲染）→ 不 arm，长按无效果。
@@ -356,6 +425,13 @@ export default memo(() => {
     // A-5 接管跟手通道：作废 B-7 留下的「会话驱动过药丸」标记，避免它被下一次
     // pager 收尾误消费（A-5 的落点由 finishTabDrag 自己显式锚定）。
     lastFollowXRef.current = -1
+    // 同步销毁 B-7 的兜底看门狗：B-7 会话逻辑上已结束，收尾由 A-5 全权负责。
+    //（不销毁也不致错——看门狗触发时有 dragArmed/dragging 守卫会让位——但留着
+    // 就会在 A-5 会话结束后凭空多触发一次无意义的收尾。）
+    if (followWatchdogRef.current) {
+      clearTimeout(followWatchdogRef.current)
+      followWatchdogRef.current = null
+    }
     lensRef.current?.setLifted(true)
     // arm 看门狗：只 arm 不接管（抬手被系统手势吃掉 / 抬手事件丢失）时自动解除，
     // 否则下一次触摸在栏体上滑动会被 PanResponder 当成拖动接管，连点击都受影响
@@ -518,6 +594,7 @@ export default memo(() => {
     if (armWatchdogRef.current) { clearTimeout(armWatchdogRef.current); armWatchdogRef.current = null }
     if (dragWatchdogRef.current) { clearTimeout(dragWatchdogRef.current); dragWatchdogRef.current = null }
     if (pressOutTimerRef.current) { clearTimeout(pressOutTimerRef.current); pressOutTimerRef.current = null }
+    if (followWatchdogRef.current) { clearTimeout(followWatchdogRef.current); followWatchdogRef.current = null }
   }, [])
 
   // 安全区未就绪前整条栏不下发（见 useSafeAreaReady）：本栏（含收起圆钮）的底边
