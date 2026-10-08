@@ -6,6 +6,7 @@ import {
   getStatus,
   hasClientConnection,
   isConnectionPending,
+  isListNegotiating,
   resumeHeartbeat,
   sendConnectingStatus,
   sendSyncStatus,
@@ -78,7 +79,9 @@ const disconnectServer = async(isResetStatus = true) =>
       sendSyncMessage(err.message as string)
     })
 
-export { connectServer, disconnectServer, getStatus }
+// 【第 34 轮第 1 条】isListNegotiating：歌单协商窗口（socket open → 服务端 finished()），
+// 供 core/sync/webdavSync.ts 判断「现在能不能动本地歌单」
+export { connectServer, disconnectServer, getStatus, isListNegotiating }
 
 // ---------------------------------------------------------------------------
 // 前后台切换的保活（第 19 轮第 5 条）

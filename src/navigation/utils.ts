@@ -5,12 +5,22 @@ import syncState from '@/store/sync/state'
 
 const pendingOverlays = new Set<string>()
 
+// 同步方式选择框的「去抖占位被占住」重来计数（见 showSyncModeModal 的说明）
+let guardRetryCount = 0
+
 // 同步方式选择框的「挂载复查」代次：每次 showSyncModeModal 递增；core/sync 在用户作答 /
 // 取消 / 连接断开（closeSyncModeModal）时调用 cancelSyncModeModalRetries 使其作废，
 // 避免复查把用户已经回答过的选择框重新弹出来（幽灵弹窗）。
 let syncModeModalSeq = 0
 export const cancelSyncModeModalRetries = () => {
   syncModeModalSeq += 1
+  // 【第 34 轮第 1 条】作废的同时把「呈现去抖」占位也放掉。
+  // pendingOverlays 的这道占位原本要等 500ms 的定时器自己过期，而它会**静默吞掉**
+  // 紧跟着到来的下一个问题：服务端连着问「歌单同步方式」和「不喜欢列表同步方式」时，
+  // 第二个问题进来时占位还在 ⇒ showSyncModeModal 直接 return ⇒ 那个问题永远没人回答、
+  // Promise 永不 settle ⇒ 服务端一直等、客户端一直卡在 'Wait syncing...'。
+  // 关掉一个选择框就说明上一个问题已经收尾，占位没有继续存在的理由。
+  pendingOverlays.delete(SYNC_MODE_MODAL)
 }
 
 export const getStatusBarStyle = (isDark: boolean) => (isDark ? 'light' : 'dark')
@@ -172,8 +182,31 @@ export const showVersionModal = () => {
   show(1)
 }
 
-export const showSyncModeModal = () => {
-  if (pendingOverlays.has(SYNC_MODE_MODAL)) return
+/**
+ * 呈现服务端驱动的「同步方式」选择框。
+ *
+ * @param onUnavailable 【第 34 轮第 1 条】呈现彻底失败（重试次数用尽 / 去抖占位久占不放）时的
+ *   回调。以前这种情况**什么都不做就 return**：用户既看不到任何提示，服务端的那个问句也永远
+ *   等不到回答（core/sync.ts 的 Promise 永不 settle），客户端状态就永久停在 'Wait syncing...'
+ *   （用户第 34 轮第 1 条实锤的日志：服务端已收到 88 首本地歌单、手里有 31 首远端歌单，
+ *   正在等客户端回答同步方式，而客户端这边一声不吭）。现在把失败**回传**给调用方，
+ *   由它 reject 掉那次问询 —— 服务端据此中止本次同步，界面给出明确状态。
+ */
+export const showSyncModeModal = (onUnavailable?: () => void) => {
+  if (pendingOverlays.has(SYNC_MODE_MODAL)) {
+    // 去抖窗口里又来了一个呈现请求：不能静默吞掉（上面的历史 bug 就是它造成的）。
+    // 等窗口过期再自己重来一次；连试 3 次仍然占着，就按「呈现不可用」上报。
+    if (guardRetryCount < 3) {
+      guardRetryCount += 1
+      setTimeout(() => { showSyncModeModal(onUnavailable) }, 600)
+      return
+    }
+    console.error('[SyncMode] overlay debounce occupied, give up')
+    guardRetryCount = 0
+    onUnavailable?.()
+    return
+  }
+  guardRetryCount = 0
   pendingOverlays.add(SYNC_MODE_MODAL)
   setTimeout(() => pendingOverlays.delete(SYNC_MODE_MODAL), 500)
   const theme = themeState.theme
@@ -197,7 +230,14 @@ export const showSyncModeModal = () => {
 
   const handleFail = (attempt: number, err: unknown) => {
     console.error('[SyncMode] showOverlay failed:', attempt, err)
-    if (attempt >= maxAttempts) return
+    if (attempt >= maxAttempts) {
+      // 【第 34 轮第 1 条】重试用尽 = 这个问题再也问不出来了。以前这里直接 return，
+      // 于是「弹不出来」和「永远等待」在界面上长得一模一样（用户第 34 轮第 1 条的
+      // 'Wait syncing...'）。现在上报给调用方（core/sync.ts 会 reject 掉这次问询）。
+      console.error('[SyncMode] give up presenting overlay, attempts =', attempt)
+      onUnavailable?.()
+      return
+    }
     setTimeout(() => {
       // 重试窗口内用户已作答 / 取消 / 断开（或又来了新一轮呈现）—— 作废，不再重试。
       // 少了这道检查，作废发生在 700ms 窗口里时仍会把用户已经离开的选择框补弹出来。

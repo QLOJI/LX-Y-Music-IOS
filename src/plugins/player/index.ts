@@ -3,7 +3,7 @@ import { Platform } from 'react-native'
 import { updateOptions, setVolume, setPlaybackRate, migratePlayerCache, destroy as destroyPlayer, getPosition } from './utils'
 import { getCurrentTrack, restoreTrack, updateMetaData } from './playList'
 import { isNativeFlacActive, restoreNativeFlacPlayback, setNativePlayWithOthersPolicy, snapshotNativeFlacPlayback } from './nativeFlac'
-import { clearNowPlayingInfo, pauseNowPlaying, playNowPlaying, setNowPlayingInfoSuppressed } from '@/utils/nativeModules/nowPlaying'
+import { pauseNowPlaying, playNowPlaying } from '@/utils/nativeModules/nowPlaying'
 import { soundEffectController } from './soundEffect'
 import settingState from '@/store/setting/state'
 import playerState from '@/store/player/state'
@@ -32,30 +32,23 @@ import playerState from '@/store/player/state'
  * 原生（StreamingFlacPlayerModule.setPlayWithOthers），行为在打断分支即时生效，
  * 切换设置不打断当前播放。
  *
- * 【第 33 轮第 4 条】这条下发链多担一件事：勾选态下**退出灵动岛 / 锁屏卡片占用**
- * （用户原话「勾选后，退出灵动岛占用」）。做法是「抑制元数据发布 + 切换那一刻清一次
- * 已发布的卡片」（见 @/utils/nativeModules/nowPlaying 的 setNowPlayingInfoSuppressed），
- * 取消勾选再按当前曲目重新发布 —— 仍然不重建播放器、不碰激活态会话分类。
+ * 【第 33 轮第 4 条 → 第 34 轮第 2 条反转】第 33 轮曾让这条下发链顺手「勾选就抑制元数据 +
+ * 清掉已发布的卡片」，以达到「退出灵动岛占用」。第 34 轮用户把需求改成：勾选后
+ * **要显示锁屏播放器界面**、「还是保留同时播放功能」（原话），所以那条抑制已整体撤销
+ * （见 @/utils/nativeModules/nowPlaying 的说明）。现在无论勾选与否都按当前曲目
+ * **重新发布一次元数据**：锁屏播放器与当前播放状态保持一致；「前台不显示灵动岛播放器、
+ * 切到后台锁屏 + 灵动岛一起显示」是系统的前后台行为，代码不介入。
  */
 const syncPlayWithOthersEnabled = async() => {
   if (Platform.OS != 'ios') return
   const enabled = settingState.setting['player.isHandleAudioFocus'] === false
-  // 【第 33 轮第 4 条】先把 JS 侧抑制口径立起来（同步赋值、没有桥往返窗口），再下发原生策略
-  setNowPlayingInfoSuppressed(enabled)
   await setNativePlayWithOthersPolicy(enabled)
   if (!playerState.musicInfo.id) return
-  if (enabled) {
-    // 勾选 = 退出灵动岛 / 锁屏占用（用户原话）：清掉已发布的卡片。清卡是幂等的，同时把
-    // 原生播放态置回 Stopped，所以下面要重新对齐一次状态。
-    await clearNowPlayingInfo().catch(() => {})
-  } else {
-    // 取消勾选 = 立即按当前曲目重新发布（不等下一行歌词），锁屏卡片与锁屏歌词一起回来。
-    // 与 core/player/nowPlaying.ts 的 syncNowPlayingMetadata 同款调用形状。
-    void updateMetaData(playerState.musicInfo, playerState.isPlay, playerState.lastLyric, true)
-  }
-  // 状态重对齐：原生在「缓存为空」时发布内部会早退（不会凭空把卡片建回来），但原生的
-  // 位置 / 歌词时钟只在 Playing 时运行，它同时是前台 4Hz 位置事件的枢纽（进度条唯一
-  // 驱动源），必须与播放状态保持一致。
+  // 立即按当前曲目重新发布（不等下一行歌词）：与 core/player/nowPlaying.ts 的
+  // syncNowPlayingMetadata 同款调用形状。首次发布 / 重发布都是幂等的。
+  void updateMetaData(playerState.musicInfo, playerState.isPlay, playerState.lastLyric, true)
+  // 状态重对齐：原生的位置 / 歌词时钟只在 Playing 时运行，它同时是前台 4Hz 位置事件的
+  // 枢纽（进度条唯一驱动源），必须与播放状态保持一致。
   if (playerState.isPlay) await playNowPlaying().catch(() => {})
   else await pauseNowPlaying().catch(() => {})
 }
@@ -112,11 +105,8 @@ const initial = async({ volume, playRate, cacheSize, isHandleAudioFocus, isEnabl
   global.lx.playerStatus.isInitialized = true
   global.lx.playerStatus.isIniting = false
   await updateOptions()
-  // 【第 33 轮第 4 条】冷启动先把「退出卡片占用」的抑制口径立起来（此刻还没有任何发布者），
-  // 防止初始化窗口内一次早到的元数据发布把卡片又建出来；勾选态下的这一步与下面的
-  // syncPlayWithOthersEnabled 同值、幂等。
-  setNowPlayingInfoSuppressed(settingState.setting['player.isHandleAudioFocus'] === false)
-  // 【第 24 轮】冷启动也把「与其他应用同时播放」策略下发给原生（重启后口径不丢）
+  // 【第 24 轮】冷启动也把「与其他应用同时播放」策略下发给原生（重启后口径不丢）。
+  // 【第 34 轮第 2 条】第 33 轮在这里补过一句「冷启动先立起元数据抑制口径」，随抑制整体撤销。
   await syncPlayWithOthersEnabled()
   await setVolume(volume)
   await setPlaybackRate(playRate)

@@ -5,7 +5,7 @@ import { callObj } from './sync'
 // import registerSyncListHandler from './syncList'
 import log from '../log'
 import { aesEncrypt } from '../utils'
-import { setSyncStatus } from '@/core/sync'
+import { isSyncModeSelecting, setSyncStatus } from '@/core/sync'
 import { dateFormat } from '@/utils/common'
 import { createMsg2call } from 'message2call'
 import { toast } from '@/utils/tools'
@@ -57,6 +57,50 @@ export const sendSyncMessage = (message: string) => {
 export const hasClientConnection = () => connectionAlive
 /** 连接是否「在途」（握手途中 / 已排定延迟重连）：回前台补连前要先排除这两种情况 */
 export const isConnectionPending = () => connecting || pendingReconnect
+
+// ---------------------------------------------------------------------------
+// 【第 34 轮第 1 条】歌单协商窗口 + 握手静默看门狗
+//
+// 用户原话：「请判断 WebDAV 同步和同步服务地址同步是否有冲突，使其独立不相互影响」
+// 与「启用同步勾选后，会有很长的 Wait syncing... 的提示」。
+//
+// ① 协商窗口：socket open 起、到服务端 finished() 为止。这期间服务端手里拿着我们刚报上去的
+//    md5 做「谁更新 / 要不要合并」的判断，本地歌单若被另一套同步（WebDAV）改写，服务端据此
+//    得出的结论就对不上真实数据。窗口供 core/sync/webdavSync.ts 让行用
+//    （见那里的 waitForListNegotiation）。
+//    窗口封顶 LX_LIST_NEGOTIATION_MAX_MS：服务端万一不回调 finished()（版本不匹配、
+//    中途出错），也不能把 WebDAV 那边的自动同步永久挡死。
+// ② 看门狗：握手期内服务端一直不说话（既没问问题、也没 finished），就把状态文案从
+//    'Wait syncing...' 换成一句能让人有动作的话。只改文案、不重连 —— 首次同步大库本来就可能
+//    慢，误杀重连会把一次正常的大同步打断。
+// ---------------------------------------------------------------------------
+const LX_LIST_NEGOTIATION_MAX_MS = 90000
+let listNegotiationUntil = 0
+/** 是否处于「服务端正在据此协商歌单」的窗口内（WebDAV 歌单同步据此让行） */
+export const isListNegotiating = () => connectionAlive && Date.now() < listNegotiationUntil
+
+const HANDSHAKE_QUIET_TIMEOUT_MS = 60000
+let handshakeWatchdog: ReturnType<typeof setTimeout> | null = null
+
+const clearHandshakeWatchdog = () => {
+  if (handshakeWatchdog) {
+    clearTimeout(handshakeWatchdog)
+    handshakeWatchdog = null
+  }
+}
+
+const armHandshakeWatchdog = () => {
+  clearHandshakeWatchdog()
+  handshakeWatchdog = setTimeout(() => {
+    handshakeWatchdog = null
+    if (!connectionAlive) return
+    if (client?.isReady) return
+    // 用户正在看「同步方式」选择框：这是合理的长等待，不能催
+    if (isSyncModeSelecting()) return
+    log.r_warn('[sync] handshake quiet timeout: no finished() from server')
+    sendSyncMessage('同步服务 60 秒内没有完成同步，可尝试关闭「启用同步」后重新打开')
+  }, HANDSHAKE_QUIET_TIMEOUT_MS)
+}
 
 const heartbeatTools = {
   failedNum: 0,
@@ -224,6 +268,9 @@ export const connect = (urlInfo: LX.Sync.UrlInfo, keyInfo: LX.Sync.KeyInfo, opti
         everConnected = true
         connectionAlive = true
         reconnectIntent = false
+        // 【第 34 轮第 1 条】服务端说「这一轮同步完了」：关掉协商窗口与握手看门狗
+        listNegotiationUntil = 0
+        clearHandshakeWatchdog()
         sendSyncStatus({
           status: true,
           message: '',
@@ -303,6 +350,10 @@ export const connect = (urlInfo: LX.Sync.UrlInfo, keyInfo: LX.Sync.KeyInfo, opti
     disconnected = false
     connecting = false
     connectionAlive = true
+    // 【第 34 轮第 1 条】协商窗口从这里开始（结算点 = 服务端 finished()，封顶 90 秒），
+    // 同时挂上握手看门狗（服务端 60 秒毫无动静时把状态文案换成人话）
+    listNegotiationUntil = Date.now() + LX_LIST_NEGOTIATION_MAX_MS
+    armHandshakeWatchdog()
     if (everConnected) {
       // 断线重连：状态保持「已连接」（文案提示连接中），不打回「未连接」
       sendSyncStatus({
@@ -327,6 +378,9 @@ export const connect = (urlInfo: LX.Sync.UrlInfo, keyInfo: LX.Sync.KeyInfo, opti
     disconnected = true
     connecting = false
     connectionAlive = false
+    // 【第 34 轮第 1 条】连接没了：协商窗口与看门狗一并收掉（下次 open 再挂）
+    listNegotiationUntil = 0
+    clearHandshakeWatchdog()
     message2read.destroy()
     switch (code) {
       case SYNC_CLOSE_CODE.normal:
@@ -369,6 +423,9 @@ export const disconnect = async(isUserInitiated = true) => {
   reconnectIntent = false
   connecting = false
   connectionAlive = false
+  // 【第 34 轮第 1 条】同上：主动断开也要把协商窗口 / 看门狗收掉
+  listNegotiationUntil = 0
+  clearHandshakeWatchdog()
   userDisconnect = isUserInitiated
   if (isUserInitiated) everConnected = false
   client.close(SYNC_CLOSE_CODE.normal)
