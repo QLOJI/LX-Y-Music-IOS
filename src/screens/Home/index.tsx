@@ -78,7 +78,6 @@ export default ({ componentId }: Props) => {
           挂在窗口上时才会呈现（RCTModalHostView 的 shouldBePresented 检查 self.window），
           Home 被 push 的原生页面覆盖后视图树脱离窗口，挂在 Home 里的弹窗永远无法呈现，
           表现为设置详情页里的登录按钮点了没反应。 */}
-      {/* <YouTubeLoginManager /> */}
       <DownloadBall />
     </>
   )

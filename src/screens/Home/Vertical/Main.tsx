@@ -485,6 +485,11 @@ const Main = () => {
     // 合成一次周期即可；后者是「无真实手势会话时才执行」的幂等清理，所以这条心跳
     // 是覆盖面最广的一道自愈——任何残留最多存活一个周期。
     const heartbeat = () => {
+      // 【第 33 轮第 1 条·省电】非活跃（后台）不做无意义的重发：后台没有新手势会话，
+      // 原生也不会产生新的失配；而这一跳每次都要跨两次桥（setScrollEnabled +
+      // clearNativePagerScrolling）。回前台由本文件的「后台恢复兜底」effect 直接清一次、
+      // 重发一次，覆盖不受影响。
+      if (AppState.currentState !== 'active') return
       resyncPagerScroll()
       healPagerScrollLatch()
     }
