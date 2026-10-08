@@ -345,10 +345,11 @@ const runCounterExamples = () => {
   '切歌去重先写戳后判定')
 
   // r6 用户手动暂停不再作废续播标记 → 报「未作废续播标记」
-  // （锚点取 pause 分支的代码三连、不取 case 头/中文注释：第 22 轮在 case 头与代码之间插了说明注释）
+  // （锚点取 pause 分支的代码三连、不取 case 头/中文注释：第 22 轮在 case 头与代码之间插了说明注释；
+  //   第 35 轮第 1 条给落闸加了「真的会暂停才落」的前置判据，锚点随之更新为当前写法）
   check('r6 pause 分支丢 cancelResumePending', () => remoteCommandInvariants(tamper(REAL_REMOTE,
-    '        markManualPause()\n        cancelResumePending()\n        void pause()',
-    '        markManualPause()\n        void pause()')),
+    '        if (playerState.isPlay) markManualPause()\n        cancelResumePending()\n        void pause()',
+    '        if (playerState.isPlay) markManualPause()\n        void pause()')),
   '用户手动播放/暂停未作废续播标记')
 
   // r7 删掉一个命令 case（seek）→ 报「覆盖不全」
@@ -369,8 +370,9 @@ const runCounterExamples = () => {
   ]), '重复通路残留')
 
   // r10 【第 22 轮】pause 分支丢手动暂停闸门 → 报「pause 分支未落手动暂停闸门」
+  // 【第 35 轮第 1 条】锚点更新为「带播放态前置判据」的当前写法，见 r6 的说明
   check('r10 pause 分支丢 markManualPause', () => remoteCommandInvariants(tamper(REAL_REMOTE,
-    '        markManualPause()\n        cancelResumePending()\n        void pause()',
+    '        if (playerState.isPlay) markManualPause()\n        cancelResumePending()\n        void pause()',
     '        cancelResumePending()\n        void pause()')),
   'pause 分支未落手动暂停闸门')
 

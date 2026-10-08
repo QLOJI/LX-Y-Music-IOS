@@ -342,9 +342,11 @@ const runCounterExamples = () => {
   '只剩 1 处')
 
   // m4 上传按钮退回「三行直筒」写法（无 try/finally）
+  // 【第 35 轮第 2 条】六个处理函数各加了起止/失败三条状态行（setSyncMessage），
+  // 锚点随之更新；反例拆的仍是「这段到底还有没有 try/finally」，语义不变。
   check('m4 「上传设置与音源」去掉 try/finally', handlerInvariants(tamper(REAL.sync,
-    "    setIsUploading(true)\n    try {\n      await manualUploadSettingsAndApis()\n    } catch (error: any) {\n      toast(`上传失败: ${error?.message ?? error}`, 'long')\n    } finally {\n      setIsUploading(false)\n    }",
-    '    setIsUploading(true)\n    await manualUploadSettingsAndApis()\n    setIsUploading(false)')),
+    "    setIsUploading(true)\n    setSyncMessage('正在上传设置与音源...')\n    try {\n      await manualUploadSettingsAndApis()\n      setSyncMessage('设置与音源上传完成')\n    } catch (error: any) {\n      toast(`上传失败: ${error?.message ?? error}`, 'long')\n      setSyncMessage('设置与音源上传失败，详情见下方提示')\n    } finally {\n      setIsUploading(false)\n    }",
+    "    setIsUploading(true)\n    setSyncMessage('正在上传设置与音源...')\n    await manualUploadSettingsAndApis()\n    setSyncMessage('设置与音源上传完成')\n    setIsUploading(false)")),
   '没有 try')
 
   // m5 testConnection 退回无超时的裸调用

@@ -170,7 +170,9 @@ const GROUP_A = [
   ['utils：resolve 之后才复查，且先比代次（已作答 / 已取消就作废）',
     (s) => /\.then\(\(\) => \{\s*\n\s*setTimeout\(\(\) => \{[\s\S]{0,200}?if \(seq !== syncModeModalSeq\) return/.test(s.utils)],
   ['utils：复查判据 = store 里的 componentId（已挂上就停手，绝不叠第二个）',
-    (s) => /if \(syncState\.syncModeComponentId\) return/.test(s.utils)],
+    // 【第 35 轮第 2 条】present() 入口也有一句同样的判据（防重复呈现），所以这里必须连
+    // 「判据为空 → handleFail('overlay not mounted')」一起钉，否则拿掉复查那句也判绿。
+    (s) => /if \(syncState\.syncModeComponentId\) return\s*\n\s*handleFail\(attempt, new Error\('overlay not mounted'\)\)/.test(s.utils)],
   ['utils：判据为空才按「没挂上」走重试（handleFail）',
     (s) => /handleFail\(attempt, new Error\('overlay not mounted'\)\)/.test(s.utils)],
   ['utils：showOverlay 的 reject 与静默失败走同一条重试路径',
@@ -356,9 +358,11 @@ const mutated = (src, key, from, to) => {
 const caught = (group, src) => runGroup(group, src).some((r) => !r.ok)
 
 // n1: utils 拿掉「已挂上就停手」的判据（复查变成无条件重试）
+// 【第 35 轮第 2 条】present() 入口也加了同样一句（防重复呈现），所以锚点带上它的下一行
+// ——只锚那一句的话 .replace 会命中新加的那处，复查判据还在，反例就拦不下来了。
 const n1 = mutated(SRC_A, 'utils',
-  'if (syncState.syncModeComponentId) return',
-  'if (false) return')
+  "if (syncState.syncModeComponentId) return\n            handleFail(attempt",
+  "if (false) return\n            handleFail(attempt")
 // n2: sync 删掉复查作废（幽灵弹窗防线没了）
 const n2 = mutated(SRC_A, 'sync',
   '  cancelSyncModeModalRetries()\n}',

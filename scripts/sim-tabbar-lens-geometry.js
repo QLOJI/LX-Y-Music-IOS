@@ -165,9 +165,11 @@ const runSourceInvariants = () => {
     tab.includes('const lastFollowXRef = useRef(-1)') &&
     tab.includes('lastFollowXRef.current = followX'))
   push('B2 重锚函数存在，且第一条语句就是「本次会话没驱动过 → 直接返回」',
-    /const snapLensToRestingSlot = useCallback\(\(\) => \{\s*\n\s*if \(lastFollowXRef\.current < 0\) return\s*\n\s*lastFollowXRef\.current = -1\s*\n\s*lensRef\.current\?\.setFollowX\(lensXRef\.current\)/.test(tab))
-  push('B3 重锚目标是「当前归属 tab 的槽心」（lensXRef），不是四舍五入的跟手落点',
-    tab.includes('lensRef.current?.setFollowX(lensXRef.current)'))
+    /const snapLensToRestingSlot = useCallback\(\(\) => \{\s*\n\s*if \(lastFollowXRef\.current < 0\) return\s*\n\s*lastFollowXRef\.current = -1\s*\n\s*lensRef\.current\?\.setFollowX\(resolveRestingSlotX\(\)\)/.test(tab))
+  // 【第 35 轮第 3 条】重锚目标从 lensXRef 换成 resolveRestingSlotX：见 B16。
+  push('B3 重锚目标是「当前归属 tab 的槽心」（静止槽心公式），不是四舍五入的跟手落点',
+    /return \(\(index \+ 0\.5\) \* width\) \/ TAB_IDS\.length/.test(tab) &&
+    tab.includes('lensRef.current?.setFollowX(resolveRestingSlotX())'))
   // 顺序：必须在 endFollow() 之前，否则 LiquidLens 的去重值已被复位，正常跟手也会多写一次原生
   const dragSub = /subscribePagerDrag\(\(dragging\) => \{([\s\S]*?)\n  \}\), \[/.exec(tab)
   const dragBody = dragSub ? dragSub[1] : ''
@@ -199,12 +201,38 @@ const runSourceInvariants = () => {
     /const armFollowWatchdog = useCallback\(\(\) => \{\s*if \(followWatchdogRef\.current\) clearTimeout\(followWatchdogRef\.current\)\s*followWatchdogRef\.current = setTimeout\(\(\) => \{\s*followWatchdogRef\.current = null\s*if \(dragArmedRef\.current \|\| draggingRef\.current\) return\s*closePagerFollowSession\(\)\s*\}, FOLLOW_SESSION_TIMEOUT_MS\)\s*\}, \[closePagerFollowSession\]\)/.test(tab))
   push('B10 记账三处齐全：跟手帧重新 arm / 会话开始 arm（与首帧顺序不保证）/ 正常收尾销毁',
     /lensRef\.current\?\.setFollowX\(followX\)\s*armFollowWatchdog\(\)/.test(tab) &&
-    /if \(dragging\) \{[\s\S]{0,300}?armFollowWatchdog\(\)\s*\} else \{\s*if \(followWatchdogRef\.current\) \{\s*clearTimeout\(followWatchdogRef\.current\)\s*followWatchdogRef\.current = null\s*\}\s*snapLensToRestingSlot\(\)/.test(tab))
-  push('B11 兜底收尾 = 正常收尾同一套动作、同一顺序（锚回槽心 → 落回静止药丸 → 复位跟手去重；顺序换了会打断在途弹簧）',
-    /const closePagerFollowSession = useCallback\(\(\) => \{\s*snapLensToRestingSlot\(\)\s*lensRef\.current\?\.setLifted\(false\)\s*lensRef\.current\?\.endFollow\(\)\s*\}, \[snapLensToRestingSlot\]\)/.test(tab))
+    /if \(dragging\) \{[\s\S]{0,400}?armFollowWatchdog\(\)[\s\S]{0,400}?clearRestReassert\(\)\s*\} else \{\s*if \(followWatchdogRef\.current\) \{\s*clearTimeout\(followWatchdogRef\.current\)\s*followWatchdogRef\.current = null\s*\}\s*snapLensToRestingSlot\(\)\s*lensRef\.current\?\.endFollow\(\)\s*reassertRestingSlot\(\)/.test(tab))
+  push('B11 兜底收尾 = 正常收尾同一套动作、同一顺序（锚回槽心 → 落回静止药丸 → 复位跟手去重 → 重申静止位；顺序换了会打断在途弹簧）',
+    /const closePagerFollowSession = useCallback\(\(\) => \{\s*snapLensToRestingSlot\(\)\s*lensRef\.current\?\.setLifted\(false\)\s*lensRef\.current\?\.endFollow\(\)\s*reassertRestingSlot\(\)\s*\}, \[snapLensToRestingSlot, reassertRestingSlot\]\)/.test(tab))
   push('B12 A-5 接管（长按 arm）与卸载清理都销毁看门狗（不留一次凭空触发的收尾 / 不在已卸载组件上跑）',
     /lastFollowXRef\.current = -1\s*if \(followWatchdogRef\.current\) \{\s*clearTimeout\(followWatchdogRef\.current\)\s*followWatchdogRef\.current = null\s*\}/.test(tab) &&
     /if \(pressOutTimerRef\.current\) \{ clearTimeout\(pressOutTimerRef\.current\); pressOutTimerRef\.current = null \}\s*if \(followWatchdogRef\.current\) \{ clearTimeout\(followWatchdogRef\.current\); followWatchdogRef\.current = null \}/.test(tab))
+
+  // ---------------- B13-B16. 静止位重申（2026-10-08 第 35 轮第 3 条） ----------------
+  // 用户原话：「当我左右滑动主界面时，底部 tab 的椭圆形水泡边缘与我的文字不是中心对齐，
+  // 左边明显大点，如果我点击就不会有这个情况，只有滑动才会出现这个问题，不论在推荐、
+  // 歌单、搜索、我的、设置都一样。」
+  //
+  // 静止几何本身没问题（A/D 段已证明逐点相等），错的是**收尾锚点读了一份迟到的值**：
+  // 收尾（pager 'idle'）读的是 lensXRef.current，而它只在上方那个无依赖 useEffect 里刷新
+  // —— 即「onPageSelected 引发的那次 React 提交跑完之后」。提交还没跑完就收尾 ⇒ 锚回**旧槽**；
+  // 且「滑回同一个 tab」时 lensX 前后相等、x prop 不变，React 不会再下发任何东西
+  // ⇒ 错位永不自愈。点击切页永远会改 lensX（换 tab）因此从不复现 —— 正是用户描述的
+  // 「只有滑动才会、点一下就好」。修法：① 收尾改读「当下」的槽心（直读 store，
+  // setNavActiveId 是同步写）；② 收尾后有界地重申几次，给迟到的那次提交留出落点。
+  push('B13 静止槽心的「新鲜」取值源：直读 store 的 navActiveId（同步写，比 React 提交早一整个周期），公式与 lensX 同形，取不到时回退 lensXRef',
+    tab.includes("import commonState from '@/store/common/state'") &&
+    /const resolveRestingSlotX = useCallback\(\(\) => \{[\s\S]{0,1200}?const activeIdNow = commonState\.navActiveId[\s\S]{0,600}?return \(\(index \+ 0\.5\) \* width\) \/ TAB_IDS\.length[\s\S]{0,600}?\}, \[\]\)/.test(tab))
+  push('B14 收尾后按**有界**延迟表重申静止位（每次现取目标：已对齐时被 LiquidLens 的 0.1pt 去重吞掉，零原生写入；不设无界循环）',
+    tab.includes('const REST_REASSERT_DELAYS = [120, 360, 800, 1600]') &&
+    /const clearRestReassert = useCallback\(\(\) => \{\s*for \(const timer of restReassertTimersRef\.current\) clearTimeout\(timer\)\s*restReassertTimersRef\.current = \[\]\s*\}, \[\]\)/.test(tab) &&
+    /const reassertRestingSlot = useCallback\(\(\) => \{\s*clearRestReassert\(\)\s*for \(const delay of REST_REASSERT_DELAYS\) \{/.test(tab))
+  push('B15 重申带两道让位守卫 + 两处清账（手指按住/长按接管时不得拽回药丸；新一轮会话开始与卸载都要清账）',
+    /if \(dragArmedRef\.current \|\| draggingRef\.current\) return\s*\n\s*if \(lastFollowXRef\.current >= 0\) return\s*\n\s*lensRef\.current\?\.setFollowX\(resolveRestingSlotX\(\)\)/.test(tab) &&
+    /if \(dragging\) \{[\s\S]{0,400}?clearRestReassert\(\)/.test(tab) &&
+    /useEffect\(\(\) => clearRestReassert, \[clearRestReassert\]\)/.test(tab))
+  push('B16 重锚不再读 lensXRef（迟一个提交的旧值就是「只有滑动才错位、点一下就好」的根因）',
+    !/const snapLensToRestingSlot = useCallback\(\(\) => \{[\s\S]{0,400}?setFollowX\(lensXRef\.current\)/.test(tab))
 
   // ---------------- C. 原生形变：速度驱动 + 跳变剔除 ----------------
   const SW = ['sampleWindowDuration', 'speedScaleCoefficient', 'idleSpeedThreshold', 'maxScaleDeviation',
@@ -595,6 +623,30 @@ const tamper = [
     label: 'ModernTabBar 卸载不清看门狗',
     file: 'tabBar',
     mutate: (s) => s.replace('    if (followWatchdogRef.current) { clearTimeout(followWatchdogRef.current); followWatchdogRef.current = null }\n  }, [])', '  }, [])'),
+  },
+  {
+    label: 'ModernTabBar 重锚退回 lensXRef（迟一个提交的旧值 —— 第 35 轮第 3 条的原始 bug）',
+    file: 'tabBar',
+    mutate: (s) => s.replace('    lensRef.current?.setFollowX(resolveRestingSlotX())\n  }, [resolveRestingSlotX])', '    lensRef.current?.setFollowX(lensXRef.current)\n  }, [resolveRestingSlotX])'),
+  },
+  {
+    label: 'ModernTabBar 去掉收尾后的静止位重申（收尾拿到旧槽就再也不自愈）',
+    file: 'tabBar',
+    // 【第 35 轮第 3 条】锚点跨过中间那行中文注释 —— 只锚「endFollow + 重申」这一对，
+    // 用 6 空格缩进 + 紧随的说明注释把范围锁在正常收尾分支里（兜底收尾那份是 4 空格）。
+    mutate: (s) => s.replace('      lensRef.current?.endFollow()\n      // 【第 35 轮第 3 条】收尾之后再重申几次静止位（见 REST_REASSERT_DELAYS 注释）\n      reassertRestingSlot()', '      lensRef.current?.endFollow()'),
+  },
+  {
+    label: 'ModernTabBar 重申不带让位守卫（手指按住 / 跟手会话中被拽回槽心）',
+    file: 'tabBar',
+    // 【第 35 轮第 3 条】锚点必须带上两道守卫各自上面的注释（源码里注释夹在中间），
+    // 且首行 8 空格缩进 —— 4/6 空格的同名守卫在别处还有三份，纯单行锚点会打错地方。
+    mutate: (s) => s.replace('        if (dragArmedRef.current || draggingRef.current) return\n        // 新一轮 B-7 跟手已经开始（有帧驱动过药丸）：让位，别和手指抢位置\n        if (lastFollowXRef.current >= 0) return\n', ''),
+  },
+  {
+    label: 'ModernTabBar 重申目标改读 lensXRef（重申本身就又变回迟到的值，等于没修）',
+    file: 'tabBar',
+    mutate: (s) => s.replace('        lensRef.current?.setFollowX(resolveRestingSlotX())\n      }, delay))', '        lensRef.current?.setFollowX(lensXRef.current)\n      }, delay))'),
   },
 ]
 

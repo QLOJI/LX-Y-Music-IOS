@@ -212,8 +212,10 @@ const runCounterExamples = () => {
   'core pause() 被系统路径共用')
 
   // t3 遥控暂停拆闸
+  // 【第 35 轮第 1 条】落闸加了「这次 pause 真的会暂停（playerState.isPlay）」前置判据
+  // —— 锚点随之更新；拆闸反例拆的仍是「这条分支到底还落不落闸」，语义不变。
   check('t3 遥控 pause 拆闸', () => setterInvariants(REAL.player, tamper(REAL.remote,
-    '        markManualPause()\n        cancelResumePending()',
+    '        if (playerState.isPlay) markManualPause()\n        cancelResumePending()',
     '        cancelResumePending()'), REAL.deeplink),
   '遥控 pause 分支未落闸')
 

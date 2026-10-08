@@ -1,0 +1,390 @@
+/**
+ * sim-sync-mode-modal-watchdog.js
+ *
+ * 「同步方式选择框一定会弹出来、一定会收尾、状态行一定会说清楚」契约不变量
+ * （第 35 轮第 2 条，2026-10-08）。
+ *
+ * 用户原话：同步状态显示「等待选择同步方式...」，但是迟迟没有弹出选择窗口，
+ * 而且选择一次后，后面就不会显示了，就只显示同步成功，需要修复；
+ * 点击上面的按钮后，下面的提示还是没有。
+ *
+ * 三个各自独立、可以互相掩盖的病根：
+ *
+ *  A. **看门狗一次都不会触发（本轮根因）**。core/sync.ts 第 34 轮注册的是
+ *     `onModalDismissed(syncState.syncModeComponentId, …)` —— 而 overlay 的 componentId
+ *     由 RNN 在呈现时生成，**只有 SyncModeModal 挂载之后**才写回 store；这一行却在
+ *     「呈现之前」执行，闭包进去的是空串。onModalDismissed 是「注册时闭包 id、只对该 id
+ *     生效」的语义（src/navigation/event.ts），于是选择框被任何**非作答**路径关掉
+ *     （点外面、宿主 VC 消失、系统收走）时：
+ *       · 这次问询的 Promise 永不 settle（服务端一直等）；
+ *       · syncModeSelecting 一直是 true —— 第 34 轮的握手看门狗把它当成「用户在考虑」，
+ *         既不催也不超时；
+ *       · 状态行就永远钉在「等待选择同步方式...」。
+ *     修法：改用 onAnyModalDismissed（触发时把「被关掉的那个 id」交回来，与**当下**的
+ *     store 值比对，天然免疫「注册早于挂载」）+ 组件卸载主动回调
+ *     handleSyncModeModalUnmounted（免掉「卸载先把 store id 清空、RNN 事件后到」的竞态）。
+ *
+ *  B. **重复呈现把好的那个顶掉**。showSyncModeModal 的「挂载复查」是延时 1000ms 才看的：
+ *     挂载慢一点（原生 Modal 正在淡出、桥接繁忙）就先判「没挂上」→ 700ms 后 present(attempt+1)；
+ *     若第一次其实已经挂上，第二个副本挂载时会发现 store 里是别人的 id，反手把**第一个**
+ *     关掉 —— 两个都不在了完全可能。修法：present() 入口加「已经有一个活着的选择框就
+ *     绝不再呈现第二个」。
+ *
+ *  C. **按钮点了下面那行字不动**。设置页那六个 WebDAV 动作以前只在底部弹一条 toast，
+ *     而「状态」行只由同步客户端写（syncStatus.message），于是点了半天下面纹丝不动
+ *     （用户原话「点击上面的按钮后，下面的提示还是没有」）。修法：六个动作各自写
+ *     开始 / 成功 / 失败三句状态。**文案里不得出现地址、账号、路径**（第 25 轮凭据口径），
+ *     失败详情只留在 toast 里。
+ *
+ * 运行：node scripts/sim-sync-mode-modal-watchdog.js
+ * 退出码：不变量全过、且全部反例被拦下时为 0，否则 1。
+ */
+
+'use strict'
+
+const fs = require('fs')
+const path = require('path')
+
+const ROOT = path.join(__dirname, '..')
+const read = (p) => fs.readFileSync(path.join(ROOT, p), 'utf8').replace(/\r\n/g, '\n')
+
+const F = {
+  events: 'src/navigation/event.ts',
+  sync: 'src/core/sync.ts',
+  utils: 'src/navigation/utils.ts',
+  modal: 'src/navigation/components/SyncModeModal.tsx',
+  page: 'src/screens/Home/Views/Setting/settings/Sync/index.tsx',
+}
+const REAL = Object.fromEntries(Object.entries(F).map(([k, v]) => [k, read(v)]))
+
+const stripComments = (src) =>
+  src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '')
+
+const sliceBy = (code, from, to) => {
+  const a = code.indexOf(from)
+  if (a < 0) return ''
+  const b = code.indexOf(to, a)
+  return b < 0 ? '' : code.slice(a, b + to.length)
+}
+
+/** 从源码抽出「以 signature 开头、后接大括号体」的函数体（按大括号配平）。 */
+const extractBracedBody = (src, signature) => {
+  const start = src.indexOf(signature)
+  if (start < 0) return null
+  const braceStart = src.indexOf('{', start + signature.length)
+  if (braceStart < 0) return null
+  let depth = 0
+  for (let i = braceStart; i < src.length; i++) {
+    const ch = src[i]
+    if (ch === '{') depth++
+    else if (ch === '}') {
+      depth--
+      if (depth === 0) return src.slice(start, i + 1)
+    }
+  }
+  return null
+}
+
+const CANCEL_MESSAGE = "setSyncMessage('同步方式选择已取消，本次同步已中止')"
+
+// ---------------------------------------------------------------------------
+// 不变量 A1：navigation/event.ts 提供「任意弹窗被关掉」的单次订阅，回调交回 componentId
+// ---------------------------------------------------------------------------
+
+const anyDismissedInvariants = (raw) => {
+  const reasons = []
+  const code = stripComments(raw)
+  const body = extractBracedBody(code, 'export const onAnyModalDismissed = (handler:')
+  if (!body) {
+    reasons.push('onAnyModalDismissed 缺失或抽取失败（锚点漂移 —— core/sync 的看门狗靠它免疫「注册早于挂载」）')
+    return reasons
+  }
+  if (!body.includes('registerModalDismissedListener')) {
+    reasons.push('onAnyModalDismissed 未订阅弹窗关闭事件')
+  }
+  if (!/if \(!componentId\) return/.test(body)) {
+    reasons.push('onAnyModalDismissed 未过滤空 componentId（空 id 会与「还没挂载」的 store 值撞上，误判成用户取消）')
+  }
+  if (!/handler\(componentId\)/.test(body)) {
+    reasons.push('onAnyModalDismissed 未把「被关掉的那个 componentId」交回调用方（交不回来就只能回到注册时闭包 id 的老路）')
+  }
+  if (/componentId != id|componentId === id/.test(body)) {
+    reasons.push('onAnyModalDismissed 里保留了「按注册时的 id 比对」的语义（订阅时拿不到 overlay 的 id —— 这层过滤必须留给调用方在触发那一刻做）')
+  }
+  return reasons
+}
+
+// ---------------------------------------------------------------------------
+// 不变量 A2/B：core/sync.ts 的看门狗与呈现顺序
+// ---------------------------------------------------------------------------
+
+const syncWatchdogInvariants = (raw) => {
+  const reasons = []
+  const code = stripComments(raw)
+
+  // ① 旧语义必须彻底退场（注册时闭包 id ⇒ 一次都不会触发）
+  if (/(^|[^A-Za-z])onModalDismissed\(/.test(code)) {
+    reasons.push('仍在用 onModalDismissed（注册时把 componentId 闭包进去的旧语义 —— 那行在选择框挂载前执行，闭包到的是空串，看门狗一次都不会触发，这正是用户看到的「状态写着等待选择同步方式、框却已不在」）')
+  }
+  if (!code.includes('onAnyModalDismissed')) {
+    reasons.push('未改用 onAnyModalDismissed（看门狗拿不到「被关掉的那个 id」）')
+  }
+
+  // ② 看门狗：比对 + 改文案 + 走取消通路
+  const iWatch = code.indexOf('removeDismissListener = onAnyModalDismissed(')
+  if (iWatch < 0) {
+    reasons.push('看门狗未注册（removeDismissListener = onAnyModalDismissed(… 缺失）')
+  } else {
+    // 三个「收尾动作」在回调体里的相对次序：先比对 → 再改文案 → 再走取消通路。
+    //（用 indexOf 而不是拼正则：比对的判据是异步比较，不该只看文本形状）
+    const iCompare = code.indexOf('if (!syncState.syncModeComponentId || dismissedId != syncState.syncModeComponentId) return', iWatch)
+    const iMessage = code.indexOf(CANCEL_MESSAGE, iWatch)
+    const iCancel = code.indexOf('removeEvent?.()', iWatch)
+    const watchdogEnd = code.indexOf('    })', iWatch)
+    if (iCompare < 0 || (watchdogEnd > 0 && iCompare > watchdogEnd)) {
+      reasons.push('看门狗未把「被关掉的 id」与「当下 store 里的 id」比对（不比对就会把别的 overlay 的关闭、甚至早已作答的那次，误当成这次问询被取消）')
+    }
+    if (iMessage < 0 || iMessage < iCompare) {
+      reasons.push('看门狗收尾没改状态文案（那行字会永远停在「等待选择同步方式...」—— 用户第 35 轮第 2 条看到的正是它）')
+    }
+    if (iCancel < 0 || iCancel < iMessage) {
+      reasons.push('看门狗没走既有的取消通路（removeEvent?.() 缺失 —— 这次问询不会 reject，服务端还在等）')
+    }
+  }
+
+  // ③ 呈现必须在「收尾手脚」接好之后（showSyncModeModal 去抖占满时会**同步**回调
+  //    handleUnavailable，而它要调用 removeListeners —— 放前面就是一个 TDZ）
+  const iPresent = code.indexOf('showSyncModeModal(handleUnavailable)')
+  const iRemoveListeners = code.indexOf('const removeListeners = () => {')
+  if (iPresent < 0) {
+    reasons.push('showSyncModeModal(handleUnavailable) 调用缺失（选择框根本不会被呈现）')
+  } else {
+    if (iRemoveListeners < 0 || iPresent < iRemoveListeners) {
+      reasons.push('呈现在前（showSyncModeModal 调用出现在「收尾手脚」removeListeners 初始化之前 —— 去抖占满时它会同步回调 handleUnavailable，直接踩 TDZ：Cannot access removeListeners before initialization）')
+    }
+    if (iWatch >= 0 && iPresent < iWatch) {
+      reasons.push('呈现在前（showSyncModeModal 调用出现在看门狗注册之前 —— 呈现失败/被取消时看门狗还没挂上，前几十毫秒的关闭事件会漏）')
+    }
+  }
+
+  // ④ 收尾必须复位 syncModeSelecting（第 34 轮的握手看门狗据此区分「卡死」与「用户在考虑」；
+  //    不复位的话，下一次问询会被上一次的残留当成「用户还在考虑」，永远不催也不超时）
+  if (!/const removeListeners = \(\) => \{[\s\S]{0,800}?syncModeSelecting = false/.test(code)) {
+    reasons.push('收尾未复位 syncModeSelecting（残留 true 会让握手看门狗一直以为「用户在考虑」，卡死时既不催也不超时）')
+  }
+
+  // ⑤ 组件卸载主动上报（免掉「卸载先清 store id、RNN 事件后到」的竞态）
+  const unmounted = extractBracedBody(code, 'export const handleSyncModeModalUnmounted = () =>')
+  if (!unmounted) {
+    reasons.push('handleSyncModeModalUnmounted 缺失或抽取失败（只靠 RNN 关闭事件会漏：卸载清理会先把 store 里的 id 清成空串）')
+  } else {
+    if (!unmounted.includes('if (!syncModeSelecting) return')) {
+      reasons.push('handleSyncModeModalUnmounted 越过 syncModeSelecting 判据（作答/取消/呈现失败三条路径都会把它置回 false；少了这道判据，「用户刚点完选项、我们再关框」会被误当成「用户跑了」）')
+    }
+    if (!unmounted.includes(CANCEL_MESSAGE)) {
+      reasons.push('handleSyncModeModalUnmounted 没改状态文案（卸载与关闭必须给同一句话，界面不能一片死寂）')
+    }
+    if (!unmounted.includes('removeSyncModeEvent()')) {
+      reasons.push('handleSyncModeModalUnmounted 没走取消通路（removeSyncModeEvent() 缺失）')
+    }
+  }
+
+  return reasons
+}
+
+// ---------------------------------------------------------------------------
+// 不变量 B：present() 入口的「绝不叠第二个选择框」守卫
+// ---------------------------------------------------------------------------
+
+const presentGuardInvariants = (raw) => {
+  const reasons = []
+  const code = stripComments(raw)
+
+  if (!/const present = \(attempt: number\) => \{\s*\n\s*if \(syncState\.syncModeComponentId\) return/.test(code)) {
+    reasons.push('present() 入口没有「已经有一个活着的选择框就绝不再呈现第二个」守卫（复查是延时 1000ms 才看的；挂载慢一点就先判没挂上 → 700ms 后补呈现，副本挂载时反手把第一个关掉 ⇒ 两个都没了，正是「状态写着等待选择同步方式、选择框却迟迟不出现」）')
+  }
+  const body = sliceBy(code, 'const present = (attempt: number) => {', '\n  present(1)')
+  if (!body) {
+    reasons.push('present() 抽取失败（锚点漂移）')
+  } else {
+    const iGuard = body.indexOf('if (syncState.syncModeComponentId) return')
+    const iOverlay = body.indexOf('Navigation.showOverlay')
+    if (iGuard < 0 || iOverlay < 0 || iGuard > iOverlay) {
+      reasons.push('守卫必须在 showOverlay 之前（再往后放就拦不住这一次呈现了）')
+    }
+  }
+  return reasons
+}
+
+// ---------------------------------------------------------------------------
+// 不变量 A3：SyncModeModal 卸载上报 + 未知类型自撤
+// ---------------------------------------------------------------------------
+
+const modalInvariants = (raw) => {
+  const reasons = []
+  const code = stripComments(raw)
+
+  if (!code.includes('handleSyncModeModalUnmounted')) {
+    reasons.push('SyncModeModal 卸载不上报 core/sync（只靠 RNN 关闭事件会漏：卸载清理先把 store 里的 id 清成空串，事件到达时已无从比对）')
+  }
+  if (!/setSyncModeComponentId\(''\)\s*\n\s*handleSyncModeModalUnmounted\(\)/.test(code)) {
+    reasons.push('SyncModeModal 卸载不上报 core/sync（清理里 handleSyncModeModalUnmounted() 缺失，或次序不对 —— 必须在清掉自己那份 id 之后调用）')
+  }
+  if (!/if \(syncState\.type != 'list' && syncState\.type != 'dislike'\) \{[\s\S]{0,500}?dismissOverlay\(componentId\)/.test(code)) {
+    reasons.push('未知问答类型的自撤缺失（画 null 的 overlay 仍带 interceptTouchOutside: true —— 用户看不到任何选择框、触摸却被整片吃掉，就是「卡住又一声不吭」）')
+  }
+  return reasons
+}
+
+// ---------------------------------------------------------------------------
+// 不变量 C：设置页六个动作各自写「开始 / 成功 / 失败」三句状态，且文案不含地址账号
+// ---------------------------------------------------------------------------
+
+const HANDLERS = [
+  'handleTestConnection',
+  'handleSyncNow',
+  'handleUpload',
+  'handleDownload',
+  'handleUploadLists',
+  'handleDownloadLists',
+]
+
+const syncPageInvariants = (raw) => {
+  const reasons = []
+  const code = stripComments(raw)
+
+  for (const h of HANDLERS) {
+    const body = sliceBy(code, `const ${h} = useCallback(async() => {`, '  }, [')
+    if (!body) {
+      reasons.push(`${h} 抽取失败（锚点漂移）`)
+      continue
+    }
+    const n = (body.match(/setSyncMessage\(/g) || []).length
+    if (n !== 3) {
+      reasons.push(`${h} 的状态行写入次数是 ${n}（应为 3：开始 / 成功 / 失败 —— 用户原话「点击上面的按钮后，下面的提示还是没有」）`)
+    }
+  }
+  const calls = (code.match(/setSyncMessage\(/g) || []).length
+  if (calls !== HANDLERS.length * 3) {
+    reasons.push(`状态行写入总次数是 ${calls}（应为 ${HANDLERS.length * 3} = 六个动作 × 三句）`)
+  }
+  // 第 25 轮凭据口径：界面文案不得回显主机名 / 账号 / 路径（失败详情留在 toast 里）
+  const bad = (code.match(/setSyncMessage\([^)]*\)/g) || [])
+    .filter(s => /https?|\S@\S|\d+\.\d+\.\d+\.\d+/.test(s))
+  if (bad.length) {
+    reasons.push(`状态文案里出现了地址/账号形态的内容（第 25 轮凭据口径：不得回显主机名、账号、路径）—— ${bad.slice(0, 2).join(' | ')}`)
+  }
+  return reasons
+}
+
+// ---------------------------------------------------------------------------
+// 反例（对篡改后的源码跑同一套判断，必须被拦下）
+// ---------------------------------------------------------------------------
+
+const tamper = (src, find, replace) => {
+  if (!src.includes(find)) throw new Error(`tamper 锚点未命中: ${find.slice(0, 60)}`)
+  return src.replace(find, replace)
+}
+
+const runCounterExamples = () => {
+  const results = []
+  const check = (name, fn, expectReasonSubstr) => {
+    let reasons = []
+    try {
+      reasons = fn()
+    } catch (e) {
+      results.push({ name, ok: false, detail: `抛异常: ${e.message}` })
+      return
+    }
+    const hit = reasons.some(r => r.includes(expectReasonSubstr))
+    results.push({ name, ok: hit, detail: hit ? '已拦下' : `未拦下（reasons=${JSON.stringify(reasons)}）` })
+  }
+
+  // c1 看门狗退回「注册时闭包 id」的旧语义（第 35 轮第 2 条的原始 bug）
+  check('c1 看门狗退回 onModalDismissed', () => syncWatchdogInvariants(tamper(REAL.sync,
+    '    removeDismissListener = onAnyModalDismissed((dismissedId) => {',
+    '    removeDismissListener = onModalDismissed(syncState.syncModeComponentId, () => {')),
+  'onModalDismissed')
+
+  // c2 看门狗不再比对 id（别人的关闭事件也算）
+  check('c2 看门狗不再比对 id', () => syncWatchdogInvariants(tamper(REAL.sync,
+    '      if (!syncState.syncModeComponentId || dismissedId != syncState.syncModeComponentId) return\n',
+    '')),
+  '比对')
+
+  // c3 呈现提到收尾手脚之前（去抖占满时同步回调 → TDZ）
+  check('c3 呈现移到手脚接好之前', () => syncWatchdogInvariants(tamper(REAL.sync,
+    "    global.app_event.on('selectSyncMode', handleSelectMode)\n",
+    "    global.app_event.on('selectSyncMode', handleSelectMode)\n    showSyncModeModal(handleUnavailable)\n")),
+  '呈现在前')
+
+  // c4 present() 入口的重复呈现守卫被删
+  check('c4 present 入口守卫被删', () => presentGuardInvariants(tamper(REAL.utils,
+    '    if (syncState.syncModeComponentId) return\n    try {',
+    '    try {')),
+  '绝不再呈现第二个')
+
+  // c5 卸载上报不看 syncModeSelecting（用户刚作答就被收回）
+  check('c5 卸载上报越界', () => syncWatchdogInvariants(tamper(REAL.sync,
+    '  if (!syncModeSelecting) return\n',
+    '')),
+  '越过 syncModeSelecting 判据')
+
+  // c6 选择框卸载不再上报（锚点只取调用那行：它前后都是中文注释，跨行锚点会命中不到）
+  check('c6 选择框卸载不上报', () => modalInvariants(tamper(REAL.modal,
+    '      handleSyncModeModalUnmounted()\n',
+    '')),
+  '卸载不上报')
+
+  // c7 某个动作不再写状态行（点了下面那行字纹丝不动）
+  check('c7 某个动作不再写状态行', () => syncPageInvariants(tamper(REAL.page,
+    "      setSyncMessage('歌单同步完成')\n",
+    '')),
+  '状态行写入次数')
+
+  // c8 状态文案回显服务器地址（第 25 轮凭据口径）
+  check('c8 状态文案回显地址', () => syncPageInvariants(tamper(REAL.page,
+    "      setSyncMessage('连接成功')\n",
+    "      setSyncMessage('连接成功 https://example.invalid/x')\n")),
+  '不得回显')
+
+  return results
+}
+
+// ---------------------------------------------------------------------------
+// 主流程
+// ---------------------------------------------------------------------------
+
+console.log('=== sim-sync-mode-modal-watchdog ===')
+
+const checks = [
+  ['event.ts：onAnyModalDismissed（交回被关掉的 componentId，不闭包 id）', () => anyDismissedInvariants(REAL.events)],
+  ['core/sync.ts：看门狗改语义 + 呈现次序 + 卸载上报', () => syncWatchdogInvariants(REAL.sync)],
+  ['utils.ts：present() 入口的「绝不叠第二个」守卫', () => presentGuardInvariants(REAL.utils)],
+  ['SyncModeModal：卸载上报 + 未知类型自撤', () => modalInvariants(REAL.modal)],
+  ['设置页：六个动作各自写三句状态，且文案不含地址账号', () => syncPageInvariants(REAL.page)],
+]
+
+let invOk = true
+for (const [name, fn] of checks) {
+  const reasons = fn()
+  if (reasons.length === 0) {
+    console.log(`\n[${name}]\n  PASS`)
+  } else {
+    invOk = false
+    console.log(`\n[${name}]`)
+    reasons.forEach(r => console.log('  FAIL ' + r))
+  }
+}
+
+console.log('\n[反例自检]')
+const ceResults = runCounterExamples()
+let ceAllOk = true
+for (const r of ceResults) {
+  console.log(`  ${r.ok ? 'PASS' : 'FAIL'} ${r.name} —— ${r.ok ? '已拦下' : `未拦下（reasons=${JSON.stringify(r.detail)}）`}`)
+  if (!r.ok) ceAllOk = false
+}
+
+const allOk = invOk && ceAllOk
+console.log(`\n结果：${allOk ? 'ALL PASS' : '有失败项'}（不变量 ${checks.length}/${checks.length}；反例 ${ceResults.filter(r => r.ok).length}/${ceResults.length}）`)
+process.exit(allOk ? 0 : 1)
