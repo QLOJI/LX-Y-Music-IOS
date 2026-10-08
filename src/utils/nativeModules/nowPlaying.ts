@@ -49,24 +49,16 @@ const hasMethod = <K extends keyof NativeNowPlayingModule>(method: K) => {
   return Platform.OS == 'ios' && typeof NowPlayingModule?.[method] == 'function'
 }
 
-// 【第 33 轮第 4 条】「与其他应用同时播放」勾选期间**退出灵动岛 / 锁屏卡片占用**：
-// 只抑制元数据发布这一个出口；play / pause / stop / 歌词 / 重锚五个桥一律照旧 ——
-// 原生那条时钟（LXNowPlayingLyricStep）同时承担「前台 4Hz 位置事件 → JS 进度条」的
-// 枢纽职责，砍掉状态桥会让前台进度条失去唯一驱动源。
-// 元数据不发布 ⇒ 原生 info 缓存保持为空 ⇒ 系统不再展示本应用的播放卡片（第 24 轮
-// 实机反馈里的「勾选后卡片消失」现象在本轮由需求反转为**期望**：用户第 33 轮第 4 条
-// 原话「勾选后，退出灵动岛占用」）。
-let nowPlayingInfoSuppressed = false
-
-/** 【第 33 轮第 4 条】切换「与其他应用同时播放」时由 plugins/player/index.ts 下发 */
-export const setNowPlayingInfoSuppressed = (suppressed: boolean) => {
-  nowPlayingInfoSuppressed = suppressed
-}
-
+// 【第 34 轮第 2 条】第 33 轮第 4 条在这里做过一版「勾选『与其他应用同时播放』就整条抑制
+// 元数据发布」的实现（原话「勾选后，退出灵动岛占用」），代价是**锁屏播放器也一起消失**
+// —— 同一个 Now Playing 会话既是锁屏卡片也是灵动岛播放器的来源，公开 API 无法只关其中一个
+//（第 33 轮交付物里已把这条例外写明）。本轮用户把需求改了：勾选后要「显示锁屏播放器界面」
+// 且「还是保留同时播放功能」，于是抑制这条路径整体撤掉 —— 元数据照常发布，
+// 勾选态下锁屏播放器回来；「前台不显示灵动岛播放器 / 切后台灵动岛与锁屏都显示」
+// 本来就由系统按前后台自动决定，不需要（也不能）由代码开关。
+// 元数据发布是唯一出口，play / pause / stop / 歌词 / 重锚五个桥与音频会话分类一概不动：
+// 原生那条时钟（LXNowPlayingLyricStep）同时承担「前台 4Hz 位置事件 → JS 进度条」的枢纽职责。
 export const updateNowPlayingInfo = async(metadata: NowPlayingInfoMetadata) => {
-  // 【第 33 轮第 4 条】勾选期间不发：卡片已在切换的那一刻清掉，这里保证它不再被建回来
-  //（取消勾选由 syncPlayWithOthersEnabled 按当前曲目重新发布）。
-  if (nowPlayingInfoSuppressed) return
   if (!hasMethod('updateNowPlayingInfo')) return
   return NowPlayingModule?.updateNowPlayingInfo?.(metadata)
 }

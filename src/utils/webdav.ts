@@ -41,6 +41,23 @@ function withTimeout<T>(p: Promise<T>, ms: number, message: string): Promise<T> 
   })
 }
 
+// 【第 34 轮第 1 条】歌单 / 设置 / 音源三类同步文件的读写超时。
+// 用户原话：「点击测试连接和立即同步歌单按钮后没有任何反馈和成功或者失败的提示，需要添加提示」。
+// 第 33 轮只给「测试连接」补了超时与提示，**文件读写这一路仍然没有超时** —— 而「立即同步歌单」
+// 的第一步就是 downloadFile(playlists.json)：
+//   · 服务器 TCP 连得上但不回包（半死 / 中间设备静默丢包 / 这个 WebDAV 服务端卡住）时，
+//     webdav 客户端的 Promise 永不 settle ⇒ 界面只有一句「开始同步歌单...」，
+//     之后既没有成功也没有失败提示，按钮一直转（用户看到的就是「没有任何反馈」）；
+//   · 更糟的是 webdavSync 的模块级 isSyncing 一直是 true ⇒ 之后每次点「立即同步歌单」
+//     都只回一句「正在同步中，请稍后...」，六个按钮全部名存实亡（第 33 轮修过的那类死锁）。
+// 这三个文件都是几十 KB 级的 JSON，超时给足量级即可；到点一律按失败上报，让调用方给出提示。
+const DOWNLOAD_TIMEOUT_MS = 30000
+const UPLOAD_TIMEOUT_MS = 60000
+const STAT_TIMEOUT_MS = 20000
+
+/** 把毫秒写成「30 秒」这种人话（提示文案里用） */
+const secText = (ms: number) => `${Math.round(ms / 1000)} 秒`
+
 /**
  * 测试连接（第 33 轮第 3 条：用户原话「点击测试连接后没有任何提示连接成功或者失败文字」）。
  *
@@ -118,11 +135,18 @@ export async function uploadFile(path: string, content: string): Promise<void> {
   const dirPath = path.substring(0, path.lastIndexOf('/'))
 
   // 2. 确保目录存在
-  await ensureDirectoryExists(cli, dirPath)
-
   // 3. 上传文件
-  webDAVLog.info(`All directories exist. Uploading file to ${path}...`)
-  await cli.putFileContents(path, content, { overwrite: true })
+  // 【第 34 轮第 1 条】整个「建目录 + 上传」套一个总超时（建目录是逐级 exists/createDirectory
+  // 的多次请求，任何一次卡住都会把整趟同步挂死，见上面的常量说明）。
+  await withTimeout(
+    (async() => {
+      await ensureDirectoryExists(cli, dirPath)
+      webDAVLog.info(`All directories exist. Uploading file to ${path}...`)
+      await cli.putFileContents(path, content, { overwrite: true })
+    })(),
+    UPLOAD_TIMEOUT_MS,
+    `上传超时（${secText(UPLOAD_TIMEOUT_MS)}内没有完成）`,
+  )
 }
 
 /**
@@ -134,7 +158,13 @@ export async function downloadFile(path: string): Promise<string | null> {
   if (!cli) throw new Error('WebDAV 未配置')
   try {
     webDAVLog.info(`Attempting to download file: ${path}`)
-    return await cli.getFileContents(path, { format: 'text' })
+    // 【第 34 轮第 1 条】下载也要有超时，否则「立即同步歌单」会永远停在「开始同步歌单...」
+    //（超时原因说明见文件顶部常量）。404/409 这类「文件不存在」照旧由下面的 catch 判定。
+    return await withTimeout(
+      cli.getFileContents(path, { format: 'text' }) as Promise<string>,
+      DOWNLOAD_TIMEOUT_MS,
+      `下载超时（${secText(DOWNLOAD_TIMEOUT_MS)}内没有响应）`,
+    )
   } catch (error: any) {
     if (error.status === 404 || error.status === 409) {
       // 【第 28 轮】原话是 "downloadFile: File not found on server: xxx"，用户直接把它读成了
@@ -158,7 +188,12 @@ export async function getStat(path: string): Promise<any | null> {
   const cli = await getClient()
   if (!cli) throw new Error('WebDAV 未配置')
   try {
-    return await cli.stat(path) as Promise<FileStat>
+    // 【第 34 轮第 1 条】stat 同样套超时（原因见文件顶部常量）
+    return await withTimeout(
+      cli.stat(path) as Promise<FileStat>,
+      STAT_TIMEOUT_MS,
+      `读取文件状态超时（${secText(STAT_TIMEOUT_MS)}内没有响应）`,
+    )
   } catch (error: any) {
     if (error.status === 404 || error.status === 409) {
       webDAVLog.info(`getStat: File or path not found for "${path}", returning null.`)
