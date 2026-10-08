@@ -36,6 +36,48 @@ const runWithLimit = async(fn: () => Promise<string>): Promise<string> => {
   })
 }
 
+/**
+ * 【第 34 轮第 3 条】单张封面的获取超时（用户原话「会出现加载在线封面因为一个或者几个
+ * 刷新不出来而不会加载后面歌曲封面的情况，请保证全部加载出封面，如果个别几个加载不出来就算了」）。
+ *
+ * 病根：getPicPath 走的是「音源 SDK 起 HTTP 请求 → 拿 URL」这条路，SDK 内部没有任何超时，
+ * 只要某一首的请求在底层卡住（服务器半死、TCP 连上不回包），它返回的 Promise 就永不 settle。
+ * 于是：
+ *   ① 这个 key 的 coverInflight 永远留着 —— 该行封面永远转圈；
+ *   ② 更糟的是 runWithLimit 的并发槽位被它占死（4 个槽位卡掉 1 个就少 25% 吞吐，
+ *      卡满 4 个则整份列表的封面全部停摆，后面几百首一首都不会再加载）；
+ *   ③ WebDAV 列表的 prefetchCovers 里 `await Promise.all(tasks)` 等的是整批任务，
+ *      一个不 settle 的任务会把整轮巡检永久卡在那一批上。
+ * 「个别几个加载不出来就算了」的工程含义就是：到点按「没拿到封面」返回空串，
+ * 让 inflight 落地、让槽位释放、让后面的歌曲继续排队 —— 宁可这一行没封面，也不许堵死整列。
+ */
+const COVER_FETCH_TIMEOUT_MS = 15000
+
+/** 给封面任务套超时：超时按「没拿到封面」返回空串（原 Promise 的后续 settle 被忽略）。 */
+const withCoverTimeout = (p: Promise<string>, ms: number): Promise<string> =>
+  new Promise<string>((resolve) => {
+    let settled = false
+    const timer = setTimeout(() => {
+      if (settled) return
+      settled = true
+      resolve('')
+    }, ms)
+    p.then(
+      (value) => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        resolve(value)
+      },
+      () => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        resolve('')
+      },
+    )
+  })
+
 interface CoverSong { source: string, name: string, singer: string }
 
 const keyOf = (song: CoverSong): string =>
@@ -76,8 +118,13 @@ export const fetchCoverUrl = async(
   const inflight = coverInflight.get(key)
   if (inflight) return inflight
 
+  // 【第 34 轮第 3 条】超时包在**入队任务的内部**：只有任务真的 settle 了，runWithLimit 的
+  // finally 才会跑、槽位才会让给下一个任务（包在外面等于槽位照样被占死）。
   const task = runWithLimit(async() =>
-    getPicPath({ musicInfo: song as LX.Music.MusicInfo, isRefresh: options?.isRefresh === true }),
+    withCoverTimeout(
+      getPicPath({ musicInfo: song as LX.Music.MusicInfo, isRefresh: options?.isRefresh === true }),
+      COVER_FETCH_TIMEOUT_MS,
+    ),
   )
     .then((url) => {
       // getPicPath 的类型标的是 string，但运行期它会把上游（音源 SDK / 网盘 meta）拿到的值原样带出来：

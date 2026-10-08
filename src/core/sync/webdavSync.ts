@@ -16,6 +16,51 @@ import {
   saveDownloadTasks,
 } from '@/utils/data/download'
 import downloadState from '@/store/download/state'
+// 【第 34 轮第 1 条】与「同步服务地址」（LX 同步服务）那套的互斥窗口，见下方 waitForListNegotiation
+import { isListNegotiating } from '@/plugins/sync'
+
+// ---------------------------------------------------------------------------
+// 【第 34 轮第 1 条】两套同步的「互不相互影响」
+//
+// 用户原话：「请判断 WebDAV 同步和同步服务地址同步是否有冲突，使其独立不相互影响」。
+// 判断结论：**确实存在一处真实冲突**，不在网络层而在数据层 —— 两套同步都在写同一份本地歌单，
+// 而且都用「全量覆盖」（本文件是 overwriteListFull，LX 那边是 list_data_overwrite），
+// 但 LX 同步服务这一侧是**带协商的**：
+//   socket 打开 → 客户端上报本地歌单的 md5 → 服务端拿自己的数据比对 →
+//   可能反过来问客户端「同步方式」（合并 / 覆盖）→ 再拉取 / 下发全量歌单 → finished()。
+// 从「上报 md5」到「完成」这段窗口里，本地歌单被 WebDAV 同步改写会发生两件坏事：
+//   ① 服务端据 md5 得出的「谁更新 / 要不要合并」结论对不上真实数据；
+//   ② 这段窗口里 LX 客户端还没注册本地变更事件（list_sync_finished 之后才注册），
+//      所以 WebDAV 写进去的新数据不会被推送给服务端 —— 服务端的快照从此是旧的。
+// 所以让行规则是：**LX 那边处于歌单协商窗口时，WebDAV 这边不碰歌单**。
+//   · 手动（立即同步歌单 / 上传歌单 / 下载歌单）：先等窗口结束（有界 15 秒，等待期间给提示）；
+//     等不到就明确告诉用户稍后再试，不硬闯；
+//   · 自动（3 秒去抖 / 冷启动补同步）：本就在下面 debouncedSync 里让行，等不到就下一轮再来；
+//     本地未同步的变更记在 opQueue 里（持久化、跨进程存活），不会因为这一轮没同步而丢。
+// 窗口之外（包括两套同步都连着、都空闲时）互不干扰：LX 客户端在 finished() 之后会注册
+// 本地变更事件，WebDAV 写进去的歌单会被它当作本地变更推给服务端，两边自然收敛。
+// ---------------------------------------------------------------------------
+const LX_NEGOTIATION_WAIT_MAX_MS = 15000
+const LX_NEGOTIATION_POLL_MS = 500
+const sleep = (ms: number) => new Promise<void>((resolve) => { setTimeout(resolve, ms) })
+
+/**
+ * 让「同步服务地址」的歌单协商先跑完。
+ * @returns true = 现在可以动本地歌单；false = 对方还在协商，本次让行（手动已给提示）
+ */
+async function waitForListNegotiation(isManual: boolean): Promise<boolean> {
+  if (!isListNegotiating()) return true
+  webDAVLog.info('[Sync] LX sync service is negotiating lists, WebDAV sync steps aside for now.')
+  if (isManual) toast('正在等待「同步服务地址」完成歌单协商...')
+  const deadline = Date.now() + LX_NEGOTIATION_WAIT_MAX_MS
+  while (isListNegotiating() && Date.now() < deadline) {
+    await sleep(LX_NEGOTIATION_POLL_MS)
+  }
+  if (!isListNegotiating()) return true
+  webDAVLog.warn('[Sync] LX sync service still negotiating, skip this turn.')
+  if (isManual) toast('「同步服务地址」仍在协商歌单，请稍后再试', 'long')
+  return false
+}
 
 let listsChanged = false
 let isSyncing = false
@@ -38,6 +83,14 @@ void loadOperationQueue()
 
 const debouncedSync = debounce(() => {
   if (!settingState.setting['sync.webdav.enable'] || !settingState.setting['sync.webdav.syncLists']) return
+  // 【第 34 轮第 1 条】「同步服务地址」正在协商歌单 → 本轮让行，3 秒后再看一次。
+  // 不在这里丢改动：listsChanged 保持置位（下面 .finally 里才清），opQueue 也还在，
+  // 等协商窗口结束（服务端 finished() 或窗口封顶 90 秒到期）自然会同步上去。
+  if (isListNegotiating()) {
+    webDAVLog.info('[Sync] LX sync service is negotiating lists, auto sync re-queued.')
+    debouncedSync()
+    return
+  }
   if (listsChanged) {
     void triggerWebDAVSync(false).finally(() => {
       listsChanged = false
@@ -330,6 +383,8 @@ export async function manualUploadLists() {
     toast('请先启用并配置 WebDAV 同步')
     return
   }
+  // 【第 34 轮第 1 条】「同步服务地址」正在协商歌单时让行（说明见 waitForListNegotiation）
+  if (!await waitForListNegotiation(true)) return
 
   const confirm = await confirmDialog({
     title: '确认上传歌单',
@@ -364,6 +419,8 @@ export async function manualDownloadLists() {
     toast('请先启用并配置 WebDAV 同步')
     return
   }
+  // 【第 34 轮第 1 条】「同步服务地址」正在协商歌单时让行（说明见 waitForListNegotiation）
+  if (!await waitForListNegotiation(true)) return
 
   const confirm = await confirmDialog({
     title: '确认下载歌单',
@@ -405,6 +462,9 @@ export async function triggerWebDAVSync(isManual = false) {
     if (isManual) toast('请先启用并配置 WebDAV 同步')
     return
   }
+
+  // 【第 34 轮第 1 条】让行闸门放在确认对话框之前：不能先让用户确认「覆盖」再告诉他等一等
+  if (!await waitForListNegotiation(isManual)) return
 
   const remoteListsPath = getRemoteListsFilePath()
 
