@@ -132,7 +132,35 @@ const GROUP_A = [
   ['utils：有挂载复查代次 syncModeModalSeq（初值 0）',
     (s) => /let syncModeModalSeq = 0/.test(s.utils)],
   ['utils：导出 cancelSyncModeModalRetries（代次 +1）',
-    (s) => /export const cancelSyncModeModalRetries = \(\) => \{\s*\n\s*syncModeModalSeq \+= 1\s*\n\}/.test(s.utils)],
+    // 第 34 轮该函数体多了「放掉去抖占位」一句，断言只钉「导出 + 首句代次 +1」，
+    // 后半段由下面那条专门钉（钉太死会让注释/追加语句误伤）。
+    (s) => /export const cancelSyncModeModalRetries = \(\) => \{\s*\n\s*syncModeModalSeq \+= 1/.test(s.utils)],
+  // 【第 34 轮第 1 条】新增：取消复查时一并放掉「呈现去抖」占位。
+  // 服务端连着问「歌单同步方式」和「不喜欢列表同步方式」时，第二个问题进来时占位还在
+  // （500ms 定时器没到点）⇒ showSyncModeModal 直接 return ⇒ 那个问题永远没人回答、
+  // Promise 永不 settle ⇒ 服务端一直等、客户端死卡 'Wait syncing...'。
+  ['utils：取消复查时一并放掉去抖占位 pendingOverlays（否则后一个问题被静默吞掉）',
+    (s) => {
+      const fn = sliceBy(s.utils, 'export const cancelSyncModeModalRetries = () => {', '\n}')
+      return fn.length > 0 && /pendingOverlays\.delete\(SYNC_MODE_MODAL\)/.test(fn) &&
+        fn.indexOf('syncModeModalSeq += 1') < fn.indexOf('pendingOverlays.delete(SYNC_MODE_MODAL)')
+    }],
+  // 【第 34 轮第 1 条】新增：呈现不可用时必须上报调用方（core/sync 据此 reject 问询）。
+  // 以前这两条路径都是「什么都不做就 return」——用户看不到提示、服务端等不到回答，
+  // 界面与「正常等待用户选择」长得一模一样（就是那串 'Wait syncing...'）。
+  ['utils：去抖占位久占不放 → 按「呈现不可用」上报（不再静默吞掉）',
+    (s) => /if \(guardRetryCount < 3\) \{[\s\S]{0,320}?console\.error\('\[SyncMode\] overlay debounce occupied, give up'\)[\s\S]{0,80}?onUnavailable\?\.\(\)/.test(s.utils)],
+  ['sync：showSyncModeModal 的失败回调会 reject 掉这次问询（服务端据此中止，不再干等）',
+    (s) => {
+      const call = /showSyncModeModal\(handleUnavailable\)/.test(s.sync)
+      const body = sliceBy(s.sync, 'function handleUnavailable()', "reject(new Error('sync mode modal unavailable'))")
+      return call && body.length > 0 &&
+        /if \(settled\) return/.test(body) &&   // 已作答就不该再 settle 一次
+        /removeListeners\(\)/.test(body) &&     // 收尾：撤监听 + 复位 selecting
+        /setSyncMessage\('同步方式选择框未能显示/.test(body)  // 界面必须留言，不能一片死寂
+    }],
+  ['sync：等待作答期间状态文案写明确（不再是连接建立时那句 Wait syncing... 死等提示）',
+    (s) => /setSyncMessage\('等待选择同步方式\.\.\.'\)/.test(s.sync) && /\bsyncModeSelecting = true\b/.test(s.sync)],
   ['utils：每次呈现取一个代次（seq = ++syncModeModalSeq）',
     (s) => /const seq = \+\+syncModeModalSeq/.test(s.utils)],
   ['utils：复查延时 1000ms / 重试间隔 700ms / 上限 5 次',
@@ -148,9 +176,17 @@ const GROUP_A = [
   ['utils：showOverlay 的 reject 与静默失败走同一条重试路径',
     (s) => /\.catch\(\(err\) => \{\s*\n\s*handleFail\(attempt, err\)/.test(s.utils)],
   ['utils：重试有上限（attempt >= maxAttempts 停手），首次呈现是 present(1)',
-    (s) => /if \(attempt >= maxAttempts\) return/.test(s.utils) &&
+    // 第 34 轮「停手」不再是裸 return —— 变成「上报 onUnavailable + return」块
+    //（上报那条由下面专门钉），这里只钉上限判断存在 + 重试走 present(attempt + 1) + 首次 present(1)
+    (s) => /if \(attempt >= maxAttempts\) \{/.test(s.utils) &&
       /setTimeout\(\(\) => \{[\s\S]{0,200}?present\(attempt \+ 1\)[\s\S]{0,40}?\}, retryDelay\)/.test(s.utils) &&
       /present\(1\)\s*\n\}/.test(s.utils)],
+  ['utils：重试用尽 → onUnavailable 上报（不再静默 return —— 弹不出来与永远等待必须可区分）',
+    (s) => {
+      const body = sliceBy(s.utils, 'if (attempt >= maxAttempts) {', 'onUnavailable?.()')
+      return body.length > 0 && body.indexOf('onUnavailable?.()') > 0 &&
+        /give up presenting overlay/.test(body)
+    }],
   ['utils：重试 tick 也先复查代次（作废发生在 700ms 窗口里也不再补弹）',
     (s) => /setTimeout\(\(\) => \{[\s\S]{0,200}?if \(seq !== syncModeModalSeq\) return[\s\S]{0,120}?present\(attempt \+ 1\)/.test(s.utils)],
   ['sync：closeSyncModeModal 关掉旧框并清 componentId',
@@ -412,6 +448,31 @@ const n18 = mutated(SRC_D, 'data',
   '`${storageDataPrefix.musicUrl}request_quality__${musicInfo.id}_${type}`',
   '`${storageDataPrefix.lyric}request_quality__${musicInfo.id}_${type}`')
 
+// n19: utils 的第 34 轮修复回退 —— 取消复查时不放掉去抖占位（第二个问题被静默吞掉 → Wait syncing...）
+const n19 = mutated(SRC_A, 'utils',
+  '  pendingOverlays.delete(SYNC_MODE_MODAL)\n}',
+  '}')
+// n20: utils 去抖占位久占时又退回静默 return（用户既看不到提示、服务端也等不到回答）
+const n20 = mutated(SRC_A, 'utils',
+  '    onUnavailable?.()\n    return\n  }\n  guardRetryCount = 0',
+  '    return\n  }\n  guardRetryCount = 0')
+// n21: utils 重试用尽又退回静默 return（「弹不出来」与「永远等待」再次长得一样）
+const n21 = mutated(SRC_A, 'utils',
+  '      onUnavailable?.()\n      return',
+  '      return')
+// n22: sync 的失败回调不再 reject（服务端干等一个永远不会到来的回答）
+const n22 = mutated(SRC_A, 'sync',
+  "      reject(new Error('sync mode modal unavailable'))",
+  '      return')
+// n23: sync 等待作答时不写状态文案（界面继续挂着死等提示）
+const n23 = mutated(SRC_A, 'sync',
+  "    setSyncMessage('等待选择同步方式...')",
+  '    // setSyncMessage removed')
+// n24: sync 呈现时不再接失败回调（第 34 轮的上报通道整条断开）
+const n24 = mutated(SRC_A, 'sync',
+  'showSyncModeModal(handleUnavailable)',
+  'showSyncModeModal()')
+
 // —— 输出 ——
 console.log('='.repeat(92))
 console.log('「同步选择框 / 搜索浮层 / 预加载 10 秒闸」契约模型（摘自源码，静态解析）')
@@ -454,6 +515,12 @@ neg('反例 n15：musicUtils 退回一律直读请求档（缓存穿透），被
 neg('反例 n16：缓存命中谎报请求档（低档链接标成 flac），被 D 判红', n16.changed && caught(GROUP_D, n16.m))
 neg('反例 n17：预取取链改带显式档（不走天梯 → 永不写映射），被 D 判红', n17.changed && caught(GROUP_D, n17.m))
 neg('反例 n18：映射键离开 musicUrl 前缀（孤儿键，清缓存清不掉），被 D 判红', n18.changed && caught(GROUP_D, n18.m))
+neg('反例 n19：取消复查不放去抖占位（连问两个同步方式时第二个被吞），被 A 判红', n19.changed && caught(GROUP_A, n19.m))
+neg('反例 n20：去抖占位久占退回静默 return（问题问不出来还没人知道），被 A 判红', n20.changed && caught(GROUP_A, n20.m))
+neg('反例 n21：重试用尽退回静默 return（弹不出来 ≡ 永远等待），被 A 判红', n21.changed && caught(GROUP_A, n21.m))
+neg('反例 n22：失败回调不 reject（服务端干等无人回答），被 A 判红', n22.changed && caught(GROUP_A, n22.m))
+neg('反例 n23：等待作答时不写状态文案（界面继续挂死等提示），被 A 判红', n23.changed && caught(GROUP_A, n23.m))
+neg('反例 n24：呈现时不接失败回调（上报通道断开），被 A 判红', n24.changed && caught(GROUP_A, n24.m))
 
 console.log()
 for (const r of results) {

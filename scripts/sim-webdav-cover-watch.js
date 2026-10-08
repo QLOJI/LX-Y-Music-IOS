@@ -66,6 +66,23 @@
  *      clearWebdavCoverMiss）、单取一次；不碰轮次、不清别人进度。本脚本不变量⑤与反例 c27–c30
  *      钉住这条分工（含「不许出现 prefetchCovers( / clearWebdavCoverMisses(」）。
  *
+ * 第 34 轮补记（用户图三「列表滑动到最后继续向上滑时会出现抽动……而且会出现加载在线封面
+ * 因为一个或者几个刷新不出来而不会加载后面歌曲封面的情况，请保证全部加载出封面」）：
+ *   两个症状，两个独立的病根，都在同一条链路上：
+ *   ① 抽动 —— getItemLayout 报的行高比真实值小一个 marginBottom。卡片自身高 ITEM_HEIGHT，
+ *      下面还挂着 styles.songItem.marginBottom = designSpacing.sm(12pt)，一个单元格占的是两者
+ *      之和。FlatList 拿 length/offset 算「内容总高 / 可视窗口 / 滚动偏移」，逐行少 12pt 后
+ *      到第 300 行就少 3600pt（≈ 42 行）—— removeClippedSubviews 在列表末尾按错的窗口卸载/
+ *      回挂单元格，内容高度反复收缩，用户看到的就是「向上滑的过程中出现间断的向下滑」。
+ *      本脚本不变量 D①③ 钉住 length 与 offset 同源、且来源就是 songItem 的实测几何。
+ *   ② 后面不再加载 —— 两层堵死，缺任一层都复发：
+ *      a) getPicPath 走音源 SDK 的 HTTP，SDK 内部没有超时：一首卡住就永不 settle，占死
+ *         runWithLimit 的 4 个并发槽位之一（卡满 4 个 → 整列一首都不再加载）。所以在**入队任务
+ *         的内部**套 withCoverTimeout(15s)：到点按「没拿到封面」resolve 空串，槽位释放
+ *         （包在 runWithLimit 外面等于槽位照样被占死 —— 不变量 D② 钉的就是「包在里面」）。
+ *      b) 整批的 `await Promise.all(tasks)` 等的是「这批都成功」：一个永不 settle 的任务让这一批
+ *         永远返回不了，循环不再往下走，后面几百首一批都不推进。改成 allSettled（不变量 D④）。
+ *
  * 为什么必须靠契约脚本：「整表分批 / 先探活再当缺失 / 每轮清备忘 / 刷新带 isRefresh /
  * onError 只重试一次 / 按钮不再被 disabled 吞掉 / 失败一定有日志和提示」全是形状与顺序，
  * 不是类型 —— 把 file:// 校验删掉、把清备忘删掉、把分批换回前 20 首、把 isRefresh 去掉、
@@ -95,6 +112,9 @@ const F = {
   action: 'src/screens/Home/Views/WebDAV/WebDAVListAction.ts',
   local: 'src/core/music/local.ts',
   coverUrl: 'src/core/music/coverUrl.ts',
+  // 【第 34 轮】行高数值模型的来源（不变量 D ③ 要拿真实令牌算「逐行少多少」）
+  tokens: 'src/theme/DesignTokens.ts',
+  constant: 'src/config/constant.ts',
 }
 
 const REAL = {}
@@ -402,6 +422,139 @@ const downloadButtonInvariants = (files) => {
 }
 
 // ---------------------------------------------------------------------------
+// 不变量 D（第 34 轮第 3 条）：末尾抽动（length/offset 与 songItem 实测几何同源）
+//   + 封面「一个卡住就拖死后面全部」的两层闸（入队任务内部超时 + 批次 allSettled）
+// ---------------------------------------------------------------------------
+
+// 数值模型的落点（给主流程打印用）
+const round34Numbers = { drift300: NaN, rows300: NaN, timeoutMs: NaN }
+
+const round34ListInvariants = (files) => {
+  const reasons = []
+  const page = stripComments(files.page)
+  const coverCode = stripComments(files.coverUrl)
+
+  // ① 行高常量 = 卡片高 + songItem 的下外边距（同一个来源，不许各算各的）
+  if (!page.includes('const ITEM_ROW_HEIGHT = ITEM_HEIGHT + designSpacing.sm')) {
+    reasons.push('getItemLayout 的行高常量不是「卡片高 + songItem 下外边距」（少加 marginBottom → 逐行累计偏移，列表末尾抽动）')
+  }
+  const songItem = slice(page, '  songItem: {', '  songItemLeft: {')
+  if (!songItem) {
+    reasons.push('styles.songItem 切片失败（锚点漂移：songItem / songItemLeft —— 行高来源无法核对）')
+  } else {
+    if (!songItem.includes('height: ITEM_HEIGHT,')) {
+      reasons.push('styles.songItem 的高度不再是 ITEM_HEIGHT（行高常量与真实卡片几何脱钩）')
+    }
+    if (!songItem.includes('marginBottom: designSpacing.sm,')) {
+      reasons.push('styles.songItem 的下外边距不再是 designSpacing.sm（行高常量与真实行距脱钩）')
+    }
+  }
+
+  // ② getItemLayout：length 与 offset 同源，且都用实测行高
+  const layout = slice(page, 'getItemLayout={(data, index) => ({', '})}')
+  if (!layout) {
+    reasons.push('getItemLayout 切片失败（锚点漂移）')
+  } else {
+    if (!layout.includes('length: ITEM_ROW_HEIGHT,')) {
+      reasons.push('getItemLayout 的 length 不是实测行高 ITEM_ROW_HEIGHT（FlatList 认为的行高比真实值小）')
+    }
+    if (!layout.includes('offset: ITEM_ROW_HEIGHT * Math.floor(index / numColumns),')) {
+      reasons.push('getItemLayout 的 offset 不是按实测行高逐行累计（与 length 不同源，滚动偏移整体偏小）')
+    }
+  }
+  if (page.includes('length: ITEM_HEIGHT,')) {
+    reasons.push('getItemLayout 又退回 length: ITEM_HEIGHT（第 34 轮第 3 条的老形状）')
+  }
+  if (!page.includes('removeClippedSubviews={true}')) {
+    reasons.push('列表不再 removeClippedSubviews（本条抽动的触发条件变了，请复核本不变量是否还成立）')
+  }
+
+  // ③ 数值模型：逐行少多少、到第 300 行累计多少（量级不是半像素，抽动才看得见）
+  const sm = (/export const designSpacing = \{[\s\S]*?\bsm: (\d+)/.exec(files.tokens ?? '') ?? [])[1]
+  const item = (/export const LIST_ITEM_HEIGHT = (\d+)/.exec(files.constant ?? '') ?? [])[1]
+  const smN = Number(sm)
+  const itemN = Number(item)
+  if (!Number.isFinite(smN) || smN <= 0) {
+    reasons.push('designSpacing.sm 读不到或为 0：行高公式退化成 ITEM_HEIGHT，本契约变成空转（令牌丢失比写错更难发现）')
+  } else if (!Number.isFinite(itemN) || itemN <= 0) {
+    reasons.push('LIST_ITEM_HEIGHT 读不到（行高数值模型无法成立）')
+  } else {
+    const drift = smN * 300
+    if (drift < itemN) {
+      reasons.push(`行高错位量级过小（第 300 行累计 ${drift}pt）—— 与本契约的前提不符，请复核令牌`)
+    }
+    round34Numbers.drift300 = drift
+    round34Numbers.rows300 = drift / (itemN + smN)
+  }
+
+  // ④ 分批推进用 allSettled（等「这批都结束」，不是「这批都成功」）
+  const sweep = slice(page, 'const prefetchedCoverIds = useRef(', 'const loadConfig = useCallback(')
+  if (!sweep) {
+    reasons.push('巡检实现体切片失败（锚点漂移：prefetchedCoverIds / loadConfig）')
+  } else {
+    if (!sweep.includes('await Promise.allSettled(tasks)')) {
+      reasons.push('批次之间不是 allSettled（一个永不 settle 的任务把这一批永久挂住，后面所有歌曲的封面全部不再加载）')
+    }
+    if (sweep.includes('await Promise.all(tasks)')) {
+      reasons.push('巡检又用回 await Promise.all(tasks)（第 34 轮第 3 条的老形状）')
+    }
+  }
+
+  // ⑤ 超时闸门：常量有界 + 包在入队任务内部 + 到点按「没拿到封面」落地 + 两条路径都清定时器
+  const msMatch = /const COVER_FETCH_TIMEOUT_MS = (\d+)/.exec(coverCode)
+  if (!msMatch) {
+    reasons.push('coverUrl.ts 没有单张封面的获取超时（一首卡住就占死并发槽位，整列封面停摆）')
+  } else {
+    const ms = Number(msMatch[1])
+    round34Numbers.timeoutMs = ms
+    if (!(ms >= 3000 && ms <= 60000)) {
+      reasons.push(`封面超时 ${ms}ms 不在合理区间 [3000, 60000]（太小把慢网全判成没封面，太大等于没有超时）`)
+    }
+  }
+  if (!coverCode.includes('const withCoverTimeout = (p: Promise<string>, ms: number): Promise<string> =>')) {
+    reasons.push('coverUrl.ts 没有 withCoverTimeout 助手（超时后的落地口径无处可查）')
+  } else {
+    const helper = slice(coverCode, 'const withCoverTimeout = (p: Promise<string>, ms: number): Promise<string> =>', 'interface CoverSong')
+    if (!helper) {
+      reasons.push('withCoverTimeout 切片失败（锚点漂移）')
+    } else {
+      if (!helper.includes("resolve('')")) {
+        reasons.push('withCoverTimeout 超时后不按「没拿到封面」返回空串（抛出去/挂着不落地，整批与槽位一起卡住）')
+      }
+      if (/\breject\b/.test(helper)) {
+        reasons.push('withCoverTimeout 里出现了 reject（超时必须静默落地成空串，不许把失败往上抛）')
+      }
+      // 超时那一条分支单独看：整个助手别处有 resolve('') 不算数（失败分支本来就有），
+      // 只有「到点」这条路径必须自己落地成空串、且不许 throw/reject。
+      const timeoutBranch = slice(helper, 'const timer = setTimeout(() => {', '}, ms)')
+      if (!timeoutBranch) {
+        reasons.push('withCoverTimeout 的超时分支切片失败（锚点漂移：setTimeout / ms）')
+      } else {
+        if (!timeoutBranch.includes("resolve('')")) {
+          reasons.push('withCoverTimeout 的超时分支不返回空串（到点了还往上抛/挂着不落地，整批与槽位一起卡住）')
+        }
+        if (/\bthrow\b|\breject\b/.test(timeoutBranch)) {
+          reasons.push('withCoverTimeout 的超时分支里出现 throw/reject（超时必须静默落地成空串，不许把失败往上抛）')
+        }
+      }
+      const clearCount = countOf(helper, 'clearTimeout(timer)')
+      if (clearCount < 2) {
+        reasons.push(`withCoverTimeout 只在 ${clearCount} 条路径上清定时器（成功 / 失败两条路径都要清，否则每张封面都留一个 15 秒定时器）`)
+      }
+    }
+  }
+  // 包在**入队任务的内部**：只有任务自己 settle，runWithLimit 的 finally 才会让出槽位
+  if (!coverCode.includes('const task = runWithLimit(async() =>\n    withCoverTimeout(')) {
+    reasons.push('超时没包在 runWithLimit 的任务内部（包在外面 = 槽位仍被永不 settle 的任务占死，并发被逐个吃光）')
+  }
+  if (!coverCode.includes('getPicPath({ musicInfo: song as LX.Music.MusicInfo, isRefresh: options?.isRefresh === true })')) {
+    reasons.push('入队任务里取封面的调用形状变了（isRefresh 透传或入参形状需复核）')
+  }
+
+  return reasons
+}
+
+// ---------------------------------------------------------------------------
 // 反例自检
 // ---------------------------------------------------------------------------
 
@@ -666,6 +819,88 @@ const runCounterExamples = () => {
   }),
   '半截文件')
 
+  // ---- 第 34 轮第 3 条：末尾抽动 + 封面全量加载 ----
+
+  // n34a length 退回卡片高（少算 marginBottom）
+  check('n34a getItemLayout 的 length 退回 ITEM_HEIGHT', round34ListInvariants({
+    ...REAL,
+    page: tamper(REAL.page, '          length: ITEM_ROW_HEIGHT,', '          length: ITEM_HEIGHT,'),
+  }),
+  'length 不是实测行高')
+
+  // n34b offset 与 length 不同源（滚动偏移整体偏小）
+  check('n34b offset 仍按卡片高累计', round34ListInvariants({
+    ...REAL,
+    page: tamper(REAL.page,
+      'offset: ITEM_ROW_HEIGHT * Math.floor(index / numColumns),',
+      'offset: ITEM_HEIGHT * Math.floor(index / numColumns),'),
+  }),
+  'offset 不是按实测行高逐行累计')
+
+  // n34c 行高常量少加一个行距
+  check('n34c 行高常量少加 marginBottom', round34ListInvariants({
+    ...REAL,
+    page: tamper(REAL.page,
+      'const ITEM_ROW_HEIGHT = ITEM_HEIGHT + designSpacing.sm',
+      'const ITEM_ROW_HEIGHT = ITEM_HEIGHT'),
+  }),
+  '行高常量不是')
+
+  // n34d 行距令牌归零（公式还在、数值退化，契约变成空转）
+  check('n34d designSpacing.sm 归零', round34ListInvariants({
+    ...REAL,
+    tokens: tamper(REAL.tokens, '  sm: 12,', '  sm: 0,'),
+  }),
+  '契约变成空转')
+
+  // n34e 分批退回 Promise.all（一个卡住拖死后面全部）
+  check('n34e 批次退回 Promise.all', round34ListInvariants({
+    ...REAL,
+    page: tamper(REAL.page, '        await Promise.allSettled(tasks)', '        await Promise.all(tasks)'),
+  }),
+  'allSettled')
+
+  // n34f 超时挪到 runWithLimit 外面（槽位照样被永不 settle 的任务占死）
+  check('n34f 超时挪到入队之外', round34ListInvariants({
+    ...REAL,
+    coverUrl: tamper(REAL.coverUrl,
+      '  const task = runWithLimit(async() =>\n    withCoverTimeout(\n      getPicPath({ musicInfo: song as LX.Music.MusicInfo, isRefresh: options?.isRefresh === true }),\n      COVER_FETCH_TIMEOUT_MS,\n    ),\n  )',
+      '  const task = withCoverTimeout(runWithLimit(() =>\n    getPicPath({ musicInfo: song as LX.Music.MusicInfo, isRefresh: options?.isRefresh === true }),\n  ), COVER_FETCH_TIMEOUT_MS)'),
+  }),
+  '没包在 runWithLimit 的任务内部')
+
+  // n34g 超时往上抛（不再落地成空串）
+  check('n34g 超时往上抛', round34ListInvariants({
+    ...REAL,
+    coverUrl: tamper(REAL.coverUrl,
+      "    const timer = setTimeout(() => {\n      if (settled) return\n      settled = true\n      resolve('')",
+      "    const timer = setTimeout(() => {\n      if (settled) return\n      settled = true\n      throw new Error('cover timeout')"),
+  }),
+  '不许把失败往上抛')
+
+  // n34h 成功路径不清定时器
+  check('n34h 成功路径不清定时器', round34ListInvariants({
+    ...REAL,
+    coverUrl: tamper(REAL.coverUrl,
+      '    p.then(\n      (value) => {\n        if (settled) return\n        settled = true\n        clearTimeout(timer)',
+      '    p.then(\n      (value) => {\n        if (settled) return\n        settled = true'),
+  }),
+  '条路径上清定时器')
+
+  // n34i 超时常量归零（setTimeout(…, 0) → 每张封面都立刻判成没封面）
+  check('n34i 超时常量归零', round34ListInvariants({
+    ...REAL,
+    coverUrl: tamper(REAL.coverUrl, 'const COVER_FETCH_TIMEOUT_MS = 15000', 'const COVER_FETCH_TIMEOUT_MS = 0'),
+  }),
+  '不在合理区间')
+
+  // n34j 超时常量整行删掉
+  check('n34j 没有超时常量', round34ListInvariants({
+    ...REAL,
+    coverUrl: tamper(REAL.coverUrl, 'const COVER_FETCH_TIMEOUT_MS = 15000\n\n', ''),
+  }),
+  '没有单张封面的获取超时')
+
   return results
 }
 
@@ -676,12 +911,14 @@ const runCounterExamples = () => {
 console.log('=== sim-webdav-cover-watch ===')
 console.log('WebDAV：封面时刻关注（整表分批巡检 + 失效本地封面重补 + 每轮清备忘 + 刷新复核最新 + 行内 onError 自愈）')
 console.log('        下载按钮按了有反应（响应式 hasConfig + 不被 disabled 吞 + 失败必有日志与提示）（第 29 轮）')
+console.log('        末尾抽动（getItemLayout 与 songItem 几何同源）+ 封面全量加载（入队任务内部超时 + 批次 allSettled）（第 34 轮第 3 条）')
 console.log()
 
 const checks = [
   ['条一①-④ 巡检整表分批 / file:// 探活与重补 / 每轮清备忘与已试 id / 刷新带 isRefresh（coverUrl.ts + local.ts 同步）', () => coverWatchInvariants(REAL)],
   ['条一⑤ 行内 onError 自愈（一次性重试 + 清 picUrl + 单首重补，且不新增 fetchCoverUrl 直调点）', () => inlineHealInvariants(REAL)],
   ['条二 下载按钮按了有反应（响应式 hasConfig / 不再被 disabled 吞 / 入口日志与 catch / 半截文件先删）', () => downloadButtonInvariants(REAL)],
+  ['第 34 轮第 3 条 末尾抽动（getItemLayout 的 length/offset 与 songItem 实测几何同源）+ 封面全量加载（入队任务内部 15s 超时落地成空串 + 批次 allSettled）', () => round34ListInvariants(REAL)],
 ]
 
 let invOk = true
@@ -697,6 +934,8 @@ for (const [name, fn] of checks) {
     ;[...new Set(reasons)].forEach((r) => console.log('  FAIL ' + r))
   }
 }
+
+console.log(`\n[数值模型·第 34 轮第 3 条] 单张封面超时 ${round34Numbers.timeoutMs}ms；行高错位：第 300 行累计少报 ${round34Numbers.drift300}pt（≈ ${Number(round34Numbers.rows300).toFixed(1)} 行）`)
 
 console.log('\n[反例自检]')
 const ceResults = runCounterExamples()

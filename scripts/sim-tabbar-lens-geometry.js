@@ -181,6 +181,31 @@ const runSourceInvariants = () => {
     S.lensJs.includes('setNativeProps?.({ followX: nextX })') &&
     S.lensJs.includes('if (Math.abs(nextX - lastFollowXRef.current) < 0.1) return'))
 
+  // ---------------- B7-B12. 静止锚点自愈 + B-7 会话看门狗（2026-10-08 用户报「椭圆与其中
+  //                  文字和图标没有中心对齐」） ----------------
+  // 病根不是几何（A/D 段已证明静止几何逐点相等），而是**状态脱钩**：x prop 只在「值变化」
+  // 时下发，跟手通道却把药丸中心写到任意位置 —— 任何一次丢收尾（pager 'idle' 被系统手势
+  // 抢占 / 转场吞掉 / 退后台丢掉）都会把脱钩状态永久留在屏幕上，因为它永远不会自愈。
+  // 补的两层：① 每次锚点输入变化重申静止位（走 x 通道，同位守卫保证零开销）；
+  //           ② B-7 跟手会话自己的看门狗（A-5 早有两条，这条一直没有）。
+  push('B7 LiquidLens 提供 setRestX 静止锚点自愈出口，且写的是 `x` 通道（followX 是 removeAllAnimations 直落，会把点击切页的淡入+抬起+弹簧打断成瞬移）',
+    S.lensJs.includes('setRestX: (x: number) => void') &&
+    /setRestX: \(nextX: number\) => \{[\s\S]{0,400}?setNativeProps\?\.\(\{ x: nextX \}\)/.test(S.lensJs))
+  push('B8 锚点输入变化就重申静止位（挂载 / 切 tab / 子页面归属 / 栏宽 / 收起展开 / 液态开关），A-5 会话期间让位',
+    /useEffect\(\(\) => \{\s*if \(!liquidGlassOn \|\| collapsed \|\| barWidth <= 0\) return\s*if \(dragArmedRef\.current \|\| draggingRef\.current\) return\s*lensRef\.current\?\.setRestX\(lensX\)\s*\}, \[lensX, resolvedActiveId, barWidth, collapsed, liquidGlassOn\]\)/.test(tab))
+  push('B9 B-7 会话看门狗存在，且记账口径是「无新帧 12s」的 debounce（不是会话总时长：按住不动时 pager 会停止发帧，阈值太小会误判成收尾丢失）',
+    tab.includes('const FOLLOW_SESSION_TIMEOUT_MS = 12000') &&
+    tab.includes('const followWatchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null)') &&
+    /const armFollowWatchdog = useCallback\(\(\) => \{\s*if \(followWatchdogRef\.current\) clearTimeout\(followWatchdogRef\.current\)\s*followWatchdogRef\.current = setTimeout\(\(\) => \{\s*followWatchdogRef\.current = null\s*if \(dragArmedRef\.current \|\| draggingRef\.current\) return\s*closePagerFollowSession\(\)\s*\}, FOLLOW_SESSION_TIMEOUT_MS\)\s*\}, \[closePagerFollowSession\]\)/.test(tab))
+  push('B10 记账三处齐全：跟手帧重新 arm / 会话开始 arm（与首帧顺序不保证）/ 正常收尾销毁',
+    /lensRef\.current\?\.setFollowX\(followX\)\s*armFollowWatchdog\(\)/.test(tab) &&
+    /if \(dragging\) \{[\s\S]{0,300}?armFollowWatchdog\(\)\s*\} else \{\s*if \(followWatchdogRef\.current\) \{\s*clearTimeout\(followWatchdogRef\.current\)\s*followWatchdogRef\.current = null\s*\}\s*snapLensToRestingSlot\(\)/.test(tab))
+  push('B11 兜底收尾 = 正常收尾同一套动作、同一顺序（锚回槽心 → 落回静止药丸 → 复位跟手去重；顺序换了会打断在途弹簧）',
+    /const closePagerFollowSession = useCallback\(\(\) => \{\s*snapLensToRestingSlot\(\)\s*lensRef\.current\?\.setLifted\(false\)\s*lensRef\.current\?\.endFollow\(\)\s*\}, \[snapLensToRestingSlot\]\)/.test(tab))
+  push('B12 A-5 接管（长按 arm）与卸载清理都销毁看门狗（不留一次凭空触发的收尾 / 不在已卸载组件上跑）',
+    /lastFollowXRef\.current = -1\s*if \(followWatchdogRef\.current\) \{\s*clearTimeout\(followWatchdogRef\.current\)\s*followWatchdogRef\.current = null\s*\}/.test(tab) &&
+    /if \(pressOutTimerRef\.current\) \{ clearTimeout\(pressOutTimerRef\.current\); pressOutTimerRef\.current = null \}\s*if \(followWatchdogRef\.current\) \{ clearTimeout\(followWatchdogRef\.current\); followWatchdogRef\.current = null \}/.test(tab))
+
   // ---------------- C. 原生形变：速度驱动 + 跳变剔除 ----------------
   const SW = ['sampleWindowDuration', 'speedScaleCoefficient', 'idleSpeedThreshold', 'maxScaleDeviation',
     'scaleSmoothingFactor', 'teleportDistance', 'maxSampleGap', 'sampleFreshness']
@@ -525,6 +550,51 @@ const tamper = [
     label: 'LiquidLensView 残留加速度驱动常量',
     file: 'lensSwift',
     mutate: (s) => s.replace('private let speedScaleCoefficient', 'private let accelerationScaleCoefficient'),
+  },
+  {
+    label: 'ModernTabBar 拆掉静止锚点自愈（脱钩状态永不自愈）',
+    file: 'tabBar',
+    mutate: (s) => s.replace('    lensRef.current?.setRestX(lensX)\n', ''),
+  },
+  {
+    label: 'ModernTabBar 自愈改走 followX 直落（点击切页的淡入+抬起+弹簧被打断成瞬移）',
+    file: 'tabBar',
+    mutate: (s) => s.replace('    lensRef.current?.setRestX(lensX)\n', '    lensRef.current?.setFollowX(lensX)\n'),
+  },
+  {
+    label: 'ModernTabBar 自愈不查 A-5 会话（在用户按住拖动时把药丸抢回槽心）',
+    file: 'tabBar',
+    mutate: (s) => s.replace('    if (dragArmedRef.current || draggingRef.current) return\n    lensRef.current?.setRestX(lensX)', '    lensRef.current?.setRestX(lensX)'),
+  },
+  {
+    label: 'LiquidLens 自愈出口改写 followX 通道（绕过同位守卫的弹簧语义）',
+    file: 'lensJs',
+    mutate: (s) => s.replace('setNativeProps?.({ x: nextX })', 'setNativeProps?.({ followX: nextX })'),
+  },
+  {
+    label: 'ModernTabBar 看门狗超时不收尾（丢收尾的药丸永远停在半路）',
+    file: 'tabBar',
+    mutate: (s) => s.replace('      closePagerFollowSession()\n    }, FOLLOW_SESSION_TIMEOUT_MS)', '    }, FOLLOW_SESSION_TIMEOUT_MS)'),
+  },
+  {
+    label: 'ModernTabBar 看门狗超时不让位 A-5（拖动中途被锚回槽心）',
+    file: 'tabBar',
+    mutate: (s) => s.replace('      if (dragArmedRef.current || draggingRef.current) return\n      closePagerFollowSession()', '      closePagerFollowSession()'),
+  },
+  {
+    label: 'ModernTabBar 跟手帧不再重新记账（长会话被当成收尾丢失，药丸中途弹回）',
+    file: 'tabBar',
+    mutate: (s) => s.replace('    armFollowWatchdog()\n  }), [armFollowWatchdog])', '  }), [armFollowWatchdog])'),
+  },
+  {
+    label: 'ModernTabBar 正常收尾不销毁看门狗（收尾后凭空多触发一次）',
+    file: 'tabBar',
+    mutate: (s) => s.replace('      if (followWatchdogRef.current) {\n        clearTimeout(followWatchdogRef.current)\n        followWatchdogRef.current = null\n      }\n      // 收尾重锚必须在 endFollow() 之前', '      // 收尾重锚必须在 endFollow() 之前'),
+  },
+  {
+    label: 'ModernTabBar 卸载不清看门狗',
+    file: 'tabBar',
+    mutate: (s) => s.replace('    if (followWatchdogRef.current) { clearTimeout(followWatchdogRef.current); followWatchdogRef.current = null }\n  }, [])', '  }, [])'),
   },
 ]
 

@@ -31,6 +31,14 @@
  *   三、消费链不许断：Home 启动 effect 读该键并 push 播放详情页；pushPlayDetailScreen 保留
  *       本工程特有的「没有正在播放的歌就不开页」守卫（防止空状态卡死，参考工程没有这一道，
  *       属于本工程的有意增强，不许为了「一比一」删掉）。
+ *       【第 34 轮第 2 条】消费点从一个变成两个：同一个开关还要覆盖「每次进入软件」——
+ *       用户原话「勾选"启动后打开播放详情页"选项后，设置为每次进入软件都会打开播放详情页，
+ *       而且会有一个跳转动画，动画时间和所有跳转动画时间一样，不然显示太僵硬了」。
+ *       病根是那个 effect 只在 Home 挂载时跑一次：从后台切回前台时页面早已挂载，判断不会重跑。
+ *       现在补了一条 AppState 监听，只认 background → active（inactive 是来电 / 控制中心那类
+ *       短暂失活，算进来会「拉一下控制中心回来就莫名跳页」），进前台后按同一个键走同一个入口，
+ *       转场沿用 pagePushOptions 系统默认（= 与全 app 所有跳转同一套动画，正是用户要的那句
+ *       「动画时间和所有跳转动画时间一样」）。两个消费点缺一不可，见不变量 B。
  *   四、音频卸载必须真接线：`audioOffload: isEnableAudioOffload`（不许回到硬编码 false）、
  *       形参不带 `_` 前缀、getPlayerConfig() 仍下发该键（设置 → initial 的必经通路）。
  *   五、卸载开关的提示文案与生效时机一致（不许再借用 handle_audio_focus 的「立即生效」文案）；
@@ -143,6 +151,30 @@ const consumerInvariants = (files) => {
   }
   if (!home.includes('navigations.pushPlayDetailScreen(componentId)')) {
     reasons.push('Home 启动 effect 不再调 navigations.pushPlayDetailScreen(componentId)')
+  }
+
+  // 【第 34 轮第 2 条】第二个消费点：从后台回到前台也要按同一个键走同一个入口。
+  const fg = (() => {
+    const at = home.indexOf("AppState.addEventListener('change'")
+    return at < 0 ? '' : home.slice(at, at + 600)
+  })()
+  if (!fg) {
+    reasons.push('Home 不再监听 AppState：开关只覆盖冷启动那一次，从后台切回前台不会打开播放详情页'
+      + '（用户第 34 轮第 2 条：「设置为每次进入软件都会打开播放详情页」）')
+  } else {
+    if (!fg.includes("if (nextState !== 'active' || prevState !== 'background') return")) {
+      reasons.push('前台回归的闸门不是「仅 background → active」：来电 / 控制中心这类 inactive 往返'
+        + '也会跳播放详情页（只有从后台「进入软件」才该开）')
+    }
+    if (!fg.includes("if (!settingState.setting['player.startupPushPlayDetailScreen']) return")) {
+      reasons.push('前台回归不读 player.startupPushPlayDetailScreen（开关对这条路径无效）')
+    }
+    if (!fg.includes('navigations.pushPlayDetailScreen(componentId)')) {
+      reasons.push('前台回归没有调 navigations.pushPlayDetailScreen(componentId)')
+    }
+  }
+  if (!home.includes('appStateSubscription.remove()')) {
+    reasons.push('AppState 监听没有在卸载时摘掉（Home 重建会叠加监听，切一次前台跳好几次页）')
   }
   const fn = (() => {
     const at = nav.indexOf('export function pushPlayDetailScreen(')
@@ -263,13 +295,39 @@ const runCounterExamples = () => {
       "toast(t('setting_play_handle_audio_focus_tip'))"),
   }), '借用')
 
-  // m7 Home 启动 effect 的消费分支被删
-  check('m7 Home 不再消费该设置', consumerInvariants({
-    ...REAL,
-    home: tamper(REAL.home,
+  // m7 Home 的两个消费分支都被删（冷启动 + 后台回前台）
+  const homeNoConsumer = tamper(
+    tamper(REAL.home,
       "    if (settingState.setting['player.startupPushPlayDetailScreen']) {\n      navigations.pushPlayDetailScreen(componentId)\n    }\n",
       ''),
+    "      if (!settingState.setting['player.startupPushPlayDetailScreen']) return\n      navigations.pushPlayDetailScreen(componentId)\n",
+    '')
+  check('m7 Home 不再消费该设置（两个消费点全删）', consumerInvariants({
+    ...REAL,
+    home: homeNoConsumer,
   }), '不再读 player.startupPushPlayDetailScreen')
+
+  // m8 只剩冷启动那一次（第 34 轮第 2 条回退：切回前台不再开页）
+  check('m8 删掉「后台回前台」的消费点', consumerInvariants({
+    ...REAL,
+    home: tamper(REAL.home,
+      "    const appStateSubscription = AppState.addEventListener('change', (nextState) => {\n      const prevState = lastAppState\n      lastAppState = nextState\n      if (nextState !== 'active' || prevState !== 'background') return\n      if (!settingState.setting['player.startupPushPlayDetailScreen']) return\n      navigations.pushPlayDetailScreen(componentId)\n    })\n",
+      ''),
+  }), '不再监听 AppState')
+
+  // m9 闸门放宽成「只要回到 active」（来电 / 控制中心往返也会跳页）
+  check('m9 前台回归闸门放宽成任意 active', consumerInvariants({
+    ...REAL,
+    home: tamper(REAL.home,
+      "if (nextState !== 'active' || prevState !== 'background') return",
+      "if (nextState !== 'active') return"),
+  }), '前台回归的闸门')
+
+  // m10 监听不摘（Home 重建叠加，一次切前台跳多次）
+  check('m10 AppState 监听不摘', consumerInvariants({
+    ...REAL,
+    home: tamper(REAL.home, '      appStateSubscription.remove()\n', ''),
+  }), '没有在卸载时摘掉')
 
   return results
 }

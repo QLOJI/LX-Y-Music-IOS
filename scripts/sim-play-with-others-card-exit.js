@@ -1,28 +1,47 @@
 #!/usr/bin/env node
 /**
  * sim-play-with-others-card-exit.js —— 「与其他应用同时播放」勾选态的三件事契约
- * （退出灵动岛/锁屏卡片占用 + 不被其它音频停播 + 有界重取把声音拉回来）
+ * （锁屏卡片照常发布 + 不被其它音频停播 + 有界重取把声音拉回来）
  *
  * 需求原话（2026-10-08 第 33 轮第 4 条）：
  *   「播放设置中，勾选“与其他应用同时播放”选项后，配置为未勾选时和现在一样，勾选后，
  *     退出灵动岛占用，强化不会暂停播放功能，不论后台什么音频在播，软件音频正常播放」
+ * 需求原话（2026-10-08 第 34 轮第 2 条 —— 用户当场改口，第 33 轮那一支作废）：
+ *   「勾选"与其他应用同时播放"选项后，请问可以设置为显示锁屏播放器界面，取消灵动岛播放器
+ *     界面吗？目前是都取消显示了，使用上面样式后，还是保留同时播放功能；修改灵动岛规则，
+ *     当打开软件并正在使用时，取消灵动岛播放器界面，只显示锁屏播放器界面，当软件关闭或者
+ *     切入后台时，灵动岛播放器界面和锁屏播放器界面都显示，并且在切入后台时，会有一个向上
+ *     缩放的动画缩小到灵动岛位置，随之灵动岛播放器界面显示，锁屏播放器界面保持显示，
+ *     点击灵动岛文字区域，会跳转到播放详情页，跳转过程动画同上」
  *
- * 三条口径（勾选 = setting['player.isHandleAudioFocus'] === false，即 playWithOthers）：
- *   ① 退出灵动岛 / 锁屏卡片占用 —— JS 侧抑制**元数据发布**这一个出口 + 切换那一刻清一次
- *      已发布的卡片（utils/nativeModules/nowPlaying.ts + plugins/player/index.ts）。
- *      为什么不能顺手把状态桥也砍掉：原生那条歌词时钟（LXNowPlayingLyricStep）同时是
- *      「前台 4Hz 位置事件 → JS 进度条」的唯一驱动源，砍掉状态桥 ⇒ 前台进度条停摆。
- *   ② 不被其它音频停播 —— 策略层：打断分支不调 pause()、不对外呈现暂停（第 24 轮分支，
- *      见 scripts/sim-audio-interruption-mix.js）。
- *   ③ 引擎真被系统停掉时的兜底 —— service.ts 的**有界**重取阶梯 scheduleMixReclaim：
- *      固定延时表 + 手动暂停/停止/取消勾选闸门 + 用户任何明确动作经 cancelResumePending 撤销。
- *      为什么要「有界」：无上限重取 = 反复激活音频会话，正是第 33 轮第 1 条要治的发热源。
+ * 第 34 轮口径（本脚本以它为准；第 33 轮那版「勾选就退出卡片」的抑制已**整体撤除**）：
+ *   ⓐ 锁屏播放器与灵动岛播放器是**同一个** Now Playing 会话，公开 API 无法只关其中一个。
+ *      第 33 轮按「退出灵动岛占用」做的元数据抑制，实测把锁屏播放器一起关掉了（第 33 轮
+ *      交付物里已把这条例外写明）；用户第 34 轮改口：勾选后要「显示锁屏播放器界面」。
+ *      于是抑制这条路径整体撤掉 —— nowPlaying.ts 里不许再出现任何抑制开关，
+ *      元数据一律照常发布。切换「与其他应用同时播放」只做三件事：
+ *        下发原生混音策略（这是「同时播放」功能本体）→ 有正在播放的歌就按当前曲目重新发布
+ *        一次元数据（锁屏播放器立刻跟上，不用等下一行歌词）→ 按当前播放状态重对齐
+ *        play/pause（原生位置 / 歌词时钟只在 Playing 时走，它同时是前台 4Hz 位置事件的
+ *        枢纽 = 进度条唯一驱动源）。
+ *   ⓑ 「前台不显示灵动岛播放器、切到后台锁屏与灵动岛都显示」、「切入后台向上缩放收到灵动岛」
+ *      以及「点灵动岛文字区域」这三件事都是**系统**按前后台自动决定 / 系统自己拥有的表现，
+ *      代码不介入也无法介入：点灵动岛 = 把 App 拉回前台，系统不提供「点的是灵动岛」这个
+ *      信号，那条「跳到播放详情页」走的是「回前台」的通用路径
+ *      （消费者见 sim-startup-detail-offload-wiring.js 不变量 B 的第二个消费点）。
+ *   ⓒ 「不会暂停播放」仍要守住 —— 策略层：打断分支不调 pause()、不对外呈现暂停（第 24 轮
+ *      分支，见 scripts/sim-audio-interruption-mix.js）+ service.ts 的**有界**重取阶梯
+ *      scheduleMixReclaim：固定延时表 + 手动暂停/停止/取消勾选闸门 + 用户任何明确动作经
+ *      cancelResumePending 撤销。为什么必须「有界」：无上限重取 = 反复激活音频会话，
+ *      正是第 33 轮第 1 条要治的发热源。
  *   原生的混音会话（真·同时出声）只在无损档的 prepareAudioSession 里、由
- *   LXPlayWithOthersEnabled 守卫，其守卫/路由策略/唯一性由 scripts/sim-play-with-others-toggle.js
- *   把住；本脚本只补「默认值必须是 NO（未勾选不许退出卡片）」与声明顺序两条。
+ *   LXPlayWithOthersEnabled 守卫，其守卫 / 路由策略 / 唯一性由
+ *   scripts/sim-play-with-others-toggle.js 把住；本脚本只补「默认值必须是 NO（未勾选 /
+ *   冷启动不许走混音会话）」与「声明在方法之前」两条。
  *
- * 为什么必须靠契约脚本：以上全是「开关极性 + 调用顺序 + 有界性」，tsc/eslint 一律无感；
- * 写反了、忘了撤销、把阶梯写成无界，都只在真机上表现为「卡片没了 / 手机发烫 / 声音回不来」。
+ * 为什么必须靠契约脚本：以上全是「开关极性 + 调用顺序 + 有界性 + 不许复活的旧设计」，
+ * tsc/eslint 一律无感；写反了、忘了撤销、把阶梯写成无界，都只在真机上表现为
+ * 「锁屏播放器没了 / 手机发烫 / 声音回不来」。
  * 运行：node scripts/sim-play-with-others-card-exit.js
  * 退出码：不变量全过、且全部反例被拦下时为 0，否则 1。
  */
@@ -55,57 +74,65 @@ const sliceFn = (code, startAnchor, endAnchor) => {
 }
 
 // ---------------------------------------------------------------------------
-// 不变量 A：卡片退出 = 只抑制元数据发布这一个出口
+// 不变量 A：元数据照常发布 —— 第 33 轮的抑制已整体撤除，不许复活
 // ---------------------------------------------------------------------------
 
 const nowPlayingInvariants = (raw) => {
   const reasons = []
   const code = stripComments(raw)
 
-  const fnBody = (name) => {
-    const at = code.indexOf(`export const ${name}`)
-    if (at < 0) return null
-    const end = code.indexOf('\nexport const ', at + 1)
-    return code.slice(at, end < 0 ? code.length : end)
+  // ⓐ-1 抑制开关必须不存在（第 34 轮的定案是「撤掉」，不是「保留着但默认关」——
+  //      留着一颗开关，下次谁把初值一翻，锁屏播放器又没了，而这次没人会记得为什么）
+  if (/suppress/i.test(code)) {
+    reasons.push('nowPlaying.ts 里又出现了抑制开关（Suppress）：锁屏播放器与灵动岛播放器是同一个'
+      + ' Now Playing 会话，抑制元数据发布会把锁屏播放器一起关掉（第 33 轮实锤，用户第 34 轮'
+      + '已改口要显示锁屏播放器）')
   }
 
-  if (!code.includes('let nowPlayingInfoSuppressed = false')) {
-    reasons.push('nowPlaying.ts 缺抑制开关（或初值不是 false：未勾选时卡片必须照常显示）')
-  }
-  if (!code.includes('export const setNowPlayingInfoSuppressed')) {
-    reasons.push('nowPlaying.ts 缺 setNowPlayingInfoSuppressed 出口（plugins/player/index.ts 无法下发抑制口径）')
-  }
-
-  const update = fnBody('updateNowPlayingInfo')
-  if (update == null) {
-    reasons.push('nowPlaying.ts 找不到 updateNowPlayingInfo')
-  } else if (!update.includes('if (nowPlayingInfoSuppressed) return')) {
-    reasons.push('updateNowPlayingInfo 发布前没查抑制开关（勾选后卡片会被下一行歌词 / 下一首歌建回来，「退出灵动岛占用」守不住）')
+  // ⓐ-2 元数据发布是唯一出口、且不许有任何闸门：形状被钉死成
+  //      「平台能力守卫 → 直接下发」两句，中间塞不进任何条件（抑制 / 空值 / 节流）
+  const pubShape = /export const updateNowPlayingInfo = async\(metadata: NowPlayingInfoMetadata\) => \{\n  if \(!hasMethod\('updateNowPlayingInfo'\)\) return\n  return NowPlayingModule\?\.updateNowPlayingInfo\?\.\(metadata\)\n\}/
+  if (!pubShape.test(code)) {
+    reasons.push('updateNowPlayingInfo 不再是无条件直发（唯一出口被加了闸门）：勾选态下任何一次'
+      + '「按条件不发」都会让锁屏播放器停在上一次的状态 / 干脆不出现')
   }
 
+  // ⓐ-3 六个桥缺一不可（清卡桥也在：别的路径 —— 停止播放 / 清空队列 —— 仍要用它）
   for (const name of ['playNowPlaying', 'pauseNowPlaying', 'stopNowPlaying', 'clearNowPlayingInfo', 'setNowPlayingLyrics', 'reanchorNowPlayingLyric']) {
-    const body = fnBody(name)
-    if (body == null) {
-      reasons.push(`nowPlaying.ts 找不到 ${name}（六个桥缺一不可：歌词时钟同时驱动前台进度条）`)
-      continue
+    if (!code.includes(`export const ${name}`)) {
+      reasons.push(`nowPlaying.ts 找不到 ${name}（六个桥缺一不可：清卡桥供停止播放用，`
+        + `歌词 / 重锚桥的时钟是前台 4Hz 位置的唯一驱动源）`)
     }
-    if (body.includes('nowPlayingInfoSuppressed')) {
-      reasons.push(`${name} 被抑制开关牵连（抑制只许作用在元数据发布一个出口；状态 / 歌词 / 重锚五桥里的时钟是前台 4Hz 位置的唯一驱动源，砍掉进度条就停）`)
-    }
+  }
+
+  // ⓐ-4 撤除理由必须留在同一处（这是一条文档契约）：需求是被用户当场改口的，
+  //      旧实现（抑制）看起来非常「合理」，不留痕的话下一个改的人会照着第 33 轮口径加回来
+  if (!raw.includes('第 34 轮第 2 条')) {
+    reasons.push('nowPlaying.ts 没有留下「第 33 轮那版抑制为何撤掉」的说明：需求是被用户改口的，'
+      + '旧实现看起来仍然「合理」，不留痕的下场就是被照着旧口径加回来')
   }
   return reasons
 }
 
 // ---------------------------------------------------------------------------
-// 不变量 B：切换编排（抑制口径先立 → 下发原生 → 清卡 / 重发布 → 状态重对齐）+ 冷启动
+// 不变量 B：切换编排（下发原生策略 → 有歌才重发布 → 按播放状态重对齐）+ 冷启动
 // ---------------------------------------------------------------------------
 
 const orchestrationInvariants = (raw) => {
   const reasons = []
   const code = stripComments(raw)
 
-  if (!code.includes("import { clearNowPlayingInfo, pauseNowPlaying, playNowPlaying, setNowPlayingInfoSuppressed } from '@/utils/nativeModules/nowPlaying'")) {
-    reasons.push('index.ts 未引入 nowPlaying 的抑制 / 清卡 / 状态三个出口')
+  // ⓑ-1 引用的出口只能是「状态对齐」两个：一旦又出现抑制 / 清卡，说明旧设计重新长回来了
+  if (/setNowPlayingInfoSuppressed/.test(code)) {
+    reasons.push('index.ts 又下发了元数据抑制口径：第 34 轮第 2 条已把「勾选就退出卡片」整体撤掉'
+      + '（同一个 Now Playing 会话，锁屏播放器会被一起关掉）')
+  }
+  if (/clearNowPlayingInfo/.test(code)) {
+    reasons.push('index.ts 又调了 clearNowPlayingInfo：切换开关时清卡会把用户此刻正在看的锁屏播放器'
+      + '抹掉（第 34 轮第 2 条已把「勾选就退出卡片」整体撤掉）')
+  }
+  if (!code.includes("import { pauseNowPlaying, playNowPlaying } from '@/utils/nativeModules/nowPlaying'")) {
+    reasons.push('index.ts 没有从 nowPlaying 只引入 play / pause 两个状态桥（该模块现在只该被用来做状态对齐）')
   }
 
   const body = sliceFn(code, 'const syncPlayWithOthersEnabled = async() => {', '\nconst initial =')
@@ -113,31 +140,49 @@ const orchestrationInvariants = (raw) => {
     reasons.push('index.ts 找不到 syncPlayWithOthersEnabled')
     return reasons
   }
-  const suppressAt = body.indexOf('setNowPlayingInfoSuppressed(enabled)')
-  const policyAt = body.indexOf('await setNativePlayWithOthersPolicy(enabled)')
-  if (suppressAt < 0) {
-    reasons.push('syncPlayWithOthersEnabled 未下发抑制口径（勾选后卡片不会被退出）')
-  } else if (policyAt >= 0 && suppressAt > policyAt) {
-    reasons.push('抑制口径落在原生策略下发之后（顺序反了：两步之间到达的元数据发布会把卡片漏出来一次）')
+
+  // ⓑ-2 开关极性：勾选（isHandleAudioFocus === false）才是「与其他应用同时播放」
+  if (!body.includes("const enabled = settingState.setting['player.isHandleAudioFocus'] === false")) {
+    reasons.push('syncPlayWithOthersEnabled 的开关极性变了：勾选态 = isHandleAudioFocus === false（写反 = 功能与设置项相反）')
   }
-  if (!/if \(enabled\) \{[\s\S]{0,120}clearNowPlayingInfo\(\)[\s\S]{0,120}\} else \{[\s\S]{0,160}updateMetaData\(/.test(body)) {
-    reasons.push('切换编排不是「勾选＝清除已发布的卡片 / 取消勾选＝按当前曲目重新发布」二选一（少任一边都表现为：卡片退不掉，或取消勾选后卡片要等下一行歌词才回来）')
+  // ⓑ-3 「同时播放」功能本体：把策略交给原生（混音会话开关，勾选后真·同时出声）
+  if (!body.includes('await setNativePlayWithOthersPolicy(enabled)')) {
+    reasons.push('syncPlayWithOthersEnabled 没有下发原生混音策略：勾选后不会切到混音会话，'
+      + '「与其他应用同时播放」功能失效（用户第 34 轮第 2 条：「还是保留同时播放功能」）')
   }
-  if (!body.includes('playNowPlaying()') || !body.includes('pauseNowPlaying()')) {
-    reasons.push('切换后未按当前播放状态重对齐（原生位置 / 歌词时钟只在 Playing 时走，它同时是前台进度条的唯一驱动源）')
+
+  const iPolicy = body.indexOf('await setNativePlayWithOthersPolicy(enabled)')
+  const iGuard = body.indexOf('if (!playerState.musicInfo.id) return')
+  const iPublish = body.indexOf('void updateMetaData(playerState.musicInfo, playerState.isPlay, playerState.lastLyric, true)')
+  const iAlignPlay = body.indexOf('if (playerState.isPlay) await playNowPlaying().catch(() => {})')
+  const iAlignPause = body.indexOf('else await pauseNowPlaying().catch(() => {})')
+
+  if (iGuard < 0) {
+    reasons.push('syncPlayWithOthersEnabled 丢了「没有正在播放的歌就不发布」守卫：'
+      + '空 id 的元数据会把锁屏播放器刷成空白（没有可显示的曲目）')
+  }
+  if (iPublish < 0) {
+    reasons.push('syncPlayWithOthersEnabled 切换后不按当前曲目重新发布元数据：'
+      + '锁屏播放器与当前曲目脱钩（要等下一行歌词 / 下一首歌才回来）')
+  } else if (iGuard >= 0 && iPublish < iGuard) {
+    reasons.push('重发布发生在「有歌吗」守卫之前：没有正在播放的歌时也会发布一次空元数据')
+  }
+  if (iAlignPlay < 0 || iAlignPause < 0) {
+    reasons.push('syncPlayWithOthersEnabled 切换后不按播放状态重对齐 play / pause：'
+      + '原生位置 / 歌词时钟只在 Playing 时走，它同时是前台进度条的唯一驱动源（不对齐 = 进度条停摆）')
+  } else if (iPublish >= 0 && iAlignPlay < iPublish) {
+    reasons.push('状态重对齐发生在重发布之前：播放状态与刚发布的元数据可能不同步')
+  }
+  if (iPolicy >= 0 && iPublish >= 0 && iPolicy > iPublish) {
+    reasons.push('重发布发生在原生策略下发之前：会话分类还没定就把元数据推出去，锁屏播放器的播放态会与真实会话错一拍')
   }
 
   const initBody = sliceFn(code, 'const initial = async(', '\nconst isInitialized =')
   if (initBody == null) {
     reasons.push('index.ts 找不到 initial')
-  } else {
-    const coldAt = initBody.indexOf("setNowPlayingInfoSuppressed(settingState.setting['player.isHandleAudioFocus'] === false)")
-    const syncAt = initBody.indexOf('await syncPlayWithOthersEnabled()')
-    if (coldAt < 0) {
-      reasons.push('initial 缺冷启动抑制口径（初始化窗口内一次早到的元数据发布会把卡片建出来，重启后勾选态失效）')
-    } else if (syncAt >= 0 && coldAt > syncAt) {
-      reasons.push('冷启动抑制口径落在 syncPlayWithOthersEnabled 之后（窗口期内同样会漏一次）')
-    }
+  } else if (!initBody.includes('await syncPlayWithOthersEnabled()')) {
+    reasons.push('initial 不再调 syncPlayWithOthersEnabled：重启后「与其他应用同时播放」的策略 / 元数据口径全丢'
+      + '（设置项显示已勾选，实际是独占口径）')
   }
   return reasons
 }
@@ -219,7 +264,7 @@ const nativeInvariants = (raw) => {
 
   const declAt = code.indexOf('static BOOL LXPlayWithOthersEnabled = NO;')
   if (declAt < 0) {
-    reasons.push('原生缺 LXPlayWithOthersEnabled 声明，或默认值不是 NO（未勾选 / 冷启动必须是标准非混音会话，否则设置项未勾选也会退出卡片）')
+    reasons.push('原生缺 LXPlayWithOthersEnabled 声明，或默认值不是 NO（未勾选 / 冷启动必须是标准非混音会话，否则设置项未勾选也会走混音会话）')
   }
   const methodAt = code.indexOf('- (BOOL)prepareAudioSession:')
   if (methodAt < 0) {
@@ -256,44 +301,56 @@ const runCounterExamples = () => {
       return
     }
     const hit = reasons.some(r => r.includes(expectReasonSubstr))
-    results.push({ name, ok: hit, detail: hit ? '已拦下' : `未拦下（reasons=${JSON.stringify(reasons)}）` })
+    results.push({ name, ok: true === hit, detail: hit ? '已拦下' : `未拦下（reasons=${JSON.stringify(reasons)}）` })
   }
 
-  // n1 抑制开关没接上（卡片被后续元数据建回来）
-  check('n1 元数据发布前不查抑制开关', () => nowPlayingInvariants(tamper(REAL.np,
-    '  if (nowPlayingInfoSuppressed) return\n',
+  // n1 第 33 轮的抑制开关复活（勾选后又把锁屏播放器一起关掉）
+  check('n1 抑制开关复活', () => nowPlayingInvariants(tamper(REAL.np,
+    "export const updateNowPlayingInfo = async(metadata: NowPlayingInfoMetadata) => {\n  if (!hasMethod('updateNowPlayingInfo')) return\n",
+    "let nowPlayingInfoSuppressed = false\nexport const setNowPlayingInfoSuppressed = (v: boolean) => {\n  nowPlayingInfoSuppressed = v\n}\nexport const updateNowPlayingInfo = async(metadata: NowPlayingInfoMetadata) => {\n  if (nowPlayingInfoSuppressed) return\n  if (!hasMethod('updateNowPlayingInfo')) return\n")),
+  '抑制开关')
+
+  // n2 元数据发布被加闸门（唯一出口不再无条件）
+  check('n2 元数据发布被加闸门', () => nowPlayingInvariants(tamper(REAL.np,
+    "  return NowPlayingModule?.updateNowPlayingInfo?.(metadata)\n}",
+    "  if (metadata.title == null) return\n  return NowPlayingModule?.updateNowPlayingInfo?.(metadata)\n}")),
+  '唯一出口')
+
+  // n3 切换时又清卡（用户此刻正在看的锁屏播放器被抹掉）
+  check('n3 切换时清卡', () => orchestrationInvariants(tamper(REAL.plugin,
+    '  await setNativePlayWithOthersPolicy(enabled)\n',
+    '  await setNativePlayWithOthersPolicy(enabled)\n  if (enabled) await clearNowPlayingInfo().catch(() => {})\n')),
+  '整体撤掉')
+
+  // n4 切换后不重发布（锁屏播放器要等下一行歌词才回来）
+  check('n4 切换后不重新发布元数据', () => orchestrationInvariants(tamper(REAL.plugin,
+    '  void updateMetaData(playerState.musicInfo, playerState.isPlay, playerState.lastLyric, true)\n',
     '')),
-  '发布前没查抑制开关')
-
-  // n2 抑制误伤状态桥（前台进度条失去驱动）
-  check('n2 抑制开关牵连状态桥', () => nowPlayingInvariants(tamper(REAL.np,
-    'export const playNowPlaying = async(options: NowPlayingStateOptions = {}) => {\n',
-    'export const playNowPlaying = async(options: NowPlayingStateOptions = {}) => {\n  if (nowPlayingInfoSuppressed) return\n')),
-  '被抑制开关牵连')
-
-  // n3 下发顺序颠倒（切换瞬间漏一次卡片）
-  check('n3 抑制口径晚于原生策略下发', () => orchestrationInvariants(tamper(REAL.plugin,
-    '  setNowPlayingInfoSuppressed(enabled)\n  await setNativePlayWithOthersPolicy(enabled)',
-    '  await setNativePlayWithOthersPolicy(enabled)\n  setNowPlayingInfoSuppressed(enabled)')),
-  '顺序反了')
-
-  // n4 取消勾选后不重发布（卡片要等下一行歌词才回来）
-  check('n4 取消勾选不重新发布卡片', () => orchestrationInvariants(tamper(REAL.plugin,
-    '    void updateMetaData(playerState.musicInfo, playerState.isPlay, playerState.lastLyric, true)',
-    '    // removed')),
   '重新发布')
 
-  // n5 勾选后不清已发布的卡片（灵动岛占用退不掉）
-  check('n5 勾选不清已发布的卡片', () => orchestrationInvariants(tamper(REAL.plugin,
-    '    await clearNowPlayingInfo().catch(() => {})',
-    '    await pauseNowPlaying().catch(() => {})')),
-  '清除已发布的卡片')
-
-  // n6 缺冷启动抑制口径（重启后勾选态失效）
-  check('n6 缺冷启动抑制口径', () => orchestrationInvariants(tamper(REAL.plugin,
-    "  setNowPlayingInfoSuppressed(settingState.setting['player.isHandleAudioFocus'] === false)\n",
+  // n5 不下发原生混音策略（同时播放功能失效）
+  check('n5 不下发原生混音策略', () => orchestrationInvariants(tamper(REAL.plugin,
+    '  await setNativePlayWithOthersPolicy(enabled)\n',
     '')),
-  '冷启动')
+  '混音策略')
+
+  // n6 冷启动不下发（重启后设置项显示已勾选、实际是独占口径）
+  check('n6 冷启动不下发', () => orchestrationInvariants(tamper(REAL.plugin,
+    '  await syncPlayWithOthersEnabled()\n',
+    '')),
+  '重启后')
+
+  // n7 丢掉「有歌才发布」守卫（空 id 元数据把锁屏播放器刷成空白）
+  check('n7 丢掉有歌才发布的守卫', () => orchestrationInvariants(tamper(REAL.plugin,
+    '  if (!playerState.musicInfo.id) return\n',
+    '')),
+  '空 id')
+
+  // n8 丢状态重对齐（原生位置 / 歌词时钟与播放状态脱钩，前台进度条停摆）
+  check('n8 丢掉状态重对齐', () => orchestrationInvariants(tamper(REAL.plugin,
+    '  if (playerState.isPlay) await playNowPlaying().catch(() => {})\n  else await pauseNowPlaying().catch(() => {})\n',
+    '')),
+  '重对齐')
 
   // r1 阶梯写成无界（反复激活会话 = 发热源）
   check('r1 重取阶梯无界', () => reclaimInvariants(tamper(REAL.service,
@@ -325,7 +382,7 @@ const runCounterExamples = () => {
     'const MIX_RECLAIM_DELAYS = [50, 50]')),
   '太密')
 
-  // k1 原生默认值翻成 YES（未勾选也走混音 ⇒ 卡片被无条件砍掉）
+  // k1 原生默认值翻成 YES（未勾选也走混音 ⇒ 未勾选就进混音会话）
   check('k1 原生默认值翻成 YES', () => nativeInvariants(tamper(REAL.native,
     'static BOOL LXPlayWithOthersEnabled = NO;',
     'static BOOL LXPlayWithOthersEnabled = YES;')),
@@ -339,12 +396,12 @@ const runCounterExamples = () => {
 // ---------------------------------------------------------------------------
 
 console.log('=== sim-play-with-others-card-exit ===')
-console.log('勾选「与其他应用同时播放」= 退出灵动岛 / 锁屏卡片占用 + 不因其它音频停播 + 有界重取兜底（第 33 轮第 4 条）')
+console.log('「与其他应用同时播放」= 元数据照常发布（锁屏播放器在）+ 不因其它音频停播 + 有界重取兜底（第 34 轮第 2 条口径）')
 console.log()
 
 const checks = [
-  ['卡片退出（抑制开关只作用在元数据发布这一个出口；六个桥里状态/歌词/重锚不许被牵连）', () => nowPlayingInvariants(REAL.np)],
-  ['切换编排 + 冷启动（抑制先立 → 下发原生 → 勾选清卡 / 取消勾选重发布 → 按状态重对齐）', () => orchestrationInvariants(REAL.plugin)],
+  ['元数据照常发布（抑制整体撤除、唯一出口无闸门、六个桥都在、撤销理由留痕）', () => nowPlayingInvariants(REAL.np)],
+  ['切换编排 + 冷启动（下发原生策略 → 有歌才按当前曲目重发布 → 按播放状态重对齐；禁止抑制 / 清卡）', () => orchestrationInvariants(REAL.plugin)],
   ['有界重取阶梯（延时表有界合理 + 开关/停止/手动暂停闸门 + 混音分支两次布防 + 可撤销 + 回前台末次机会）', () => reclaimInvariants(REAL.service)],
   ['原生（默认 NO + 守卫在 prepareAudioSession 内 + 声明在方法之前）', () => nativeInvariants(REAL.native)],
 ]
