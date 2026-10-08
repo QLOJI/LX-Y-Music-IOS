@@ -1,6 +1,7 @@
 import { onRemoteCommand } from '@/utils/nativeModules/utils'
 import { pause, play, playNext, playPrev, togglePlay } from '@/core/player/player'
 import { markTimeoutExitInteraction } from '@/core/player/timeoutExit'
+import playerState from '@/store/player/state'
 // 【第 20 轮·遥控命令单一通路（2026-10-03）】本文件是车机 / 方向盘 / 控制中心
 // （MPRemoteCommandCenter → LXRemoteCommand → 'remote-command'）的**唯一**处理入口：
 // src/plugins/player/service.ts 原先还挂着同一批命令的 RNTP 监听（remote-play 等），
@@ -43,7 +44,13 @@ export default () => {
         // 用户手动要求暂停：清除自动续播标记，避免之后被兜底逻辑误自动播放
         // 【第 22 轮】再落一道「手动暂停」闸门：只清一次标记挡不住打断开始 / 回前台这类
         // **重新**置位的途径（用户报的「手动暂停后，其它音频播完回软件又自己开始播放」）。
-        markManualPause()
+        // 【第 35 轮第 1 条】闸门只在「这次 pause 真的会暂停」时才落。配合原生侧
+        // 「有信息就永远启用全部命令」（AppDelegate.mm LXSyncRemoteCommandAvailability），
+        // 锁屏卡片重绘期间（playbackState 被短暂切成相反值）系统可能按**显示出来的**状态
+        // 投递一条与真实播放态相反的 pause/play —— 那条 pause 落到一首本来就在暂停的歌上时，
+        // 只会白白把闸门锁死，之后所有自动续播入口都不再出声（第 22 轮那个 bug 的另一种成因）。
+        // 已经暂停就不动闸门：pause() 本身幂等，重复调用无副作用。
+        if (playerState.isPlay) markManualPause()
         cancelResumePending()
         void pause()
         break
