@@ -3268,6 +3268,11 @@ RCT_REMAP_METHOD(updateEqualizerConfig, updateEqualizerConfig:(NSDictionary *)co
 @property (nonatomic, assign) double startThresholdSeconds;
 @property (nonatomic, assign) double maxBufferSeconds;
 @property (nonatomic, assign) double pausedBufferSeconds;
+// 【第 33 轮第 5 条】「手动恢复 / 拖动进度 / 打断结束自动续播」用的短门槛（老口径 1.5 秒）：
+// 用户要的 10 秒只针对「新流起播」与「缓冲耗尽后重填」，不该把「点一下继续播」也拖成 10 秒
+@property (nonatomic, assign) double resumeThresholdSeconds;
+// 【第 33 轮第 5 条】当前长门槛的装上时刻（CACurrentMediaTime）：给「弱网迟迟攒不满 10 秒」兜底降档用
+@property (nonatomic, assign) double startThresholdArmedAt;
 @property (nonatomic, assign) double lastKnownPosition;
 @property (nonatomic, assign) int64_t expectedContentLength;
 @property (nonatomic, assign) double pendingSeekPosition;
@@ -3301,11 +3306,14 @@ static NSString *LXStreamingFlacDecoderErrorStatusName(FLAC__StreamDecoderErrorS
 // 继续渲染只会出杂音），但**对外不呈现暂停**：状态与锁屏 / 灵动岛卡片保持「在播」，
 // 打断结束分支照常重启引擎、恢复输出；NO = 独占口径（第 13/16/21 轮语义）：打断即
 // 暂停并对外呈现 paused，短暂中断自动续播。
-// 【为什么不在这里动音频会话分类】mixWithOthers 会让本应用失去 Now Playing 主会话
-// 资格（Apple 规则：mixable 会话无资格）—— 锁屏 / 灵动岛播放卡片当场消失；且与
-// prepareAudioSession 的 LongFormAudio 路由策略互斥（setCategory 报 -50，会话被停用后
-// 表现为「歌曲在走、没有声音」）。两条都是用户第 24 轮实锤的现象，「同时播放」因此
-// 落在策略层而不是会话层。
+// 【为什么不在这里动音频会话分类（第 24 轮结论 · 第 33 轮第 4 条修订）】混音会让本应用
+// 失去 Now Playing 主会话资格（Apple 规则：mixable 会话无资格）—— 锁屏 / 灵动岛播放卡片
+// 消失：第 24 轮用户把它当 bug（要求「始终显示」），第 33 轮用户把它当需求（原话「勾选后，
+// 退出灵动岛占用」），所以**现在可以动会话分类了**。但第二条仍然成立且必须绕开：
+// 混音选项与 prepareAudioSession 的 LongFormAudio 路由策略互斥（setCategory 报 -50，
+// 会话被停用后表现为「歌曲在走、没有声音」）—— 勾选态的混音分类改用
+// AVAudioSessionRouteSharingPolicyDefault（见下方 prepareAudioSession），失败还会退回
+// 非混音口径。策略标记本身继续做第 24 轮那件事：勾选 = 引擎被系统停掉也不对外呈现暂停。
 static BOOL LXPlayWithOthersEnabled = NO;
 
 @implementation StreamingFlacPlayerModule {
@@ -3349,9 +3357,15 @@ RCT_EXPORT_MODULE();
     _decoderQueue = dispatch_queue_create("cn.toside.music.mobile.streamingflac.decoder", DISPATCH_QUEUE_SERIAL);
     _renderQueue = dispatch_queue_create("cn.toside.music.mobile.streamingflac.render", DISPATCH_QUEUE_SERIAL);
     _currentState = @"idle";
-    _startThresholdSeconds = 1.5;
-    _maxBufferSeconds = 8.0;
+    // 【第 33 轮第 5 条】起播与「缓冲耗尽后重填」要等满 10 秒音频（用户原话「设定缓存歌曲时间为
+    // 10 秒，加载歌曲 10 秒缓存后再播放歌曲……缓存下一个 10 秒」）；播放中的解码前瞻水位同步提到
+    // 10 秒（环形缓冲容量 = max(maxBuffer+2, 12) 秒 = 12 秒，装得下 10 秒门槛）。
+    // 手动恢复 / 拖动进度 / 打断结束续播走 resumeThresholdSeconds（老口径 1.5 秒）。
+    _startThresholdSeconds = 10.0;
+    _maxBufferSeconds = 10.0;
     _pausedBufferSeconds = 2.0;
+    _resumeThresholdSeconds = 1.5;
+    _startThresholdArmedAt = 0;
     _currentVolume = 1.0f;
     _currentRate = 1.0f;
     [[NSNotificationCenter defaultCenter] addObserver:self
@@ -3446,6 +3460,21 @@ RCT_EXPORT_MODULE();
 - (BOOL)prepareAudioSession:(NSError **)error {
   AVAudioSession *session = [AVAudioSession sharedInstance];
   if (@available(iOS 13.0, *)) {
+    // 【第 33 轮第 4 条】勾选「与其他应用同时播放」= 真·同时出声：改用混音（mixable）会话，
+    // 后台不论什么音频在播都压不住本应用（不再触发「会话被系统停用 → 引擎停摆」）。代价
+    // 由需求反转：混音会话失去 Now Playing 主会话资格，卡片 / 灵动岛占用交还系统 —— 正是
+    // 用户这一条要的「退出灵动岛占用」（卡片另由 JS 侧 nowPlaying 抑制开关清掉，两边同口径）。
+    // 因此混音分支**不配** LongFormAudio 路由策略（两者互斥，setCategory 报 -50 =
+    // 有进度没声音），改用 AVAudioSessionRouteSharingPolicyDefault —— 这是混音的标准组合。
+    if (LXPlayWithOthersEnabled) {
+      if ([session setCategory:AVAudioSessionCategoryPlayback
+                        mode:AVAudioSessionModeDefault
+          routeSharingPolicy:AVAudioSessionRouteSharingPolicyDefault
+                     options:AVAudioSessionCategoryOptionMixWithOthers
+                       error:error]) return [session setActive:YES error:error];
+      // 系统拒绝（例如会话正被别家独占）/ 分类不支持：静默退回下面的非混音口径，
+      // 至少保住「能出声」，再由 JS 侧的有界重取阶梯去抢会话。
+    }
     if (![session setCategory:AVAudioSessionCategoryPlayback
                       mode:AVAudioSessionModeDefault
         routeSharingPolicy:AVAudioSessionRouteSharingPolicyLongFormAudio
@@ -3534,6 +3563,10 @@ RCT_EXPORT_MODULE();
     if (_sourceRenderingEnabled.load(std::memory_order_acquire)) return;
     if (self.stopRequested || self.manualPause || !self.playbackStarted) return;
     self.lastKnownPosition = [self currentPlaybackPositionLocked];
+    // 【第 33 轮第 5 条】缓冲耗尽 = 用户要的「立即显示为缓存中，缓存下一个 10 秒」：重填按 10 秒
+    // 门槛重新计时（此前若被 resume / seek 装过短门槛，这里必须换回长门槛）
+    self.startThresholdSeconds = self.maxBufferSeconds;
+    self.startThresholdArmedAt = CACurrentMediaTime();
     self.playbackStarted = NO;
     self.currentState = @"buffering";
     [self emitState:@"buffering" position:@(self.lastKnownPosition) duration:@(self.duration)];
@@ -3893,6 +3926,10 @@ RCT_EXPORT_MODULE();
       dispatch_sync(self.renderQueue, ^{
         if (![self ensureAudioEngineRunningLocked:&engineError]) return;
         self.manualPause = NO;
+        // 【第 33 轮第 5 条】系统打断结束的自动续播：装短门槛 —— 这是「接着放刚才那首」，
+        // 不是新流起播；第 24/31 轮修好的自动续播手感不能被 10 秒门槛拖住
+        self.startThresholdSeconds = self.resumeThresholdSeconds;
+        self.startThresholdArmedAt = 0;
         [self maybeStartPlaybackLocked];
         didResumePlaying = self.playbackStarted;
         if (!didResumePlaying) {
@@ -4349,7 +4386,16 @@ static const int64_t LXShortInterruptionIgnoreMs = 1500;
   if (self.engine == nil || !self.engine.isRunning) return;
   int64_t queuedFrames = [self currentQueuedFrameCountLocked];
   double queuedSeconds = (double)queuedFrames / self.sampleRate;
-  if (!self.playbackStarted && (queuedSeconds >= self.startThresholdSeconds || (self.downloadCompleted && queuedFrames > 0))) {
+  // 【第 33 轮第 5 条】「快速启动 + 后台缓冲」的兜底：10 秒门槛装上后 20 秒还攒不够（弱网 /
+  // 源站限速），退回老门槛先出声 —— 宁可偶发一次卡顿，也不能一直静默不播。只在已攒到短门槛
+  // 时才降档，绝不提前出声；整首下完时下面的 downloadCompleted 快路径本来就会起播。
+  double startThreshold = self.startThresholdSeconds;
+  if (startThreshold > self.resumeThresholdSeconds && self.startThresholdArmedAt > 0
+      && (CACurrentMediaTime() - self.startThresholdArmedAt) > 20.0
+      && queuedSeconds >= self.resumeThresholdSeconds) {
+    startThreshold = self.resumeThresholdSeconds;
+  }
+  if (!self.playbackStarted && (queuedSeconds >= startThreshold || (self.downloadCompleted && queuedFrames > 0))) {
     _sourceRenderingEnabled.store(true, std::memory_order_release);
     _bufferingNotificationScheduled.store(false, std::memory_order_release);
     _endedNotificationScheduled.store(false, std::memory_order_release);
@@ -4650,7 +4696,10 @@ RCT_REMAP_METHOD(openStream, openStream:(NSString *)urlString headers:(NSDiction
     delegateQueue.maxConcurrentOperationCount = 1;
     self.session = [NSURLSession sessionWithConfiguration:[NSURLSessionConfiguration defaultSessionConfiguration] delegate:self delegateQueue:delegateQueue];
     self.task = [self.session dataTaskWithRequest:request];
-    self.startThresholdSeconds = 1.5;
+    // 【第 33 轮第 5 条】新流起播：等满 10 秒音频（或整首下完）再出声。此处必须显式重装——
+    // 否则上一首残留的短门槛（resume / seek 装过）会让新歌只攒 1.5 秒就起播，长门槛形同虚设。
+    self.startThresholdSeconds = self.maxBufferSeconds;
+    self.startThresholdArmedAt = CACurrentMediaTime();
     [self.task resume];
     [self startDecoderLoop];
     resolve(nil);
@@ -4674,6 +4723,10 @@ RCT_REMAP_METHOD(resume, resumeStreamWithResolver:(RCTPromiseResolveBlock)resolv
       self.interruptedBySystem = NO;
       // 【第 31 轮·追加】用户主动恢复播放：撤销短暂系统音窗口里的待决暂停（用户要的音乐优先）
       self.pendingShortInterruptionIgnore = NO;
+      // 【第 33 轮第 5 条】手动恢复：装短门槛、并撤掉长时间计时 —— 这是「继续放刚才那首」，
+      // 刚才已经攒过一轮缓存，不该再等 10 秒
+      self.startThresholdSeconds = self.resumeThresholdSeconds;
+      self.startThresholdArmedAt = 0;
       [self maybeStartPlaybackLocked];
       shouldEmitBuffering = !self.playbackStarted;
       if (shouldEmitBuffering) self.currentState = @"buffering";
@@ -4774,6 +4827,10 @@ RCT_REMAP_METHOD(seekTo, seekToStream:(nonnull NSNumber *)position resolver:(RCT
     self.completedFrames = self.sampleRate > 0 ? (int64_t)llround(requestedPosition * self.sampleRate) : 0;
     self.playbackAnchorFrame = self.completedFrames;
     self.playbackStarted = NO;
+    // 【第 33 轮第 5 条】拖动进度：装短门槛 —— 用户刚动过手，先出声再说；真被网络拖住时
+    // 渲染回调会照常切到 buffering（「缓存中...」），不需要在这里等满 10 秒把人晾着
+    self.startThresholdSeconds = self.resumeThresholdSeconds;
+    self.startThresholdArmedAt = 0;
   });
   if (!seekApplied || self.playbackGeneration != entryGeneration + 1 || ![entryURL isEqualToString:self.currentURL]) {
     resolve(@0);
