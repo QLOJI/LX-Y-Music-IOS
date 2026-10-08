@@ -39,6 +39,15 @@
  * 从未观测到非零亮度）一律按亮。证据挂两处：亮度变化通知（先记录再判定，顺序不能反——
  * 硬关屏那一次通知只有这一次机会拿到依据）+ 回前台；用调用点计数而非窗口正则，避免相邻
  * 观察者互相顶包。绑住：新增 1 组不变量（共 5 组）+ 3 条反例（共 25 条）。
+ *
+ * 第 33 轮第 1 条（2026-10-08）「发热严重，减少发热量，特别是减少后台运行占用，优化整体
+ * 代码，去除冗余代码无用代码」：前几组治「音频常驻时后台跑一整夜的活」，这一组治**后台每
+ * N 秒起床一次**的三处周期性 JS 工作（倒计时 UI tick / 首页横滑自愈心跳 / 网易登录 cookie
+ * 轮询）——单次不重，但每次唤醒都把 CPU 从深度睡眠里拽起来。口径是**闸门 ≠ 停表**：定时器
+ * 保留（普通 setInterval，后台被系统冻结）、body 早退、回前台自动恢复；倒计时到点的
+ * BackgroundTimer 与回前台两处自愈兜底一个都不许删。另一半是冗余清理（52 个无引用文件已
+ * 删）：按「路径必须不存在 + 正向对照 + 全量 import 解析扫描」三向钉住 —— 本机没有
+ * tsc/eslint，删过头只有这道扫描拦得住。绑住：新增 2 组不变量（共 7 组）+ 9 条反例（共 35 条）。
  */
 
 const fs = require('fs')
@@ -658,6 +667,315 @@ const runScreenGateCounterExamples = () => {
 }
 
 // ---------------------------------------------------------------------------
+// 「减发热：后台不做无意义唤醒」三闸门（第 33 轮第 1 条，2026-10-08）
+//
+// 这三处周期性 JS 工作单次都不重，重的是「后台每 N 秒把 CPU 从深度睡眠里拽起来一次」：
+//   ① 倒计时到点退出（playDetail 的 timeoutExit）的 1s UI tick：每秒 callHooks → 订阅者
+//      setState，而后台根本看不见这个数字；到点退出由 BackgroundTimer 保证，与 UI 无关。
+//   ② 首页 pager 横滑自愈心跳：每拍两次跨桥（setScrollEnabled + clearNativePagerScrolling），
+//      后台没有新手势会话、原生也不会产生新的失配。
+//   ③ 网易登录 WebView 的 cookie 轮询：每 1.5s 向不可见的 WebView 注入 JS 取 document.cookie。
+// 三条共同口径「闸门 ≠ 停表」：定时器保留（普通 setInterval → 系统冻结 = 零唤醒零断言），
+// body 首行早退，回前台自动恢复。功能性计时（BackgroundTimer 到点退出、回前台两处自愈
+// 兜底）一条都不许删 —— 所以下面是成对断言。
+// ---------------------------------------------------------------------------
+
+const HEAT_GATE_FILES = {
+  timeoutExit: 'src/core/player/timeoutExit.ts',
+  main: 'src/screens/Home/Vertical/Main.tsx',
+  webLogin: 'src/components/WebLoginModal.tsx',
+}
+
+const readHeat = (over = {}) => {
+  const files = {}
+  for (const [k, p] of Object.entries(HEAT_GATE_FILES)) files[k] = over[k] ?? read(p)
+  return files
+}
+
+const FOREGROUND_GATE = /AppState\.currentState\s*!==\s*'active'/
+
+const heatGateInvariants = (files) => {
+  const reasons = []
+
+  // ① 倒计时：UI tick 进后台就停刷，但到点退出仍由 BackgroundTimer 独立保证
+  const te = stripComments(files.timeoutExit)
+  const tickAt = te.indexOf('this.timeout = setInterval(() => {')
+  if (tickAt < 0) {
+    reasons.push('timeoutExit 找不到倒计时 1s tick 起表点（闸门无从判定）')
+  } else {
+    const tick = te.slice(tickAt, te.indexOf('}, 1000)', tickAt))
+    if (!FOREGROUND_GATE.test(tick)) {
+      reasons.push('倒计时 1s tick 无前台闸门（后台每秒 callHooks + 订阅者 setState，看不见还照刷）')
+    }
+    if (tick.includes('this.exit()')) {
+      reasons.push('退出动作挪进了受闸门的 UI tick（后台到点就永远不退出 = 省电省出老 bug）')
+    }
+  }
+  if (!/this\.bgTimeout = BackgroundTimer\.setTimeout\(/.test(te)) {
+    reasons.push('倒计时到点不用 BackgroundTimer.setTimeout（普通 setTimeout 后台被冻结 ⇒ 到点不退出）')
+  } else if (!/this\.bgTimeout = BackgroundTimer\.setTimeout\(\(\) => \{[\s\S]{0,160}?this\.exit\(\)/.test(te)) {
+    reasons.push('BackgroundTimer 回调里不再 exit（到点退出与 UI tick 的前台闸门必须彼此独立）')
+  }
+
+  // ② 首页横滑自愈心跳：后台不跨桥重发，回前台两处兜底必须还在
+  const main = stripComments(files.main)
+  const hbAt = main.indexOf('const heartbeat = () => {')
+  if (hbAt < 0) {
+    reasons.push('Main.tsx 找不到横滑自愈心跳（心跳没了＝原生闩锁失配只能等下一次真实手势自愈）')
+  } else {
+    const hb = main.slice(hbAt, main.indexOf('const timer = setInterval(heartbeat', hbAt))
+    if (!FOREGROUND_GATE.test(hb)) {
+      reasons.push('横滑心跳无前台闸门（后台每拍两次跨桥：setScrollEnabled + clearNativePagerScrolling）')
+    }
+    if (!hb.includes('resyncPagerScroll()') || !hb.includes('healPagerScrollLatch()')) {
+      reasons.push('心跳少了一次重发或一次闩锁清理（心跳只剩空转，自愈覆盖面缩水）')
+    }
+  }
+  const subAt = main.indexOf("AppState.addEventListener('change'")
+  if (subAt < 0) {
+    reasons.push('Main.tsx 无 AppState 订阅（回前台自愈兜底缺失）')
+  } else {
+    const sub = main.slice(subAt, subAt + 400)
+    if (!sub.includes('clearNativePagerScrolling()') || !sub.includes('resyncPagerScroll()')) {
+      reasons.push('Main.tsx 回前台兜底被削（后台不做 + 回前台也不补 = 横滑开关可能整场失配）')
+    }
+  }
+
+  // ③ 登录 cookie 轮询：后台不注入，但定时器必须活着（回前台自动继续）
+  const wl = stripComments(files.webLogin)
+  const pollAt = wl.indexOf('pollingIntervalRef.current = setInterval(() => {')
+  if (pollAt < 0) {
+    reasons.push('WebLoginModal 找不到 cookie 轮询起表点（闸门无从判定）')
+  } else {
+    const poll = wl.slice(pollAt, wl.indexOf('}, 1500)', pollAt))
+    if (!FOREGROUND_GATE.test(poll)) {
+      reasons.push('cookie 轮询无前台闸门（后台每 1.5s 向不可见的 WebView 注入 JS 取 cookie）')
+    }
+    if (poll.includes('stopPolling')) {
+      reasons.push('cookie 轮询在后台步骤里销毁了定时器（闸门必须是「保留定时器 + body 早退」，回前台要能自动继续）')
+    }
+    if (!poll.includes('loggedInRef.current || isCheckingRef.current')) {
+      reasons.push('cookie 轮询缺重入/完成守卫（省电不该顺手删掉原有守卫）')
+    }
+    if (!poll.includes('injectJavaScript')) {
+      reasons.push('cookie 轮询不再注入取 cookie 的 JS（省电不能把功能省掉）')
+    }
+  }
+  return reasons
+}
+
+// ---------------------------------------------------------------------------
+// 冗余清理（第 33 轮第 1 条「去除冗余代码无用代码」）
+//   三向钉住：① 删除清单（36 条路径 / 52 个文件）不许回潮；
+//            ② 正向对照（活文件必须判为存在，避免路径口径错位后静默全过）；
+//            ③ 全量 import 解析扫描（删过头的唯一真危险；本机无 tsc/eslint，只有它拦得住）。
+// ---------------------------------------------------------------------------
+
+const R33_REMOVED = [
+  'src/components/KgVerifyModal.tsx',
+  'src/components/YouTubeLoginModal.tsx',
+  'src/components/YouTubeLoginManager.tsx',
+  'src/components/common/Card.tsx',
+  'src/components/common/MediaCard.tsx',
+  'src/components/common/ScaledImage.tsx',
+  'src/components/common/DrawerLayoutFixed.tsx',
+  'src/components/common/DrawerLayoutFixed.ios.tsx',
+  'src/components/common/DorpDownPanel',
+  'src/components/home/AnnouncementCard.tsx',
+  'src/components/home/CategoryChips.tsx',
+  'src/components/home/HorizontalShelf.tsx',
+  'src/components/home/HotSongList.tsx',
+  'src/screens/PlayDetail/components/lyricText.ts',
+  'src/screens/PlayDetail/Vertical/components/TimeoutExitBtn.tsx',
+  'src/screens/PlayDetail/Vertical/components/Btn.tsx',
+  'src/screens/PlayDetail/Vertical/components/Marquee.tsx',
+  'src/screens/PlayDetail/Vertical/Player/components/MoreBtn',
+  'src/screens/Home/Views/Setting/Horizontal/index.tsx',
+  'src/screens/Home/Views/Setting/Vertical/Header.tsx',
+  'src/screens/Home/Views/Setting/settings/Player/IsShowNotificationImage.tsx',
+  'src/screens/Home/Views/Setting/settings/Player/UseNativeFlacPlayer.tsx',
+  'src/utils/nativeModules/cryptoTest.ts',
+  'src/utils/nativeModules/userApiFallback.ts',
+  'src/utils/musicSdk/xm.js',
+  'src/utils/musicSdk/kg/singer.js',
+  'src/utils/musicSdk/mg/album.js',
+  'src/utils/musicSdk/kg/tipSearch.js',
+  'src/utils/musicSdk/mg/tipSearch.js',
+  'src/utils/musicSdk/wy/tipSearch.js',
+  'src/utils/musicSdk/tx/tipSearch.js',
+  'src/utils/musicSdk/bd',
+  'src/utils/musicSdk/yt',
+  'src/utils/musicSdk/kg/temp',
+  'src/utils/musicSdk/mg/temp',
+  'src/utils/musicSdk/tx/qrc',
+]
+
+const KEEP_CONTROLS = [
+  'src/screens/Home/Vertical/Main.tsx',
+  'src/utils/musicSdk/wy/user.js',
+  'src/screens/Home/Views/DailyRec/index.tsx',
+]
+
+const redundancyInvariants = (exists) => {
+  const reasons = []
+
+  for (const p of KEEP_CONTROLS) {
+    if (!exists(p)) {
+      reasons.push(`正向对照失败：${p} 判为不存在（清理清单的「不存在」判定不可信，路径口径错位）`)
+    }
+  }
+  for (const p of R33_REMOVED) {
+    if (exists(p)) {
+      reasons.push(`第 33 轮删掉的冗余路径又回来了：${p}（无引用副本不该被拷回；若确需恢复，请连同引用点一起补测试与说明）`)
+    }
+  }
+  return reasons
+}
+
+/** src/ 下全部 JS/TS 源码（相对 ROOT 的 posix 路径 → 源码）。
+ *  注意：不能用 readdirSync(dir, { withFileTypes: true }) 的 Dirent.isDirectory() ——
+ *  本机契约运行器把工程挂到虚拟根（__dirname === '/scripts'）时，该判定会把文件也报成
+ *  目录（app.ts 被判为目录），于是递归进文件里再 readdir 直接 ENOENT。改用
+ *  「readdir 成功即目录、抛错即文件」，只依赖 readdirSync 对文件必然抛错这一条标准行为。 */
+const walkSrcFiles = (dir, out = {}) => {
+  let names
+  try {
+    names = fs.readdirSync(dir)
+  } catch (e) {
+    return out
+  }
+  for (const raw of names) {
+    const name = typeof raw == 'string' ? raw : raw.name
+    if (!name || name === 'node_modules' || name.startsWith('.')) continue
+    const full = path.join(dir, name)
+    let isDir = false
+    try {
+      fs.readdirSync(full)
+      isDir = true
+    } catch (e) {
+      isDir = false
+    }
+    if (isDir) walkSrcFiles(full, out)
+    else if (/\.(ts|tsx|js|jsx)$/.test(name)) {
+      out[path.relative(ROOT, full).split(path.sep).join('/')] = fs.readFileSync(full, 'utf8')
+    }
+  }
+  return out
+}
+
+const SRC_MAP = walkSrcFiles(path.join(ROOT, 'src'))
+const SRC_EXT = ['.ts', '.tsx', '.js', '.jsx', '.json']
+const SPEC_RE = /(?:from\s*|require\s*\(\s*|import\s*\(\s*)['"]([^'"]+)['"]/g
+
+// 自制 posix 解析（契约运行器里没有 path.posix）：
+//   'src/plugins/player' + '../utils' → 'src/plugins/utils'
+const posixResolve = (fromFile, spec) => {
+  const base = fromFile.split('/').slice(0, -1)
+  const out = []
+  for (const seg of base.concat(spec.split('/'))) {
+    if (seg === '' || seg === '.') continue
+    if (seg === '..') { out.pop(); continue }
+    out.push(seg)
+  }
+  return out.join('/')
+}
+
+const danglingImportInvariants = (exists, files) => {
+  const reasons = []
+  let unresolved = 0
+  for (const [rel, src] of Object.entries(files)) {
+    const code = stripComments(src)
+    SPEC_RE.lastIndex = 0
+    let m
+    while ((m = SPEC_RE.exec(code)) !== null) {
+      const spec = m[1]
+      let base
+      if (spec.startsWith('@/')) base = 'src/' + spec.slice(2)
+      else if (spec.startsWith('./') || spec.startsWith('../')) base = posixResolve(rel, spec)
+      else continue // 裸模块名（node_modules / 原生包）：不归本契约管
+      const cands = [base]
+      for (const e of SRC_EXT) cands.push(base + e)
+      for (const e of SRC_EXT) cands.push(base + '/index' + e)
+      if (!cands.some(p => exists(p))) {
+        unresolved++
+        if (unresolved <= 20) {
+          reasons.push(`${rel} 的 import 指向不存在的文件：'${spec}'（删过头 / 路径写错；本机无 tsc/eslint，只有这道扫描拦得住）`)
+        }
+      }
+    }
+  }
+  if (unresolved > 20) reasons.push(`另有 ${unresolved - 20} 处悬空 import 未逐条列出（先修上面这些）`)
+  return reasons
+}
+
+const REAL_EXISTS = (rel) => fs.existsSync(path.join(ROOT, rel))
+
+const runHeatCounterExamples = () => {
+  const results = []
+  const check = (name, fn, expectSubstr) => {
+    let reasons = []
+    try {
+      reasons = fn()
+    } catch (e) {
+      results.push({ name, ok: false, detail: `抛异常: ${e.message}` })
+      return
+    }
+    const hit = reasons.some(r => r.includes(expectSubstr))
+    results.push({ name, ok: hit, detail: hit ? '已拦下' : `未拦下（reasons=${JSON.stringify(reasons)}）` })
+  }
+  const heat = (over) => heatGateInvariants(readHeat(over))
+  const REAL_HEAT = readHeat()
+
+  // H1 倒计时 UI tick 去掉前台闸门（后台每秒刷看不见的数字）
+  check('H1 倒计时 tick 无前台闸门', () => heat({
+    timeoutExit: tamper(REAL_HEAT.timeoutExit, "      if (AppState.currentState !== 'active') return\n", ''),
+  }), '倒计时 1s tick 无前台闸门')
+
+  // H2 到点退出的 BackgroundTimer 被削（省电省成「后台不退出」）
+  check('H2 到点退出不再由 BackgroundTimer 保证', () => heat({
+    timeoutExit: tamper(REAL_HEAT.timeoutExit,
+      '    this.bgTimeout = BackgroundTimer.setTimeout(() => {\n      this.clearTimer()\n      this.exit()\n    }, time * 1000)',
+      '    this.bgTimeout = BackgroundTimer.setTimeout(() => {\n      this.clearTimer()\n    }, time * 1000)'),
+  }), '不再 exit')
+
+  // H3 横滑心跳去掉前台闸门（后台每拍两次跨桥）
+  check('H3 横滑心跳无前台闸门', () => heat({
+    main: tamper(REAL_HEAT.main, "      if (AppState.currentState !== 'active') return\n      resyncPagerScroll()", '      resyncPagerScroll()'),
+  }), '横滑心跳无前台闸门')
+
+  // H4 回前台兜底被削（后台不做 + 回前台也不补）
+  check('H4 回前台兜底被削', () => heat({
+    main: tamper(REAL_HEAT.main, '      clearNativePagerScrolling()\n      resyncPagerScroll()', '      resyncPagerScroll()'),
+  }), '回前台兜底被削')
+
+  // H5 cookie 轮询去掉前台闸门（后台每 1.5s 注入不可见 WebView）
+  check('H5 cookie 轮询无前台闸门', () => heat({
+    webLogin: tamper(REAL_HEAT.webLogin, "      if (AppState.currentState !== 'active') return\n", ''),
+  }), 'cookie 轮询无前台闸门')
+
+  // H6 把闸门写成「停表」（退后台销毁定时器 ⇒ 回前台不再自动继续）
+  check('H6 闸门写成停表', () => heat({
+    webLogin: tamper(REAL_HEAT.webLogin,
+      "      if (AppState.currentState !== 'active') return\n      if (loggedInRef.current || isCheckingRef.current) return",
+      "      if (AppState.currentState !== 'active') return stopPolling()\n      if (loggedInRef.current || isCheckingRef.current) return"),
+  }), '销毁了定时器')
+
+  // D1 冗余路径回潮
+  check('D1 已删冗余路径回潮', () => redundancyInvariants((rel) => rel === 'src/utils/musicSdk/xm.js' || REAL_EXISTS(rel)),
+    '又回来了')
+
+  // D2 删过头（某文件被删但仍有 import 指向它）
+  check('D2 删过头留下悬空 import', () => danglingImportInvariants((rel) => rel !== 'src/plugins/player/nativeFlac.ts' && REAL_EXISTS(rel), SRC_MAP),
+    '指向不存在的文件')
+
+  // D3 正向对照失效（路径口径错位时不许静默全过）
+  check('D3 正向对照失效', () => redundancyInvariants(() => false),
+    '正向对照失败')
+
+  return results
+}
+
+// ---------------------------------------------------------------------------
 // 主流程
 // ---------------------------------------------------------------------------
 
@@ -666,6 +984,8 @@ const realJs = jsInvariants(REAL.playProgress)
 const realPaused = pausedInvariants(readGlass())
 const realBg = bgInvariants(readBg())
 const realScreenGate = screenGateInvariants(REAL.appdel)
+const realHeat = heatGateInvariants(readHeat())
+const realRedundancy = [...redundancyInvariants(REAL_EXISTS), ...danglingImportInvariants(REAL_EXISTS, SRC_MAP)]
 
 console.log('=== sim-power-drain ===')
 console.log('\n[原生 AppDelegate.mm]')
@@ -694,19 +1014,34 @@ if (realScreenGate.length === 0) {
   realScreenGate.forEach(r => console.log('  FAIL ' + r))
 }
 
+console.log('\n[减发热：后台不做无意义唤醒三闸门（第 33 轮第 1 条）]')
+if (realHeat.length === 0) {
+  console.log('  PASS 倒计时 UI tick / 横滑自愈心跳 / 登录 cookie 轮询：闸门在、定时器保留、功能计时与回前台兜底一条没少')
+} else {
+  realHeat.forEach(r => console.log('  FAIL ' + r))
+}
+
+console.log('\n[冗余清理（第 33 轮第 1 条）]')
+if (realRedundancy.length === 0) {
+  console.log(`  PASS 删除清单 ${R33_REMOVED.length} 条路径全不存在 + ${KEEP_CONTROLS.length} 项正向对照 + ${Object.keys(SRC_MAP).length} 个源文件 import 全解析`)
+} else {
+  realRedundancy.forEach(r => console.log('  FAIL ' + r))
+}
+
 console.log('\n[反例自检]')
 const ceResults = runCounterExamples()
 const peResults = runPausedCounterExamples()
 const beResults = runBgCounterExamples()
 const sgResults = runScreenGateCounterExamples()
+const hResults = runHeatCounterExamples()
 let ceAllOk = true
-const allResults = [...ceResults, ...peResults, ...beResults, ...sgResults]
+const allResults = [...ceResults, ...peResults, ...beResults, ...sgResults, ...hResults]
 for (const r of allResults) {
   console.log(`  ${r.ok ? 'PASS' : 'FAIL'} ${r.name} —— ${r.ok ? '已拦下' : `未拦下（reasons=${JSON.stringify(r.detail)}）`}`)
   if (!r.ok) ceAllOk = false
 }
 
-const invCount = [realNative.ok, realJs.ok, realPaused.length === 0, realBg.length === 0, realScreenGate.length === 0].filter(Boolean).length
-const allOk = invCount === 5 && ceAllOk
-console.log(`\n结果：${allOk ? 'ALL PASS' : '有失败项'}（不变量 ${allOk || invCount > 0 ? `${invCount}/5` : '0/5'}；反例 ${allResults.filter(r => r.ok).length}/${allResults.length}）`)
+const invCount = [realNative.ok, realJs.ok, realPaused.length === 0, realBg.length === 0, realScreenGate.length === 0, realHeat.length === 0, realRedundancy.length === 0].filter(Boolean).length
+const allOk = invCount === 7 && ceAllOk
+console.log(`\n结果：${allOk ? 'ALL PASS' : '有失败项'}（不变量 ${allOk || invCount > 0 ? `${invCount}/7` : '0/7'}；反例 ${allResults.filter(r => r.ok).length}/${allResults.length}）`)
 process.exit(allOk ? 0 : 1)

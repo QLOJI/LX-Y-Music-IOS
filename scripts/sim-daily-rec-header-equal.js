@@ -253,7 +253,8 @@ const MAX_COLS = Number(constExpr(detailSrc, 'detailTitleMaxVisibleColumns'))
 const PAGES = [
   { name: '酷狗每日推荐', navId: 'nav_kg_daily_rec', items: (kgTabs ? kgTabs.length : 0) + 1, labels: kgTabs || [] },
   { name: 'QQ每日推荐', navId: 'nav_tx_daily_rec', items: (txTabs ? txTabs.length : 0) + 1, labels: txTabs || [] },
-  { name: '网易每日推荐', navId: 'nav_daily_rec', items: MAX_COLS > 0 ? 5 : 0, labels: ['推荐歌曲', '推荐歌单', '默认推荐', '风格化推荐'] },
+  // 标签顺序 = 页面上从左到右的实际渲染顺序（第 33 轮第 6 条后：歌单在左、歌曲在右）
+  { name: '网易每日推荐', navId: 'nav_daily_rec', items: MAX_COLS > 0 ? 5 : 0, labels: ['推荐歌单', '推荐歌曲', '默认推荐', '风格化推荐'] },
 ]
 for (const p of PAGES) {
   p.columns = Math.min(p.items, MAX_COLS)

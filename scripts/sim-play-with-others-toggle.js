@@ -20,15 +20,24 @@
  *     不勾选 = 独占（第 21 轮修的「高德播报即停、结束不恢复」场景）
  *   老用户偏好映射无缝：旧「勾选（自动暂停）」= 新「不勾选」，真实行为不变。
  *
- * 会话口径（第 24 轮修正，也是本脚本改名后的核心不变量）：
- *   音频会话**始终**非混音（iosCategoryOptions: []）。mixWithOthers 是死路：
- *   ① mixable 会话失去 Now Playing 主会话资格 ⇒ 锁屏 / 灵动岛播放卡片消失
- *      （用户实锤「勾选后卡片消失、取消就有了」）；
- *   ② 与原生流式引擎的 LongFormAudio 路由策略互斥 ⇒ setCategory 报 -50，
- *      会话被停用后表现为「歌曲在走、没有声音」（用户实锤「声音消失、进度还在走」）。
- *   「不因其它音频暂停自己」因此落在**策略层**（service.ts 混音分支 + 原生
+ * 会话口径（第 24 轮修正；**第 33 轮第 4 条修订**，也是本脚本改名后的核心不变量）：
+ *   需求原话（2026-10-08 第 33 轮第 4 条）：
+ *     「播放设置中，勾选“与其他应用同时播放”选项后，配置为未勾选时和现在一样，勾选后，
+ *       退出灵动岛占用，强化不会暂停播放功能，不论后台什么音频在播，软件音频正常播放」
+ *   第 24 轮的两条实锤在本轮各有归宿：
+ *   ① mixable 会话失去 Now Playing 主会话资格 ⇒ 卡片 / 灵动岛占用消失：用户第 24 轮当
+ *      bug（「我需要始终显示」），第 33 轮当**需求**（「退出灵动岛占用」）—— 于是勾选态
+ *     允许混音，但**只在原生流式引擎（无损档）的 prepareAudioSession 里、由
+ *      LXPlayWithOthersEnabled 守卫**，并且必须配 AVAudioSessionRouteSharingPolicyDefault；
+ *   ② 混音 + LongFormAudio 路由策略互斥 ⇒ setCategory 报 -50（「歌曲在走、没有声音」）：
+ *      本轮通过「混音分支不配 LongFormAudio」绕开，且失败要能退回非混音口径 —— 这条第
+ *      24 轮的禁区别名（运行期改激活态会话分类）仍然有效：RNTP / AVPlayer 那条路径
+ *      （非无损档）的 iosCategoryOptions 依旧是定死的常量空数组，不许随设置抖动。
+ *   「不因其它音频暂停自己」在策略层继续成立（service.ts 混音分支 + 原生
  *   LXPlayWithOthersEnabled，见 scripts/sim-audio-interruption-mix.js），
  *   切换到该模式**不重建播放器**（旧 reloadConfig() 就是「勾选即失声」的触发器）。
+ *   勾选态的「退出卡片占用」由 JS 侧 nowPlaying 抑制开关落地，验收在
+ *   scripts/sim-play-with-others-card-exit.js。
  *
  * 带反例自检（这类回归 tsc/eslint 无感：极性写反、会话回潮完全合法，只在真机上表现为
  * 「勾选后卡片消失 / 没声音」或「关掉同时播放后车机行为反过来」）。
@@ -43,6 +52,7 @@ const path = require('path')
 const ROOT = path.join(__dirname, '..')
 const read = (p) => fs.readFileSync(path.join(ROOT, p), 'utf8').replace(/\r\n/g, '\n')
 const stripComments = (src) => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '')
+const countOf = (src, needle) => src.split(needle).length - 1
 
 const F = {
   ui: 'src/screens/Home/Views/Setting/settings/Player/IsHandleAudioFocus.tsx',
@@ -110,7 +120,40 @@ const langInvariants = (rawJson) => {
 // ---------------------------------------------------------------------------
 // 不变量 C：会话分类不再随设置抖动 + 源码里不许再有 mixWithOthers
 //   （dependencies-patch.js 的 RNTP 构建期补丁故意容忍 mixWithOthers，不在扫描范围）
+//   【第 33 轮第 4 条】唯一放行的形态：原生流式引擎 prepareAudioSession 里由
+//   LXPlayWithOthersEnabled 守卫、配 RouteSharingPolicyDefault 的那一处混音分类。
+//   放行前先把这串**完整**选项名归一化掉，其余任何形态（RNTP 的 iosCategoryOptions、
+//   业务代码里的混音开关、裸 mixWithOthers）依旧一律拦下 —— 不放宽任何旧口径。
 // ---------------------------------------------------------------------------
+
+/** 原生勾选态混音分类的自洽性：守卫 + 路由策略 + 唯一性 + 失败可退回 */
+const nativeMixSessionInvariants = (rawNative) => {
+  const reasons = []
+  const code = stripComments(rawNative)
+  const OPTION = 'AVAudioSessionCategoryOptionMixWithOthers'
+  const hits = countOf(code, OPTION)
+  if (hits !== 1) {
+    reasons.push(`原生源码里 ${OPTION} 出现 ${hits} 次（第 33 轮第 4 条只允许一处：prepareAudioSession 的勾选守卫分支）`)
+    if (hits === 0) return reasons
+  }
+  const at = code.indexOf(OPTION)
+  const before = code.slice(Math.max(0, at - 400), at)
+  const after = code.slice(at, at + 400)
+
+  if (!before.includes('if (LXPlayWithOthersEnabled) {')) {
+    reasons.push('原生混音分类没有由 LXPlayWithOthersEnabled 守卫（未勾选也会是混音会话 ⇒ 卡片 / 灵动岛占用被无条件砍掉，与设置项撒谎）')
+  }
+  if (!before.includes('AVAudioSessionRouteSharingPolicyDefault')) {
+    reasons.push('原生混音分类没有配 AVAudioSessionRouteSharingPolicyDefault（混音 + LongFormAudio 互斥，setCategory 报 -50 = 歌曲在走、没有声音）')
+  }
+  if (before.includes('AVAudioSessionRouteSharingPolicyLongFormAudio')) {
+    reasons.push('原生混音分类仍配着 AVAudioSessionRouteSharingPolicyLongFormAudio（第 24 轮实锤的 -50 死路）')
+  }
+  if (!after.includes('AVAudioSessionRouteSharingPolicyLongFormAudio')) {
+    reasons.push('原生混音分类失败后无可退回分支（-50 / 会话被别家占用时会直接失声，混音只是增强不是唯一出路）')
+  }
+  return reasons
+}
 
 const sessionInvariants = (srcs) => {
   const reasons = []
@@ -120,14 +163,18 @@ const sessionInvariants = (srcs) => {
     reasons.push('播放器未把 player.isHandleAudioFocus 传给 handleAudioFocus')
   }
   if (!plugin.includes('iosCategoryOptions: [],')) {
-    reasons.push('iosCategoryOptions 不是常量空数组（会话分类又随设置抖动：勾选会换分类 ⇒ 卡片消失 / 无声）')
+    reasons.push('RNTP 路径的 iosCategoryOptions 不是常量空数组（第 24 轮 -50 禁区：运行期改激活态会话分类 ⇒ 勾选即失声 / 卡片被无条件砍掉）')
   }
+
+  reasons.push(...nativeMixSessionInvariants(srcs.native))
 
   for (const [name, raw] of Object.entries(srcs)) {
     if (name == 'lang') continue
-    const code = stripComments(raw)
-    if (code.includes('mixWithOthers')) {
-      reasons.push(`${name} 的代码里出现 mixWithOthers（第 24 轮已定案：混音会话与「卡片始终显示」/ 原生 LongFormAudio 互斥，不许回潮）`)
+    // 原生那一处放行形态由 nativeMixSessionInvariants 单独验（守卫 + 路由策略 + 唯一性）；
+    // 其余文件里出现任何大小写形态的 mixWithOthers 一律拦下 —— 归一化只发生在这里，别处没有豁免。
+    if (name == 'native') continue
+    if (/mixwithothers/i.test(stripComments(raw))) {
+      reasons.push(`${name} 的代码里出现 mixWithOthers（第 24 轮已定案：RNTP / 业务层的混音会话与「卡片可选显示」/ 原生 LongFormAudio 互斥，不许回潮；第 33 轮第 4 条只放行原生 prepareAudioSession 的勾选守卫分支）`)
     }
   }
   return reasons
@@ -200,6 +247,30 @@ const runCounterExamples = () => {
     "const isPlayWithOthers = () => settingState.setting['player.isHandleAudioFocus'] === false\nconst LXLegacyMixOptions = ['mixWithOthers']") }),
   'mixWithOthers')
 
+  // c8 原生混音分类丢掉勾选守卫（未勾选也走混音 ⇒ 卡片 / 灵动岛占用被无条件砍掉）
+  check('c8 原生混音分类丢掉勾选守卫', () => session({ native: tamper(REAL.native,
+    '    if (LXPlayWithOthersEnabled) {\n',
+    '') }),
+  '没有由 LXPlayWithOthersEnabled 守卫')
+
+  // c9 混音配 LongFormAudio（第 24 轮实锤的 -50 死路）
+  check('c9 原生混音配 LongFormAudio（-50 死路）', () => session({ native: tamper(REAL.native,
+    '          routeSharingPolicy:AVAudioSessionRouteSharingPolicyDefault\n                     options:AVAudioSessionCategoryOptionMixWithOthers',
+    '          routeSharingPolicy:AVAudioSessionRouteSharingPolicyLongFormAudio\n                     options:AVAudioSessionCategoryOptionMixWithOthers') }),
+  '-50')
+
+  // c10 混音失败后没有可退回的非混音口径（会话被别家独占时直接失声）
+  check('c10 原生混音失败后无可退回口径', () => session({ native: tamper(REAL.native,
+    'AVAudioSessionRouteSharingPolicyLongFormAudio',
+    'AVAudioSessionRouteSharingPolicyDefault') }),
+  '无可退回分支')
+
+  // c11 混音分类写到第二处（放行形态的唯一性被破坏）
+  check('c11 原生混音分类写到第二处', () => session({ native: tamper(REAL.native,
+    'AVAudioSessionRouteSharingPolicyLongFormAudio',
+    'AVAudioSessionRouteSharingPolicyLongFormAudio\n                   options:AVAudioSessionCategoryOptionMixWithOthers') }),
+  '只允许一处')
+
   return results
 }
 
@@ -208,13 +279,13 @@ const runCounterExamples = () => {
 // ---------------------------------------------------------------------------
 
 console.log('=== sim-play-with-others-toggle ===')
-console.log('「与其他应用同时播放」= 改名 + 极性翻转 + 存储语义不变 + 切换无感（不重建播放器）+ 会话不许混音（第 23/24 轮）')
+console.log('「与其他应用同时播放」= 改名 + 极性翻转 + 存储语义不变 + 切换无感（不重建播放器）+ 会话混音只许出现在原生勾选守卫分支（第 23/24 轮，第 33 轮第 4 条修订）')
 console.log()
 
 const checks = [
   ['设置项（playWithOthers / check / setter 翻回存储语义 / 无感下发 syncPlayWithOthersEnabled / 无 reloadConfig / toast）', () => uiInvariants(REAL.ui)],
   ['文案（zh-cn.json：名称「与其他应用同时播放」+ tip「立即生效」）', () => langInvariants(REAL.lang)],
-  ['会话（iosCategoryOptions 常量空数组 + 5 个源码文件剥离注释后无 mixWithOthers）', () => sessionInvariants(REAL)],
+  ['会话（RNTP 路径 iosCategoryOptions 常量空数组 + 非原生文件无任何大小写形态 mixWithOthers + 原生放行形态由勾选守卫 / Default 路由策略 / 唯一性 / 可退回四项把住）', () => sessionInvariants(REAL)],
 ]
 
 let invOk = true
