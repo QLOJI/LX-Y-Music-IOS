@@ -161,11 +161,18 @@ export default memo(() => {
 
   return (
     <View style={{ flex: 1 }}>
-      {pageHeader}
       <View
         style={[{ flex: 1 }, selectedPlaylist ? { opacity: 0 } : null]}
         pointerEvents={selectedPlaylist ? 'none' : 'auto'}
       >
+        {/* 页头必须在这层「变暗层」**里面**（用户第 33 轮第 6 条：点歌单后原标题/封面重叠）。
+            以前它在外面，打开歌单详情（页内浮层，见下方 absoluteFill 的 SonglistDetail）时
+            只把 PagerView 那层 opacity:0 了，状态栏占位 + 大标题 + tabs 仍然可见，而详情页
+            自己的封面/标题从 statusBarHeight 起画，正好压上去 ⇒ 用户截图那种「两套标题叠着」。
+            放进这一层后：打开详情 = 整页一起吃 opacity:0 + pointerEvents:none，
+            屏幕上只剩歌单内容（原每日推荐标题不再显示）。
+            同仓 MyPlaylist / KgPlaylist / TxPlaylist 的 index 都是这个范式，此处对齐。 */}
+        {pageHeader}
         <PagerView
           ref={pagerViewRef}
           style={{ flex: 1 }}

@@ -70,30 +70,13 @@ const Tabs = ({
       showsHorizontalScrollIndicator={false}
       contentContainerStyle={styles.tabsContainer}
     >
+      {/* 主 tab 顺序（用户第 33 轮第 6 条：「将推荐歌单标题显示在左，推荐歌曲标题显示在右」）：
+          歌单在左、歌曲在右。切页映射不受影响 —— onTabChange 走的是 id（'songs' / 'playlists'），
+          不是下标；PagerView 仍是 page0 = RecSongs / page1 = RecPlaylists。 */}
       <TouchableOpacity
         style={[
           styles.tab,
           // 列宽 = DetailPageTitle 下发的 tab 列宽（行内给）
-          { width: columnWidth },
-          // 主 tab 圆角随「按钮圆角」设置行内覆盖；可见高度 ≈ 32 = 15 号文字行高 17 + 下划线留白 5 + 上下 padding 5×2
-          { borderRadius: buttonRadius(32) },
-        ]}
-        onPress={() => { onTabChange('songs') }}
-      >
-        <Text
-          style={[styles.tabText, { borderBottomColor: activeTab === 'songs' ? theme['c-primary-font-active'] : 'transparent' }]}
-          color={theme['c-font']}
-          // 单行 + 放不下自动缩字号：不换行（换行会撑破行高、破坏「同一高度」）、不裁字
-          numberOfLines={1}
-          adjustsFontSizeToFit
-          minimumFontScale={0.75}
-        >
-          推荐歌曲
-        </Text>
-      </TouchableOpacity>
-      <TouchableOpacity
-        style={[
-          styles.tab,
           { width: columnWidth },
           // 主 tab 圆角随「按钮圆角」设置行内覆盖；可见高度 ≈ 32 = 15 号文字行高 17 + 下划线留白 5 + 上下 padding 5×2
           { borderRadius: buttonRadius(32) },
@@ -103,11 +86,31 @@ const Tabs = ({
         <Text
           style={[styles.tabText, { borderBottomColor: activeTab === 'playlists' ? theme['c-primary-font-active'] : 'transparent' }]}
           color={theme['c-font']}
+          // 单行 + 放不下自动缩字号：不换行（换行会撑破行高、破坏「同一高度」）、不裁字
           numberOfLines={1}
           adjustsFontSizeToFit
           minimumFontScale={0.75}
         >
           推荐歌单
+        </Text>
+      </TouchableOpacity>
+      <TouchableOpacity
+        style={[
+          styles.tab,
+          { width: columnWidth },
+          // 主 tab 圆角随「按钮圆角」设置行内覆盖；可见高度 ≈ 32 = 15 号文字行高 17 + 下划线留白 5 + 上下 padding 5×2
+          { borderRadius: buttonRadius(32) },
+        ]}
+        onPress={() => { onTabChange('songs') }}
+      >
+        <Text
+          style={[styles.tabText, { borderBottomColor: activeTab === 'songs' ? theme['c-primary-font-active'] : 'transparent' }]}
+          color={theme['c-font']}
+          numberOfLines={1}
+          adjustsFontSizeToFit
+          minimumFontScale={0.75}
+        >
+          推荐歌曲
         </Text>
       </TouchableOpacity>
       {activeTab === 'songs' ? (
@@ -255,8 +258,15 @@ export default memo(() => {
 
   return (
     <View style={{ flex: 1 }}>
-      {pageHeader}
       <View style={[{ flex: 1 }, selectedPlaylist ? { opacity: 0 } : null]} pointerEvents={selectedPlaylist ? 'none' : 'auto'}>
+        {/* 页头必须在这层「变暗层」**里面**（用户第 33 轮第 6 条：点歌单后原标题/封面重叠）。
+            以前它在外面，打开歌单详情（页内浮层，见下方 absoluteFill 的 SonglistDetail）时
+            只把 PagerView 那层 opacity:0 了，状态栏占位 + 大标题 + tabs 仍然可见，而详情页
+            自己的封面/标题从 statusBarHeight 起画，正好压上去 ⇒ 用户截图那种「两套标题叠着」。
+            放进这一层后：打开详情 = 整页一起吃 opacity:0 + pointerEvents:none，
+            屏幕上只剩歌单内容（原每日推荐标题不再显示）。
+            同仓 MyPlaylist / KgPlaylist / TxPlaylist 的 index 都是这个范式，此处对齐。 */}
+        {pageHeader}
         <PagerView
           ref={pagerViewRef}
           style={{ flex: 1 }}
