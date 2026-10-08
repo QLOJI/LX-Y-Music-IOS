@@ -251,9 +251,12 @@ export async function manualUploadSettingsAndApis() {
   })
   if (!confirm) return
 
-  isSyncing = true
-  toast('开始上传...')
+  // 【第 33 轮第 3 条】isSyncing = true 挪进 try：以前它写在 try 外面、紧接着一句 toast，
+  // 这一小段一旦出岔子（同步抛错等）标记就永久停在 true —— 之后四个手动按钮 + 自动同步
+  // 全部只回一句「正在同步中，请稍后...」，用户看到的就是「所有按钮全部锁死、点了没反应」。
   try {
+    isSyncing = true
+    toast('开始上传...')
     const remoteSettingsPath = getRemoteSettingsFilePath()
     const remoteUserApisPath = getRemoteUserApisFilePath()
 
@@ -286,9 +289,10 @@ export async function manualDownloadSettingsAndApis() {
   })
   if (!confirm) return
 
-  isSyncing = true
-  toast('开始下载...')
+  // 【第 33 轮第 3 条】同手动上传：标记进 try，杜绝永久卡在「正在同步中」
   try {
+    isSyncing = true
+    toast('开始下载...')
     const remoteSettingsPath = getRemoteSettingsFilePath()
     const remoteUserApisPath = getRemoteUserApisFilePath()
 
@@ -334,9 +338,10 @@ export async function manualUploadLists() {
   })
   if (!confirm) return
 
-  isSyncing = true
-  toast('开始上传歌单...')
+  // 【第 33 轮第 3 条】同手动上传：标记进 try，杜绝永久卡在「正在同步中」
   try {
+    isSyncing = true
+    toast('开始上传歌单...')
     const remoteListsPath = getRemoteListsFilePath()
     const { lists } = await getAllDataForSync()
     await uploadLists(remoteListsPath, lists)
@@ -367,9 +372,10 @@ export async function manualDownloadLists() {
   })
   if (!confirm) return
 
-  isSyncing = true
-  toast('开始下载歌单...')
+  // 【第 33 轮第 3 条】同手动上传：标记进 try，杜绝永久卡在「正在同步中」
   try {
+    isSyncing = true
+    toast('开始下载歌单...')
     const remoteListsPath = getRemoteListsFilePath()
     const remoteListsContent = await webdav.downloadFile(remoteListsPath)
     if (remoteListsContent) {
@@ -400,12 +406,13 @@ export async function triggerWebDAVSync(isManual = false) {
     return
   }
 
-  isSyncing = true
-  if (isManual) toast('开始同步歌单...')
-
   const remoteListsPath = getRemoteListsFilePath()
 
+  // 【第 33 轮第 3 条】标记进 try：见上方手动上传的说明（永久卡「正在同步中」的成因之一）
   try {
+    isSyncing = true
+    if (isManual) toast('开始同步歌单...')
+
     const remoteListsContent = await webdav.downloadFile(remoteListsPath)
 
     if (remoteListsContent === null) {

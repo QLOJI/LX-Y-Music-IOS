@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { AppState } from 'react-native'
 import BackgroundTimer from 'react-native-background-timer'
 import { exitApp } from '@/core/common'
 import playerState from '@/store/player/state'
@@ -74,6 +75,10 @@ const timeoutTools = {
       this.exit()
     }, time * 1000)
     this.timeout = setInterval(() => {
+      // 【第 33 轮第 1 条·省电】后台不刷新倒计时 UI（反正看不见）：省一次 JS 唤醒 +
+      // 订阅者 setState。到点仍由上面的 BackgroundTimer 触发 exit()，且 exit / clearTimer
+      // 自身都会 callHooks，语义不变。
+      if (AppState.currentState !== 'active') return
       this.callHooks()
     }, 1000)
     this.callHooks()
