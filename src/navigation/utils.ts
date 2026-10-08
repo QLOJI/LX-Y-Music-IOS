@@ -247,6 +247,16 @@ export const showSyncModeModal = (onUnavailable?: () => void) => {
   }
 
   const present = (attempt: number) => {
+    // 【第 35 轮第 2 条】已经有一个活着的选择框就绝不再呈现第二个。
+    //
+    // 上面的「挂载复查」是**延时 1000ms** 才看的：挂载慢一点（原生 Modal 正在淡出、
+    // 桥接繁忙）就会先判「没挂上」→ 700ms 后 present(attempt + 1)。若第一次其实已经挂上，
+    // 第二次呈现的副本会在挂载时发现 store 里是别人的 id，调用 dismissOverlay 把**第一个**
+    // 关掉 —— 两个都不在了是可能的（第二个还没挂稳就被后续重试顶掉），表现正是用户第 35 轮
+    // 第 2 条看到的「状态写着等待选择同步方式，选择框却迟迟不出现」。
+    // 复查已挂上就停手这条判据（下一段的 if）保持不变，这里只是把同样的判据前移到呈现入口，
+    // 让「重试」永远只能补一个**真的不存在**的选择框。
+    if (syncState.syncModeComponentId) return
     try {
       void Navigation.showOverlay({
         component: {
