@@ -161,6 +161,9 @@ export const requestStoragePermission = async() => {
  */
 // 当前已展示的 Toast overlay 的 componentId（同一次只保留一个，避免堆叠）
 let currentToastId: string | null = null
+// 【第 33 轮第 3 条】每次 toast 的序号：失败重试用它判断「这次请求是不是最新的」，
+// 避免一条过期的提示（比如「正在测试连接...」）在结果提示之后又冒出来。
+let toastSeq = 0
 
 export const toast = (
   message: string,
@@ -187,7 +190,8 @@ export const toast = (
 
   // iOS 分支：用 RNN overlay 呈现非阻塞 Toast，替代 Alert.alert
   const durationMs = duration === 'long' ? 3500 : 2000
-  const showOverlay = () => {
+  const seq = ++toastSeq
+  const showOverlay = (allowRetry = true) => {
     void Navigation.showOverlay({
       component: {
         name: TOAST_SCREEN,
@@ -213,6 +217,18 @@ export const toast = (
       // 后建的原生面板窗口时，浮层就被压到下面，表现为「点了没有任何反馈」。
       // 浮层创建成功后立刻提层一次（原生侧提到 UIWindowLevelAlert + 1，旧包上安全降级）。
       raiseToastOverlay()
+    }).catch((err: any) => {
+      // 【第 33 轮第 3 条】这里以前**没有 catch**：浮层创建一旦失败（导航正在切换、
+      // 同名 overlay 争用、原生窗口状态异常），Promise 就变成 unhandled rejection，
+      // 用户侧看到的就是「点了没有任何提示」；更糟的是 currentToastId 会停在旧值上，
+      // 之后每次 toast 都先去 dismiss 一个已经死掉的 overlay，整条提示链路静默失效。
+      currentToastId = null
+      console.warn('[toast] overlay 创建失败：', err?.message ?? err)
+      // 只重试一次、挪到下一拍：失败绝大多数是「上一个浮层还没销毁 / 正在切导航」的瞬时争用。
+      // 序号比对保证只有最新那条提示才重试（过期的「正在测试连接...」不会在结果之后又冒出来）。
+      if (allowRetry && seq === toastSeq) {
+        setTimeout(() => { showOverlay(false) }, 250)
+      }
     })
   }
 
@@ -220,7 +236,9 @@ export const toast = (
   if (currentToastId) {
     void Navigation.dismissOverlay(currentToastId)
       .catch(() => {})
-      .finally(showOverlay)
+      // 注意：这里必须是箭头函数。写成 `.finally(showOverlay)` 会把 dismissOverlay 的
+      // resolve 值（undefined）当成 allowRetry 传进去 —— 重试分支永远不会走。
+      .finally(() => { showOverlay() })
   } else {
     showOverlay()
   }

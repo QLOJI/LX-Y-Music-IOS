@@ -30,11 +30,55 @@ export function resetClient() {
   client = null
 }
 
-export async function testConnection(): Promise<boolean> {
+/** 给一个 Promise 套超时：到点就 reject（原 Promise 的后续 settle 被忽略）。 */
+function withTimeout<T>(p: Promise<T>, ms: number, message: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => { reject(new Error(message)) }, ms)
+    p.then(
+      (value) => { clearTimeout(timer); resolve(value) },
+      (error) => { clearTimeout(timer); reject(error) },
+    )
+  })
+}
+
+/**
+ * 测试连接（第 33 轮第 3 条：用户原话「点击测试连接后没有任何提示连接成功或者失败文字」）。
+ *
+ * 以前这里只有一个裸的 `getDirectoryContents('/')`：
+ *   ① **没有超时** —— 服务器 TCP 连得上但不回包（半死 / 被中间设备静默丢包）时这个 Promise
+ *      永不 settle，「测试连接」按钮就永远停在「测试中...」并保持禁用，用户看不到任何结果；
+ *   ② 探的是根目录 `/`，而用户真正要用的是「同步路径」—— 服务器只开放子目录（根不可列）时
+ *      会被误判成「连接失败」，反过来根可列但同步路径没权限时又会误判成成功。
+ *
+ * 现在：探「同步路径」（没填就探根），带超时；404/409（路径不存在）不算失败 —— 那恰恰说明
+ * 服务器和账号都是通的，只是目录还没建（首次同步会自动建）。结果同步写进 WebDAV 日志，
+ * 界面提示由调用方 toast。
+ */
+export async function testConnection(timeoutMs = 15000): Promise<boolean> {
   const cli = await getClient()
   if (!cli) throw new Error('WebDAV 未配置')
-  await cli.getDirectoryContents('/')
-  return true
+
+  const rawPath = settingState.setting['sync.webdav.path'] || '/'
+  const cleanPath = '/' + rawPath.replace(/^\/|\/$/g, '')
+  const probePath = cleanPath === '/' ? '/' : cleanPath + '/'
+
+  webDAVLog.info(`[Test] 探测 ${probePath} ...`)
+  try {
+    await withTimeout(
+      cli.getDirectoryContents(probePath) as Promise<unknown>,
+      timeoutMs,
+      `连接超时（${Math.round(timeoutMs / 1000)} 秒内服务器没有响应）`,
+    )
+    webDAVLog.info(`[Test] 成功：${probePath} 可访问`)
+    return true
+  } catch (error: any) {
+    if ((error?.status === 404 || error?.status === 409) && probePath !== '/') {
+      webDAVLog.info(`[Test] ${probePath} 尚不存在，但服务器可达（首次同步会自动创建该目录）`)
+      return true
+    }
+    webDAVLog.error(`[Test] 失败：${error?.stack ?? error?.message ?? error}`)
+    throw error
+  }
 }
 
 /**
