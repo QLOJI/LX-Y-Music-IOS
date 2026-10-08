@@ -78,6 +78,16 @@ import { existsFile } from '@/utils/fs'
 type ActiveTab = 'config' | 'list' | 'folders'
 const ITEM_HEIGHT = scaleSizeH(LIST_ITEM_HEIGHT)
 
+// 【第 34 轮第 3 条】列表项**实测行高**：卡片自身高度是 ITEM_HEIGHT，但它下面还挂着
+// marginBottom（styles.songItem 里 = designSpacing.sm），一个单元格占的是两者之和。
+// FlatList 的 getItemLayout 必须回报这个真实值（length 与 offset 同一来源）：
+// 以前 length 只报 ITEM_HEIGHT、比真实值小 designSpacing.sm，逐行累计后 FlatList 算出的
+// 内容总高、可视窗口和滚动偏移全部偏小，配合 removeClippedSubviews 在列表末尾卸载/回挂
+// 单元格时内容高度反复收缩 —— 用户看到的正是「滑到最后继续往上滑时列表抽动、
+// 向上滑的过程中会出现间断的向下滑」（用户第 34 轮第 3 条原话）。
+// 改的是常量来源，不改任何视觉：卡片高度、间距、圆角一概不动。
+const ITEM_ROW_HEIGHT = ITEM_HEIGHT + designSpacing.sm
+
 const formatTime = (time?: number) => {
   if (!time) return ''
   return new Date(time).toLocaleString()
@@ -428,7 +438,13 @@ export default memo(() => {
             ))
           }))
         }
-        await Promise.all(tasks)
+        // 【第 34 轮第 3 条】原来是 `await Promise.all(tasks)`：整批 20 首里只要有一首的
+        // Promise 永不 settle（音源 SDK 卡在底层 HTTP 上，见 core/music/coverUrl.ts 的超时说明），
+        // 这一批就永远等不到返回 —— 循环不再往下走，**后面所有歌曲的封面全部不再加载**，
+        // 用户看到的就是「一个或者几个刷新不出来，后面就不加载了」。
+        // 换成 allSettled：等的是「这一批都结束了」而不是「这一批都成功了」，
+        // 个别失败 / 卡死（超时后按空串落地）也照样推进下一批。
+        await Promise.allSettled(tasks)
       }
     }
 
@@ -1243,9 +1259,11 @@ export default memo(() => {
         maxToRenderPerBatch={10}
         removeClippedSubviews={true}
         updateCellsBatchingPeriod={50}
+        // 【第 34 轮第 3 条】length / offset 一律用实测行高 ITEM_ROW_HEIGHT（= 卡片高 + 下外边距），
+        // 与 styles.songItem 的几何同源，别再拿 ITEM_HEIGHT 当行高（见该常量的说明）
         getItemLayout={(data, index) => ({
-          length: ITEM_HEIGHT,
-          offset: ITEM_HEIGHT * Math.floor(index / numColumns),
+          length: ITEM_ROW_HEIGHT,
+          offset: ITEM_ROW_HEIGHT * Math.floor(index / numColumns),
           index,
         })}
         onScrollToIndexFailed={(info) => {
