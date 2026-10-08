@@ -1,0 +1,214 @@
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { View, TouchableOpacity } from 'react-native'
+import CheckBox from './Checkbox'
+
+import { createStyle, tipDialog } from '@/utils/tools'
+import { scaleSizeH, scaleSizeW } from '@/utils/pixelRatio'
+import { useTheme } from '@/store/theme/hook'
+import { useSettingValue } from '@/store/setting/hook'
+import { applyOpacity } from '@/utils/colorOpacity'
+import Text from '../Text'
+import { Icon } from '../Icon'
+import { designRadius, designSpacing } from '@/theme/DesignTokens'
+import { useButtonRadius } from '@/utils/buttonRadius'
+
+export interface CheckBoxProps {
+  check: boolean
+  label?: string
+  children?: React.ReactNode
+  onChange: (check: boolean) => void
+  disabled?: boolean
+  need?: boolean
+  size?: number
+  marginRight?: number
+  marginBottom?: number
+
+  helpTitle?: string
+  helpDesc?: string
+  /**
+   * 容器外观：
+   * - 'card'（默认）：软件统一行样式——圆角 + 1px 边框 + 半透明主题色底，
+   *   与推荐页「排行榜」按钮同一套视觉语言（设置页所有开关/单选行都走这套）；
+   * - 'plain'：无底纹的旧样式，供弹窗、菜单等自带底色的场景沿用。
+   */
+  variant?: 'card' | 'plain'
+  /**
+   * 独占整行：卡片铺满可用宽度，并去掉用于并排项之间留缝的右外边距。
+   */
+  block?: boolean
+}
+
+export default ({
+  check,
+  label,
+  children,
+  onChange,
+  helpTitle,
+  helpDesc,
+  disabled = false,
+  need = false,
+  marginRight = 0,
+  marginBottom = 0,
+  size = 1,
+  variant = 'card',
+  block = false,
+}: CheckBoxProps) => {
+  const theme = useTheme()
+  const buttonOpacity = useSettingValue('theme.buttonOpacity')
+  // 「按钮圆角」：卡片式行（设置页按钮式选项）行内覆盖，高度取 contentStyle.minHeight（block 52，否则 40）
+  const buttonRadius = useButtonRadius()
+  const [isDisabled, setDisabled] = useState(false)
+  const tintColors = {
+    true: theme['c-primary'],
+    false: theme['c-600'],
+  }
+  const disabledTintColors = {
+    true: theme['c-primary-alpha-600'],
+    false: theme['c-400'],
+  }
+
+  useEffect(() => {
+    if (need) {
+      if (check) {
+        if (!isDisabled) setDisabled(true)
+      } else {
+        if (isDisabled) setDisabled(false)
+      }
+    } else {
+      isDisabled && setDisabled(false)
+    }
+  }, [check, need, isDisabled])
+
+  const handleLabelPress = useCallback(() => {
+    if (isDisabled) return
+    onChange?.(!check)
+  }, [isDisabled, onChange, check])
+
+  const helpComponent = useMemo(() => {
+    const handleShowHelp = () => {
+      void tipDialog({
+        title: helpTitle ?? '',
+        message: helpDesc,
+        btnText: global.i18n.t('understand'),
+      })
+    }
+    return (helpTitle ?? helpDesc) ? (
+      <TouchableOpacity
+        style={[styles.helpBtn, { borderRadius: buttonRadius(32) /* 「按钮圆角」：静态 32×32 图标按钮；32 = 设计原值，不要传 styles.helpBtn.height（已被 createStyle 预缩放） */ }]}
+        onPress={handleShowHelp}
+      >
+        <Icon size={15 * size} name="help" />
+      </TouchableOpacity>
+    ) : null
+  }, [helpTitle, helpDesc, size, buttonRadius])
+
+  // 统一行样式（对齐推荐页「排行榜」按钮）：圆角 designRadius.md + 1px 边框 +
+  // 半透明主题色底。整行（block）时卡片铺满可用宽度、不预留右外边距；
+  // 并排的小选项（非 block）保留右外边距，充当相邻选项之间的间隙。
+  // card 变体是按钮式行（设置页所有开关/单选行），底色与边框按「按钮」消费
+  // 「按钮透明度」：只对颜色 alpha 做乘算，勾选标记与文字不受影响
+  //（严禁用容器 style.opacity，那会把内容一起变淡）。
+  // plain 变体供弹窗/菜单等自带底色的场景沿用，不消费。
+  const contentStyle = useMemo(() => {
+    const base = { ...styles.content, marginBottom: scaleSizeH(marginBottom) }
+    if (variant !== 'card') return base
+    return {
+      ...base,
+      borderRadius: designRadius.md,
+      borderWidth: 1,
+      borderColor: applyOpacity(theme['c-border-background'], buttonOpacity),
+      backgroundColor: applyOpacity(theme['c-primary-light-900-alpha-200'], buttonOpacity),
+      paddingHorizontal: designSpacing.sm,
+      minHeight: block ? 52 : 40,
+      marginRight: block ? 0 : designSpacing.sm,
+      // 卡片之间保证至少 8pt 行距（调用方传了更大的 marginBottom 时以调用方为准）
+      marginBottom: Math.max(scaleSizeH(marginBottom), designSpacing.xs),
+    }
+  }, [theme, marginBottom, variant, block, buttonOpacity])
+
+  const labelStyle = useMemo(() => ({
+    ...styles.label,
+    marginRight: scaleSizeW(marginRight),
+    // 整行卡片：标签撑满剩余宽度，帮助按钮被顶到卡片右端
+    ...(variant === 'card' && block ? { flexGrow: 1 } : null),
+  }), [marginRight, variant, block])
+
+  const nameStyle = useMemo(
+    () => (variant === 'card' ? { ...styles.name, fontWeight: '600' as const } : styles.name),
+    [variant],
+  )
+
+  return disabled ? (
+    <View style={[contentStyle, { borderRadius: buttonRadius(block ? 52 : 40) /* 「按钮圆角」：卡片 minHeight block 52 / 否则 40 */ }]}>
+      <CheckBox
+        status={check ? 'checked' : 'unchecked'}
+        disabled={true}
+        tintColors={disabledTintColors}
+        size={size}
+      />
+      <View style={labelStyle}>
+        {label ? (
+          <Text style={nameStyle} color={theme['c-500']} size={15 * size}>
+            {label}
+          </Text>
+        ) : (
+          children
+        )}
+      </View>
+      {helpComponent}
+    </View>
+  ) : (
+    <View style={[contentStyle, { borderRadius: buttonRadius(block ? 52 : 40) /* 「按钮圆角」：卡片 minHeight block 52 / 否则 40 */ }]}>
+      <CheckBox
+        status={check ? 'checked' : 'unchecked'}
+        disabled={isDisabled}
+        onPress={handleLabelPress}
+        tintColors={tintColors}
+        size={size}
+      />
+      <TouchableOpacity style={labelStyle} activeOpacity={0.3} onPress={handleLabelPress}>
+        {label ? (
+          <Text style={nameStyle} size={15 * size}>
+            {label}
+          </Text>
+        ) : (
+          children
+        )}
+      </TouchableOpacity>
+      {helpComponent}
+    </View>
+  )
+}
+
+const styles = createStyle({
+  content: {
+    flexGrow: 0,
+    flexShrink: 1,
+    minHeight: 40,
+    marginRight: designSpacing.sm,
+    alignItems: 'center',
+    flexDirection: 'row',
+    // backgroundColor: 'rgba(0,0,0,0.2)',
+  },
+  checkbox: {
+    flex: 0,
+    // backgroundColor: 'rgba(0,0,0,0.2)',
+  },
+  label: {
+    flexGrow: 0,
+    flexShrink: 1,
+    // marginRight: 15,
+    // alignItems: 'center',
+    // backgroundColor: 'rgba(0,0,0,0.2)',
+    paddingRight: designSpacing.xs,
+  },
+  name: {
+    fontWeight: '500',
+  },
+  helpBtn: {
+    height: 32,
+    width: 32,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+})

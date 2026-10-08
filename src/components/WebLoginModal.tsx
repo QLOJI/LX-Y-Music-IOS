@@ -1,5 +1,5 @@
 import { forwardRef, useImperativeHandle, useRef, useCallback, useEffect } from 'react'
-import { View, StyleSheet, TouchableOpacity } from 'react-native'
+import { View, StyleSheet, TouchableOpacity, AppState } from 'react-native'
 import Modal, { type ModalType } from '@/components/common/Modal'
 import WebView, { type WebViewNavigation } from 'react-native-webview'
 import { useTheme } from '@/store/theme/hook'
@@ -71,6 +71,9 @@ export default forwardRef<WebLoginModalType, {}>((props, ref) => {
   const startPolling = useCallback(() => {
     stopPolling()
     pollingIntervalRef.current = setInterval(() => {
+      // 【第 33 轮第 1 条·省电】后台注入没有意义（WebView 不可见、也不会有人操作）：
+      // 只在活跃时轮询；定时器不销毁，回前台自动继续。
+      if (AppState.currentState !== 'active') return
       if (loggedInRef.current || isCheckingRef.current) return
       // 验证码登录多为页面内 AJAX，不会触发 onNavigationStateChange，
       // 通过轮询主动注入 JS 获取 document.cookie 兜底。
