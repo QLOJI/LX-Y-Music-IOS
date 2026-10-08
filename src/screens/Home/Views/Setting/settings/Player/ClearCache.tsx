@@ -23,8 +23,12 @@ const CACHE_LIMIT_OPTIONS = [
   { value: 2048, label: '2GB' },
 ]
 
-// 播放缓存控制：iOS 上原生 maxCacheSize / audioOffload 均不生效，
-// 这里提供真实的缓存统计、大小上限控制（超限自动 LRU 清理）与手动清理。
+// 播放缓存控制：这里提供真实的应用缓存统计、大小上限控制（超限自动 LRU 清理）与手动清理。
+// 注意两条通路的区别：本行的 cacheLimit 管的是**应用缓存目录**（Caches + Tmp）；
+// 播放器自身缓存上限（player.cacheSize → setupPlayer 的 maxCacheSize）由播放器初始化时读取。
+// 【第 33 轮第 7 条更正】原注释写「iOS 上原生 maxCacheSize / audioOffload 均不生效」——
+// audioOffload 已接进 setupPlayer（取 player.isEnableAudioOffload 设置值，见
+// plugins/player/index.ts），该说法的一半已过时；maxCacheSize 那条保留描述现状。
 export default memo(() => {
   const t = useI18n()
   const cacheLimit = useSettingValue('player.cacheLimit')

@@ -14,12 +14,15 @@ import IsShowBluetoothLyric from './IsShowBluetoothLyric'
 import IsS2T from './IsS2T'
 import ClearCache from './ClearCache'
 import IsAutoPlayOnReturn from './IsAutoPlayOnReturn'
+import IsStartupPushPlayDetailScreen from './IsStartupPushPlayDetailScreen'
 
 export default memo(() => {
   return (
     <Section sectionId="setting_player">
       <IsSavePlayTime />
       <IsAutoPlayOnReturn />
+      {/* 用户第 33 轮第 7 条：紧跟在「返回软件时自动播放」下面（顺序即需求原话里的位置） */}
+      <IsStartupPushPlayDetailScreen />
       <IsAutoCleanPlayedList />
       <IsAutoSkipOnError />
       <IsHandleAudioFocus />

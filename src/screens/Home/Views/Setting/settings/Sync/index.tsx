@@ -9,6 +9,7 @@ import History from './History'
 import { useSettingValue } from '@/store/setting/hook'
 import { updateSetting } from '@/core/common'
 import { createStyle, toast } from '@/utils/tools'
+import { useI18n } from '@/lang'
 import { dateFormat } from '@/utils/common'
 import { useTheme } from '@/store/theme/hook'
 import Text from '@/components/common/Text'
@@ -24,8 +25,14 @@ import {
 } from '@/core/sync/webdavSync'
 import IsEnable from '@/screens/Home/Views/Setting/settings/Sync/IsEnable.tsx'
 
+// 【第 33 轮第 2 条】服务器地址沿用「同步服务地址」（IsEnable.tsx 的 HostInput）那套前缀校验：
+// 1:1 复刻参考工程 lx-music-mobile-ios-adaptation 的 Sync/IsEnable.tsx `addressRxp`，
+// 非法串不落盘并给同一条提示（本工程此前只有 WebDAV 这行地址框没有校验）。
+const webdavAddressRxp = /^https?:\/\/\S+/i
+
 export default memo(() => {
   const theme = useTheme()
+  const t = useI18n()
   const isEnableWebdav = useSettingValue('sync.webdav.enable')
   const isSyncLists = useSettingValue('sync.webdav.syncLists')
   const isSyncPlayHistory = useSettingValue('sync.webdav.syncPlayHistory')
@@ -78,56 +85,106 @@ export default memo(() => {
 
   const handleTestConnection = useCallback(async() => {
     if (isTesting) return
+    // 【第 33 轮第 3 条】不再以「启用 WebDAV 同步」为前置：测试连接的用途就是「先确认连不连得上」，
+    // 所以只要求填了地址和用户名；缺什么就直说缺什么。以前按钮被 disabled={!isEnableWebdav} 吞掉，
+    // 而该开关默认是关的 —— 用户点下去毫无反应、也没有任何提示（原话「点击测试连接后没有任何提示」）。
+    if (!webdavUrl.trim() || !webdavUsername.trim()) {
+      toast('请先填写服务器地址和用户名', 'long')
+      return
+    }
     setIsTesting(true)
     toast('正在测试连接...')
     try {
       await testConnection()
       toast('连接成功！')
     } catch (error: any) {
-      toast(`连接失败: ${error.message}`, 'long')
+      toast(`连接失败: ${error?.message ?? error}`, 'long')
     } finally {
       setIsTesting(false)
     }
-  }, [isTesting])
+  }, [isTesting, webdavUrl, webdavUsername])
 
   const handleSyncNow = useCallback(async() => {
     if (isSyncing) return
     setIsSyncing(true)
     try {
       await triggerWebDAVSync(true)
+    } catch (error: any) {
+      toast(`同步失败: ${error?.message ?? error}`, 'long')
     } finally {
       setIsSyncing(false)
     }
   }, [isSyncing])
 
+  // 下面四个「上传 / 下载」按钮的 loading 标记一律走 try/finally（第 33 轮第 3 条）：
+  // 以前是 `setIsXxx(true)` → `await …` → `setIsXxx(false)` 三行直筒，任何一次抛错都会跳过复位，
+  // 按钮就永远停在「上传中...」并保持禁用；再叠加下面那个「未启用就整块 disabled」的门，
+  // 表现就是用户原话「再点击所有按钮全部锁死，点击后没有任何反应」。
+  // 与 WebDAV 下载菜单（第 28 轮）同口径：失败既给具体原因，loading 也一定复位。
   const handleUpload = useCallback(async() => {
     if (isUploading) return
     setIsUploading(true)
-    await manualUploadSettingsAndApis()
-    setIsUploading(false)
+    try {
+      await manualUploadSettingsAndApis()
+    } catch (error: any) {
+      toast(`上传失败: ${error?.message ?? error}`, 'long')
+    } finally {
+      setIsUploading(false)
+    }
   }, [isUploading])
 
   const handleDownload = useCallback(async() => {
     if (isDownloading) return
     setIsDownloading(true)
-    await manualDownloadSettingsAndApis()
-    setIsDownloading(false)
+    try {
+      await manualDownloadSettingsAndApis()
+    } catch (error: any) {
+      toast(`下载失败: ${error?.message ?? error}`, 'long')
+    } finally {
+      setIsDownloading(false)
+    }
   }, [isDownloading])
 
   const handleUploadLists = useCallback(async() => {
     if (isUploadingLists) return
     setIsUploadingLists(true)
-    await manualUploadLists()
-    setIsUploadingLists(false)
+    try {
+      await manualUploadLists()
+    } catch (error: any) {
+      toast(`上传失败: ${error?.message ?? error}`, 'long')
+    } finally {
+      setIsUploadingLists(false)
+    }
   }, [isUploadingLists])
 
   const handleDownloadLists = useCallback(async() => {
     if (isDownloadingLists) return
     setIsDownloadingLists(true)
-    await manualDownloadLists()
-    setIsDownloadingLists(false)
+    try {
+      await manualDownloadLists()
+    } catch (error: any) {
+      toast(`下载失败: ${error?.message ?? error}`, 'long')
+    } finally {
+      setIsDownloadingLists(false)
+    }
   }, [isDownloadingLists])
 
+
+  // 【第 33 轮第 2 条】服务器地址 1:1 复刻参考工程 Sync/IsEnable.tsx 的 setHostAddress：
+  // 必须以 http(s):// 开头才写入设置项；非法输入清空输入框，并给出与「同步服务地址」同一条提示。
+  // 用户名 / 密码 / 同步路径三行继续走下面的通用 handleWebdavSettingChanged（它们本来就不是 URL）。
+  const handleWebdavUrlChanged = useCallback((text: string, callback: (value: string) => void) => {
+    let url: string
+    if (webdavAddressRxp.test(text)) url = text.trim()
+    else {
+      url = ''
+      if (text) toast(t('setting_sync_host_value_error_tip'), 'long')
+    }
+    callback(url)
+    if (url === webdavUrl) return
+    updateSetting({ 'sync.webdav.url': url })
+    resetClient()
+  }, [webdavUrl, t])
 
   const handleWebdavSettingChanged = (key: keyof LX.AppSetting) => (text: string, callback: (value: string) => void) => {
     updateSetting({ [key]: text })
@@ -174,7 +231,8 @@ export default memo(() => {
         <InputItem
           label="服务器地址"
           value={webdavUrl}
-          onChanged={handleWebdavSettingChanged('sync.webdav.url')}
+          onChanged={handleWebdavUrlChanged}
+          inputMode="url"
           placeholder="https://example.com/webdav"
         />
         <InputItem
@@ -198,17 +256,24 @@ export default memo(() => {
           editable={!isSyncing}
         />
 
-        <View style={{ opacity: isEnableWebdav ? 1 : 0.5 }}>
+        {/* 【第 33 轮第 3 条】这块以前套着 `opacity: isEnableWebdav ? 1 : 0.5`，六个按钮又都带着
+            `disabled={!isEnableWebdav || isXxx}`。而 `sync.webdav.enable` 默认是 false ——
+            于是「启用 WebDAV 同步」没勾时：六个按钮全部无响应、没有加载中文字、没有任何提示
+            （用户原话「按钮点击后，上面文字没有显示加载中的情况……点击后没有任何反应」）。
+            现在按钮始终可点，真正的门交给各处理函数：缺配置就明说缺什么，未启用就提示去启用
+            （core/sync/webdavSync.ts 里每个动作都会给出具体原因）。视觉上也不再置灰——半透明
+            会被读成「坏了」。（勾选项那一块的 0.5 保留：那几个开关确实是跟着启用状态走。） */}
+        <View>
           {/* 【第 23 轮】六个动作按钮两列网格对齐：每格 flexBasis 45% + flexGrow 1（同设置页
               两列勾选网格的单元格几何），两格等宽 → 左右缘全部对齐；block 去掉并排右外边距。 */}
           <View style={styles.btnRow}>
             <View style={styles.btnCell}>
-              <Button block onPress={handleTestConnection} disabled={!isEnableWebdav || isTesting}>
+              <Button block onPress={handleTestConnection} disabled={isTesting}>
                 {isTesting ? '测试中...' : '测试连接'}
               </Button>
             </View>
             <View style={styles.btnCell}>
-              <Button block onPress={handleSyncNow} disabled={!isEnableWebdav || isSyncing}>
+              <Button block onPress={handleSyncNow} disabled={isSyncing}>
                 {isSyncing ? '同步中...' : '立即同步歌单'}
               </Button>
             </View>
@@ -216,12 +281,12 @@ export default memo(() => {
 
           <View style={styles.btnRow}>
             <View style={styles.btnCell}>
-              <Button block onPress={handleUpload} disabled={!isEnableWebdav || isUploading}>
+              <Button block onPress={handleUpload} disabled={isUploading}>
                 {isUploading ? '上传中...' : '上传设置与音源'}
               </Button>
             </View>
             <View style={styles.btnCell}>
-              <Button block onPress={handleDownload} disabled={!isEnableWebdav || isDownloading}>
+              <Button block onPress={handleDownload} disabled={isDownloading}>
                 {isDownloading ? '下载中...' : '下载设置与音源'}
               </Button>
             </View>
@@ -229,12 +294,12 @@ export default memo(() => {
 
           <View style={styles.btnRow}>
             <View style={styles.btnCell}>
-              <Button block onPress={handleUploadLists} disabled={!isEnableWebdav || isUploadingLists}>
+              <Button block onPress={handleUploadLists} disabled={isUploadingLists}>
                 {isUploadingLists ? '上传中...' : '上传歌单'}
               </Button>
             </View>
             <View style={styles.btnCell}>
-              <Button block onPress={handleDownloadLists} disabled={!isEnableWebdav || isDownloadingLists}>
+              <Button block onPress={handleDownloadLists} disabled={isDownloadingLists}>
                 {isDownloadingLists ? '下载中...' : '下载歌单'}
               </Button>
             </View>
