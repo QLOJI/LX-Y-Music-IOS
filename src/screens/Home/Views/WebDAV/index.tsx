@@ -442,8 +442,13 @@ export default memo(() => {
   // 落盘那一步失败（updateWebDAVMusicMeta 抛错时不会广播 webdavPicUpdated），已经渲染出来的
   // 行也能立刻换图。拿不到时返回空串，算不算「失败」由调用方决定（整表巡检据此安排续巡，
   // 插队的可视巡检不记账）。
-  const fetchCoverForSong = useCallback((song: LX.WebDAV.MusicInfo, isRefresh: boolean) => {
-    return fetchCoverUrl(song, { isRefresh }).then((url) => {
+  const fetchCoverForSong = useCallback((song: LX.WebDAV.MusicInfo, isRefresh: boolean, highPriority = false) => {
+    // 【第 39 轮第 2 条】本页的所有取封面都走**插队通道**（highPriority）：
+    // 整表巡检 / 可视列表巡检 / 续巡取的都是「用户此刻盯着看的这份列表」，
+    // 而 coverUrl.ts 的 4 个并发槽是全局共用的 —— 换目录前那批旧歌单的任务还在排队时，
+    // 新歌单的封面不该排在它们后面（否则观感就是「点了扫描，封面一首都不开始加载」）。
+    // 第三个参数由调用点给出（默认 false，保持函数签名的语义直白）。
+    return fetchCoverUrl(song, { isRefresh, highPriority }).then((url) => {
       if (!url) return ''
       setSongs(prevSongs => prevSongs.map(item =>
         item.id === song.id ? { ...item, meta: { ...item.meta, picUrl: url } } : item,
@@ -511,7 +516,7 @@ export default memo(() => {
           // 【第 38 轮第 1 条】取封面走本页漏斗 fetchCoverForSong（它内部就是
           // fetchCoverUrl(song, { isRefresh }) + 按 id 写回）：刷新标记照样透传，页面里
           // `fetchCoverUrl(` 仍只有漏斗那一处。拿不到封面（空串）的计入 failed，交给下面的续巡。
-          fetchCoverForSong(song, isRefresh).then((url) => {
+          fetchCoverForSong(song, isRefresh, true).then((url) => {
             if (!url) failed.push(song)
           }),
         )
@@ -574,7 +579,7 @@ export default memo(() => {
       // （网盘内封面走本地缓存、在线匹配写回 meta）。
       // 失败不做任何记账：这些歌本来就在整表巡检的名单里，重试由它那套续巡管 —— 本条不碰
       // prefetchedCoverIds、不清失败备忘、也不动整表巡检的续巡定时器。
-      void fetchCoverForSong(song, false)
+      void fetchCoverForSong(song, false, true)
     }
   }, [fetchCoverForSong])
 

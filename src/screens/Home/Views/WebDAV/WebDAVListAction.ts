@@ -498,7 +498,10 @@ export const refreshWebdavCover = async(
   // 之后每一行都会重发已经确认查不到的搜索（第 28 轮的搜索风暴就是这么回来的）。
   clearWebdavCoverMiss(song)
   const target = { ...song, meta: { ...song.meta, picUrl: '' } }
-  const url = await fetchCoverUrl(target, { isRefresh: true })
+  // 【第 39 轮第 2 条】菜单里的「从在线获取封面」是用户对着这一首点的 ——
+  // 必须走插队通道，否则它会排在整表巡检那几百个任务后面，点完半天没反应
+  // （coverUrl.ts 的两条队列见该文件 runWithLimit 上方的说明）。
+  const url = await fetchCoverUrl(target, { isRefresh: true, highPriority: true })
   if (!url) webDAVLog.warn('refreshWebdavCover: still missing', { musicId: song.id })
   return url
 }
