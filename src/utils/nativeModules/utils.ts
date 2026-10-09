@@ -47,11 +47,27 @@ export const screenUnkeepAwake = () => {
  * 旧构建里没有这个方法：这里用 typeof 判定安全降级，调用方无需 try/catch，
  * 也不会在未更新的包上抛错（注意：该方法必须用包含本次原生改动的新构建才生效）。
  */
-export const raiseToastOverlay = (): void => {
+export const raiseOverlayWindows = (): void => {
   if (!isIOS) return
   if (typeof UtilsModule?.raiseOverlayWindows != 'function') return
   UtilsModule.raiseOverlayWindows()
 }
+
+/**
+ * 【第 39 轮第 1 条】与 raiseToastOverlay 是**同一个原生调用**，这里给「除 Toast 之外
+ * 还需要浮层在最上层」的场景一个说得通的名字 —— 当前唯一使用者是同步方式选择框
+ * （navigation/components/SyncModeModal.tsx）：它挂在 RNN overlay 窗口里，和主窗口同层，
+ * 一旦被 makeKeyAndVisible 的主窗口 / 后建的原生面板压到下面，用户看到的就是
+ * 「数据同步界面状态永远停在『等待选择同步方式...』」—— 选择框其实已经挂载并画好了
+ * （JS 侧的 visible 标记为 true，握手看门狗的让行条件因此永远成立），只是窗口被压在底下。
+ * 幂等：原生侧只在 windowLevel 不等于目标值时才写，重复调用无副作用。
+ *
+ * 兼容性：旧构建里没有 raiseOverlayWindows 原生方法，这里安全降级为 no-op（不抛错）。
+ */
+export const raiseSyncModeOverlay = raiseOverlayWindows
+
+/** Toast 浮层提层：与 raiseOverlayWindows 同一实现（保留既有调用点与契约字面量）。 */
+export const raiseToastOverlay = raiseOverlayWindows
 
 /**
  * 把本地图片文件写进系统相册（iOS 相册，用户照片 App 里直接可见）。
