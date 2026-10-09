@@ -703,6 +703,9 @@ static void LXSyncNowPlayingLyricTimer(void);
 static void LXRememberScreenBrightness(void);
 static void LXQueueNowPlayingLyricRedraw(void);
 static void LXForceNowPlayingCardRepaint(void);
+// 【第 45 轮】前置声明：遥控命令处理器（LXHandleRemoteCommandEvent，定义在本文件前面）
+// 的「按下即对表」要调用它，而它的定义在更下面（唯一写入口，见 LXApplyNowPlayingInfo）。
+static void LXApplyNowPlayingInfo(void);
 static NSObject *LXLyricLock(void);
 // 播放位置事件（原生 4Hz 外推位置广播给 JS，驱动进度条等 UI，替代 JS 侧桥接轮询）
 static NSNotificationName const LXPlayerPositionNotificationName = @"LXPlayerPosition";
@@ -758,6 +761,25 @@ static MPRemoteCommandHandlerStatus LXHandleRemoteCommandEvent(NSString *command
   if ([command isEqualToString:@"play"] || [command isEqualToString:@"toggle"]) {
     LXActivateAudioSessionForRemotePlay();
   }
+  // 【第 45 轮】按下即对表。用户原话（第 45 轮第 1 条）：「还是一样，锁屏和灵动岛界面
+  // 上一首、下一首、播放/暂停按钮点击无反应」。第 43/44 轮已把「显示态 = 启停态」收口到
+  // 唯一写入口（LXApplyNowPlayingInfo）的主线程闸门；但外界仍有两个本工程控制之外的写入者
+  // 可以把卡片拉离正轨：
+  //   · RNTP 在 iOS 上仍会按 updateOptions 的 capabilities 配置原生遥控命令
+  //     （src/plugins/player/utils.ts 的 defaultUpdateOptions 在 iOS 分支照传 capabilities，
+  //      src/plugins/player/index.ts 的 initial/reloadConfig 都会走一次）
+  //   · 系统侧在后台 / 会话仲裁 / 控制中心展开时改写或丢弃媒体会话
+  //     （本文件 DidBecomeActive 观察者的注释记过 iOS 27 Beta 的这条行为）
+  // 一旦分叉，用户点的那个键就会被 enabled = NO 静默吞掉，而此刻**没有任何周期性重发**
+  // 去纠正它：第 43 轮已按参考工程删掉 1s 看门狗，熄屏 / 非播放时歌词时钟也不在跑。
+  // 这一句让每一次**被投递到**的按键都成为一次全量对表：把缓存里的最新状态按当前播放态
+  // 重新写一遍 info（速率第 44 轮归一）/ playbackState / 六个 enabled。上一首、下一首、
+  // 拖动进度三个命令在任何播放态下都是 enabled = YES（见 LXSyncRemoteCommandAvailability）
+  // ——用户点它们任意一次，显示层与启停层就回到与播放态同源；随后 JS 按通知执行的动作
+  // 会在新状态上再发布一次（后写的仍是动作结果，这一句只纠正显示层，不改变播放）。
+  // 放在 LXPostRemoteCommandNotification 之前：先把卡片纠正过来，再让动作发生。
+  // 只对「按键」做，不碰 seek（拖动进度条会以极高频连续投递事件，逐条全量重发没有意义）。
+  LXApplyNowPlayingInfo();
   LXPostRemoteCommandNotification(command, nil);
   return MPRemoteCommandHandlerStatusSuccess;
 }
@@ -6821,6 +6843,20 @@ RCT_REMAP_METHOD(sha1, sha1:(NSString *)input resolver:(RCTPromiseResolveBlock)r
 - (void)handleAppWillResignActiveForLyricCard:(NSNotification *)notification
 {
   LXQueueNowPlayingLyricRedraw();
+  // 【第 45 轮】锁屏 / 下拉的瞬间再对一次表。
+  // 为什么是这一拍：① 锁屏后用户面对的就是这张卡片，而下拉 / 锁屏时系统只渲染**一次**
+  // 快照（本方法上面那行重绘就是为这个）；② 锁屏之后**没有任何周期性重发兜底** ——
+  // 熄屏（亮度证据可信）时歌词时钟是停的（第 23 轮亮度门 LXIsScreenTrustedOff，
+  // LXSyncNowPlayingLyricTimer 会停钟，省电口径来自第 42 轮），第 43 轮又按参考工程
+  // 删掉了 1s 可用性看门狗。卡片若在锁屏前已经与播放态分叉（显示 ▶ / 进度不走 /
+  // playCommand 已关），用户锁屏后点的每一下都会被 enabled = NO 静默吞掉 ——
+  // 正是第 44 轮截图里「灰色 ▶、点了一点反应都没有」。
+  // 这里把缓存里的最新状态全量重发一次（速率第 44 轮归一、playbackState、六个 enabled
+  // 同源同刻写出），用户看到的第一帧锁屏卡片就是与命令同源的那一版。
+  // 只在有歌曲信息时发（没卡片可对）；非播放态也发 —— 那时对表写的就是 ▶ / 速率 0 /
+  // play 可用。幂等、无周期性开销（只在转 inactive 这一拍跑一次）。
+  if (LXNowPlayingInfoCache.count == 0) return;
+  LXApplyNowPlayingInfo();
 }
 
 - (UISceneConfiguration *)application:(UIApplication *)application
