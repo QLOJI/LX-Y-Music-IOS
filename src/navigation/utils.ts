@@ -3,6 +3,7 @@ import { VERSION_MODAL, PACT_MODAL, SYNC_MODE_MODAL, ANNOUNCEMENT_MODAL } from '
 import themeState from '@/store/theme/state'
 import syncState from '@/store/sync/state'
 import syncActions from '@/store/sync/action'
+import { raiseSyncModeOverlay } from '@/utils/nativeModules/utils'
 
 const pendingOverlays = new Set<string>()
 
@@ -353,6 +354,13 @@ export const showSyncModeModal = (onUnavailable?: () => void) => {
         },
       })
         .then(() => {
+          // 【第 39 轮第 1 条】overlay 已推给原生：立刻把浮层窗口提到最上层。
+          // 选择框所在的 RNN overlay 是独立 UIWindow，windowLevel 与主窗口同为
+          // UIWindowLevelNormal —— 主窗口被 makeKeyAndVisible（或后建的原生面板窗口出现）时
+          // 它会被压到下面，表现为「状态一直停在等待选择同步方式...、屏幕上却什么都没有」。
+          // 这里是**第一时间**的提层（组件挂载时还会再提一次，并在存活期间持续提，
+          // 详见 SyncModeModal 的 OVERLAY_RAISE_INTERVAL_MS 说明）。提层幂等、旧构建下安全降级。
+          raiseSyncModeOverlay()
           setTimeout(() => {
             // 已被作答 / 取消（或新一轮 show）作废 —— 什么都不做
             // （这条不是静默死路：作废只可能来自「这次问句已经有结果」或「更新的呈现接手了」，
