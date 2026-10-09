@@ -13,7 +13,7 @@ import ModalContent from './ModalContent'
 import { dismissOverlay } from '../utils'
 import syncState from '@/store/sync/state'
 import CheckBox from '@/components/common/CheckBox'
-import { handleSyncModeModalUnmounted, setSyncModeComponentId } from '@/core/sync'
+import { handleSyncModeModalUnmounted, markSyncModeModalVisible, setSyncModeComponentId } from '@/core/sync'
 import { designRadius, designSpacing, designTypography } from '@/theme/DesignTokens'
 
 const styles = createStyle({
@@ -386,6 +386,10 @@ export default ({ componentId }: { componentId: string }) => {
       void dismissOverlay(syncState.syncModeComponentId)
     }
     setSyncModeComponentId(componentId)
+    // 【第 36 轮第 1 条】「选择框确实在屏幕上」的标记：showSyncModeModal 的重试入口与
+    // client.ts 的握手看门狗都靠它区分「用户在看着选择框」与「选择框根本没弹出来」。
+    // id 只能在「我们主动关掉」和「追问」两条路径上用，不能当「在屏幕上」用（见 core/sync.ts）。
+    markSyncModeModalVisible()
     console.log('[SyncMode] overlay mounted:', componentId)
     // 【第 35 轮第 2 条】问答类型不合法（既不是歌单也不是不喜欢列表）时，下面的 return
     // 画的是 null —— 一个**什么都没画**的全屏透明层，还带着 interceptTouchOutside: true：
@@ -397,15 +401,18 @@ export default ({ componentId }: { componentId: string }) => {
       setTimeout(() => { void dismissOverlay(componentId) }, 0)
     }
     return () => {
-      // 卸载即「不在屏幕上」：清掉挂载标记，作为 showSyncModeModal「挂载复查」的判据
-      // （真正的判据是「store 里的 id 指向一个还活着的选择框」）。用户作答时
-      // closeSyncModeModal 已先清过（清后 id 为 ''，此处不重复清）。
-      if (syncState.syncModeComponentId == componentId) setSyncModeComponentId('')
       // 【第 35 轮第 2 条】主动通知 core/sync「选择框没了」。
-      // 只靠 RNN 的弹窗关闭事件会漏：卸载清理（上一行）会把 store 里的 id 清成空串，
+      // 只靠 RNN 的弹窗关闭事件会漏：卸载清理会把 store 里的 id 清成空串，
       // 事件到达 JS 时已经无从比对。这里直接回调，没有先后顺序问题；用户作答那条路径
       // 不受影响（core/sync 只在「还有问句在等」时才收尾，作答时早已置回 false）。
-      handleSyncModeModalUnmounted()
+      // 【第 36 轮第 1 条】顺序：**先**回调带 componentId 的 core/sync，**再**清 id ——
+      // core/sync 要用 componentId 精确比对「消失的是不是当前问句的那个选择框」，
+      // 先清掉就拿不到可比对的值了（也无法再区分「作答导致的卸载」与「被系统收走的卸载」）。
+      handleSyncModeModalUnmounted(componentId)
+      // 卸载即「不在屏幕上」：清掉挂载标记，作为 showSyncModeModal「挂载复查」的判据
+      // （用户作答时 closeSyncModeModal 已先清过，此处不重复清。
+      //   标记本身由 handleSyncModeModalUnmounted → markSyncModeModalHidden 摘掉。）
+      if (syncState.syncModeComponentId == componentId) setSyncModeComponentId('')
     }
   }, [componentId])
 

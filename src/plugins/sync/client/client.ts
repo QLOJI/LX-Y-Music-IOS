@@ -5,7 +5,7 @@ import { callObj } from './sync'
 // import registerSyncListHandler from './syncList'
 import log from '../log'
 import { aesEncrypt } from '../utils'
-import { isSyncModeSelecting, setSyncStatus } from '@/core/sync'
+import { isSyncModeSelecting, isSyncModeModalVisible, setSyncStatus } from '@/core/sync'
 import { dateFormat } from '@/utils/common'
 import { createMsg2call } from 'message2call'
 import { toast } from '@/utils/tools'
@@ -95,8 +95,12 @@ const armHandshakeWatchdog = () => {
     handshakeWatchdog = null
     if (!connectionAlive) return
     if (client?.isReady) return
-    // 用户正在看「同步方式」选择框：这是合理的长等待，不能催
-    if (isSyncModeSelecting()) return
+    // 用户正在看「同步方式」选择框：这是合理的长等待，不能催。
+    // 【第 36 轮第 1 条】判据从「有问句在等」收紧到「选择框确实在屏幕上」：
+    // 用前者时，一个**没弹出来**的问句会让这条看门狗也一起沉默 —— 用户这边既不见框、
+    // 也不见任何提示，状态就永远钉在「等待选择同步方式...」（用户第 36 轮第 1 条原话）。
+    // 现在只有「框在屏幕上」才闭嘴；框不在，就照常把「没有完成同步」这句话说出来。
+    if (isSyncModeSelecting() && isSyncModeModalVisible()) return
     log.r_warn('[sync] handshake quiet timeout: no finished() from server')
     sendSyncMessage('同步服务 60 秒内没有完成同步，可尝试关闭「启用同步」后重新打开')
   }, HANDSHAKE_QUIET_TIMEOUT_MS)

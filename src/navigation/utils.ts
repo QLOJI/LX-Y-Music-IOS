@@ -2,6 +2,7 @@ import { Navigation } from 'react-native-navigation'
 import { VERSION_MODAL, PACT_MODAL, SYNC_MODE_MODAL, ANNOUNCEMENT_MODAL } from './screenNames'
 import themeState from '@/store/theme/state'
 import syncState from '@/store/sync/state'
+import syncActions from '@/store/sync/action'
 
 const pendingOverlays = new Set<string>()
 
@@ -256,7 +257,19 @@ export const showSyncModeModal = (onUnavailable?: () => void) => {
     // 第 2 条看到的「状态写着等待选择同步方式，选择框却迟迟不出现」。
     // 复查已挂上就停手这条判据（下一段的 if）保持不变，这里只是把同样的判据前移到呈现入口，
     // 让「重试」永远只能补一个**真的不存在**的选择框。
-    if (syncState.syncModeComponentId) return
+    //
+    // 【第 36 轮第 1 条】「有 id」不等于「选择框在屏幕上」—— id 是「组件挂载时写回、
+    // 卸载清理时清掉」的：原生把 overlay 收走却没跑到 JS 卸载清理时，这个 id 就是一条
+    // **残留**，此后每一次呈现都在这里静默 return：不呈现、不重试、不上报失败，
+    // 问句与状态文案一起永久悬着。用户第 36 轮第 1 条看到的三件事（状态一直
+    // 「等待选择同步方式」、选择框不弹、也等不到「已连接」）正是这条静默死路的连锁反应。
+    // 判据改用「确实在屏幕上」（由 SyncModeModal 挂载 / 卸载维护）。
+    if (syncState.syncModeModalVisible) return
+    if (syncState.syncModeComponentId) {
+      // 不在屏幕上却留着 id = 残留，先清掉再照常呈现（绝不静默 return）
+      console.warn('[SyncMode] stale syncModeComponentId, clear before presenting:', syncState.syncModeComponentId)
+      syncActions.setSyncModeComponentId('')
+    }
     try {
       void Navigation.showOverlay({
         component: {
@@ -305,8 +318,12 @@ export const showSyncModeModal = (onUnavailable?: () => void) => {
         .then(() => {
           setTimeout(() => {
             // 已被作答 / 取消（或新一轮 show）作废 —— 什么都不做
+            // （这条不是静默死路：作废只可能来自「这次问句已经有结果」或「更新的呈现接手了」，
+            //   两种情况都有别人负责收尾）
             if (seq !== syncModeModalSeq) return
-            if (syncState.syncModeComponentId) return
+            // 【第 36 轮第 1 条】判据同上：看「在不在屏幕上」，不看 id —— 残留 id 会让
+            // 复查误判成「已挂载」而停止重试，选择框就再也不会出现。
+            if (syncState.syncModeModalVisible) return
             handleFail(attempt, new Error('overlay not mounted'))
           }, verifyDelay)
         })
