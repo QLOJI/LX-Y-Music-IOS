@@ -88,12 +88,24 @@
  *   本脚本新增不变量 E 与反例 f1–f10 钉住以上全部形状（含「注释锚点会漂移」这一坑：
  *   stripComments 会把整行 `//` 抹成空行，续巡分支的切片改用 sweep 之前最近的 `} else {`）。
  *
+ * 第 42 轮第 2 条增量（需求原话：「发热严重，电量消耗快，减少发热量，减少电量消耗，特别是减少
+ * 后台运行占用，优化整体代码，去除冗余代码无用代码」）：
+ *   · 续巡是本页唯一「永久自我重排」的循环，而本页是惰性常驻页、退后台不卸载 —— iOS 上音频在
+ *     后台播放时 JS 不被冻结，于是整夜都在「定时器到点 → 联网搜封面 → 解码图片 → 写 setState」。
+ *     本轮给它上前后台门：退后台连已排的那一发也收掉（不只是不排新的），名单留在
+ *     coverFollowupSongs 里；回前台取走名单立刻按 auto 模式补一发。后台一遍封面网络巡都不跑，
+ *     前台的「持续刷新直到刷出来」照旧（不变量 F + 反例 g1–g4 钉住）。
+ *   · 无进展退避：连续几轮「续巡过但失败名单没缩短」就按 2 倍退避（15s → 30s → …）封顶到
+ *     长周期 5 分钟；用户触发的整轮巡检把退避计数清零（新一轮从头来）。原来「长短两档固定值」
+ *     的三元表达式被这套退避取代 —— 同一个判据（两档 + 不许空转）的新形状，不变量 E 的锚点
+ *     随之更新。
+ *
  * 为什么必须靠契约脚本：这几条全是「形状 / 顺序 / 上限」而非类型 —— 把无条件 return 放回去、
  * 把兜底删掉、把 onToggleSource 换成真的换源、把空串 return 提到兜底之前、把上限改成整表、
  * 把去重删掉、把 fallback 挪到空歌词之后，或者把第 29 轮的 file:// 校验 / 失败备忘清空 /
  * 分批推进删掉，tsc/eslint 全是绿的，只在真机上表现为
  * 「扫完还是灰占位 / 播到某首还是无歌词 / 扫一次发几百个请求 / 封面挂了就再也回不来」。
- * 带反例自检（c1–c25）。
+ * 带反例自检（c1–c25 与 f1–f10、g1–g4）。
  *
  * 运行：node scripts/sim-webdav-auto-cover-lyric.js
  * 退出码：不变量全过、且全部反例被拦下时为 0，否则 1。
@@ -393,8 +405,11 @@ const prefetchInvariants = (rawPage) => {
   // 【第 36 轮第 3 条】下限从 5 提到 6：多出来的一处是巡检自己的续巡入口
   // `prefetchCovers(failed, { auto: true })` —— 它就是「持续刷新，直到刷出来为止」的落点，
   // 少一处都说明某条入口断了（定义那一处是 `const prefetchCovers = useCallback(`，不含 `(`，不计入）。
-  if (countOf(code, 'prefetchCovers(') < 6) {
-    reasons.push(`预热调用点不足：prefetchCovers( 只有 ${countOf(code, 'prefetchCovers(')} 处（进列表/扫描/扫描并下载/刷新/播放回填 + 续巡 共 6 处）`)
+  // 【第 42 轮第 2 条】下限再提到 7：回前台的补账入口 `prefetchCovers(pending, { auto: true })`
+  // —— 退后台把已排期的续巡收掉了，这一处就是「回前台立刻补一发」的落点；删了它后台那道门
+  // 就变成「一退后台就永久停」。
+  if (countOf(code, 'prefetchCovers(') < 7) {
+    reasons.push(`预热调用点不足：prefetchCovers( 只有 ${countOf(code, 'prefetchCovers(')} 处（进列表/扫描/扫描并下载/刷新/播放回填 + 续巡 + 回前台补发 共 7 处）`)
   }
   if (code.includes('prefetchCovers([')) {
     reasons.push('页面里又出现单首形式的 prefetchCovers([...])（行内自愈不许再借整轮巡检入口：会打断在飞的那一轮）')
@@ -459,8 +474,21 @@ const followupSweepInvariants = (files) => {
   if (!body.includes('const hasRetryable = failed.some(song => !isWebdavCoverKnownMiss(song))')) {
     reasons.push('续巡没有按「确凿没结果 / 可能救得回来」分级（要么对查不到的歌无限空转，要么把暂时失败判死）')
   }
-  if (!body.includes('hasRetryable ? COVER_FOLLOWUP_SHORT_MS : COVER_FOLLOWUP_LONG_MS')) {
-    reasons.push('续巡节奏没有长短两档（COVER_FOLLOWUP_SHORT_MS / COVER_FOLLOWUP_LONG_MS）')
+  // 【第 42 轮第 2 条】节奏从「两档固定值」升级成「两档 + 无进展退避」：短周期起步
+  // （COVER_FOLLOWUP_SHORT_MS）→ 每轮没进展翻倍 → 封顶 COVER_FOLLOWUP_LONG_MS；
+  // 确凿没结果的直接走长周期。判据还是同一个（长短两档 + 不许空转），只是形状换了，
+  // 原三元表达式的锚点随之更新成下面四条。
+  if (!body.includes('const backoff = Math.min(COVER_FOLLOWUP_SHORT_MS * Math.pow(2, round), COVER_FOLLOWUP_LONG_MS)')) {
+    reasons.push('续巡没有「短周期起步 → 无进展翻倍 → 封顶长周期」的退避（几首永远拿不到封面的歌会把链路钉在最短周期上空转）')
+  }
+  if (!body.includes('const delay = hasRetryable ? backoff : COVER_FOLLOWUP_LONG_MS')) {
+    reasons.push('续巡节奏没有按「确凿没结果 / 可能救得回来」分档（backoff 起点必须来自 COVER_FOLLOWUP_SHORT_MS，确凿没结果的走 COVER_FOLLOWUP_LONG_MS）')
+  }
+  if (!body.includes('coverFollowupRounds.current = round + 1')) {
+    reasons.push('续巡退避轮数不推进（backoff 永远停在第 0 轮 = 短周期空转，退避形同虚设）')
+  }
+  if (!body.includes('if (failed.length < coverFollowupLastCount.current) coverFollowupRounds.current = 0')) {
+    reasons.push('续巡名单在缩短也不回缩退避（救得回来的歌被一并拖在长间隔上）')
   }
   // ③ 续巡只重查没拿到的那批：先把这些 id 从已试名单里摘掉，否则上面那道 has() 去重
   //    会把这批整批跳过 —— 「再也不重试」换个地方原样复现。
@@ -483,13 +511,28 @@ const followupSweepInvariants = (files) => {
       reasons.push('续巡没有把待重查的 id 从已试名单里摘掉（去重会把这批整批跳过 —— 「再也不重试」换个地方复现）')
     }
   }
-  // ⑤ 同一时刻只挂一个续巡定时器：新一轮巡检先清旧的，卸载时也要清
-  if (!body.includes('if (coverFollowupTimer.current) {\n      clearTimeout(coverFollowupTimer.current)')) {
-    reasons.push('新一轮巡检没有先清掉旧的续巡定时器（多个定时器叠着跑，越滚越多）')
+  // ⑤ 同一时刻只挂一个续巡定时器，停表只有一个收口（第 42 轮第 2 条把内联 clearTimeout 收成
+  //    cancelCoverFollowup：新一轮巡检 / 卸载 / 退后台三处都走它）。判据仍是「真的停表」——
+  //    收口本体必须 clearTimeout + 置空，新一轮巡检开头必须先调它并把旧名单清掉。
+  if (!page.includes('  const cancelCoverFollowup = useCallback(() => {\n    if (coverFollowupTimer.current) {\n      clearTimeout(coverFollowupTimer.current)\n      coverFollowupTimer.current = null\n    }\n  }, [])')) {
+    reasons.push('cancelCoverFollowup 不是「clearTimeout + 置空」的单一收口（停表能力被掏空：卸载/退后台拿到的可能是个空壳）')
   }
-  const unmount = slice(page, '  useEffect(() => () => {', '  }, [])')
-  if (!unmount || !unmount.includes('clearTimeout(coverFollowupTimer.current)')) {
-    reasons.push('页面卸载没有清掉续巡定时器（离开 WebDAV 后定时器还在跑，回调落在已卸载的组件上）')
+  const prefetchHead = slice(body, 'const isAuto = options?.auto === true', 'if (!isAuto) {')
+  if (!prefetchHead) {
+    reasons.push('prefetchCovers 开头切片失败（锚点漂移：isAuto / if (!isAuto) {）')
+  } else {
+    if (!prefetchHead.includes('cancelCoverFollowup()')) {
+      reasons.push('新一轮巡检没有先清掉旧的续巡定时器（多个定时器叠着跑，越滚越多）')
+    }
+    if (!prefetchHead.includes('coverFollowupSongs.current = null')) {
+      reasons.push('新一轮巡检没有清掉旧的续巡名单（旧名单跨轮串台：回前台会把一批已经作废的歌又补一遍）')
+    }
+  }
+  const unmount = slice(page, '  useEffect(() => () => {\n    cancelCoverFollowup()', '  }, [cancelCoverFollowup])')
+  if (!unmount) {
+    reasons.push('页面卸载没有收续巡（离开 WebDAV 后定时器还在跑，回调落在已卸载的组件上）')
+  } else if (!unmount.includes('coverFollowupSongs.current = null')) {
+    reasons.push('页面卸载没有清掉续巡名单（下一次挂载之前的前后台切换会跑一份没人看的巡检）')
   }
   // ⑥ 常量有界：短周期是「秒级重试」、长周期是「确凿失败的兜底」，都不许退化成 0 / 无限大
   const shortMs = Number((/const COVER_FOLLOWUP_SHORT_MS = (\d+)/.exec(page) ?? [])[1])
@@ -563,6 +606,50 @@ const followupSweepInvariants = (files) => {
     }
     if (!picBranch.includes('await acquireWebdavCoverSearch()')) {
       reasons.push('封面兜底搜索不再进并发闸（几百行同时发搜索，第 28 轮的风暴回来）')
+    }
+  }
+
+  return reasons
+}
+
+// ---------------------------------------------------------------------------
+// 不变量 F（第 42 轮第 2 条）：封面续巡的前后台门（减后台耗电 / 减发热）
+//   病根：本页是惰性常驻页、续巡只在「还有歌没拿到封面」时才排期、全程没有前后台判断 ——
+//   iOS 上音频在后台播放时 JS 线程不被冻结，于是整夜都在「定时器到点 → 联网搜封面 →
+//   解码图片 → 写 setState」（用户原话「发热严重，电量消耗快……减少后台运行占用」）。
+//   口径：退后台把**已排期的那一发也收掉**（只拦新排期不够 —— 已排的那一发照样到点联网），
+//        名单留在 coverFollowupSongs 里；回前台取走名单立刻按 auto 模式补发。
+// ---------------------------------------------------------------------------
+
+const followupPowerInvariants = (files) => {
+  const reasons = []
+  const page = stripComments(files.page)
+  const body = prefetchBody(page)
+  if (!body) {
+    reasons.push('prefetchCovers 实现体切片失败（锚点漂移：prefetchedCoverIds / loadConfig）')
+    return reasons
+  }
+
+  // ① 退后台不排期（本轮耗电主开关）。早退必须排在「名单落地」之后 ——
+  //    否则名单没留，回前台补发无账可还，「持续刷新」被后台一收就永久停。
+  const gateAt = body.indexOf("if (AppState.currentState !== 'active') return")
+  const storeAt = body.indexOf('coverFollowupSongs.current = failed')
+  if (gateAt < 0) {
+    reasons.push('续巡排期没有前台闸门（iOS 后台播放音频时 JS 不被冻结：退后台仍每轮联网搜封面、解码图片、写 setState —— 整夜发热耗电）')
+  } else if (storeAt < 0 || gateAt < storeAt) {
+    reasons.push('退后台的早退排在续巡名单落地之前（名单没留，回前台补发无账可还 —— 「持续刷新」被后台一收就永久停）')
+  }
+
+  // ② 前后台门：退后台收已排期的那一发；回前台「取走名单 → 清名单 → 立刻补发」。
+  const appGate = slice(page, "AppState.addEventListener('change', (next) => {", 'sub.remove()')
+  if (!appGate) {
+    reasons.push('封面续巡的前后台门切片失败（锚点漂移：AppState.addEventListener / sub.remove）')
+  } else {
+    if (!/if \(next !== 'active'\) \{[\s\S]{0,240}?cancelCoverFollowup\(\)/.test(appGate)) {
+      reasons.push('退后台没有收掉已排期的那一发续巡（「减少后台运行占用」要求后台一遍封面网络巡都不跑；只拦新排期不够 —— 已排的那一发照样到点联网）')
+    }
+    if (!/const pending = coverFollowupSongs\.current[\s\S]{0,200}?coverFollowupSongs\.current = null[\s\S]{0,200}?prefetchCovers\(pending, \{ auto: true \}\)/.test(appGate)) {
+      reasons.push('回前台没有「取走名单 → 清名单 → 立刻补发」的补账（退后台收掉的欠账没人还：切一次后台回来，这首的封面就永远等不到下一轮）')
     }
   }
 
@@ -864,14 +951,15 @@ const runCounterExamples = () => {
   }),
   '已试名单里摘掉')
 
-  // f5 卸载不收定时器（离开 WebDAV 后定时器还在跑）
+  // f5 卸载不收定时器（离开 WebDAV 后定时器还在跑）。
+  //    第 42 轮第 2 条起卸载走 cancelCoverFollowup 单一收口，锚点换成新的卸载 effect 形状。
   check('f5 卸载不收定时器', followupSweepInvariants({
     ...REAL,
     page: tamper(REAL.page,
-      '  useEffect(() => () => {\n    if (coverFollowupTimer.current) {\n      clearTimeout(coverFollowupTimer.current)\n      coverFollowupTimer.current = null\n    }\n  }, [])',
-      '  useEffect(() => () => {}, [])'),
+      '  useEffect(() => () => {\n    cancelCoverFollowup()\n    coverFollowupSongs.current = null\n  }, [cancelCoverFollowup])',
+      '  useEffect(() => () => {}, [cancelCoverFollowup])'),
   }),
-  '卸载没有清掉续巡定时器')
+  '卸载没有收续巡')
 
   // f6 续巡短周期被改成毫秒级（请求风暴）
   check('f6 续巡短周期超界', followupSweepInvariants({
@@ -912,6 +1000,42 @@ const runCounterExamples = () => {
   }),
   'finally 里放行')
 
+  // ---- 第 42 轮第 2 条：封面续巡的前后台门（后台耗电 / 发热） ----
+
+  // g1 退后台照排（闸门被删）
+  check('g1 退后台照排', followupPowerInvariants({
+    ...REAL,
+    page: tamper(REAL.page, "      if (AppState.currentState !== 'active') return\n", ''),
+  }),
+  '没有前台闸门')
+
+  // g2 在名单落地之前又塞了一道早退（名单没留，回前台无账可还）
+  check('g2 早退插到名单落地之前', followupPowerInvariants({
+    ...REAL,
+    page: tamper(REAL.page,
+      '      const hasRetryable = failed.some(song => !isWebdavCoverKnownMiss(song))',
+      "      if (AppState.currentState !== 'active') return\n      const hasRetryable = failed.some(song => !isWebdavCoverKnownMiss(song))"),
+  }),
+  '名单落地之前')
+
+  // g3 退后台只拦新排期、不收已排的那一发（已排的那发照样到点联网）
+  check('g3 退后台不收已排期的那一发', followupPowerInvariants({
+    ...REAL,
+    page: tamper(REAL.page,
+      '        cancelCoverFollowup()\n        return\n      }',
+      '        return\n      }'),
+  }),
+  '退后台没有收掉')
+
+  // g4 回前台不补发（欠账没人还）
+  check('g4 回前台不补发', followupPowerInvariants({
+    ...REAL,
+    page: tamper(REAL.page,
+      '      coverFollowupSongs.current = null\n      prefetchCovers(pending, { auto: true })',
+      '      void pending'),
+  }),
+  '回前台没有')
+
   return results
 }
 
@@ -920,7 +1044,7 @@ const runCounterExamples = () => {
 // ---------------------------------------------------------------------------
 
 console.log('=== sim-webdav-auto-cover-lyric ===')
-console.log('WebDAV：扫描/刷新/进列表自动巡检封面（整表分批 + 失效本地封面重补 + 失败备忘每轮清空）+ 播放自动补齐歌词（第 27 轮起，第 29 轮加强）')
+console.log('WebDAV：扫描/刷新/进列表自动巡检封面（整表分批 + 失效本地封面重补 + 失败备忘每轮清空）+ 播放自动补齐歌词（第 27 轮起，第 29 轮加强；第 42 轮给续巡加前后台门与无进展退避）')
 console.log()
 
 const checks = [
@@ -928,7 +1052,8 @@ const checks = [
   ['条一③ 列表页巡检（整表分批 ≤50 / 每轮清失败备忘 / file:// 失效封面重补 / 跳缓存）+ 预热点齐全 + 没回退成整表批量下载', () => prefetchInvariants(REAL.page)],
   ['条二 WebDAV 歌词兜底 + saveLyric + 空歌词仍是最后收口', () => webdavLyricFallbackInvariants(REAL.local)],
   ['兜底链路复核：helper 走 searchMusic/内置平台接口，内置 apiList 仍为空，并发上限仍是 4', () => helperInvariants(REAL)],
-  ['第 36 轮第 3 条 巡检不会停（无轮次作废 / 跑完按失败性质分档续巡 / 续巡只重查没拿到的那批并摘掉已试 id）+ 名额不再泄漏（搜索套 12s 上限且短于外层超时 / 超时异常不记备忘 / finally 放行）', () => followupSweepInvariants(REAL)],
+  ['第 36 轮第 3 条 巡检不会停（无轮次作废 / 跑完按失败性质分档退避续巡 / 续巡只重查没拿到的那批并摘掉已试 id）+ 名额不再泄漏（搜索套 12s 上限且短于外层超时 / 超时异常不记备忘 / finally 放行）', () => followupSweepInvariants(REAL)],
+  ['第 42 轮第 2 条 封面续巡的前后台门（退后台把已排期的那一发也收掉、名单留着 / 回前台取名单立刻补发）+ 单一停表收口（新一轮先收旧的、卸载收干净）', () => followupPowerInvariants(REAL)],
 ]
 
 let invOk = true

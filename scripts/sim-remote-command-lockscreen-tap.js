@@ -22,18 +22,37 @@
  *     iOS 17/18 对合并按钮的投递归属不确定）；上一首 / 下一首 / 拖动进度一律 YES。
  *   只要两端同源，就永远不会出现「按钮在、点了不投递」。
  *
- * 配套（同一轮，缺一不可）：
+ * 配套（第 36 轮；原配套 ②「1s 重申可用性的看门狗」已在第 43 轮整条删除，理由见下）：
  *   ① **一处都不许再说谎**：全文件只允许一处 `center.playbackState = ...`，
  *      且赋的就是真实态 `LXNowPlayingState`（第 35 轮之前有两处「切到相反值再切回」的
- *      强制重绘 —— 那 60ms/150ms 窗口里显示态与启停态互相矛盾，正是「点两次才生效」的根）；
- *   ② **外部改写 1 秒内纠正**：MPRemoteCommandCenter 是双方共管的 ——
- *      react-native-track-player 的 setupPlayer / updateOptions / destroy 会直接关掉同一批
- *      命令且不通知我们。LXStartRemoteCommandWatchdog（1s 周期 dispatch source，主队列）
- *      每秒重申一次可用性，把这类静默改写拉回来。
+ *      强制重绘 —— 那 60ms/150ms 窗口里显示态与启停态互相矛盾，正是「点两次才生效」的根）。
+ *
+ * 【第 43 轮】用户原话：「锁屏界面和灵动岛播放器界面，前几次点击播放/暂停和上一首、
+ * 下一首还可以操作，用了一段时间后就不行了，而且点击一次后不能点击第二次，
+ * 请一比一使用 lx-music-mobile-ios-adaptation 项目中的锁屏界面和灵动岛播放器界面
+ * 代码，修复这些问题。」
+ * 第 36 轮的配套 ②（1s 重申一次的 LXStartRemoteCommandWatchdog）**本轮已整条删除** ——
+ * 它就是同一类症状的另一半成因：它只重写六个 `enabled`，**不**重发
+ * nowPlayingInfo / playbackState，显示态一旦落在后面，它就把「卡片显示 ⏸ 而
+ * pauseCommand 已被关掉」这类显示态/启停态分叉**钉死**，用户的点击随即被
+ * enabled = NO 静默吞掉（= 「点击一次后不能点击第二次」）。
+ * 参考工程 lx-music-mobile-ios-adaptation 没有看门狗、没有歌词时钟、也不把
+ * nowPlayingInfo 置空，它的模型是「主线程 + 状态变化时写一次」—— 本轮 1:1 回到该模型：
+ *   ① `LXApplyNowPlayingInfo`（唯一写 MPNowPlayingInfoCenter / 命令 enabled 的地方）带
+ *      **主线程闸门**：非主线程一律 marshal 回主队列再写。用户报的「用一段时间后就不行」
+ *      正是它的反面——8.3Hz 歌词时钟跑在专用串行队列上，换行时跨线程改写
+ *      MPRemoteCommandCenter.enabled / MPNowPlayingInfoCenter.nowPlayingInfo，
+ *      这两个对象主线程亲和，后台线程改写是未定义行为，系统的命令状态机会累积失步；
+ *   ② 看门狗整条不许回来（声明 / 安装时的调用 / 定义三处都不能有）；
+ *   ③ 会话拆除窗口不许回来：`nowPlayingInfo = nil` 只允许出现在 apply 的
+ *      「缓存为空 → 写 nil」这一处形状里（参考工程同款），封面链路不许再置空整条信息；
+ *   ④ 遥控「播放 / 合并键」按下时先抢回音频会话：本工程按用户第 16 轮第 9 条
+ *      「手动暂停要卸载占用音频」会在 pause 让出会话，而参考工程的会话常驻 ——
+ *      让出之后必须在这一按的瞬间夺回（不然起播链路一旦晚一步/失败，卡片就永远停在 ▶）。
  *
  * 反例专盯「回归 tsc / eslint 都无感」的部分：原生不参与 TS 检查，把判据改回按播放态单算、
- * 漏一句 beginReceivingRemoteControlEvents、把看门狗删掉、或又把 playbackState 翻转加回来，
- * 静态检查与单测全都看不见。
+ * 漏一句 beginReceivingRemoteControlEvents、把主线程闸门删掉、让看门狗回来、
+ * 或又把 playbackState 翻转加回来，静态检查与单测全都看不见。
  *
  * 运行：node scripts/sim-remote-command-lockscreen-tap.js
  * 退出码：不变量全过、且全部反例被拦下时为 0，否则 1。
@@ -227,67 +246,85 @@ const singleSourceInvariants = (raw) => {
 }
 
 // ---------------------------------------------------------------------------
-// 不变量 C：可用性重申看门狗（外部改写 1 秒内纠正）
+// 不变量 C：写入一律主线程 + 无看门狗 + 无会话拆除 + 播放键先抢会话
+//（第 43 轮重写；本来的「1s 可用性看门狗」条款已作废，见文件头说明）
 // ---------------------------------------------------------------------------
 
-const watchdogInvariants = (raw) => {
+const mainThreadInvariants = (raw) => {
   const reasons = []
+  const code = stripComments(raw)
 
-  const body = extractBracedBody(raw, 'static void LXStartRemoteCommandWatchdog(void)')
-  if (!body) {
-    reasons.push('LXStartRemoteCommandWatchdog 缺失或抽取失败（锚点漂移 —— 没有它，react-native-track-player 对 MPRemoteCommandCenter 的静默改写没人纠正，锁屏按钮会「过一会儿就点不动」）')
-    return reasons
-  }
-  const code = stripComments(body)
-
-  if (!code.includes('DISPATCH_SOURCE_TYPE_TIMER')) {
-    reasons.push('看门狗不是 dispatch source 定时器（DISPATCH_SOURCE_TYPE_TIMER 缺失）')
-  }
-  const setTimer = slice(code, 'dispatch_source_set_timer(timer,', ');')
-  if (!setTimer) {
-    reasons.push('看门狗没设周期（dispatch_source_set_timer(timer, …) 缺失或形状变了）')
+  // ① LXApplyNowPlayingInfo 必须带主线程闸门（非主线程 marshal 回主队列再写）
+  const apply = extractBracedBody(raw, 'static void LXApplyNowPlayingInfo(void)')
+  if (!apply) {
+    reasons.push('LXApplyNowPlayingInfo 缺失或抽取失败（锚点漂移）')
   } else {
-    // 三个数值（起始延迟 / 周期 / leeway）都要用 NSEC_PER_SEC 换算才算秒级；
-    // 周期本身还有上限：3600 * NSEC_PER_SEC 这种「一小时纠正一次」等于没纠正。
-    const multipliers = setTimer.match(/[0-9.]+\s*\*\s*NSEC_PER_SEC/g) || []
-    if (multipliers.length < 3) {
-      reasons.push('看门狗周期不是秒级（dispatch_source_set_timer 的 起始延迟 / 周期 / leeway 三个数值都要用 NSEC_PER_SEC 换算 —— 缺了就等于纠正窗口不可控）')
+    const body = stripComments(apply)
+    const gate = /if \(!\[NSThread isMainThread\]\) \{\s*dispatch_async\(dispatch_get_main_queue\(\), \^\{[\s\S]{0,200}?LXApplyNowPlayingInfo\(\);[\s\S]{0,80}?\}\);\s*return;\s*\}/.exec(body)
+    if (gate == null) {
+      reasons.push('LXApplyNowPlayingInfo 缺主线程闸门（非主线程必须先 dispatch_async 回主队列再写 MPNowPlayingInfoCenter / MPRemoteCommandCenter —— 8.3Hz 歌词时钟跑在专用串行队列上，跨线程写这两个主线程亲和的对象是未定义行为，系统遥控命令状态机会累积失步：点几次还行、播一会儿就全不灵）')
     }
-    const tooBig = multipliers.filter((m) => Number(m.split('*')[0].trim()) > 60)
-    if (tooBig.length) {
-      reasons.push(`看门狗周期被拉长（${tooBig.join(' / ')} —— 超过 60 秒的纠正窗口等于没纠正，锁屏按钮会「过一会儿就点不动」）`)
+    if (!body.includes('LXSyncRemoteCommandAvailability();')) {
+      reasons.push('LXApplyNowPlayingInfo 不再同步命令可用性（LXSyncRemoteCommandAvailability() 缺失 —— 显示态与启停态会脱钩）')
     }
   }
-  if (!code.includes('dispatch_source_set_event_handler(timer')) {
-    reasons.push('看门狗没挂事件处理（dispatch_source_set_event_handler 缺失）')
-  }
-  if (!code.includes('LXSyncRemoteCommandAvailability();')) {
-    reasons.push('看门狗每拍不重申可用性（LXSyncRemoteCommandAvailability() 缺失）')
-  }
-  if (!code.includes('dispatch_resume(timer);')) {
-    reasons.push('看门狗创建后没启动（dispatch_resume(timer) 缺失 —— dispatch source 默认挂起）')
-  }
-  // 必须在主队列上跑：MPRemoteCommandCenter 的属性只能在主线程改
-  if (!code.includes('dispatch_async(dispatch_get_main_queue()') || !code.includes('dispatch_get_main_queue())')) {
-    reasons.push('看门狗没落到主队列（dispatch_get_main_queue 缺失 —— MPRemoteCommandCenter 的属性只能在主线程改）')
-  }
-  // 空转保护：无歌曲信息且不在接收遥控事件时跳过（省电，也避免无播放时的无谓轮询）
-  if (!code.includes('LXNowPlayingInfoCache.count == 0 && !LXIsReceivingRemoteControlEvents')) {
-    reasons.push('看门狗没有空转保护（缺「无歌曲信息且未在接收遥控事件就跳过」的判据）')
+
+  // ② 全文件只允许一处 MPNowPlayingInfoCenter 取用，且必须在 apply 里
+  const centers = code.match(/\[MPNowPlayingInfoCenter/g) || []
+  if (centers.length !== 1) {
+    reasons.push(`MPNowPlayingInfoCenter 出现 ${centers.length} 处（只允许 LXApplyNowPlayingInfo 里那一处 —— 多出来的每一处都是绕过主线程闸门的旁路）`)
+  } else if (apply && !stripComments(apply).includes('[MPNowPlayingInfoCenter defaultCenter]')) {
+    reasons.push('MPNowPlayingInfoCenter 的取用不在 LXApplyNowPlayingInfo 里（写入必须收口到主线程闸门那一条路）')
   }
 
-  // 前置声明必须先于使用（C 语言的隐式声明会让编译报错/行为未定义）
-  const iDecl = raw.indexOf('static void LXStartRemoteCommandWatchdog(void);')
-  const iDef = raw.indexOf('static void LXStartRemoteCommandWatchdog(void) {')
-  if (iDecl < 0) {
-    reasons.push('看门狗缺前置声明（`static void LXStartRemoteCommandWatchdog(void);`）')
-  } else if (iDef > 0 && iDecl > iDef) {
-    reasons.push('看门狗的前置声明出现在定义之后（应在文件开头的静态声明区）')
+  // ③ 命令可用性只许被 apply 调用一次（看门狗没了 ⇒ 它天然只在主线程被调用）
+  const availCalls = code.match(/LXSyncRemoteCommandAvailability\(\);/g) || []
+  if (availCalls.length !== 1) {
+    reasons.push(`LXSyncRemoteCommandAvailability() 被调用 ${availCalls.length} 处（只允许 LXApplyNowPlayingInfo 里那一处 —— 多出来的调用点只改 enabled 不改显示态，会把显示态/启停态的分叉钉死：卡片显示 ⏸ 而 pauseCommand 已被关掉，点击被 enabled = NO 静默吞掉）`)
+  } else if (!(apply && stripComments(apply).includes('LXSyncRemoteCommandAvailability();'))) {
+    reasons.push('LXSyncRemoteCommandAvailability() 的唯一调用点不在 LXApplyNowPlayingInfo 里（可用性必须与显示态同源同刻写出）')
   }
 
-  // 安装完 target 就要点起看门狗（反过来的话：安装前的那段窗口没人兜底）
-  if (!/LXRemoteCommandHandlersInstalled = YES;[\s\S]{0,400}?LXStartRemoteCommandWatchdog\(\);/.test(raw)) {
-    reasons.push('看门狗没在安装 target 之后立刻启动（LXRemoteCommandHandlersInstalled = YES; 后 400 字符内没有 LXStartRemoteCommandWatchdog();）')
+  // ④ 看门狗不许回来（声明 / 调用 / 定义任一形态都不许）
+  if (/LXStartRemoteCommandWatchdog/.test(code)) {
+    reasons.push('LXStartRemoteCommandWatchdog 又回来了（第 43 轮已整条删除：它只重写 enabled、不重发 nowPlayingInfo / playbackState，显示态落在后面时它把分叉钉死；参考工程没有它；另外它还是 1s 周期的后台唤醒）')
+  }
+
+  // ⑤ 会话拆除窗口不许回来
+  if (/nowPlayingInfo\s*=\s*nil;/.test(code)) {
+    reasons.push('出现 `nowPlayingInfo = nil;`（把整条媒体会话拆掉一瞬间：卡片消失/重现会重走 now-playing 归属仲裁，这段时间投递到本 App 的遥控命令可能丢失；而换封面发生在每次切歌 ⇒ 用一会儿按钮就全失灵。参考工程从不置空，只有 apply 里「缓存为空 → 写 nil」那一种形状）')
+  }
+  const infoWrites = code.match(/center\.nowPlayingInfo\s*=/g) || []
+  if (infoWrites.length !== 1 || !(apply && stripComments(apply).includes('center.nowPlayingInfo ='))) {
+    reasons.push(`center.nowPlayingInfo 赋值 ${infoWrites.length} 处（只允许 LXApplyNowPlayingInfo 里那一处，形状必须是「有缓存写 copy、无缓存写 nil」的三元式）`)
+  }
+  const artwork = extractBracedBody(raw, 'static void LXApplyNowPlayingArtwork(UIImage *image, NSUInteger requestId)')
+  if (artwork && /defaultCenter/.test(stripComments(artwork))) {
+    reasons.push('LXApplyNowPlayingArtwork 里又直接取用了 MPNowPlayingInfoCenter（封面链路只许走 LXApplyNowPlayingInfo 重发）')
+  }
+
+  // ⑥ 遥控「播放 / 合并键」按下时先抢回音频会话
+  const handler = extractBracedBody(raw, 'static MPRemoteCommandHandlerStatus LXHandleRemoteCommandEvent(NSString *command)')
+  if (!handler) {
+    reasons.push('LXHandleRemoteCommandEvent 缺失或抽取失败（锚点漂移）')
+  } else {
+    const body = stripComments(handler)
+    const gate = /isEqualToString:@"play"[\s\S]{0,120}?isEqualToString:@"toggle"/.test(body)
+    if (!gate || !body.includes('LXActivateAudioSessionForRemotePlay();')) {
+      reasons.push('遥控播放键按下时没有先抢回音频会话（缺 LXActivateAudioSessionForRemotePlay 调用，或 play/toggle 门控被删 —— 本工程 pause 会让出会话（用户第 16 轮第 9 条「应该是没有卸载占用音频」），参考工程会话常驻；不在这里夺回，起播晚一步/失败时卡片会永远停在 ▶，点第二次没反应）')
+    }
+  }
+  const activate = extractBracedBody(raw, 'static void LXActivateAudioSessionForRemotePlay(void)')
+  if (!activate) {
+    reasons.push('LXActivateAudioSessionForRemotePlay 缺失或抽取失败（锚点漂移）')
+  } else {
+    const body = stripComments(activate)
+    if (!body.includes('setActive:YES error:nil')) {
+      reasons.push('LXActivateAudioSessionForRemotePlay 不再激活音频会话（setActive:YES 缺失）')
+    }
+    if (!body.includes('dispatch_get_main_queue()')) {
+      reasons.push('LXActivateAudioSessionForRemotePlay 没有落到主队列（AVAudioSession 的 setActive 必须在主线程调用）')
+    }
   }
 
   return reasons
@@ -406,27 +443,45 @@ const runCounterExamples = () => {
 
   // r8 封面就绪重绘又去碰 playbackState → 报「LXApplyNowPlayingArtwork 里出现 playbackState」
   check('r8 封面就绪重绘又碰 playbackState', () => singleSourceInvariants(tamper(REAL_APPDELEGATE,
-    '    center.nowPlayingInfo = nil;\n',
-    '    center.nowPlayingInfo = nil;\n    center.playbackState = MPNowPlayingPlaybackStatePaused;\n')),
+    '    info[MPMediaItemPropertyArtwork] = artwork;\n',
+    '    info[MPMediaItemPropertyArtwork] = artwork;\n    [MPNowPlayingInfoCenter defaultCenter].playbackState = MPNowPlayingPlaybackStatePaused;\n')),
   'LXApplyNowPlayingArtwork 里出现 playbackState')
 
-  // r9 看门狗被删（顺手「优化」掉）→ 报「LXStartRemoteCommandWatchdog 缺失」
-  check('r9 看门狗启动调用被删', () => watchdogInvariants(tamper(REAL_APPDELEGATE,
-    '  LXStartRemoteCommandWatchdog();\n',
+  // s1 主线程闸门被删（回到「歌词时钟跨线程直写」的老样子）→ 报「缺主线程闸门」
+  check('s1 LXApplyNowPlayingInfo 的主线程闸门被删', () => mainThreadInvariants(tamper(REAL_APPDELEGATE,
+    '  if (![NSThread isMainThread]) {\n    dispatch_async(dispatch_get_main_queue(), ^{\n      LXApplyNowPlayingInfo();\n    });\n    return;\n  }\n  @synchronized (LXLyricLock()) {',
+    '  @synchronized (LXLyricLock()) {')),
+  '主线程闸门')
+
+  // s2 台词：歌词时钟（专用串行队列）绕过 apply 直呼可用性同步 → 报「被调用 2 处」
+  check('s2 歌词时钟绕过 apply 直呼 LXSyncRemoteCommandAvailability', () => mainThreadInvariants(tamper(REAL_APPDELEGATE,
+    '      LXApplyNowPlayingInfo();\n      LXForceNowPlayingCardRepaint();',
+    '      LXSyncRemoteCommandAvailability();\n      LXForceNowPlayingCardRepaint();')),
+  '被调用 2 处')
+
+  // s3 有人把 1s 重申看门狗加回来 → 报「又回来了」
+  check('s3 看门狗被加回来', () => mainThreadInvariants(tamper(REAL_APPDELEGATE,
+    '  LXRemoteCommandHandlersInstalled = YES;\n}',
+    '  LXRemoteCommandHandlersInstalled = YES;\n  LXStartRemoteCommandWatchdog();\n}')),
+  '又回来了')
+
+  // s4 封面链路又把整条信息置空（会话拆除窗口回来）→ 报「nowPlayingInfo = nil」
+  check('s4 封面链路又置空 nowPlayingInfo（会话拆除窗口）', () => mainThreadInvariants(tamper(REAL_APPDELEGATE,
+    '    info[MPMediaItemPropertyArtwork] = artwork;\n',
+    '    info[MPMediaItemPropertyArtwork] = artwork;\n    [MPNowPlayingInfoCenter defaultCenter].nowPlayingInfo = nil;\n')),
+  'nowPlayingInfo = nil')
+
+  // s5 歌词时钟自己直接写 MPNowPlayingInfoCenter（绕过唯一写入口）→ 报「出现 2 处」
+  check('s5 歌词时钟绕过 apply 直写 MPNowPlayingInfoCenter', () => mainThreadInvariants(tamper(REAL_APPDELEGATE,
+    '    LXNowPlayingInfoCache[MPMediaItemPropertyArtist] = text;\n',
+    '    LXNowPlayingInfoCache[MPMediaItemPropertyArtist] = text;\n    [MPNowPlayingInfoCenter defaultCenter].nowPlayingInfo = [LXNowPlayingInfoCache copy];\n')),
+  '出现 2 处')
+
+  // s6 遥控播放键不再抢回音频会话（本工程 pause 会让出会话）→ 报「没有先抢回音频会话」
+  check('s6 遥控播放键不再抢回音频会话', () => mainThreadInvariants(tamper(REAL_APPDELEGATE,
+    '  if ([command isEqualToString:@"play"] || [command isEqualToString:@"toggle"]) {\n    LXActivateAudioSessionForRemotePlay();\n  }\n',
     '')),
-  '没在安装 target 之后立刻启动')
-
-  // r10 整个 set_timer 被换成「一小时一跳、不再用秒换算」的写法 → 报「周期不是秒级」
-  check('r10 看门狗周期被拉长到小时级', () => watchdogInvariants(tamper(REAL_APPDELEGATE,
-    '  dispatch_source_set_timer(timer,\n                              dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),\n                              (uint64_t)(1.0 * NSEC_PER_SEC),\n                              (uint64_t)(0.2 * NSEC_PER_SEC));',
-    '  dispatch_source_set_timer(timer, dispatch_time(DISPATCH_TIME_NOW, 3600ull * 1000 * 1000 * 1000), 3600ull * 1000 * 1000 * 1000, 0);')),
-  '周期不是秒级')
-
-  // r10b 周期还用 NSEC_PER_SEC 写，但换成小时（3600 * NSEC_PER_SEC 也要拦）
-  check('r10b 周期写成 3600 * NSEC_PER_SEC', () => watchdogInvariants(tamper(REAL_APPDELEGATE,
-    '                              (uint64_t)(1.0 * NSEC_PER_SEC),\n',
-    '                              (uint64_t)(3600.0 * NSEC_PER_SEC),\n')),
-  '周期被拉长')
+  '没有先抢回音频会话')
 
   // r11 JS 侧无条件落闸（第 35 轮第 1 条要拦的就是这个）→ 报「前置判据」
   check('r11 JS 侧 pause 无条件落闸', () => remoteInvariants(tamper(REAL_REMOTE,
@@ -452,7 +507,7 @@ console.log('=== sim-remote-command-lockscreen-tap ===')
 const checks = [
   ['原生：命令启停与参考工程 1:1（显示态 / 启停态同源）', () => availabilityInvariants(REAL_APPDELEGATE)],
   ['原生：全文件只允许一处 playbackState 赋值且赋真实态（两处说谎翻转已删）', () => singleSourceInvariants(REAL_APPDELEGATE)],
-  ['原生：可用性重申看门狗（外部改写 1 秒内纠正）', () => watchdogInvariants(REAL_APPDELEGATE)],
+  ['原生：写入一律主线程 + 无看门狗 + 无会话拆除 + 播放键先抢会话（第 43 轮）', () => mainThreadInvariants(REAL_APPDELEGATE)],
   ['JS：pause 只在真的会暂停时落闸（六命令覆盖 + 去重窗口）', () => remoteInvariants(REAL_REMOTE)],
 ]
 

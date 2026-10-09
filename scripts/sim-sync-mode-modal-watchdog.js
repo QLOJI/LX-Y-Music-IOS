@@ -68,6 +68,9 @@ const F = {
   utils: 'src/navigation/utils.ts',
   modal: 'src/navigation/components/SyncModeModal.tsx',
   page: 'src/screens/Home/Views/Setting/settings/Sync/index.tsx',
+  // 【第 42 轮第 1 条】问句的主树兜底面（组件本体 + 它在 Home 视图树里的挂载点）
+  host: 'src/navigation/components/SyncModeAskHost.tsx',
+  home: 'src/screens/Home/index.tsx',
 }
 const REAL = Object.fromEntries(Object.entries(F).map(([k, v]) => [k, read(v)]))
 
@@ -374,6 +377,151 @@ const syncPageInvariants = (raw) => {
 }
 
 // ---------------------------------------------------------------------------
+// 不变量 D：【第 42 轮第 1 条】「同步方式」问句的**主树兜底面**
+//
+// 用户原话：「同步服务地址的状态还是显示等待选择同步方式，最上层还是没有显示这个窗口，
+// 歌单也没有同步成功，请强制修复」。
+//
+// 第 36~39 轮把「一定会弹出来」全押在 RNN overlay 上（去抖、挂载复查、失败重试、窗口提层），
+// 用户看到的却始终是「状态停在等待选择同步方式、框子不出来」。这条症状能反推出的最强事实是
+// 「JS 侧以为挂上了」（否则 20 秒问句复查早把问句判死，文案会变成「未能显示」）——也就是
+// SyncModeModal 的挂载回调跑过，但 iOS 上那个独立 UIWindow 在这个工程里就是画不出来。
+// JS 侧没有任何可靠信号能证明「overlay 真的在屏幕上」，所以这一轮换了判据：不再问 overlay
+// 「挂上没挂上」，只问**问句有没有结果** —— 到期还没作答，就把同一个选择框**换面**到主窗口的
+// React 树里画（Home 视图树里的 SyncModeAskHost），那条路不依赖任何独立 UIWindow、
+// 也不经过 RNN 的呈现通道。
+//
+// 本段钉住四件事（顺序即正确性，全部是踩过的雷）：
+//   ① 换面必须**先立接管标记、再拆 overlay**：接管标记同时是两条卸载通路的让行判据，
+//      反过来就是「我们主动拆 overlay → 卸载回调把这次问句按『用户取消』杀掉」；
+//   ② 兜底面同样要点亮「在屏幕上」（20 秒问句复查与 60 秒握手看门狗据此让行）；
+//   ③ 三条收尾（作答 / 取消 / 断开、呈现失败）都要把兜底面收掉，绝不残留；
+//   ④ 兜底面必须复用**同一套**组件（SyncModeModal 的具名导出）并挂在 Home 视图树里 ——
+//      复制一份必然走样，不挂在 Home 树上则根本画不出来。
+// ---------------------------------------------------------------------------
+
+const fallbackInvariants = (files) => {
+  const reasons = []
+  const sync = stripComments(files.sync)
+  const modal = stripComments(files.modal)
+  const host = stripComments(files.host)
+  const home = stripComments(files.home)
+
+  // ① 接管期限常量
+  if (!/const SYNC_MODE_FALLBACK_MS = \d+/.test(sync)) {
+    reasons.push('core/sync.ts 没有 SYNC_MODE_FALLBACK_MS（问句到期换面的期限缺失 —— 又回到「只押 overlay」的老路：'
+      + '那正是用户第 42 轮原话「最上层还是没有显示这个窗口」）')
+  }
+
+  // ② 换面动作：先立标记（宿主据此画出来 + 两条卸载通路据此让行），再点「在屏幕上」，最后才拆 overlay
+  const handOver = extractBracedBody(sync, 'const handOverToFallback = () =>')
+  if (!handOver) {
+    reasons.push('handOverToFallback 缺失（overlay 画不出来时没有把问句交给主树的通路）')
+  } else {
+    const iVisible = handOver.indexOf('setSyncModeAskFallbackVisible(true)')
+    const iMark = handOver.indexOf('markSyncModeModalVisible()')
+    const iCancel = handOver.indexOf('cancelSyncModeModalRetries()')
+    const iDismiss = handOver.indexOf('dismissOverlay(')
+    const iClearId = handOver.indexOf("setSyncModeComponentId('')")
+    if (iVisible < 0) {
+      reasons.push('换面不立接管标记（兜底面宿主不会画出来，问句还是没人看得见）')
+    }
+    if (iMark >= 0 && (iVisible < 0 || iMark < iVisible)) {
+      reasons.push('换面先把 overlay 摆到「在屏幕上」再立接管标记：中间这段里两条卸载通路都还没让行，'
+        + '我们自己拆 overlay 引发的卸载回调会把这次问句按「用户取消」杀掉')
+    }
+    if (iCancel < 0) {
+      reasons.push('换面没有作废挂载复查（cancelSyncModeModalRetries 缺失：还没到点的复查会把 overlay 重新弹到兜底面上）')
+    }
+    if (iDismiss < 0) {
+      reasons.push('换面没有把 overlay 收掉（屏幕上会同时留两个选择框，底下那个还整片吃触摸）')
+    }
+    if (iClearId < 0 || (iDismiss >= 0 && iClearId > iDismiss)) {
+      reasons.push('换面先 dismiss 再清 store 里的 componentId（看门狗与卸载身份比对要先失去依据，否则这次拆除会被当成用户把框点走了）')
+    }
+  }
+
+  // ③ 接管期限必须在「呈现之后」点起来，且到期真的走换面（不是只清个定时器）
+  const iPresent = sync.indexOf('showSyncModeModal(handleUnavailable)')
+  const iArm = sync.indexOf('fallbackTimer = setTimeout(() => {')
+  if (iPresent < 0) {
+    reasons.push('showSyncModeModal(handleUnavailable) 调用缺失（选择框根本不会被呈现）')
+  } else if (iArm < 0) {
+    reasons.push('主树兜底面的接管期限没有点起来（overlay 画不出来时永远不会有第二条呈现通路）')
+  } else if (iArm < iPresent) {
+    reasons.push('接管期限在呈现之前就点起来（呈现失败会同步回调 handleUnavailable，那种情况下到期还可能再换面一次）')
+  } else if (!/fallbackTimer = setTimeout\(\(\) => \{\s*\n\s*fallbackTimer = null\s*\n\s*if \(settled\) return\s*\n\s*handOverToFallback\(\)/.test(sync)) {
+    reasons.push('接管期限到期没有走换面（缺 settled 判据或 handOverToFallback() —— 已作答之后还会把兜底面翻出来）')
+  }
+
+  // ④ 收尾（removeListeners）必须把兜底面与接管期限一起收掉
+  if (!/const removeListeners = \(\) => \{[\s\S]{0,1400}?clearFallbackTimer\(\)/.test(sync)) {
+    reasons.push('收尾没有清掉接管期限（clearFallbackTimer 缺失：问句结束后到期还会把兜底面翻出来）')
+  }
+  if (!/const removeListeners = \(\) => \{[\s\S]{0,1400}?setSyncModeAskFallbackVisible\(false\)/.test(sync)) {
+    reasons.push('收尾没有收掉兜底面（setSyncModeAskFallbackVisible(false) 缺失：作答 / 取消 / 断开 / 呈现失败之后'
+      + '那块全屏层会留在屏幕上，整片吃触摸）')
+  }
+
+  // ⑤ 两条卸载通路都必须给兜底面让行（换面动作自己拆除 overlay 会触发它们）
+  const unmounted = extractBracedBody(sync, 'export const handleSyncModeModalUnmounted = (componentId?: string) =>')
+  if (!unmounted) {
+    reasons.push('handleSyncModeModalUnmounted 缺失或抽取失败')
+  } else if (!unmounted.includes('if (syncState.syncModeAskFallbackVisible) return')) {
+    reasons.push('卸载上报不给兜底面让行（接管标记为真时它是我们自己拆 overlay 的回声，'
+      + '照旧走取消通路 = 用户刚要作答、问句却被按「已取消」杀掉）')
+  }
+  const iWatch = sync.indexOf('removeDismissListener = onAnyModalDismissed(')
+  if (iWatch < 0) {
+    reasons.push('看门狗未注册（removeDismissListener = onAnyModalDismissed(… 缺失）')
+  } else {
+    const watchBody = sync.slice(iWatch, sync.indexOf('    })', iWatch))
+    if (!watchBody.includes('if (syncState.syncModeAskFallbackVisible) return')) {
+      reasons.push('看门狗不给兜底面让行（换面时 overlay 的关闭事件是我们自己拆出来的，'
+        + '照旧收尾 = 兜底面上那个还活着的选择框被按「用户取消」处理）')
+    }
+  }
+
+  // ⑥ 宿主组件：复用同一套组件、只在需要时画、全屏置顶
+  if (!host.includes('useSyncModeAskFallback()')) {
+    reasons.push('SyncModeAskHost 不订阅兜底面可见性（它永远不会画出来）')
+  }
+  if (!/if \(!visible\) return null/.test(host)) {
+    reasons.push('SyncModeAskHost 不显示时没有返回 null（常驻全屏层会整片吃触摸，界面看着像卡死）')
+  }
+  if (!/if \(syncState\.type != 'list' && syncState\.type != 'dislike'\) return null/.test(host)) {
+    reasons.push('SyncModeAskHost 缺问答类型守卫（画一个空的全屏层同样会吃触摸 —— 与 SyncModeModal 的同款守卫对齐）')
+  }
+  if (!host.includes("import { DislikeModeModal, ListModeModal } from './SyncModeModal'")) {
+    reasons.push('SyncModeAskHost 没有复用 SyncModeModal 的具名导出组件（复制一份必然走样：按钮文案/作答链路是同一套才算「同一个选择框」）')
+  }
+  if (!/zIndex:\s*[1-9]\d\d/.test(host)) {
+    reasons.push('SyncModeAskHost 没有置顶的层级（下载悬浮球 100 / 页头 10 —— 兜底面必须盖在它们之上，'
+      + '否则「最上层还是没有显示这个窗口」原样复现）')
+  }
+  if (!/position: 'absolute'/.test(host) || !/top: 0/.test(host) || !/bottom: 0/.test(host)) {
+    reasons.push('SyncModeAskHost 不是全屏绝对定位（半屏的兜底面会让「最上面那一层」这个诉求落空）')
+  }
+
+  // ⑦ SyncModeModal 的具名导出（兜底面复用它们的唯一来源）
+  if (!/export const ListModeModal = /.test(modal)) {
+    reasons.push('SyncModeModal 没有具名导出 ListModeModal（兜底面无从复用同一个选择框）')
+  }
+  if (!/export const DislikeModeModal = /.test(modal)) {
+    reasons.push('SyncModeModal 没有具名导出 DislikeModeModal（兜底面无从复用同一个选择框）')
+  }
+
+  // ⑧ 必须真挂在 Home 视图树里（不挂 = 兜底面根本不存在）
+  if (!home.includes('<SyncModeAskHost />')) {
+    reasons.push('Home 视图树里没有挂 SyncModeAskHost（兜底面不存在，overlay 画不出来时依旧什么都没有）')
+  }
+  if (!/import SyncModeAskHost from '@\/navigation\/components\/SyncModeAskHost'/.test(home)) {
+    reasons.push('Home 没有引入 SyncModeAskHost（挂载点悬空）')
+  }
+  return reasons
+}
+
+// ---------------------------------------------------------------------------
 // 反例（对篡改后的源码跑同一套判断，必须被拦下）
 // ---------------------------------------------------------------------------
 
@@ -489,6 +637,71 @@ const runCounterExamples = () => {
     '')),
   '挂载没有点亮')
 
+  // —— 第 42 轮第 1 条：主树兜底面 ——
+  const fbv = (over) => fallbackInvariants({ ...REAL, ...over })
+
+  // e1 接管期限常量被删（没有第二条呈现通路，overlay 画不出来就永远没有选择框）
+  check('e1 换面期限常量被删', () => fbv({
+    sync: tamper(REAL.sync, 'const SYNC_MODE_FALLBACK_MS = 1500\n', ''),
+  }), '没有 SYNC_MODE_FALLBACK_MS')
+
+  // e2 到期不换面（只清定时器 / 干脆不排期）
+  check('e2 到期不换面', () => fbv({
+    sync: tamper(REAL.sync,
+      '    fallbackTimer = setTimeout(() => {\n      fallbackTimer = null\n      if (settled) return\n      handOverToFallback()\n    }, SYNC_MODE_FALLBACK_MS)\n',
+      ''),
+  }), '接管期限没有点起来')
+
+  // e3 换面先点「在屏幕上」再立接管标记（中间那条拆除会被当成用户取消 —— 第 34~39 轮反复踩的雷）
+  check('e3 换面顺序反了（先拆再立）', () => fbv({
+    sync: tamper(REAL.sync,
+      '      syncActions.setSyncModeAskFallbackVisible(true)\n      markSyncModeModalVisible()\n',
+      '      markSyncModeModalVisible()\n      syncActions.setSyncModeAskFallbackVisible(true)\n'),
+  }), '换面先把 overlay 摆到')
+
+  // e4 卸载上报不给兜底面让行
+  check('e4 卸载上报不让行', () => fbv({
+    sync: tamper(REAL.sync,
+      '  if (syncState.syncModeAskFallbackVisible) return\n  if (componentId && syncState.syncModeComponentId && componentId != syncState.syncModeComponentId) return\n',
+      '  if (componentId && syncState.syncModeComponentId && componentId != syncState.syncModeComponentId) return\n'),
+  }), '卸载上报不给兜底面让行')
+
+  // e5 看门狗不给兜底面让行
+  check('e5 看门狗不让行', () => fbv({
+    sync: tamper(REAL.sync,
+      '      if (syncState.syncModeAskFallbackVisible) return\n      if (!syncState.syncModeComponentId || dismissedId != syncState.syncModeComponentId) return\n',
+      '      if (!syncState.syncModeComponentId || dismissedId != syncState.syncModeComponentId) return\n'),
+  }), '看门狗不给兜底面让行')
+
+  // e6 收尾不把兜底面 / 接管期限收掉（全屏层残留 = 整片吃触摸）
+  check('e6 收尾不清兜底面', () => fbv({
+    sync: tamper(REAL.sync,
+      '      clearFallbackTimer()\n      syncActions.setSyncModeAskFallbackVisible(false)\n',
+      ''),
+  }), '收尾没有收掉兜底面')
+
+  // e7 兜底面不复用同一个选择框组件（复制一份必然走样）
+  check('e7 兜底面不复用组件', () => fbv({
+    host: tamper(REAL.host,
+      "import { DislikeModeModal, ListModeModal } from './SyncModeModal'",
+      'const ListModeModal = () => null\nconst DislikeModeModal = () => null'),
+  }), '复用')
+
+  // e8 兜底面没挂在 Home 视图树里（组件写了也没人渲染）
+  check('e8 兜底面未挂 Home 树', () => fbv({
+    home: tamper(REAL.home, '      <SyncModeAskHost />\n', ''),
+  }), '没有挂 SyncModeAskHost')
+
+  // e9 兜底面层级被压回下载球之下（「最上层」诉求落空）
+  check('e9 兜底面层级不置顶', () => fbv({
+    host: tamper(REAL.host, 'zIndex: 200,', 'zIndex: 1,'),
+  }), '置顶的层级')
+
+  // e10 选择框组件不再具名导出（兜底面失去「同一套组件」的来源）
+  check('e10 选择框不再具名导出', () => fbv({
+    modal: tamper(REAL.modal, 'export const ListModeModal = () => {', 'const ListModeModal = () => {'),
+  }), '没有具名导出')
+
   return results
 }
 
@@ -504,6 +717,7 @@ const checks = [
   ['utils.ts：present() 入口的「绝不叠第二个」守卫', () => presentGuardInvariants(REAL.utils)],
   ['SyncModeModal：卸载上报 + 未知类型自撤', () => modalInvariants(REAL.modal)],
   ['设置页：六个动作各自写三句状态，且文案不含地址账号', () => syncPageInvariants(REAL.page)],
+  ['【第 42 轮第 1 条】主树兜底面：换面顺序 / 让行 / 收尾 / 复用同一套组件 / 挂在 Home 树', () => fallbackInvariants(REAL)],
 ]
 
 let invOk = true
