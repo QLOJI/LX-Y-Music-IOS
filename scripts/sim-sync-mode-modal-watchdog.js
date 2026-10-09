@@ -29,6 +29,13 @@
  *     若第一次其实已经挂上，第二个副本挂载时会发现 store 里是别人的 id，反手把**第一个**
  *     关掉 —— 两个都不在了完全可能。修法：present() 入口加「已经有一个活着的选择框就
  *     绝不再呈现第二个」。
+ *     【第 38 轮第 2 条】这道守卫本身升级了：原来是无条件静默 return，而它同时是一条死路 ——
+ *     「在屏幕上」的标记只要因为任何一次「原生把选择框收走、JS 侧卸载清理没跑到」而残留成
+ *     true，本轮每一次 present（含 5 次重试）都在这行无声返回：不呈现、不重试、不上报失败，
+ *     core/sync.ts 的 20 秒问句复查又因为这个标记一直为 true 而无限续期 ⇒ 服务端的问句永远
+ *     等不到回答、状态文案永远钉在「等待选择同步方式...」（用户第 38 轮第 2 条的原话）。
+ *     现在的守卫区分两种来源：presentedThisRound（本轮自己刚推出去过 → 静默停手）
+ *     / 陈旧标记（打日志 + 清标记后照常呈现，绝不静默 return）。本脚本的 B 段判据随之改写。
  *
  *  C. **按钮点了下面那行字不动**。设置页那六个 WebDAV 动作以前只在底部弹一条 toast，
  *     而「状态」行只由同步客户端写（syncStatus.message），于是点了半天下面纹丝不动
@@ -225,8 +232,17 @@ const presentGuardInvariants = (raw) => {
   // 【第 36 轮第 1 条】守卫的判据从「有 id」换成「确实在屏幕上」（syncModeModalVisible）：
   // 原生把 overlay 收走却没跑到 JS 卸载清理时，store 里的 id 是一条残留 —— 用 id 当判据，
   // 此后每一次呈现都在这里静默 return（不呈现、不重试、不上报失败），问句与状态文案一起悬着。
-  const GUARD = 'if (syncState.syncModeModalVisible) return'
-  if (!new RegExp('const present = \\(attempt: number\\) => \\{\\s*\\n\\s*' + GUARD.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).test(code)) {
+  //
+  // 【第 38 轮第 2 条】守卫从「无条件静默 return」升级为「区分两种来源」：
+  //   · presentedThisRound = 本轮自己刚把 overlay 推出去过（1000ms 挂载复查 / 700ms 失败重试
+  //     重入 present()）—— 真的可能已经在屏幕上，静默停手是正解；
+  //   · 否则 = 上一轮留下的陈旧标记 —— 必须就地纠正（打日志 + 清标记）后**照常呈现**。
+  // 为什么必须这么改：陈旧标记 + 无条件 return = 一条死路 —— 本轮每一次 present（含 5 次重试）
+  // 都无声返回（不呈现、不重试、不上报失败），core/sync.ts 的 20 秒问句复查又因为这个标记
+  // 一直为 true 而无限续期 ⇒ 服务端的问句永远等不到回答、状态文案永远钉在「等待选择同步方式」
+  // （用户第 38 轮第 2 条原话：状态只会显示等待选择同步方式，不会弹出同步方式的窗口）。
+  const GUARD_ENTRY = /const present = \(attempt: number\) => \{\s*\n\s*if \(syncState\.syncModeModalVisible\) \{/
+  if (!GUARD_ENTRY.test(code)) {
     reasons.push('present() 入口没有「已经有一个活着的选择框就绝不再呈现第二个」守卫（复查是延时 1000ms 才看的；'
       + '挂载慢一点就先判没挂上 → 700ms 后补呈现，副本挂载时反手把第一个关掉 ⇒ 两个都没了，'
       + '正是「状态写着等待选择同步方式、选择框却迟迟不出现」）。第 36 轮起判据必须是'
@@ -235,21 +251,45 @@ const presentGuardInvariants = (raw) => {
   const body = sliceBy(code, 'const present = (attempt: number) => {', '\n  present(1)')
   if (!body) {
     reasons.push('present() 抽取失败（锚点漂移）')
+    return reasons
+  }
+  // 守卫块本体：从「确实在屏幕上」的判据到「本轮真的推过 overlay」的落点（第 38 轮的 presentedThisRound）
+  const guardBlock = sliceBy(body, 'if (syncState.syncModeModalVisible) {', 'presentedThisRound = true')
+  if (!guardBlock) {
+    reasons.push('present() 的 visible 守卫块抽取失败（判据 / presentedThisRound 锚点漂移）')
   } else {
-    const iGuard = body.indexOf(GUARD)
-    const iOverlay = body.indexOf('Navigation.showOverlay')
-    if (iGuard < 0 || iOverlay < 0 || iGuard > iOverlay) {
-      reasons.push('守卫必须在 showOverlay 之前（再往后放就拦不住这一次呈现了）')
+    // ① 静默停手只能对「本轮自己推过」的那一支成立
+    if (!guardBlock.includes('if (presentedThisRound) return')) {
+      reasons.push('visible 守卫没有区分「本轮自己刚把 overlay 推出去过」（presentedThisRound）：'
+        + '要么把上一轮的陈旧标记也一起放过（叠第二个 overlay，反手把在屏幕上那个关掉），'
+        + '要么退回无条件静默 return（陈旧标记 = 选择框再也不弹，第 38 轮第 2 条的死路）')
     }
-    // 不在屏幕上却留着 id = 残留：必须清掉再照常呈现，不许静默 return（否则就是第 36 轮第 1 条的原始症状）
-    const iStale = body.indexOf("syncActions.setSyncModeComponentId('')")
-    if (iStale < 0 || (iGuard >= 0 && iStale < iGuard)) {
-      reasons.push('残留 id 没有清理分支（不在屏幕上却留着 id 时必须先清掉再呈现 —— 只判断不清理，'
-        + '或者干脆 return，都会让选择框再也弹不出来）')
+    if (/if \(syncState\.syncModeModalVisible\) return/.test(guardBlock)) {
+      reasons.push('visible 守卫又退回无条件静默 return（陈旧标记下每一次呈现都无声返回：不呈现、不重试、不上报失败）')
     }
-    if (!body.includes('stale syncModeComponentId')) {
-      reasons.push('残留 id 的清理没有日志（用户日志里看不到「为什么这次呈现被跳过」）')
+    // ② 陈旧标记必须就地纠正：只判不救就是第 36 轮第 1 条死路的另一半
+    if (!guardBlock.includes('stale syncModeModalVisible')) {
+      reasons.push('陈旧「在屏幕上」标记没有日志（用户日志里看不到「为什么这次呈现被当成重复呈现」）')
     }
+    if (!guardBlock.includes('syncState.syncModeModalVisible = false')) {
+      reasons.push('陈旧「在屏幕上」标记没有被清掉（只判不救：本轮每一次 present 都在这里停手，'
+        + '选择框与状态文案一起永久悬着，core/sync 的 20 秒复查还会因它无限续期）')
+    }
+  }
+  const iGuard = body.indexOf('if (syncState.syncModeModalVisible) {')
+  const iOverlay = body.indexOf('Navigation.showOverlay')
+  if (iGuard < 0 || iOverlay < 0 || iGuard > iOverlay) {
+    reasons.push('守卫必须在 showOverlay 之前（再往后放就拦不住这一次呈现了）')
+  }
+  // 不在屏幕上却留着 id = 残留：必须清掉再照常呈现，不许静默 return（否则就是第 36 轮第 1 条的原始症状）
+  // 【第 38 轮】判据补强：清理必须发生在 showOverlay 之前（放到呈现之后 = 清的是新写回的 id）
+  const iStale = body.indexOf("syncActions.setSyncModeComponentId('')")
+  if (iStale < 0 || (iOverlay >= 0 && iStale > iOverlay)) {
+    reasons.push('残留 id 没有清理分支（不在屏幕上却留着 id 时必须先清掉再呈现 —— 只判断不清理，'
+      + '或者干脆 return，都会让选择框再也弹不出来）')
+  }
+  if (!body.includes('stale syncModeComponentId')) {
+    reasons.push('残留 id 的清理没有日志（用户日志里看不到「为什么这次呈现被跳过」）')
   }
   return reasons
 }
@@ -375,8 +415,11 @@ const runCounterExamples = () => {
   '呈现在前')
 
   // c4 present() 入口的重复呈现守卫被删
+  // 【第 38 轮第 2 条】锚点从旧的「无条件 return 一行」换成带大括号的判据块（守卫已升级为
+  // 「区分本轮自己推出去的 / 上一轮的陈旧标记」）——沿用旧锚点会命中 .then() 复查里那句
+  // 同样文本的无条件 return，反例就成了假通过。
   check('c4 present 入口守卫被删', () => presentGuardInvariants(tamper(REAL.utils,
-    '    if (syncState.syncModeModalVisible) return\n',
+    '    if (syncState.syncModeModalVisible) {\n',
     '')),
   '绝不再呈现第二个')
 
@@ -424,9 +467,21 @@ const runCounterExamples = () => {
 
   // c12 守卫退回按 id 判（残留 id 会被当成「还在屏幕上」→ 静默 return）
   check('c12 守卫退回按 id 判', () => presentGuardInvariants(tamper(REAL.utils,
-    '    if (syncState.syncModeModalVisible) return\n',
-    '    if (syncState.syncModeComponentId) return\n')),
+    '    if (syncState.syncModeModalVisible) {',
+    '    if (syncState.syncModeComponentId) {')),
   '确实在屏幕上')
+
+  // c12b 陈旧标记又退回无条件静默 return（第 38 轮第 2 条的死路：不呈现、不重试、不上报）
+  check('c12b 陈旧标记退回静默 return', () => presentGuardInvariants(tamper(REAL.utils,
+    '      if (presentedThisRound) return\n',
+    '      return\n')),
+  'presentedThisRound')
+
+  // c12c 陈旧标记只判不救（不清掉「在屏幕上」的标记 → 本轮每一次 present 都在守卫处停手）
+  check('c12c 陈旧标记只判不救', () => presentGuardInvariants(tamper(REAL.utils,
+    '      syncState.syncModeModalVisible = false\n',
+    '')),
+  '没有被清掉')
 
   // c13 挂载不再点亮「在屏幕上」标记
   check('c13 挂载不点亮在屏标记', () => modalInvariants(tamper(REAL.modal,

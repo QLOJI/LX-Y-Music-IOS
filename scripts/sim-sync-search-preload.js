@@ -153,7 +153,17 @@ const GROUP_A = [
   // 以前这两条路径都是「什么都不做就 return」——用户看不到提示、服务端等不到回答，
   // 界面与「正常等待用户选择」长得一模一样（就是那串 'Wait syncing...'）。
   ['utils：去抖占位久占不放 → 按「呈现不可用」上报（不再静默吞掉）',
-    (s) => /if \(guardRetryCount < 3\) \{[\s\S]{0,320}?console\.error\('\[SyncMode\] overlay debounce occupied, give up'\)[\s\S]{0,80}?onUnavailable\?\.\(\)/.test(s.utils)],
+    // 【第 38 轮第 2 条】原来是一条 `if (guardRetryCount < 3) { … {0,320} … console.error(…)` 的
+    // 邻接窗口。本轮去抖分支里加了「代次作废 + 600ms 后排队重来」两句（外加说明注释），
+    // 窗口被撑爆 —— 改成三段合钉，比邻接窗口更能说明「久占不放 = 一定走到上报」，也免疫注释增删：
+    //   ① 有「重试 3 次」的计数判据；
+    //   ② 计数没用完那条分支自己 return（不吞掉后面的上报路径）；
+    //   ③ 紧接着的放弃路径必须**紧挨着**上报：console.error → 复位计数 → onUnavailable?.()
+    //      （③ 不许放宽成「文件里某处出现过 onUnavailable?.()」——那样反例 n20 把上报删掉
+    //        再把 return 提前，靠后面 reset 分支的同名调用就能蒙混过关）。
+    (s) => /if \(guardRetryCount < 3\) \{/.test(s.utils) &&
+      /\)\s*\n\s*return\s*\n\s*\}\s*\n\s*console\.error\('\[SyncMode\] overlay debounce occupied, give up'\)/.test(s.utils) &&
+      /console\.error\('\[SyncMode\] overlay debounce occupied, give up'\)\s*\n\s*guardRetryCount = 0\s*\n\s*onUnavailable\?\.\(\)/.test(s.utils)],
   ['sync：showSyncModeModal 的失败回调会 reject 掉这次问询（服务端据此中止，不再干等）',
     (s) => {
       const call = /showSyncModeModal\(handleUnavailable\)/.test(s.sync)

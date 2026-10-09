@@ -515,8 +515,17 @@ const existingStructureInvariants = (f) => {
   if (!/if let reference = captureReferenceSize, reference\.width > 1, reference\.height > 1/.test(glass)) {
     reasons.push('captureBaseSize 不再以 captureReferenceSize 为基准（透镜锁定语义被改坏）')
   }
-  if (!/liquidGlassView\.captureReferenceSize = bounds\.size/.test(lens)) {
-    reasons.push('透镜不再把 captureReferenceSize 锁成静止药丸尺寸')
+  // 【第 38 轮】锁定语义升级（用户优化项 ①：长按 morph 期间迷你播放器栏会遮住水珠上边，
+  // 且水珠要在采集纹理上「平滑变大再变回来」，不能中途重新采景）：采景基准必须**锁死不变**。
+  //   待机 = 静止药丸尺寸（bounds.size）；长按 morph 期间 = 最大包围盒（宿主
+  //   LGLiquidLensHostView 每帧问一次 setLensCaptureReferenceSize(_:)）。
+  // 为什么不能直接赋 bounds.size：morph 期间透镜 bounds 每帧变大变小，基准跟着变 →
+  // CABackdropLayer 反复重组 → 采景瞬间是空的，用户看到的就是黑带。
+  if (!/liquidGlassView\.captureReferenceSize = effectiveCaptureReference/.test(lens)) {
+    reasons.push('透镜不再把 captureReferenceSize 锁成稳定采景基准（第 38 轮起应是 effectiveCaptureReference：待机=静止药丸尺寸 / morph 期间=最大包围盒）')
+  }
+  if (/liquidGlassView\.captureReferenceSize = bounds\.size/.test(lens)) {
+    reasons.push('透镜又出现直接赋 bounds.size 的采景基准（morph 期间基准随每帧 bounds 变化 = 重新采景 + 黑带；第 38 轮已改成 effectiveCaptureReference）')
   }
 
   // B3 均匀沿用修复未回退（previous 非空条件不得再出现；沿用赋值恰一处）
@@ -809,6 +818,11 @@ CE('C10 透镜抬起链路不再接 beginLiveCapture', existingStructureInvarian
   'liquidGlassView.beginLiveCapture()',
   'liquidGlassView.endLiveCapture()'
 ), '透镜抬起链路')
+
+CE('C10b 采景基准退回直接赋 bounds.size（morph 期间基准随每帧 bounds 变 → 重新采景 + 黑带）', existingStructureInvariants, tamperLens(
+  'liquidGlassView.captureReferenceSize = effectiveCaptureReference',
+  'liquidGlassView.captureReferenceSize = bounds.size'
+), '采景基准')
 
 CE('C11 帧率赋值被铺回会话切换处（唯一赋值点被破坏 → 档位可与会话脱节）', existingStructureInvariants, tamperGlass(
   '    func endLiveCapture() {\n        liveCaptureRequested = false\n        syncRenderFrameRate()',

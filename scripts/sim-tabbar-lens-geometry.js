@@ -34,9 +34,24 @@
  *       ② 被跟手打断的弹簧由 _followTookOver 补做落回；③ 让位条件收紧成「只在真拖动中
  *       让位」（arm 标志挂 8s 不再吞 pager 收尾）；④ endFollow 复位到 -1 哨兵。
  *     新增样式：「底部 tab 栏，长按后椭圆形气泡会变大，类似水珠的样式，功能和一起一样，
- *     只是多了这个样式。」→ 水珠 = 边长 1.45 × 栏高的正方形 bounds（长按 arm 时经
+ *     只是多了这个样式。」→ 水珠 = 边长 kLGDropletScale × 栏高的正方形 bounds（长按 arm 时经
  *     droplet prop 下发），Swift 侧 min(w,h)/2 画成正圆、纵向溢出栏体（C16-C18 / D11）；
  *     为此栏体不再裁剪（A11，overflow: 'visible'），玻璃的圆角由宿主自己转发自持。
+ *
+ *  ④ **第 38 轮优化 1**（2026-10-09 用户第 3 条）
+ *     「底部 tab 栏，长按后的椭圆形气泡保持最上层，现在迷你播放器栏遮住了椭圆形气泡上边；
+ *      然后减小一点变大气泡，有点大了，松手后变回小水珠的过程动画需要更流畅点，
+ *      显示是由大水珠变为小水珠的过程，长按变大，松手变小，都增加变化过程，更流畅。」
+ *     三件事分别锁在：
+ *       · 层级（A12）：Vertical/Content.tsx 返回 **Fragment**，Header / Main / ModernTabBar
+ *         与 PlayerBar 同属 Vertical/index.tsx 那个 flex:1 View 的**直接子节点** —— 所以给
+ *         tab 栏 wrapper + pillLayer 的 zIndex: 3 能真的重排兄弟，把水珠抬到迷你播放条之上。
+ *       · 尺寸收小（C16 / D11）：kLGDropletScale 1.45 → 1.30。
+ *       · 形变过程（C16-C18 / C23-C24 / D12）：第 37 轮的 UIView 弹簧动画**看不见** ——
+ *         透镜的形态来自 Metal 玻璃，形状由 shader 每帧现读 bounds 现算，而 UIView 动画只
+ *         动 CoreAnimation 呈现层，模型 bounds 在动画开始那一瞬间就写到了终点，玻璃按终点
+ *         尺寸渲染，长按/松手都是瞬变。第 38 轮改成宿主用 CADisplayLink 逐帧推进
+ *         _dropletProgress（近临界阻尼弹簧）、每帧把**模型几何**写实。
  *
  * 运行：node scripts/sim-tabbar-lens-geometry.js
  * 退出码：不变量全过且反例全被拦下时为 0，否则 1。
@@ -55,6 +70,8 @@ const F = {
   tabBar: 'src/components/layout/ModernTabBar.tsx',
   lensJs: 'src/components/common/LiquidLens.tsx',
   main: 'src/screens/Home/Vertical/Main.tsx',
+  verticalIndex: 'src/screens/Home/Vertical/index.tsx',
+  verticalContent: 'src/screens/Home/Vertical/Content.tsx',
   tokens: 'src/theme/DesignTokens.ts',
   lensSwift: 'ios/Vendor/LiquidGlassKit/Sources/LiquidLensView.swift',
   hostMm: 'ios/Vendor/LiquidGlassKit/Sources/LiquidGlassViewManager.mm',
@@ -112,6 +129,8 @@ const runSourceInvariants = () => {
   const lens = S.lensSwift
   const host = S.hostMm
   const tokens = S.tokens
+  const vIndex = S.verticalIndex
+  const vContent = S.verticalContent
 
   const LG = fieldNumber(tokens, 'lg') // designSpacing.lg
   const GLASS_R = fieldNumber(tokens, 'glass')
@@ -184,6 +203,25 @@ const runSourceInvariants = () => {
     /overflow: 'visible'/.test(barBlock) && !/overflow: ?'hidden'/.test(barBlock) &&
     host.includes('_glassView.layer.cornerRadius = self.layer.cornerRadius') &&
     host.includes('_glassBacking.layer.cornerRadius = self.layer.cornerRadius'))
+
+  // ---------------- A12. 第 38 轮优化 1：水珠必须压在迷你播放条之上 ----------------
+  // 用户原话：「底部 tab 栏，长按后的椭圆形气泡保持最上层，现在迷你播放器栏遮住了椭圆形气泡上边」。
+  // 层级事实（本条的「前提」部分就是把它钉住，几何对但父级不对的话 zIndex 是空谈）：
+  //   Vertical/index.tsx  = <View flex:1>{ <Content />, <PlayerBar /> }</View>
+  //   Vertical/Content.tsx = Fragment：Header / Main / ModernTabBar **没有自己的父 View**，
+  //     RN 扁平化 Fragment 后，这三者与 PlayerBar 同属上面那个 View 的**直接子节点**。
+  // 于是给 tab 栏 wrapper / pillLayer 的 zIndex = 3（> PlayerBar 的 0）真的能重排兄弟、
+  // 把水珠连同栏体一起抬到迷你播放条之上；Header 的 10 更高（页头本来就该在最上）。
+  // ⚠️ 反过来说：不能为了抬层级给 Content 套一层带 zIndex 的容器 —— 那会连带把 Main
+  // （歌曲列表滚动内容）也抬到迷你播放条之上，列表会盖住胶囊。所以 Vertical/index.tsx
+  // 里**不许出现 zIndex**。
+  push('A12 【第 38 轮】水珠压在迷你播放条之上：tab 栏 wrapper 与 pillLayer 同为 zIndex 3，且「同一父级」前提成立（Vertical/Content 返回 Fragment，Header/Main/ModernTabBar 与 PlayerBar 是 Vertical 那个 flex:1 View 的直接子节点；Vertical/index.tsx 自身不得出现 zIndex，否则 Main 会一起抬到胶囊之上）',
+    /(?:^|\n)\s*zIndex:\s*3\s*(?:,|\n)/.test(styleBlock(tab, 'wrapper') || '') &&
+    /(?:^|\n)\s*zIndex:\s*3\s*(?:,|\n)/.test(styleBlock(tab, 'pillLayer') || '') &&
+    /return \(\s*<>\s*[\s\S]{0,400}?<Main \/>[\s\S]{0,300}?<ModernTabBar \/>\s*<\/>\s*\)/.test(vContent) &&
+    /<View style=\{\{ flex: 1 \}\}>\s*<Content \/>[\s\S]{0,600}?<PlayerBar componentId=\{componentId\} isHome \/>\s*<\/View>/.test(vIndex) &&
+    !/zIndex/.test(vIndex),
+    `wrapper/pillLayer zIndex = ${(styleBlock(tab, 'wrapper') || '').match(/zIndex:\s*\d+/)?.[0] ?? '—'} / ${(styleBlock(tab, 'pillLayer') || '').match(/zIndex:\s*\d+/)?.[0] ?? '—'}`)
 
   // ---------------- B. 跟手会话收尾重锚 ----------------
   push('B1 跟手通道记录最后写入的 x（判定本次会话是否驱动过药丸）',
@@ -343,16 +381,44 @@ const runSourceInvariants = () => {
   // ---------------- C16-C21. 第 37 轮：水珠造型 + 被打断的点击弹簧 ----------------
   // 新增样式需求（用户原话）：「如图二：底部 tab 栏，长按后椭圆形气泡会变大，类似水珠
   // 的样式，功能和一起一样，只是多了这个样式。」
-  push('C16 水珠几何：边长 = kLGDropletScale × 栏高 的正方形 bounds，中心锁槽心（纵向溢出栏体上下各 (1.45−1)/2×栏高）',
-    host.includes('static const CGFloat kLGDropletScale = 1.45') &&
-    /if \(_droplet && height > 0\) \{[\s\S]{0,300}?CGFloat side = round\(height \* kLGDropletScale\);\s*_lens\.bounds = CGRectMake\(0, 0, side, side\);\s*_lens\.center = CGPointMake\(_x, height \/ 2\.0\);/.test(host))
-  push('C17 水珠圆角必须走胶囊几何极限（override = -1 ⇒ 正方形 bounds 下 min(w,h)/2 = 正圆；沿用栏体圆角 28 会画成圆角方形，不是水珠）',
-    /if \(_droplet\) \{[\s\S]{0,300}?setLensCornerRadius:-1\]/.test(host) &&
+  // 【第 38 轮优化 1】在这套装置上又改了三处：① 尺寸 1.45 → 1.30（用户「有点大了，减小一点」）；
+  // ② 形变改成逐帧补间（C16-C18 + C23/C24 + D12，「都增加变化过程，更流畅」）；
+  // ③ 层级（A12）。第 37 轮这里写的是「正方形 bounds + UIView 弹簧」，见 C18 的说明。
+  push('C16 【第 38 轮】水珠几何：两端点（静止 = 槽宽 × 栏高 的胶囊 ↔ 水珠 = kLGDropletScale × 栏高 的正方形）之间按 _dropletProgress 逐帧插值，中心恒锁槽心 (x, h/2)；取整走 C 函数 round()',
+    host.includes('static const CGFloat kLGDropletScale = 1.30') &&
+    /BOOL dropletGeometry = height > 0 && \(_droplet \|\| _dropletProgress > 0\)/.test(host) &&
+    /CGFloat dropletSide = round\(height \* kLGDropletScale\)/.test(host) &&
+    /CGFloat progress = _dropletProgress < 0 \? 0 : \(_dropletProgress > 1 \? 1 : _dropletProgress\)/.test(host) &&
+    /CGFloat lensWidth = round\(_pillWidth \+ \(dropletSide - _pillWidth\) \* progress\)/.test(host) &&
+    /CGFloat lensHeight = round\(height \+ \(dropletSide - height\) \* progress\)/.test(host) &&
+    /if \(dropletGeometry\) \{[\s\S]{0,400}?_lens\.bounds = CGRectMake\(0, 0, lensWidth, lensHeight\);\s*_lens\.center = CGPointMake\(_x, height \/ 2\.0\);/.test(host) &&
+    /_lens\.frame = CGRectMake\(0, 0, _pillWidth, height\);\s*_lens\.center = CGPointMake\(_x, height \/ 2\.0\);/.test(host))
+  push('C17 水珠态**及 morph 的每一个中间帧**都走胶囊几何极限（override = -1 ⇒ 正方形 bounds 下 min(w,h)/2 = 正圆，中间态（宽 > 高）恰好是标准胶囊；沿用栏体圆角 28 会画成圆角方形，不是水珠）',
+    /if \(dropletGeometry\) \{[\s\S]{0,400}?setLensCornerRadius:-1\]/.test(host) &&
     lens.includes('cornerRadiusOverride >= 0'))
-  push('C18 水珠开关幂等 + 带弹簧动画（同值直接 return，不重播）；透镜宿主保留 clipsToBounds = NO（越界是造型的一部分）',
-    /-\s*\(void\)setDroplet:\(BOOL\)droplet \{\s*if \(_droplet == droplet\) return/.test(host) &&
-    /\(void\)setDroplet:\(BOOL\)droplet \{[\s\S]{0,600}?usingSpringWithDamping/.test(host) &&
+  push('C18 【第 38 轮】水珠补间装置：幂等（状态/目标/进度/速度四项全同 → 零动作、不重播）、CADisplayLink 挂 .common 模式（长按期间 runloop 在 UITrackingRunLoopMode，只挂默认模式的显示链接会被挂起 ⇒ morph 停在第 0 帧直到抬手）、dt 夹到 [1/120, 1/30] 后走半隐式欧拉 + 两端夹回；透镜宿主保留 clipsToBounds = NO（越界是造型的一部分）',
+    /-\s*\(void\)setDroplet:\(BOOL\)droplet \{\s*CGFloat target = droplet \? 1\.0 : 0\.0;/.test(host) &&
+    /if \(_droplet == droplet && _dropletTarget == target &&/.test(host) &&
+    /\[link addToRunLoop:\[NSRunLoop mainRunLoop\] forMode:NSRunLoopCommonModes\]/.test(host) &&
+    /if \(dt < 1\.0 \/ 120\.0\) dt = 1\.0 \/ 120\.0;/.test(host) &&
+    /if \(dt > 1\.0 \/ 30\.0\) dt = 1\.0 \/ 30\.0;/.test(host) &&
+    /_dropletVelocity \+= \(-kLGDropletSpringStiffness \* delta - kLGDropletSpringDamping \* _dropletVelocity\) \* dt/.test(host) &&
+    /_dropletProgress \+= _dropletVelocity \* dt/.test(host) &&
+    /if \(_dropletProgress <= 0\.0\) \{[\s\S]{0,200}?_dropletProgress >= 1\.0\) \{/.test(host) &&
+    /static const CGFloat kLGDropletSpringStiffness = 170\.0;/.test(host) &&
+    /static const CGFloat kLGDropletSpringDamping = 26\.0;/.test(host) &&
     host.includes('self.clipsToBounds = NO'))
+  // 【第 38 轮】为什么不能退回第 37 轮的 UIView 弹簧（这条同时是 C23 的存在理由）：
+  // 用户可见后果 = 「长按/松手都是瞬变，没有由小变大/由大变小的过程」。
+  // ⚠️ 注意作用域：setTargetX 的点击弹簧（抬落/滑动）本来就该是 UIView 动画，那里保留
+  // usingSpringWithDamping 是对的 —— 本条只禁**水珠补间**退回动画块。
+  const dropletBody = (/-\s*\(void\)setDroplet:\(BOOL\)droplet \{([\s\S]*?)\n\}/.exec(host) || [])[1] || ''
+  push('C19b 【第 38 轮】水珠补间不得退回 UIView 弹簧动画（透镜形态由 shader 每帧现读 bounds 现算，UIView 动画只动呈现层、模型 bounds 一瞬间到终点 ⇒ 玻璃按终点尺寸渲染、过程看不见）：setDroplet: 只负责换目标并启动补间',
+    dropletBody.includes('startDropletAnimation];') &&
+    !dropletBody.includes('usingSpringWithDamping') &&
+    !dropletBody.includes('animateWithDuration') &&
+    !/_dropletProgress = target;/.test(dropletBody),
+    dropletBody.replace(/\s+/g, ' ').trim().slice(0, 80))
   push('C19 被打断的点击弹簧必须补做落回：跟手一笔打断在途弹簧（finished == NO）时，completion 不能再直接 return（否则透镜永久停在抬起玻璃态 —— 就是用户报的那个「椭圆形气泡」）',
     host.includes('if (!finished && !self->_followTookOver) return;') &&
     (host.match(/_followTookOver/g) || []).length >= 4,
@@ -372,6 +438,25 @@ const runSourceInvariants = () => {
   push('C22 原生宿主取整必须用 C 函数 round()（Swift 风格 (x).rounded() 在 ObjC++ 编不过 —— 第 37 轮 CI 实锤）；全文件不许再有 .rounded() 残留',
     /\bround\(height \* kLGDropletScale\)/.test(host) &&
     !/\.rounded\s*\(/.test(host))
+
+  // ---------------- C23-C24. 第 38 轮：morph 的「每帧写实」与「采景基准锁定」 ----------------
+  const stepBody = (/-\s*\(void\)stepDropletAnimation:\(CADisplayLink \*\)link \{([\s\S]*?)\n\}/.exec(host) || [])[1] || ''
+  push('C23 【第 38 轮】morph 每帧把**模型几何**写实：积分出本帧进度之后再 setNeedsLayout + layoutIfNeeded（顺序反了/少了，玻璃就保持上一帧形状 —— 透镜形状由 shader 每帧按 bounds 现算）；这段写实在帧体与收敛吸附两处都在（≥2）；收敛后吸附到端点（消浮点残差）再落一次位、然后停表；离窗（didMoveToWindow 且 window == nil）也停表 —— 显示链接强引用宿主，不停就是卸载后每帧空转',
+    (stepBody.match(/\[self setNeedsLayout\];\s*\n\s*\[self layoutIfNeeded\];/g) || []).length >= 2 &&
+    /_dropletProgress \+= _dropletVelocity \* dt;[\s\S]{0,900}?\[self setNeedsLayout\];\s*\n\s*\[self layoutIfNeeded\];/.test(stepBody) &&
+    /_dropletProgress = _dropletTarget;\s*\n\s*_dropletVelocity = 0\.0;\s*\n\s*\[self setNeedsLayout\];\s*\n\s*\[self layoutIfNeeded\];\s*\n\s*\[self stopDropletAnimation\];/.test(stepBody) &&
+    /didMoveToWindow[\s\S]{0,300}?if \(self\.window == nil\) \[self stopDropletAnimation\]/.test(host),
+    `每帧写实 ${(stepBody.match(/\[self setNeedsLayout\];\s*\n\s*\[self layoutIfNeeded\];/g) || []).length} 处`)
+  push('C24 【第 38 轮】morph 期间的采景基准锁成整段动画的最大外接盒（宽 = MAX(槽宽, 水珠径)、高 = MAX(栏高, 水珠径)，两条插值都单调 ⇒ 即全程上界），非水珠态推 CGSizeZero 撤销；Swift 侧基准读覆盖值 effectiveCaptureReference（三处赋值全走它、零处写回 bounds.size）—— 逐帧改采景尺寸会让 CABackdropLayer 每帧向 window server 重取 backdrop，合成跟不上就是 morph 期间半张黑条',
+    /if \(\[lensCustom respondsToSelector:@selector\(setLensCaptureReferenceSize:\)\]\) \{/.test(host) &&
+    /\[lensCustom setLensCaptureReferenceSize:CGSizeMake\(MAX\(_pillWidth, dropletSide\), MAX\(height, dropletSide\)\)\]/.test(host) &&
+    /\[lensCustom setLensCaptureReferenceSize:CGSizeZero\]/.test(host) &&
+    /private var captureReferenceOverride: CGSize = \.zero/.test(lens) &&
+    /@objc public func setLensCaptureReferenceSize\(_ size: CGSize\) \{\s*guard captureReferenceOverride != size else \{ return \}/.test(lens) &&
+    /private var effectiveCaptureReference: CGSize \{[\s\S]{0,200}?if override\.width > 1, override\.height > 1 \{ return override \}/.test(lens) &&
+    (lens.match(/liquidGlassView\.captureReferenceSize = effectiveCaptureReference/g) || []).length >= 3 &&
+    !/liquidGlassView\.captureReferenceSize = bounds\.size/.test(lens),
+    `effectiveCaptureReference 赋值 ${(lens.match(/liquidGlassView\.captureReferenceSize = effectiveCaptureReference/g) || []).length} 处`)
 
   // ---------------- D. 数值模型 ----------------
   push('D0 设计令牌可读（lg / tabBarBaseHeight / glass 三个数缺失则后面的几何断言全部失真）',
@@ -591,6 +676,10 @@ const runSourceInvariants = () => {
   }
 
   // D11：水珠造型的量化 —— 直径 / 纵向溢出量 / 与静止药丸（槽宽 × 栏高）的关系
+  // 【第 38 轮】用户「变大气泡有点大了，减小一点」→ 1.45 收到 1.30。本条同时给收小后的
+  // 造型兜底：① 仍必须纵向溢出栏体（参考图「挂在栏上的水珠」的核心特征）；
+  // ② 横向在**每一个机型**上都不许明显盖住相邻 tab 的图标位（side / 槽宽 ≤ 1.35；
+  //    1.45 时 iPhone SE 是 1.38 —— 那正是「有点大」在小屏上的量化形式）。
   {
     const m = /static const CGFloat kLGDropletScale = ([\d.]+)/.exec(host)
     const scale = m ? Number(m[1]) : 0
@@ -598,9 +687,59 @@ const runSourceInvariants = () => {
     const side = Math.round(BAR_H * scale)
     const overflow = (side - BAR_H) / 2
     const slot = slotOf(d)
-    push(`D11 水珠直径 = ${scale} × 栏高 ${BAR_H} = ${side}pt：比静止药丸高 ${(side - BAR_H).toFixed(1)}pt` +
-      `（上下各溢出栏体 ${overflow.toFixed(1)}pt，长按造型一眼可辨）、比一个槽宽 ${slot.toFixed(1)}pt 宽 ${(side - slot).toFixed(1)}pt`,
-      scale > 1.2 && scale < 2 && overflow >= 8 && side > slot * 0.9, d.name)
+    const worstRatio = Math.max(...DEVICES.map((dev) => side / slotOf(dev)))
+    const worstDev = DEVICES.map((dev) => ({ dev, r: side / slotOf(dev) })).sort((a, b) => b.r - a.r)[0]
+    push(`D11 【第 38 轮】水珠直径 = ${scale} × 栏高 ${BAR_H} = ${side}pt：比静止胶囊高 ${(side - BAR_H).toFixed(1)}pt` +
+      `（上下各溢出栏体 ${overflow.toFixed(1)}pt，长按造型一眼可辨）、@${d.name} 占槽宽 ` +
+      `${(side / slot * 100).toFixed(0)}%（槽宽 ${slot.toFixed(1)}pt）；全机型最宽处 ${worstDev.dev.name} ` +
+      `${(worstRatio * 100).toFixed(0)}%（≤135% —— 不盖住相邻 tab 的图标位；第 37 轮 1.45 时小屏是 138%）`,
+      scale > 1.1 && scale < 1.6 && overflow >= 6 && worstRatio <= 1.35, d.name)
+  }
+  // D12：第 38 轮 morph 的补间模型 —— 近临界阻尼弹簧把进度 0 → 1（长按胀开）与 1 → 0（松手
+  //      缩回）推完，逐帧积分规则与 stepDropletAnimation: 完全一致（dt 夹取、半隐式欧拉、
+  //      两端夹回）。要证明三件事：① **有过程**（不是瞬变：首帧只走约 1%，到 99% 需要
+  //      0.15s 以上 —— 第 37 轮的 UIView 弹簧模型值是「一帧到终点」，用户看到的瞬变就是它）；
+  //      ② **流畅**（两端夹回后不过冲、单调不抖）；③ **不拖泥带水**（0.6s 内收敛，
+  //      手感是「跟手」而不是慢动作）；阻尼比 ζ 近临界（0.9 ~ 1.05），越界就是回弹/拖沓。
+  {
+    const k = Number((/static const CGFloat kLGDropletSpringStiffness = ([\d.]+)/.exec(host) || [])[1] || 0)
+    const c = Number((/static const CGFloat kLGDropletSpringDamping = ([\d.]+)/.exec(host) || [])[1] || 0)
+    const dtFixed = 1 / 120
+    const stepOnce = (p, v, target) => {
+      v += (-k * (p - target) - c * v) * dtFixed
+      p += v * dtFixed
+      if (p <= 0) { p = 0; if (v < 0) v = 0 } else if (p >= 1) { p = 1; if (v > 0) v = 0 }
+      return [p, v]
+    }
+    const run = (target) => {
+      let p = target === 1 ? 0 : 1
+      let v = 0
+      const trace = []
+      for (let i = 0; i < 240; i++) {
+        ;[p, v] = stepOnce(p, v, target)
+        trace.push({ t: (i + 1) * dtFixed, p })
+        if (Math.abs(p - target) < 1e-3) break
+      }
+      return trace
+    }
+    const zeta = k ? c / (2 * Math.sqrt(k)) : 0
+    const up = run(1)
+    const down = run(0)
+    const t99 = (trace, target) => {
+      const hit = trace.find((x) => Math.abs(x.p - target) <= 0.01)
+      return hit ? hit.t : Infinity
+    }
+    const tUp = t99(up, 1)
+    const tDown = t99(down, 0)
+    const firstUp = up.length ? up[0].p : 0
+    const overUp = up.some((x) => x.p > 1 + 1e-9)
+    const overDown = down.some((x) => x.p < -1e-9)
+    push(`D12 morph 补间模型（k=${k}, c=${c}, ζ=${zeta.toFixed(3)} 近临界阻尼，dt=1/120 逐帧）：` +
+      `胀开首帧只走 ${(firstUp * 100).toFixed(1)}%（不是瞬变）、到 99% 用 ${tUp.toFixed(2)}s；` +
+      `缩回对称 ${tDown.toFixed(2)}s；两端夹回后无过冲`,
+      zeta > 0.9 && zeta < 1.05 && firstUp > 0.002 && firstUp < 0.06 &&
+      tUp >= 0.15 && tUp <= 0.6 && tDown >= 0.15 && tDown <= 0.6 && !overUp && !overDown,
+      `ζ=${zeta.toFixed(3)} 首帧=${(firstUp * 100).toFixed(1)}% 99%@${tUp.toFixed(2)}s/${tDown.toFixed(2)}s`)
   }
 
   return out
@@ -794,7 +933,64 @@ const tamper = [
   {
     label: '宿主水珠边长缩回栏高（不再溢出，造型丢失）',
     file: 'hostMm',
-    mutate: (s) => s.replace('static const CGFloat kLGDropletScale = 1.45', 'static const CGFloat kLGDropletScale = 1.0'),
+    mutate: (s) => s.replace('static const CGFloat kLGDropletScale = 1.30', 'static const CGFloat kLGDropletScale = 1.0'),
+  },
+  {
+    label: '宿主水珠边长涨回 1.45（用户「有点大了」的原尺寸，小屏上盖住相邻 tab 图标位）',
+    file: 'hostMm',
+    mutate: (s) => s.replace('static const CGFloat kLGDropletScale = 1.30', 'static const CGFloat kLGDropletScale = 1.45'),
+  },
+  // ---- 第 38 轮新增：层级 / 逐帧补间 / 采景基准 ----
+  {
+    label: 'ModernTabBar 栏体退回默认层级（水珠又被迷你播放条压住上半）',
+    file: 'tabBar',
+    // 只替换第一处（wrapper 那份）：A12 要求 wrapper 与 pillLayer **两处**都在，缺一即拦下
+    mutate: (s) => s.replace('    zIndex: 3,\n', ''),
+  },
+  {
+    label: 'Vertical 给 Content 套一层带 zIndex 的容器（Main 一并抬到胶囊之上，列表盖住迷你播放条）',
+    file: 'verticalIndex',
+    mutate: (s) => s.replace('<View style={{ flex: 1 }}>', '<View style={{ flex: 1, zIndex: 3 }}>'),
+  },
+  {
+    label: '宿主水珠态退回 UIView 弹簧动画（模型 bounds 一帧到终点 ⇒ 玻璃按终点渲染，长按/松手都是瞬变）',
+    file: 'hostMm',
+    mutate: (s) => s.replace('  [self startDropletAnimation];', '  [UIView animateWithDuration:0.3 animations:^{ _dropletProgress = target; }];'),
+  },
+  {
+    label: '宿主水珠补间挂到默认 runloop 模式（长按期间 runloop 在 UITrackingRunLoopMode ⇒ 显示链接被挂起，morph 停在第 0 帧）',
+    file: 'hostMm',
+    mutate: (s) => s.replace('forMode:NSRunLoopCommonModes', 'forMode:NSDefaultRunLoopMode'),
+  },
+  {
+    label: '宿主水珠补间不再逐帧写实模型几何（只改进度不重排 ⇒ 玻璃保持上一帧形状）',
+    file: 'hostMm',
+    mutate: (s) => s.replace('  [self setNeedsLayout];\n  [self layoutIfNeeded];\n  if (fabs(_dropletProgress', '  if (fabs(_dropletProgress'),
+  },
+  {
+    label: '宿主水珠收敛后不吸附端点 / 不停表（显示链接永久空转，进度停在浮点残差上）',
+    file: 'hostMm',
+    mutate: (s) => s.replace('    _dropletProgress = _dropletTarget;\n    _dropletVelocity = 0.0;\n', ''),
+  },
+  {
+    label: '宿主水珠补间在离开窗口后不停表（显示链接强引用宿主，视图已卸载仍每帧回调）',
+    file: 'hostMm',
+    mutate: (s) => s.replace('  if (self.window == nil) [self stopDropletAnimation];\n', ''),
+  },
+  {
+    label: '宿主 morph 期间不再锁定采景基准（逐帧改采景尺寸 ⇒ CABackdropLayer 每帧重取 backdrop，半张黑条）',
+    file: 'hostMm',
+    mutate: (s) => s.replace('[lensCustom setLensCaptureReferenceSize:CGSizeMake(MAX(_pillWidth, dropletSide), MAX(height, dropletSide))];', '[lensCustom setLensCaptureReferenceSize:CGSizeZero];'),
+  },
+  {
+    label: 'Swift 采景基准覆盖失效（effectiveCaptureReference 退回每帧 bounds，等于没推外接盒）',
+    file: 'lensSwift',
+    mutate: (s) => s.replace('        if override.width > 1, override.height > 1 { return override }\n', ''),
+  },
+  {
+    label: 'LiquidLens 水珠开关断开原生通道（长按下发 droplet 变成空操作）',
+    file: 'lensJs',
+    mutate: (s) => s.replace('        instance?.setNativeProps?.({ droplet: on })', '        void on'),
   },
   {
     label: 'ModernTabBar 栏体退回裁剪（水珠被上下削平成宽胶囊）',
