@@ -92,6 +92,12 @@
 - (void)setLensGlassOpacity:(CGFloat)opacity;
 - (void)setLensCornerRadius:(CGFloat)radius;
 - (void)setCaptureExclusionView:(nullable UIView *)view;
+// 【第 38 轮】采景基准尺寸覆盖（CGSizeZero = 不覆盖，回落到透镜自身 bounds）。
+// 水珠 morph 期间宿主把它锁成整段动画的最大外接尺寸：采景矩形/像素缓冲的尺寸一变，
+// CABackdropLayer 就得整幅重新向 window server 要 backdrop（高帧率下合成跟不上就是
+// 「黑线条 / 半张黑条」，见 LiquidGlassView.captureReferenceSize 的长注释）——
+// 逐帧改尺寸的 morph 必须绕开这条路。
+- (void)setLensCaptureReferenceSize:(CGSize)size;
 @end
 
 // Host view: an RCTView so all standard RN view props (borderRadius, overflow, pointerEvents,
@@ -424,11 +430,29 @@ RCT_CUSTOM_VIEW_PROPERTY(live, NSNumber, LGLiquidGlassHostView) {
 @end
 
 // 【第 37 轮新增样式】水珠态几何：长按激活拖动时，透镜从「与槽等宽的胶囊」长成
-// 直径 = 1.45 × 栏高的圆（56 → ~81pt），纵向溢出栏体上下边缘各 ~12.6pt。
-// 取值依据：用户参考图里那颗水珠明显比栏体高、横向略宽于一个图标位（栏宽/5），
-// 1.45 在 iPhone 16 Pro Max（栏高 56 / 槽宽 ~78）下得 81pt ≈ 略宽于槽，与图一致；
+// 直径 = kLGDropletScale × 栏高的圆，纵向溢出栏体上下边缘。
+// 【第 38 轮】1.45 → 1.30（用户反馈「变大气泡有点大了，减小一点」）：在
+// iPhone 16 Pro Max（栏高 56 / 槽宽 ~78）下水珠直径 81 → 73pt，纵向溢出 12.6 → 8.4pt，
+// 仍在栏体上下各冒出一头（参考图的核心特征），横向 ≈ 槽宽的 93%、不再比整个图标位还宽。
 // 由于透镜是正方形 frame，Swift 侧取 min(w,h)/2 恰好画成正圆。
-static const CGFloat kLGDropletScale = 1.45;
+static const CGFloat kLGDropletScale = 1.30;
+
+// 【第 38 轮】水珠 morph（长按胀开 / 松手缩回）的逐帧补间参数。
+// 为什么不再用 UIView 弹簧动画（第 37 轮的写法）：透镜的可见形态是 Metal 玻璃，
+// 它的**形状来自 shader 每帧现读的 bounds**（LiquidGlassView.updateUniforms 的
+// resolution + 圆角），而 UIView 动画只动 CoreAnimation 的呈现层 —— 模型 bounds 在
+// 动画开始的瞬间就写到了终点，于是透镜按终点尺寸渲染、动画形同虚设（用户看到的就是
+// 「长按 / 松手都是瞬变，没有由大变小/由小变大的过程」）。
+// 改成宿主自己用 CADisplayLink 逐帧推进一个 0..1 的进度、每帧把**模型几何**写实
+// （setNeedsLayout + layoutIfNeeded），玻璃的每一帧都按当帧尺寸重新算 SDF，
+// 过程真正可见；而且这是模型层补间，跟手通道的 [lens.layer removeAllAnimations]
+// （followX 每次写入都会调）绝不会把它打断。
+// 弹簧取近临界阻尼（ω = sqrt(170) ≈ 13 rad/s，ζ = 26 / (2·13) ≈ 0.99）：≈0.3s 平滑到位、
+// 无可见回弹；长按中途松手时目标翻转，进度与速度**接力**（不重置），过渡自然。
+static const CGFloat kLGDropletSpringStiffness = 170.0;
+static const CGFloat kLGDropletSpringDamping = 26.0;
+static const CGFloat kLGDropletRestProgress = 0.002; // 进度与目标差 < 此值
+static const CGFloat kLGDropletRestVelocity = 0.02;  // 且速度 < 此值 ⇒ 视为到位、停表
 
 @implementation LGLiquidLensHostView {
   // 恒为自研 LiquidLensView（LGLensFactory 统一创建）。上游亦为自研复刻，
@@ -441,6 +465,14 @@ static const CGFloat kLGDropletScale = 1.45;
   CGFloat _lastWidth; // 上一次布局的宿主宽度（等比重映射的基准，0 = 尚未布局）
   // 水珠态（第 37 轮新增样式，JS 经 droplet prop 下发）
   BOOL _droplet;
+  // 【第 38 轮】水珠 morph 的逐帧补间状态（见 setDroplet: 与文件顶部常量注释）：
+  // _dropletProgress 0..1（0 = 与槽等宽的胶囊，1 = 水珠满径），_dropletTarget 是它的
+  // 目标值，_dropletVelocity 是弹簧积分器的速度，_dropletLink 是驱动它们的显示链接。
+  CGFloat _dropletProgress;
+  CGFloat _dropletTarget;
+  CGFloat _dropletVelocity;
+  CFTimeInterval _dropletLastTimestamp;
+  CADisplayLink *_dropletLink;
   // 【第 37 轮第 1 条】「在途的点击弹簧被跟手一笔打断」标记。
   // setTargetX:animated:YES 的 completion 原本在 finished == NO 时直接 return，
   // 把「落回静止药丸」整个跳过——而跟手通道（followX）每一次写入都会
@@ -484,18 +516,29 @@ static const CGFloat kLGDropletScale = 1.45;
   }
   _lastWidth = width;
   CGFloat height = self.bounds.size.height;
-  // 【第 37 轮新增样式】水珠态：正方形 frame（边长 = kLGDropletScale × 栏高），
-  // 中心仍锁在槽心 (_x, h/2) —— 纵向溢出栏体上下边缘由 JS 侧解除栏体裁剪后可见
-  // （见 ModernTabBar 的 bar 样式：overflow: 'visible'）。Swift 侧的静止药丸/抬起
-  // 玻璃都按 bounds 现算，正方形 bounds + 圆角 override = -1 ⇒ min(w,h)/2 = 正圆，
-  // 即水珠。
-  if (_droplet && height > 0) {
-    // 取整必须用 C 函数 round()：这里曾写成 Swift 风格的 (…).rounded()，
-    // 而 ObjC++ 里 CGFloat（= double）是标量、没有成员函数 —— clang 直接判错，
-    // CI（LiquidGlassKit 目标 CompileC）实锤编译失败。Swift 侧（LiquidLensView.swift）
-    // 的 .rounded() 是合法 Swift，不受影响。
-    CGFloat side = round(height * kLGDropletScale);
-    _lens.bounds = CGRectMake(0, 0, side, side);
+  // 【第 37 轮新增样式 / 第 38 轮改为逐帧补间】水珠态：正方形 frame（边长 =
+  // kLGDropletScale × 栏高），中心仍锁在槽心 (_x, h/2) —— 纵向溢出栏体上下边缘由
+  // JS 侧解除栏体裁剪后可见（见 ModernTabBar 的 bar 样式：overflow: 'visible'）。
+  // Swift 侧的静止药丸/抬起玻璃都按 bounds 现算，正方形 bounds + 圆角 override = -1
+  // ⇒ min(w,h)/2 = 正圆，即水珠。
+  // 第 38 轮起不再只有「药丸 / 水珠」两个端点：_dropletProgress（0..1）由
+  // stepDropletAnimation: 逐帧推进，这里按进度在两端之间插值（宽 槽宽→水珠径、
+  // 高 栏高→水珠径），**每一帧都是真的写进 bounds 的模型几何** —— 玻璃的形状由
+  // shader 每帧现读 bounds 现算，所以 morph 过程肉眼可见（第 37 轮用 UIView 弹簧
+  // 动画呈现层，模型 bounds 一瞬间就到终点，玻璃按终点尺寸渲染，形同瞬变）。
+  // 逐帧取整是对齐 Metal 采景/着色栅格（同 LiquidLensView.applySpeedSize 的取整
+  // 注释：非整数尺寸会让采景栅格落在半像素上、边缘出现暗色接缝）。
+  BOOL dropletGeometry = height > 0 && (_droplet || _dropletProgress > 0);
+  // 取整必须用 C 函数 round()：这里曾写成 Swift 风格的 (…).rounded()，
+  // 而 ObjC++ 里 CGFloat（= double）是标量、没有成员函数 —— clang 直接判错，
+  // CI（LiquidGlassKit 目标 CompileC）实锤编译失败。Swift 侧（LiquidLensView.swift）
+  // 的 .rounded() 是合法 Swift，不受影响。
+  CGFloat dropletSide = round(height * kLGDropletScale);
+  if (dropletGeometry) {
+    CGFloat progress = _dropletProgress < 0 ? 0 : (_dropletProgress > 1 ? 1 : _dropletProgress);
+    CGFloat lensWidth = round(_pillWidth + (dropletSide - _pillWidth) * progress);
+    CGFloat lensHeight = round(height + (dropletSide - height) * progress);
+    _lens.bounds = CGRectMake(0, 0, lensWidth, lensHeight);
     _lens.center = CGPointMake(_x, height / 2.0);
   } else {
     _lens.frame = CGRectMake(0, 0, _pillWidth, height);
@@ -509,9 +552,12 @@ static const CGFloat kLGDropletScale = 1.45;
   // 且与栏体圆角在视觉上一致（UIKit 对 layer.cornerRadius 同样按短边一半收敛）。
   id<LGLensCustomizations> lensCustom = (id<LGLensCustomizations>)_lens;
   if ([lensCustom respondsToSelector:@selector(setLensCornerRadius:)]) {
-    if (_droplet) {
-      // 水珠态必须走「胶囊几何极限」（override = -1 ⇒ min(w,h)/2 = 正圆）。
-      // 不能沿用栏体圆角：正方形 bounds 下推送 28 会画成圆角方形，不是水珠。
+    if (dropletGeometry) {
+      // 水珠态 **及 morph 的每一个中间帧** 都走「胶囊几何极限」（override = -1 ⇒
+      // min(w,h)/2）。不能沿用栏体圆角：正方形 bounds 下推送 28 会画成圆角方形，
+      // 不是水珠；而 morph 中间态（宽 > 高）取 min/2 恰好是标准胶囊 —— 第 38 轮把
+      // 「只在水珠态用极限值」放宽到「整段 morph 都用极限值」，两端点与旧口径完全
+      // 等价（进度 0 = 胶囊 28 / 进度 1 = 正圆），中间帧则从胶囊连续长成正圆。
       [lensCustom setLensCornerRadius:-1];
     } else if (self.bounds.size.height > 0 && _pillWidth > 0 && self.layer.cornerRadius > 0) {
       // 几何无效（首帧未布局 / RN 样式尚未应用）时不推送圆角：此时短边一半 = 0，
@@ -519,6 +565,21 @@ static const CGFloat kLGDropletScale = 1.45;
       // （「透镜偶发变矩形」）。跳过本次，等几何有效的下一轮 layout 再对齐。
       CGFloat radius = MIN(MIN(self.layer.cornerRadius, _pillWidth / 2.0), self.bounds.size.height / 2.0);
       [lensCustom setLensCornerRadius:radius];
+    }
+  }
+  // 【第 38 轮】采景基准尺寸：morph 期间锁成整段动画的**最大外接尺寸**（宽取两端较大
+  // 者 = 槽宽，高取两端较大者 = 水珠径；两条插值都单调，最大值即全程上界）。
+  // 为什么必须锁：采景矩形与背景像素缓冲都用这个尺寸（captureBaseSize），尺寸一变
+  // CABackdropLayer 就得整幅重新向 window server 要 backdrop —— 0.3s 的 morph 若逐帧
+  // 改尺寸，合成跟不上就会采到半张没合成的画面（LiquidGlassView.captureReferenceSize
+  // 注释里的「黑线条 / 半张黑条」）。锁成常量后一整段 morph 只重建一次缓冲，
+  // 形状变化全部交给 shader（updateUniforms 仍按 bounds 现算）。
+  // 非水珠态推 CGSizeZero = 撤销覆盖，回落「采景基准 = 透镜 bounds」的旧口径。
+  if ([lensCustom respondsToSelector:@selector(setLensCaptureReferenceSize:)]) {
+    if (dropletGeometry) {
+      [lensCustom setLensCaptureReferenceSize:CGSizeMake(MAX(_pillWidth, dropletSide), MAX(height, dropletSide))];
+    } else {
+      [lensCustom setLensCaptureReferenceSize:CGSizeZero];
     }
   }
 }
@@ -609,26 +670,89 @@ static const CGFloat kLGDropletScale = 1.45;
   _lens.center = CGPointMake(x, self.bounds.size.height / 2.0);
 }
 
-// 【第 37 轮新增样式】水珠态开关：长按激活拖动时长成圆、所有收尾路径缩回胶囊。
-// 几何在 layoutSubviews 里算（droplet 会影响每一轮布局），这里只负责动画：
-// 用 0.3s 弹簧（damping 0.72）把 bounds/center 的变化补成「水珠胀开/收回」的观感，
-// BeginFromCurrentState 保证长按-松手快速交替时不会从上次动画的旧起点重播。
+// 【第 37 轮新增样式 / 第 38 轮改逐帧补间】水珠态开关：长按激活拖动时长成圆、
+// 所有收尾路径（松手 / 抬手 / 看门狗 / 会话兜底）缩回胶囊。
+// 几何在 layoutSubviews 里按 _dropletProgress 现算；本方法只负责「把进度推向目标」：
+// 启动/续用 CADisplayLink，弹簧积分器逐帧推进进度并把模型几何写实（见
+// stepDropletAnimation:）。长按-松手快速交替时进度与速度接力，不会从旧起点重播。
 - (void)setDroplet:(BOOL)droplet {
-  if (_droplet == droplet) return;
+  CGFloat target = droplet ? 1.0 : 0.0;
+  // 幂等：状态与目标都没变、弹簧也停在目标上 → 零动作（JS 重发同一 prop 不重播动画）
+  if (_droplet == droplet && _dropletTarget == target &&
+      fabs(_dropletProgress - target) < kLGDropletRestProgress &&
+      fabs(_dropletVelocity) < kLGDropletRestVelocity) {
+    return;
+  }
   _droplet = droplet;
-  [UIView animateWithDuration:droplet ? 0.28 : 0.22
-                        delay:0
-       usingSpringWithDamping:0.72
-        initialSpringVelocity:0
-                      options:UIViewAnimationOptionBeginFromCurrentState |
-                              UIViewAnimationOptionAllowUserInteraction
-                   animations:^{
-    // setNeedsLayout 必须先调：layoutIfNeeded 只在有脏布局时才真的跑
-    // layoutSubviews（droplet 分支重算 _lens 的 bounds/center；子视图
-    // LiquidLensView 的 layoutSubviews 随之重排圆角与玻璃）
+  _dropletTarget = target;
+  // 目标可能是在途翻转（长按途中松手）：只换目标，进度/速度接力，morph 从当前
+  // 状态平滑改向 —— 这正是「大水珠变小水珠」那一段的连续感来源。
+  [self startDropletAnimation];
+}
+
+// 启动 morph 补间（已在跑则什么都不做）。显示链接强引用 target（self），
+// 停下它的两条路：弹簧收敛（stepDropletAnimation: 末尾）与离窗（didMoveToWindow:）。
+- (void)startDropletAnimation {
+  if (_dropletLink) return;
+  _dropletLastTimestamp = 0;
+  CADisplayLink *link = [CADisplayLink displayLinkWithTarget:self selector:@selector(stepDropletAnimation:)];
+  // 必须挂 .common 模式：长按期间手指按着不松 = runloop 处于 UITrackingRunLoopMode，
+  // 只挂默认模式（NSDefaultRunLoopMode）的显示链接会被挂起 —— morph 会一直停在第 0 帧
+  // 直到手指抬起，那就是另一种「没有变化过程」。
+  [link addToRunLoop:[NSRunLoop mainRunLoop] forMode:NSRunLoopCommonModes];
+  _dropletLink = link;
+}
+
+- (void)stopDropletAnimation {
+  [_dropletLink invalidate];
+  _dropletLink = nil;
+  _dropletLastTimestamp = 0;
+}
+
+// 显示链接回调（主线程，每个刷新帧一次，ProMotion 最高 120Hz）。
+- (void)stepDropletAnimation:(CADisplayLink *)link {
+  CFTimeInterval now = link.timestamp;
+  CGFloat dt = _dropletLastTimestamp > 0 ? (CGFloat)(now - _dropletLastTimestamp) : (CGFloat)(1.0 / 60.0);
+  _dropletLastTimestamp = now;
+  // 首帧 / 掉帧 / 断片（退后台回来、桥阻塞）：步长夹到 [1/120, 1/30] 秒。半隐式欧拉
+  // 的稳定性对步长敏感，一次大跳会让进度直接过冲、morph 出现一段「跳变」。
+  if (dt < 1.0 / 120.0) dt = 1.0 / 120.0;
+  if (dt > 1.0 / 30.0) dt = 1.0 / 30.0;
+  // 近临界阻尼弹簧：a = -k·(p - target) - c·v（参数见文件顶部常量注释）
+  CGFloat delta = _dropletProgress - _dropletTarget;
+  _dropletVelocity += (-kLGDropletSpringStiffness * delta - kLGDropletSpringDamping * _dropletVelocity) * dt;
+  _dropletProgress += _dropletVelocity * dt;
+  // 夹回 [0, 1] 并同向清零速度（两端点之外没有几何意义，过冲必须就地吃掉）
+  if (_dropletProgress <= 0.0) {
+    _dropletProgress = 0.0;
+    if (_dropletVelocity < 0.0) _dropletVelocity = 0.0;
+  } else if (_dropletProgress >= 1.0) {
+    _dropletProgress = 1.0;
+    if (_dropletVelocity > 0.0) _dropletVelocity = 0.0;
+  }
+  // 每帧把**模型几何**写实：setNeedsLayout 必须先调（layoutIfNeeded 只在有脏布局时
+  // 才真的跑 layoutSubviews）。droplet 分支按当帧进度重算 _lens 的 bounds/center，
+  // 子视图 LiquidLensView 的 layoutSubviews 随之重排圆角/采景基准/玻璃形状。
+  [self setNeedsLayout];
+  [self layoutIfNeeded];
+  if (fabs(_dropletProgress - _dropletTarget) < kLGDropletRestProgress &&
+      fabs(_dropletVelocity) < kLGDropletRestVelocity) {
+    // 到位：吸附到目标端点（消掉浮点残差）后再落一次位 —— 最后一帧的几何就是端点
+    // 几何（进度恰好 0/1，采景基准与圆角同时切回静止口径），然后停表。
+    _dropletProgress = _dropletTarget;
+    _dropletVelocity = 0.0;
     [self setNeedsLayout];
     [self layoutIfNeeded];
-  } completion:nil];
+    [self stopDropletAnimation];
+  }
+}
+
+// 离开窗口（RN 卸载宿主 / 页面被移除）时停表：显示链接强引用 target（self），
+// 不停就是「视图已卸载、链接还在每帧回调」的空转。进度保持当前值，重挂载后由下一次
+// setDroplet（JS 在长按与各条收尾路径都会重发）纠正。
+- (void)didMoveToWindow {
+  [super didMoveToWindow];
+  if (self.window == nil) [self stopDropletAnimation];
 }
 
 - (void)setPillWidth:(CGFloat)width {

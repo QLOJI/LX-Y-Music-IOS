@@ -190,6 +190,47 @@ public final class LiquidLensView: UIView, AnyLiquidLensView {
         setNeedsLayout()
     }
 
+    /// 采景基准尺寸覆盖（Vendored addition，第 38 轮）：`.zero`（默认）= 不覆盖，
+    /// 采景基准回落为透镜自身 bounds（与第 26 轮以来的行为完全一致，收缩/拉伸
+    /// 那套速度形变继续走这条路）。
+    ///
+    /// 为什么需要：「长按水珠」的放大/收缩是**模型尺寸逐帧插值**（宿主
+    /// LiquidGlassViewManager.mm 的 CADisplayLink 弹簧），透镜 bounds 从药丸
+    /// (t_x × h) 一路变到正圆 (side × side)。若采景基准跟着 bounds 走，每帧都得
+    /// 改一次 CABackdropLayer 的尺寸 ⇒ 整幅重新向 window server 要 backdrop，
+    /// 120Hz 下合成追不上，drawHierarchy 读到半张没合成的黑条被折射进玻璃
+    /// （就是 captureReferenceSize 注释里那条「黑色线条 / 半张黑条」红线的成因）。
+    ///
+    /// 宿主因此在变形期间把基准锁成「药丸与正圆的外接矩形」（两个尺寸都随进度
+    /// 单调插值 ⇒ 外接矩形在整个变形过程中恒定），回落为药丸后立刻推 `.zero`
+    /// 交还给 bounds。采景矩形是**以透镜中心为中心**、按基准尺寸外扩的（见
+    /// LiquidGlassView.captureBackdrop 的 captureOrigin 计算），给一个比 bounds 大
+    /// 的基准只是让采景框对称地多盖一圈背景，画面上不可见。
+    private var captureReferenceOverride: CGSize = .zero
+
+    @objc public func setLensCaptureReferenceSize(_ size: CGSize) {
+        guard captureReferenceOverride != size else { return }
+        captureReferenceOverride = size
+        // 抬起态：立即重申一次基准（不等下一次 layout —— 宿主推这个值的时机正是
+        // 变形起点/终点，慢一帧就等于让采景矩形在变形首帧变一次尺寸）。
+        applyCaptureReferenceIfLifted()
+        setNeedsLayout()
+    }
+
+    /// 当前生效的采景基准：覆盖值有效（宽高都 > 1，与 LiquidGlassView.captureBaseSize
+    /// 的有效性判据同口径）就用覆盖值，否则回落 bounds.size。
+    private var effectiveCaptureReference: CGSize {
+        let override = captureReferenceOverride
+        if override.width > 1, override.height > 1 { return override }
+        return bounds.size
+    }
+
+    /// 抬起态下把基准与圆角重申给玻璃层（layoutSubviews 与本 setter 共用一份）。
+    private func applyCaptureReferenceIfLifted() {
+        guard isLifted else { return }
+        liquidGlassView.captureReferenceSize = effectiveCaptureReference
+    }
+
     public override func layoutSubviews() {
         super.layoutSubviews()
 
@@ -216,7 +257,10 @@ public final class LiquidLensView: UIView, AnyLiquidLensView {
 
             // 采景基准 = 药丸的静止尺寸（见 LiquidGlassView.captureReferenceSize）：
             // 挤压/拉伸只改 shader 形状，采景矩形与像素缓冲始终保持这个尺寸不动。
-            liquidGlassView.captureReferenceSize = bounds.size
+            // 第 38 轮起：水珠变形期间宿主会推来一个「外接矩形」覆盖值（见
+            // captureReferenceOverride），此时基准恒等于外接矩形，采景矩形连尺寸
+            // 都不用改（更谈不上重合成）。
+            liquidGlassView.captureReferenceSize = effectiveCaptureReference
         }
     }
 
@@ -278,7 +322,8 @@ public final class LiquidLensView: UIView, AnyLiquidLensView {
         addSubview(liquidGlassView)
 
         // 采景几何：基准锁成静止药丸尺寸（挤压/拉伸不再逐帧改采景矩形尺寸）
-        liquidGlassView.captureReferenceSize = bounds.size
+        // 第 38 轮：水珠变形期间取宿主推来的外接矩形覆盖值（见 captureReferenceOverride）。
+        liquidGlassView.captureReferenceSize = effectiveCaptureReference
         // 抬起/跟手期间背景每帧都在变：丢掉上一次抬起留下的背景纹理（那是上次点击
         // 位置的页面内容），并把刷新率拉满；落下后由 endLiveCapture 交回自适应帧率。
         liquidGlassView.beginLiveCapture()
