@@ -692,8 +692,6 @@ static id LXScreenBrightnessObserver = nil;
 static NSString * const LXRemoteCommandNotificationName = @"LXRemoteCommand";
 static BOOL LXRemoteCommandHandlersInstalled = NO;
 static void LXBeginReceivingRemoteControlEvents(void);
-// 【第 36 轮第 5 条】遥控命令可用性的重申看门狗（定义在本区块末尾）
-static void LXStartRemoteCommandWatchdog(void);
 // 歌词行时钟：锚点刷新 / 清行（定义在文件后部歌词驱动区块，此处前置声明）
 static void LXRefreshNowPlayingLyricAnchor(void);
 static void LXClearNowPlayingLyricLines(void);
@@ -731,7 +729,35 @@ static void LXPostRemoteCommandNotification(NSString *command, NSDictionary *ext
   [[NSNotificationCenter defaultCenter] postNotificationName:LXRemoteCommandNotificationName object:nil userInfo:userInfo];
 }
 
+// 【第 43 轮】遥控「播放 / 合并键」按下的那一刻，先把音频会话抢回来。
+//
+// 背景：本工程的 nativeFlac 在**手动暂停时主动让出音频会话**（LXStreamingFlacPlayer
+// 的 pause，用户第 16 轮第 9 条：「应该是没有卸载占用音频」——暂停后别的 App 要能出声），
+// 而参考工程 lx-music-mobile-ios-adaptation 的会话是**常驻**的（它的 pause 里调的是
+// prepareAudioSession）。让出会话是本工程的用户需求，不能撤；但让出去之后，
+// 「点击 ▶」就变成了「先夺回会话、再起播」两步，而夺回会话过去只发生在这条链路的末端
+// （resume → prepareAudioSession，要等 JS 起播、失败时还静默）：
+// 一旦此时会话已被别的 App 占用，resume 的 setActive 失败 → JS 侧播放从未成立 →
+// 卡片永远停在 ▶ → 用户看到的就是「点一次还行，再点就没反应」。参考工程因为会话
+// 常驻，压根没有这个窗口。
+//
+// 修法：用户按下 ▶ / 合并键的瞬间（主线程、任何桥接往返之前）就把会话激活回来，
+// 与参考工程的「按下即能播」等价；随后的 resume 幂等重复激活，不再是唯一的成败点。
+// 只对 play / toggle 两键做 —— 暂停 / 切歌 / 拖动进度都不该主动抢会话。
+static void LXActivateAudioSessionForRemotePlay(void) {
+  if (![NSThread isMainThread]) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+      LXActivateAudioSessionForRemotePlay();
+    });
+    return;
+  }
+  [[AVAudioSession sharedInstance] setActive:YES error:nil];
+}
+
 static MPRemoteCommandHandlerStatus LXHandleRemoteCommandEvent(NSString *command) {
+  if ([command isEqualToString:@"play"] || [command isEqualToString:@"toggle"]) {
+    LXActivateAudioSessionForRemotePlay();
+  }
   LXPostRemoteCommandNotification(command, nil);
   return MPRemoteCommandHandlerStatusSuccess;
 }
@@ -772,8 +798,6 @@ static void LXInstallRemoteCommandHandlers(void) {
     return LXHandleRemoteChangePlaybackPositionEvent((MPChangePlaybackPositionCommandEvent *)event);
   }];
   LXRemoteCommandHandlersInstalled = YES;
-  // 安装完 target 就把「可用性重申」的看门狗点起来（见下方 LXStartRemoteCommandWatchdog）
-  LXStartRemoteCommandWatchdog();
 }
 
 static void LXSyncRemoteCommandAvailability(void) {
@@ -813,9 +837,18 @@ static void LXSyncRemoteCommandAvailability(void) {
   //
   // 配套（同一轮）：① 两处**故意把 playbackState 切成相反值**的「强制重绘」已删除
   // （LXForceNowPlayingCardRepaint / LXApplyNowPlayingArtwork）——只要还会说谎，
-  // 「同源」就不成立；② 新增 LXStartRemoteCommandWatchdog()：每秒重申一次本函数，
-  // 使任何**外部**改写（react-native-track-player 的 destroy / updateOptions 会直接
-  // 关掉同一批 MPRemoteCommandCenter 命令，且不会通知我们）在 1 秒内被纠正回来。
+  // 「同源」就不成立。
+  // 【第 43 轮】原配套 ②「1s 重申的可用性看门狗」已**整条删除**（声明 / 安装时的
+  // 调用 / 定义三处全无），理由：
+  //   · 它只重写六个 enabled，**不**重发 nowPlayingInfo / playbackState。一旦显示态
+  //     落在后面（状态变量已改、apply 因故没发），它就把「卡片上显示 ⏸ 而 pauseCommand
+  //     已被关掉」这类显示态/启停态分叉**钉死**，用户随后的点击被 enabled = NO 静默吞掉
+  //     —— 正是用户报的「点击一次后不能点击第二次」；
+  //   · 参考工程 lx-music-mobile-ios-adaptation 没有看门狗，它的模型是「状态变化时写
+  //     一次，显示态与启停态同源同刻」——本轮 1:1 回到这个模型；
+  //   · 顺带去掉一个 1s 周期的后台唤醒（用户第 42 轮就在要求降耗电）。
+  // 真正致命的跨线程写入由 LXApplyNowPlayingInfo() 的主线程闸门收口（见其长注释），
+  // 不需要再用每秒轮询去「纠正」任何东西。
   BOOL isPlaying = LXNowPlayingState == MPNowPlayingPlaybackStatePlaying;
   commandCenter.playCommand.enabled = !isPlaying;
   commandCenter.pauseCommand.enabled = isPlaying;
@@ -826,46 +859,43 @@ static void LXSyncRemoteCommandAvailability(void) {
   LXBeginReceivingRemoteControlEvents();
 }
 
-// 【第 36 轮第 5 条】遥控命令「可用性重申」看门狗。
-//
-// 为什么需要它：MPRemoteCommandCenter 是**双方共管**的 —— 除了本文件，
-// react-native-track-player 的 setupPlayer / updateOptions / destroy 也会直接改写
-// 同一批命令对象（把 enabled 关掉、或换掉 target），而且**不会**回调通知我们。
-// 这类改写发生在 JS 侧任何一条播放器初始化 / 销毁路径上，本文件无从感知；结果是
-// 「锁屏 / 灵动岛的上/下一首、播放暂停点了没反应」，而且**不是偶发**。
-// （第 35 轮把判据改成「六个一律 YES」没能修好，正因为它只纠正得了我们自己的改写，
-//  外部改写随时能把结论推翻 —— 这一轮改成：判据与参考工程 1:1 + 外部改写 1 秒内纠正。）
-//
-// 做法：主队列上一个 1s 周期的 dispatch source（不用 NSTimer：控制中心盖住 App 时
-// 主 RunLoop 退入非 common 模式，NSTimer 会停摆），每拍重申一次可用性。
-// 单次开销 = 一次 count 取值 + 六次属性赋值，可忽略；静态存储的 source 只创建一次。
-// 无歌曲信息、且未在接收遥控事件时直接跳过，避免无播放时的无谓轮询。
-static void LXStartRemoteCommandWatchdog(void) {
-  static dispatch_source_t timer = nil;
-  if (timer != nil) return;
-  dispatch_async(dispatch_get_main_queue(), ^{
-    if (timer != nil) return;
-    timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
-    if (timer == nil) return;
-    // 1s 周期 / 0.2s leeway（允许系统合并唤醒，省电）
-    dispatch_source_set_timer(timer,
-                              dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
-                              (uint64_t)(1.0 * NSEC_PER_SEC),
-                              (uint64_t)(0.2 * NSEC_PER_SEC));
-    dispatch_source_set_event_handler(timer, ^{
-      // 与歌词时钟共享同一把锁读缓存（时钟线程可能在写）
-      BOOL idle = NO;
-      @synchronized (LXLyricLock()) {
-        idle = LXNowPlayingInfoCache.count == 0 && !LXIsReceivingRemoteControlEvents;
-      }
-      if (idle) return;
-      LXSyncRemoteCommandAvailability();
-    });
-    dispatch_resume(timer);
-  });
-}
+// 【第 43 轮】这里原本是第 36 轮加的「可用性重申看门狗」（1s 周期的 dispatch source，
+// 每拍调一次 LXSyncRemoteCommandAvailability）。整条已删除，删除理由见
+// LXSyncRemoteCommandAvailability() 上的第 43 轮注释（摘要：它只重写 enabled、
+// 不重发显示态 ⇒ 把显示态/启停态的分叉钉死，正是「点击一次后不能点击第二次」；
+// 参考工程没有它；顺带去一个 1s 后台唤醒）。
 
+// 【第 43 轮】Now Playing 的唯一写入口，**一律在主线程执行**。
+//
+// 用户原话（第 43 轮）：「锁屏界面和灵动岛播放器界面，前几次点击播放/暂停和上一首、
+// 下一首还可以操作，用了一段时间后就不行了，而且点击一次后不能点击第二次，
+// 请一比一使用 lx-music-mobile-ios-adaptation 项目中的锁屏界面和灵动岛播放器界面
+// 代码，修复这些问题。」
+//
+// 参考工程 lx-music-mobile-ios-adaptation 这条链路上**每一次**写入都在主线程
+// （NowPlayingModule 每个方法都 dispatch 主队列 → LXSetNowPlayingInfo /
+// LXSetNowPlayingPlaybackState → LXApplyNowPlayingInfo → 命令 enabled），而且它
+// 没有歌词时钟、没有可用性看门狗、从不把 nowPlayingInfo 置空 —— 它的锁屏 / 灵动岛
+// 按钮在本机型上是好用的。
+//
+// 本工程多了一条跑在专用串行队列（com.lxmusic.nowplaying.lyric）上的 8.3Hz 歌词时钟：
+// 换行时 LXNowPlayingLyricStep 直接经本函数**跨线程**改写 MPRemoteCommandCenter 的
+// enabled 与 MPNowPlayingInfoCenter 的 nowPlayingInfo / playbackState。这两个对象都是
+// 主线程亲和的，后台线程改写属于未定义行为：系统内部的遥控命令状态机
+// （「卡片上显示的按钮」↔「会投递哪条命令」的对应关系）会逐次累积地失步，表现正是
+// 用户报的「点几次还行、播一会儿就全都不灵」「点一次之后再点就没反应」，
+// 而且原生侧不留任何异常（不崩溃、不打日志），单线程复现不出来。
+//
+// 修法：非主线程一律 marshal 回主队列再写 —— 与参考工程同源（主线程 + 状态变化时写一次）。
+// 锁照旧持有：缓存 LXNowPlayingInfoCache 仍由歌词时钟线程写，读侧必须与它互斥；
+// @synchronized 可重入，主线程内已持锁的嵌套调用（LXSetNowPlayingInfo 等）不受影响。
 static void LXApplyNowPlayingInfo(void) {
+  if (![NSThread isMainThread]) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+      LXApplyNowPlayingInfo();
+    });
+    return;
+  }
   @synchronized (LXLyricLock()) {
     MPNowPlayingInfoCenter *center = [MPNowPlayingInfoCenter defaultCenter];
     center.nowPlayingInfo = LXNowPlayingInfoCache.count ? [LXNowPlayingInfoCache copy] : nil;
@@ -909,13 +939,15 @@ static void LXApplyNowPlayingArtwork(UIImage *image, NSUInteger requestId) {
       return image;
     }];
     info[MPMediaItemPropertyArtwork] = artwork;
-    // iOS 已知行为：同一播放会话中 nowPlayingInfo 已发布过「无封面」版本后，
-    // 仅追加 artwork 再发布不一定能刷新锁屏/控制中心封面（表现为要暂停再播放
-    // 才出现封面）。同一 runloop 里「置空 + 立即重设」会被系统合并成一次更新，
-    // 仍无法触发重绘。这里先置空，延迟一帧后再发布，强制控制中心重新渲染
-    // 整张媒体卡片（含封面）。
-    MPNowPlayingInfoCenter *center = [MPNowPlayingInfoCenter defaultCenter];
-    center.nowPlayingInfo = nil;
+    // 【第 43 轮】这里原本有一句 `center.nowPlayingInfo = nil;`（想靠「置空 + 延迟一帧
+    // 重发」逼系统重画整张媒体卡片来刷封面）。**已删除**，理由三条：
+    //   · 置空 = 主动把媒体会话拆掉一瞬间。iOS 里卡片消失 / 重新出现会重走一次
+    //     now-playing 归属仲裁，这段时间投递到本 App 的遥控命令可能丢失 —— 而换封面
+    //     发生在每次切歌，用一段时间后累积成「锁屏 / 灵动岛按钮全都不灵」；
+    //   · 参考工程 lx-music-mobile-ios-adaptation **从不置空**：它只在本文件
+    //     LXApplyNowPlayingInfo 里按「缓存有没有内容」决定写 copy 还是 nil，
+    //     封面照常刷新（用户第 43 轮要求的正是 1:1 对齐它）；
+    //   · 真正负责把封面推上去的是下面两次延迟重发（0.05s / 0.3s），它们都还在。
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
       if (requestId != LXNowPlayingArtworkRequestId) return;
       LXApplyNowPlayingInfo();
@@ -1084,12 +1116,10 @@ static void LXSetNowPlayingPlaybackState(MPNowPlayingPlaybackState state, NSDict
     // 控制中心遥控（播放/暂停/上一首下一首）的播放状态变化同样重锚歌词时钟
     LXRefreshNowPlayingLyricAnchor();
 
-    // 播放状态可能早于歌曲元数据（标题）到达：先把 playbackRate / elapsedTime 写入缓存，
-    // 但暂不发布。iOS 27 Beta 7 会把“只有 playbackRate、没有标题”的空字典识别成“未在播放”，
-    // 且后续补写元数据不一定重新显示控制中心媒体卡片；等 LXSetNowPlayingInfo 写入有效标题后
-    // 统一发布（届时缓存已含正确的 playbackRate / elapsedTime），避免切歌后控制中心进度卡在“-”。
-    if (existingTitle.length == 0) return;
-
+    // 【第 42 轮·去冗余】这里本来还有**第二道** `if (existingTitle.length == 0) return;`
+    // ——它与函数开头（进锁之前）那道判据读的是同一个变量、同一个表达式，中间只隔了
+    // 锚点重算（LXRefreshNowPlayingLyricAnchor 不碰标题），永远不会单独命中，是纯死代码，
+    // 已删。此处直接发布：标题为空的情形在开头就已返回，走不到这一行。
     LXApplyNowPlayingInfo();
   }
 }
