@@ -19,6 +19,7 @@ import { subscribeScrollLock } from '@/utils/scrollLock'
 import WebLoginManager from '@/components/WebLoginManager'
 import QQWebLoginManager from '@/components/QQWebLoginManager'
 import KgWebLoginManager from '@/components/KgWebLoginManager'
+import SyncModeAskHost from '@/navigation/components/SyncModeAskHost'
 import Basic from '@/screens/Home/Views/Setting/settings/Basic'
 import Player from '@/screens/Home/Views/Setting/settings/Player'
 import Search from '@/screens/Home/Views/Setting/settings/Search'
@@ -136,6 +137,18 @@ export default memo(({ settingId, componentId }: {
       <WebLoginManager />
       <QQWebLoginManager />
       <KgWebLoginManager />
+      {/* 【第 45 轮第 2 条】「同步方式」问句要能在**本页**弹出来。
+          用户原话：「数据同步中的同步服务地址功能，在第一次连接过程中，可以显示同步方式的
+          弹窗了，但是弹出位置不对，这个弹窗应该在数据同步界面弹出显示」。
+          根因与上面三条登录弹窗完全相同（同一条平台事实）：兜底面 SyncModeAskHost 只挂在
+          Home 视图树里，而「数据同步」正是本屏（RNN push 出来的 SettingDetail）—— 用户点
+          「连接」时 Home 整棵树已被本屏盖住、脱离窗口，弹窗要等用户自己退回 Home 才看得见
+          （所以用户是在设置页上看到它的）。同一份组件挂进本屏的 PageContent 末尾
+          （全屏绝对定位 + zIndex 200，盖过本页 header / 列表 / 下载悬浮球），问句在、用户
+          就在他所在的那一页看到并作答。Home 那一份保留：两边渲染同一份状态
+          （syncModeAskFallbackVisible），作答走同一条 global.app_event.selectSyncMode；任一
+          时刻只有最上面那屏的那一份可见，收尾（作答/取消/断开）时两份一起卸载。 */}
+      <SyncModeAskHost />
     </PageContent>
   )
 })
