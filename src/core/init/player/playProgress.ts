@@ -582,7 +582,6 @@ export default () => {
     audioClock.reset()
     setNowPlayTime(0)
     setMaxplayTime(0)
-    engineConfirmedPlaying = false
     isBufferingHold = false
     // prevProgressStatus = 'none'
     // handleSetTaskBarState(playProgress.progress, prevProgressStatus)

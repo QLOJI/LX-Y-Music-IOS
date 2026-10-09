@@ -32,6 +32,21 @@ export const markSyncModeModalHidden = () => { syncState.syncModeModalVisible = 
 // 绝不让 Promise 与状态文案一起悬着（服务端 message2call 自己的超时是 120s，这里必须更短）。
 const SYNC_MODE_ASK_CHECK_MS = 20000
 
+// 【第 42 轮第 1 条】主树兜底面（SyncModeAskHost）的接管期限（毫秒）。
+//
+// 第 36~39 轮把「选择框一定会弹出来」全押在 RNN overlay 上（去抖、挂载复查、失败重试、
+// 窗口提层都做了），用户第 42 轮的原话却依旧是「状态还是显示等待选择同步方式，最上层还是
+// 没有显示这个窗口」。前面几轮能证到的最强事实只有一条：**JS 侧以为挂上了** —— 问句的文案
+// 永远停在「等待选择同步方式...」，说明 20 秒问句复查每次都读到「在屏幕上」而无限续期，
+// 也就是 SyncModeModal 的挂载回调确实跑过；可 iOS 上那个独立 UIWindow 在这个工程里就是
+// 画不出来（overlay 是不是被压层、窗口是不是根本没进层，JS 侧无从判断）。
+//
+// 所以本轮换判据：不再问 overlay「挂上没挂上」，只问**问句有没有结果** —— 到期还没作答，
+// 就地换面：把同一个选择框搬到**主窗口的 React 树**里画（Home 视图树的 SyncModeAskHost）。
+// 那条路不依赖任何独立 UIWindow、不经过 RNN 的呈现通道，只要 Home 在屏幕上就一定看得见
+// （「数据同步」页本身就在 Home 的视图树里）。
+const SYNC_MODE_FALLBACK_MS = 1500
+
 export const setSyncStatus = (status: LX.Sync.Status) => {
   syncActions.setStatus(status)
 }
@@ -108,6 +123,40 @@ export const selectSyncMode = async <T extends keyof LX.Sync.ModeTypes>(
       }, SYNC_MODE_ASK_CHECK_MS)
     }
 
+    // 【第 42 轮第 1 条】主树兜底面的接管期限 + 接管动作。
+    let fallbackTimer: ReturnType<typeof setTimeout> | null = null
+    const clearFallbackTimer = () => {
+      if (fallbackTimer) {
+        clearTimeout(fallbackTimer)
+        fallbackTimer = null
+      }
+    }
+    /**
+     * 到期还没等到作答 ⇒ 把问句交给主树兜底面呈现（同一个选择框组件，换一个宿主）。
+     * 顺序是有讲究的：**先**立接管判据，**再**去拆 overlay ——
+     *   · setSyncModeAskFallbackVisible(true)：Home 树里的宿主据此画出来，并且
+     *     handleSyncModeModalUnmounted 与 onAnyModalDismissed 两条卸载通路都靠它让行
+     *     （否则我们主动拆 overlay 引发的卸载回调会把这次问句按「用户取消」杀掉 ——
+     *     那正是第 34~39 轮反复踩的那颗雷）；
+     *   · markSyncModeModalVisible()：兜底面同样算「选择框在屏幕上」，20 秒问句复查与
+     *     client.ts 的 60 秒握手看门狗据此让行（用户在看、在思考，属于合理的长等待）；
+     *   · cancelSyncModeModalRetries()：让 showSyncModeModal 里还没到点的挂载复查作废，
+     *     免得它把 overlay 重新弹到兜底面上；
+     *   · 最后才拆 overlay：先清 store 里的 id（看门狗与卸载身份比对随即无从命中），
+     *     再 dismissOverlay —— 屏幕上永远只有一个选择框。
+     */
+    const handOverToFallback = () => {
+      syncActions.setSyncModeAskFallbackVisible(true)
+      markSyncModeModalVisible()
+      cancelSyncModeModalRetries()
+      const id = syncState.syncModeComponentId
+      if (id) {
+        syncActions.setSyncModeComponentId('')
+        void dismissOverlay(id)
+      }
+      console.log('[SyncMode] ask handed over to in-tree fallback surface')
+    }
+
     const removeListeners = () => {
       // showSyncModeModal 的失败回调可能早于下面 removeListener 的赋值（异步路径下成立，
       // 但这里不做假设）—— 一律用可选调用，避免「undefined is not a function」
@@ -119,6 +168,10 @@ export const selectSyncMode = async <T extends keyof LX.Sync.ModeTypes>(
       syncModeSelecting = false
       // 【第 36 轮第 1 条】问句有了结果，最后一道保障的复查就撤掉
       clearAskGuard()
+      // 【第 42 轮第 1 条】问句有了结果，主树兜底面的接管期限与兜底面本身一起收掉
+      // （作答 / 取消 / 断开 / 呈现失败四条路径都从这里过，兜底面绝不残留）
+      clearFallbackTimer()
+      syncActions.setSyncModeAskFallbackVisible(false)
       global.app_event.off('selectSyncMode', handleSelectMode)
     }
 
@@ -168,6 +221,9 @@ export const selectSyncMode = async <T extends keyof LX.Sync.ModeTypes>(
     // closeSyncModeModal 会先清空 store 里的 id，比对随即失败（且 settled 已经是 true）。
     removeDismissListener = onAnyModalDismissed((dismissedId) => {
       if (settled) return
+      // 【第 42 轮第 1 条】主树兜底面接管后，overlay 的关闭事件是**我们自己**拆出来的，
+      // 不是用户把框点走了 —— 让行（兜底面上那个框还活着、还能作答）。
+      if (syncState.syncModeAskFallbackVisible) return
       if (!syncState.syncModeComponentId || dismissedId != syncState.syncModeComponentId) return
       syncActions.setSyncModeComponentId('')
       // 状态文案也要跟着改：旧路径下这里一声不吭，那行字会一直停在
@@ -180,6 +236,14 @@ export const selectSyncMode = async <T extends keyof LX.Sync.ModeTypes>(
     // 【第 36 轮第 1 条】呈现的同时把「最后一道保障」点起来
     armAskGuard()
     showSyncModeModal(handleUnavailable)
+    // 【第 42 轮第 1 条】呈现之后同时点起**主树兜底面**的接管期限（说明见 SYNC_MODE_FALLBACK_MS）。
+    // 放在 showSyncModeModal 之后：它可能**同步**回调 handleUnavailable（去抖占满那条路），
+    // 那种情况下 removeListeners 已经跑过 —— 这里再点起来的定时器由回调开头的 settled 判据拦下。
+    fallbackTimer = setTimeout(() => {
+      fallbackTimer = null
+      if (settled) return
+      handOverToFallback()
+    }, SYNC_MODE_FALLBACK_MS)
   })
 
 /**
@@ -212,6 +276,10 @@ export const handleSyncModeModalUnmounted = (componentId?: string) => {
   // （不传 = 调用方只是要报告消失，见下）；比对的两个值都非空才作数，
   // 作答路径清空 id 的先后顺序不影响（closeSyncModeModal 先清 id 再 dismiss，
   // 于是它引发的卸载回调会落到「store id 为空」这一支，由下面的 syncModeSelecting 接管）。
+  // 【第 42 轮第 1 条】主树兜底面已经接管时，这条卸载回调整个忽略 —— 它不是「用户跑了」，
+  // 而是**我们自己**在接管时主动拆掉的 overlay（handOverToFallback，见那里的顺序说明）：
+  // 标记、文案、问句一概不动，用户接着在兜底面上作答。
+  if (syncState.syncModeAskFallbackVisible) return
   if (componentId && syncState.syncModeComponentId && componentId != syncState.syncModeComponentId) return
   // 比对通过（自己人，或调用方没带 id）：它下一秒就要被原生拆掉了，属于**已经**不在屏幕上。
   markSyncModeModalHidden()
