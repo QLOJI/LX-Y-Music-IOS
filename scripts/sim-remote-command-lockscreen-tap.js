@@ -61,6 +61,20 @@
  *   ⑤ 因此第 44 轮在唯一写入口的**发布前**加一道归一：速率必须与 LXNowPlayingState 同源
  *      （播放中 ⇒ > 0，保留倍速；非播放 ⇒ 0），与下面的 playbackState / 命令 enabled 同刻同真。
  *
+ * 【第 45 轮】用户原话（第 1 条）：「还是一样，锁屏和灵动岛界面上一首、下一首、播放/暂停
+ * 按钮点击无反应，我记得最早的版本是没有这个问题的，需要修复」。第 43/44 轮已是结构性
+ * 修复（唯一写入口 + 主线程闸门 + 速率归一 + 无看门狗 + 无会话拆除窗口），本轮做的是补上
+ * **两条自愈路径**——外界写入者（RNTP 按 updateOptions 的 capabilities 配置原生遥控命令 /
+ * 系统侧会话仲裁改写、丢弃媒体会话）仍能把卡片拉离正轨，而第 43 轮删掉 1s 看门狗、熄屏时
+ * 歌词时钟又停摆之后，没有任何周期性重发去纠正分叉：
+ *   ⑥ 按下即对表（不变量 F ②）：每一次被投递到本 App 的按键先 `LXApplyNowPlayingInfo();`
+ *      全量重发一次（info / playbackState / 六个 enabled），再 post 通知。上一首 / 下一首在
+ *      任何播放态都 enabled = YES，所以任意一次成功投递都是一次自愈；
+ *   ⑦ 锁屏那一刻对表（不变量 F ③）：willResignActive 里（有歌曲信息时）同样全量重发 ——
+ *      用户面对的第一帧锁屏卡片就与命令同源。
+ *   配套：LXApplyNowPlayingInfo 定义在文件后部、调用点在前部，必须有且仅有一处前置声明
+ *   （不变量 F ①；缺了就是隐式声明，ARC 下编译不过）。
+ *
  * 反例专盯「回归 tsc / eslint 都无感」的部分：原生不参与 TS 检查，把判据改回按播放态单算、
  * 漏一句 beginReceivingRemoteControlEvents、把主线程闸门删掉、让看门狗回来、
  * 或又把 playbackState 翻转加回来，静态检查与单测全都看不见。
@@ -432,6 +446,80 @@ const rateStateInvariants = (raw) => {
 }
 
 // ---------------------------------------------------------------------------
+// 不变量 F：按下即对表 + 锁屏那一刻对表（第 45 轮）
+//
+// 用户原话（第 45 轮第 1 条）：「还是一样，锁屏和灵动岛界面上一首、下一首、播放/暂停
+// 按钮点击无反应，我记得最早的版本是没有这个问题的，需要修复」。
+//
+// 第 43/44 轮已把「显示态 = 启停态」收口到唯一写入口 LXApplyNowPlayingInfo 的主线程闸门；
+// 但外界仍有两个本工程控制之外的写入者能把卡片拉离正轨（RNTP 按 updateOptions 的
+// capabilities 配置原生遥控命令 / 系统侧会话仲裁改写、丢弃媒体会话）。第 43 轮又按参考
+// 工程删掉了 1s 可用性看门狗、熄屏时歌词时钟停摆 —— 分叉之后**没有任何周期性重发**去
+// 纠正它。两条自愈路径把「对表」挂到两个必然发生的时刻：
+//   ① 按下即对表：每一次被投递到本 App 的按键（play/pause/toggle/next/previous）先全量
+//      重发一遍 info / playbackState / 六个 enabled，再投递通知（先纠正显示层，再让动作
+//      发生）。上一首 / 下一首在任何播放态都 enabled = YES，用户点它们任意一次就能把
+//      显示层与启停层拉回同源，所以任意一次成功投递都是自愈点；
+//   ② 锁屏那一刻对表：willResignActive（下拉控制中心 / 锁屏）时全量重发一次 ——
+//      锁屏后系统只渲染一次快照，且没有任何周期性兜底，第一帧就必须与命令同源。
+// 两者都幂等、都不引入周期性开销（第 42 轮省电口径）；都不碰 seek（拖动进度条会以
+// 极高频连续投递，逐条全量重发没有意义）。
+// ---------------------------------------------------------------------------
+
+const tapResyncInvariants = (raw) => {
+  const reasons = []
+  const code = stripComments(raw)
+
+  // ① 前置声明：LXHandleRemoteCommandEvent 的定义在文件前部，它要调用定义在更后面的
+  //    LXApplyNowPlayingInfo —— 没有声明就是隐式声明（ARC 下 objc 直接编译不过）
+  const decls = code.match(/static void LXApplyNowPlayingInfo\(void\);/g) || []
+  if (decls.length !== 1) {
+    reasons.push(`LXApplyNowPlayingInfo 的前置声明 ${decls.length} 处（应恰好一处 —— 定义在后、调用在前，缺了就是隐式声明）`)
+  }
+  const iDecl = code.indexOf('static void LXApplyNowPlayingInfo(void);')
+  const iHandlerDef = code.indexOf('static MPRemoteCommandHandlerStatus LXHandleRemoteCommandEvent(NSString *command) {')
+  if (iDecl < 0) {
+    reasons.push('没有 LXApplyNowPlayingInfo 的前置声明（定义在后、调用在前：隐式声明，ARC 下编译不过）')
+  } else if (iHandlerDef >= 0 && iDecl > iHandlerDef) {
+    reasons.push('前置声明出现在 LXHandleRemoteCommandEvent 定义之后（声明必须先于调用点）')
+  }
+
+  // ② 按下即对表：先全量重发（纠正显示层），再投递通知（让动作发生）
+  const handler = extractBracedBody(raw, 'static MPRemoteCommandHandlerStatus LXHandleRemoteCommandEvent(NSString *command)')
+  if (!handler) {
+    reasons.push('LXHandleRemoteCommandEvent 缺失或抽取失败（锚点漂移）')
+  } else {
+    const body = stripComments(handler)
+    const iApply = body.indexOf('LXApplyNowPlayingInfo();')
+    const iPost = body.indexOf('LXPostRemoteCommandNotification(command, nil);')
+    if (iApply < 0) {
+      reasons.push('遥控按键不再「按下即对表」（缺 LXApplyNowPlayingInfo() —— 分叉之后没有任何周期性重发能纠正它：'
+        + '看门狗第 43 轮已删、熄屏时歌词时钟停摆，用户点下去的每一下都会被 enabled = NO 静默吞掉，'
+        + '正是第 45 轮第 1 条原话「点击无反应」）')
+    } else if (iPost >= 0 && iApply > iPost) {
+      reasons.push('「按下即对表」落在 LXPostRemoteCommandNotification 之后（动作先生效、显示层后纠正 —— 这一拍里卡片与命令仍互相矛盾）')
+    }
+  }
+
+  // ③ 锁屏那一刻对表：willResignActive 里全量重发一次（有歌曲信息时）
+  const resign = extractBracedBody(raw, '- (void)handleAppWillResignActiveForLyricCard:(NSNotification *)notification')
+  if (!resign) {
+    reasons.push('handleAppWillResignActiveForLyricCard 缺失或抽取失败（锚点漂移）')
+  } else {
+    const body = stripComments(resign)
+    if (!body.includes('LXNowPlayingInfoCache.count == 0')) {
+      reasons.push('锁屏对表没有「无歌曲信息就跳过」的守卫（缓存为空时应直接返回 —— 没有卡片可对）')
+    }
+    if (!body.includes('LXApplyNowPlayingInfo();')) {
+      reasons.push('锁屏 / 下拉那一刻不再对表（缺 LXApplyNowPlayingInfo() —— 锁屏后没有任何周期性重发兜底，'
+        + '卡片若已分叉，用户看到的第一帧就是那个点不动的灰按钮）')
+    }
+  }
+
+  return reasons
+}
+
+// ---------------------------------------------------------------------------
 // 反例（对篡改后的源码跑同一套判断，必须被拦下）
 // ---------------------------------------------------------------------------
 
@@ -568,6 +656,31 @@ const runCounterExamples = () => {
     '        if (!playerState.isPlay) return\n        markManualPause()\n')),
   '提前 return')
 
+  // u1 【第 45 轮】「按下即对表」被删（分叉后没有任何纠正路径 —— 用户截图里的灰按钮）
+  //     锚点带上前一行 apply 调用与后一行 post 调用：两行紧挨着，全文件唯一。
+  check('u1 按下即对表被删', () => tapResyncInvariants(tamper(REAL_APPDELEGATE,
+    '  LXApplyNowPlayingInfo();\n  LXPostRemoteCommandNotification(command, nil);',
+    '  LXPostRemoteCommandNotification(command, nil);')),
+  '按下即对表')
+
+  // u2 「按下即对表」被挪到通知之后（动作先生效、显示层后纠正，这一拍仍自相矛盾）→ 报次序
+  check('u2 对表被挪到通知之后', () => tapResyncInvariants(tamper(REAL_APPDELEGATE,
+    '  LXApplyNowPlayingInfo();\n  LXPostRemoteCommandNotification(command, nil);',
+    '  LXPostRemoteCommandNotification(command, nil);\n  LXApplyNowPlayingInfo();')),
+  '落在 LXPostRemoteCommandNotification 之后')
+
+  // u3 锁屏那一刻的对表被删（锁屏后没有任何周期性重发兜底）→ 报「不再对表」
+  check('u3 锁屏对表被删', () => tapResyncInvariants(tamper(REAL_APPDELEGATE,
+    '  if (LXNowPlayingInfoCache.count == 0) return;\n  LXApplyNowPlayingInfo();\n}',
+    '}')),
+  '不再对表')
+
+  // u4 前置声明被删（定义在后、调用在前 —— 隐式声明，ARC 下编译不过）→ 报「前置声明」
+  check('u4 LXApplyNowPlayingInfo 前置声明被删', () => tapResyncInvariants(tamper(REAL_APPDELEGATE,
+    'static void LXApplyNowPlayingInfo(void);\n',
+    '')),
+  '前置声明')
+
   return results
 }
 
@@ -582,6 +695,7 @@ const checks = [
   ['原生：全文件只允许一处 playbackState 赋值且赋真实态（两处说谎翻转已删）', () => singleSourceInvariants(REAL_APPDELEGATE)],
   ['原生：写入一律主线程 + 无看门狗 + 无会话拆除 + 播放键先抢会话（第 43 轮）', () => mainThreadInvariants(REAL_APPDELEGATE)],
   ['原生：发布前速率与播放态同源（卡片显示 ⟺ 命令启停，第 44 轮）', () => rateStateInvariants(REAL_APPDELEGATE)],
+  ['原生：按下即对表 + 锁屏那一刻对表（第 45 轮，含前置声明）', () => tapResyncInvariants(REAL_APPDELEGATE)],
   ['JS：pause 只在真的会暂停时落闸（六命令覆盖 + 去重窗口）', () => remoteInvariants(REAL_REMOTE)],
 ]
 

@@ -50,6 +50,18 @@
  *  setWebdavStatus，并新增「页面里一个 setSyncMessage( 都不许有」这条负向判据；
  *  「等待选择同步方式...」这些由 core/sync 写的字仍然属于**下面那块**同步服务地址，两者互不覆盖。
  *
+ *  【第 45 轮第 2 条】兜底面加了**第二个挂载点**。用户原话：「数据同步中的同步服务地址功能，
+ *  在第一次连接过程中，可以显示同步方式的弹窗了，但是弹出位置不对，这个弹窗应该在数据同步
+ *  界面弹出显示」。根因是一条平台事实（SettingDetail/index.tsx 里三条登录弹窗注释早已记过）：
+ *  一张 push 屏盖住 Home 后，Home 的整棵树就脱离窗口 —— 而「数据同步」正是 push 出来的
+ *  SettingDetail 屏，用户点「连接」时人就在这一页，只挂 Home 的话弹窗只能等他自己退回 Home
+ *  才画得出来（于是出现在设置页上 = 截图里的「弹出位置不对」）。修法：同一个 SyncModeAskHost
+ *  也挂进 SettingDetail 的 PageContent 末尾（直接子级：</LandscapeCentered> 之后、
+ *  </PageContent> 之前，全屏绝对定位 + zIndex 200 盖过本页 header / 列表；塞进 ScrollView /
+ *  LandscapeCentered 会跟着列表滚、被裁切）。两份实例渲染同一份状态、点同一条作答链路
+ *  （global.app_event.selectSyncMode），任一时刻只有最上面那屏的那一份可见，收尾时一起卸载。
+ *  本脚本相应新增 ⑨（第二挂载点存在 + 位置判据）与反例 e8b / e8c / e8d。
+ *
  * 运行：node scripts/sim-sync-mode-modal-watchdog.js
  * 退出码：不变量全过、且全部反例被拦下时为 0，否则 1。
  */
@@ -71,6 +83,8 @@ const F = {
   // 【第 42 轮第 1 条】问句的主树兜底面（组件本体 + 它在 Home 视图树里的挂载点）
   host: 'src/navigation/components/SyncModeAskHost.tsx',
   home: 'src/screens/Home/index.tsx',
+  // 【第 45 轮第 2 条】第二个挂载点：「数据同步」页所在的 push 屏（问句触发时用户就在这一页）
+  settingDetail: 'src/screens/SettingDetail/index.tsx',
 }
 const REAL = Object.fromEntries(Object.entries(F).map(([k, v]) => [k, read(v)]))
 
@@ -391,13 +405,16 @@ const syncPageInvariants = (raw) => {
 // React 树里画（Home 视图树里的 SyncModeAskHost），那条路不依赖任何独立 UIWindow、
 // 也不经过 RNN 的呈现通道。
 //
-// 本段钉住四件事（顺序即正确性，全部是踩过的雷）：
+// 本段钉住五件事（顺序即正确性，全部是踩过的雷）：
 //   ① 换面必须**先立接管标记、再拆 overlay**：接管标记同时是两条卸载通路的让行判据，
 //      反过来就是「我们主动拆 overlay → 卸载回调把这次问句按『用户取消』杀掉」；
 //   ② 兜底面同样要点亮「在屏幕上」（20 秒问句复查与 60 秒握手看门狗据此让行）；
 //   ③ 三条收尾（作答 / 取消 / 断开、呈现失败）都要把兜底面收掉，绝不残留；
 //   ④ 兜底面必须复用**同一套**组件（SyncModeModal 的具名导出）并挂在 Home 视图树里 ——
-//      复制一份必然走样，不挂在 Home 树上则根本画不出来。
+//      复制一份必然走样，不挂在 Home 树上则根本画不出来；
+//   ⑤ 【第 45 轮第 2 条】还要挂在「数据同步」页所在的 push 屏（SettingDetail）的
+//      PageContent 末尾 —— 见下方 ⑨ 的说明（Home 被 push 屏盖住后整棵树脱离窗口，
+//      只挂 Home 的话，用户停在数据同步页时弹窗要等退回 Home 才看得见）。
 // ---------------------------------------------------------------------------
 
 const fallbackInvariants = (files) => {
@@ -406,6 +423,7 @@ const fallbackInvariants = (files) => {
   const modal = stripComments(files.modal)
   const host = stripComments(files.host)
   const home = stripComments(files.home)
+  const settingDetail = stripComments(files.settingDetail || '')
 
   // ① 接管期限常量
   if (!/const SYNC_MODE_FALLBACK_MS = \d+/.test(sync)) {
@@ -517,6 +535,30 @@ const fallbackInvariants = (files) => {
   }
   if (!/import SyncModeAskHost from '@\/navigation\/components\/SyncModeAskHost'/.test(home)) {
     reasons.push('Home 没有引入 SyncModeAskHost（挂载点悬空）')
+  }
+
+  // ⑨ 【第 45 轮第 2 条】还必须挂在「数据同步」页所在的 push 屏（SettingDetail）里，
+  //    且必须直接是 PageContent 的子级（</LandscapeCentered> 之后、</PageContent> 之前）：
+  //    用户点「连接」时正停在这一页 —— Home 那棵树已被这张 push 屏盖住、脱离窗口，
+  //    只挂 Home 的话弹窗要等用户自己退回 Home 才画得出来（= 用户原话「弹出位置不对」）。
+  //    塞进 ScrollView / LandscapeCentered 内会跟着列表滚、被裁切，也就不再是全屏置顶层。
+  if (!settingDetail) {
+    reasons.push('SettingDetail 源码缺失（「数据同步」问句没有第二挂载点：问句触发时用户就在这一页，'
+      + '弹窗只能等退回 Home 才可见 —— 用户第 45 轮原话「弹出位置不对……应该在数据同步界面弹出显示」）')
+  } else {
+    if (!/import SyncModeAskHost from '@\/navigation\/components\/SyncModeAskHost'/.test(settingDetail)) {
+      reasons.push('SettingDetail 没有引入 SyncModeAskHost（第二挂载点悬空）')
+    }
+    const iLandscape = settingDetail.indexOf('</LandscapeCentered>')
+    const iHost = settingDetail.indexOf('<SyncModeAskHost />')
+    const iPageEnd = settingDetail.indexOf('</PageContent>')
+    if (iHost < 0) {
+      reasons.push('SettingDetail 视图树里没有挂 SyncModeAskHost（问句触发时用户就在这一页：'
+        + '弹窗只能等退回 Home 才可见 = 「弹出位置不对」原样复现）')
+    } else if (iLandscape < 0 || iPageEnd < 0 || iHost < iLandscape || iHost > iPageEnd) {
+      reasons.push('SettingDetail 的 SyncModeAskHost 不在 </LandscapeCentered> 之后、</PageContent> 之前'
+        + '（必须直接挂在 PageContent 里：塞进 ScrollView / LandscapeCentered 会跟着列表滚、被裁切，不再是全屏置顶层）')
+    }
   }
   return reasons
 }
@@ -692,6 +734,33 @@ const runCounterExamples = () => {
     home: tamper(REAL.home, '      <SyncModeAskHost />\n', ''),
   }), '没有挂 SyncModeAskHost')
 
+  // e8b 【第 45 轮第 2 条】第二挂载点（SettingDetail）被删 —— 问句触发时用户正停在
+  //     「数据同步」页，弹窗又只能等退回 Home 才画得出来（用户原话「弹出位置不对」）。
+  //     锚点带上后一行 </PageContent>：挂载点前面是一整块中文注释，裸取 JSX 那一行
+  //     虽在本文件唯一（Home 树里另有同形行，tamper 只作用于本文件），带上上下文更稳。
+  check('e8b SettingDetail 挂载点被删', () => fbv({
+    settingDetail: tamper(REAL.settingDetail,
+      '      <SyncModeAskHost />\n    </PageContent>',
+      '    </PageContent>'),
+  }), 'SettingDetail 视图树里没有挂')
+
+  // e8c 第二挂载点被挪进 LandscapeCentered / ScrollView 内（跟着列表滚、被裁切，
+  //     不再是全屏置顶层）—— 位置判据必须拦住
+  check('e8c SettingDetail 挂载点位置不对', () => fbv({
+    settingDetail: tamper(tamper(REAL.settingDetail,
+      '      <SyncModeAskHost />\n    </PageContent>',
+      '    </PageContent>'),
+      '      </LandscapeCentered>\n',
+      '      <SyncModeAskHost />\n      </LandscapeCentered>\n'),
+  }), '不在 </LandscapeCentered> 之后')
+
+  // e8d 第二挂载点不再引入组件（挂载点悬空 —— JSX 直接报未定义标识符）
+  check('e8d SettingDetail 未引入组件', () => fbv({
+    settingDetail: tamper(REAL.settingDetail,
+      "import SyncModeAskHost from '@/navigation/components/SyncModeAskHost'\n",
+      ''),
+  }), '没有引入 SyncModeAskHost')
+
   // e9 兜底面层级被压回下载球之下（「最上层」诉求落空）
   check('e9 兜底面层级不置顶', () => fbv({
     host: tamper(REAL.host, 'zIndex: 200,', 'zIndex: 1,'),
@@ -717,7 +786,7 @@ const checks = [
   ['utils.ts：present() 入口的「绝不叠第二个」守卫', () => presentGuardInvariants(REAL.utils)],
   ['SyncModeModal：卸载上报 + 未知类型自撤', () => modalInvariants(REAL.modal)],
   ['设置页：六个动作各自写三句状态，且文案不含地址账号', () => syncPageInvariants(REAL.page)],
-  ['【第 42 轮第 1 条】主树兜底面：换面顺序 / 让行 / 收尾 / 复用同一套组件 / 挂在 Home 树', () => fallbackInvariants(REAL)],
+  ['【第 42/45 轮】主树兜底面：换面顺序 / 让行 / 收尾 / 复用同一套组件 / 两处挂载（Home + SettingDetail PageContent 末尾）', () => fallbackInvariants(REAL)],
 ]
 
 let invOk = true
