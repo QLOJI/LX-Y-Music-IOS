@@ -169,7 +169,12 @@ const Tabs = ({
 }
 
 export default memo(() => {
-  const [activeTab, setActiveTab] = useState<'songs' | 'playlists'>('songs')
+  // 【第 40 轮·默认落点】用户原话「网易每日推荐打开时，默认显示推荐歌单内容」：
+  // 主 tab 的初值从「推荐歌曲」（'songs'）改成「推荐歌单」（'playlists'）—— 页面上
+  // 推荐歌单本来就在左（第 33 轮第 6 条），打开即落在它上面。
+  // PagerView 的 initialPage 仍按语义 id 映射（`activeTab === 'songs' ? 0 : 1`，见下方 render），
+  // 初值一变落点自然跟着变，映射本身不用动（也仍然与 tab 渲染顺序解耦）。
+  const [activeTab, setActiveTab] = useState<'songs' | 'playlists'>('playlists')
   const [isStylized, setIsStylized] = useState(false)
   const [showStylizedModal, setShowStylizedModal] = useState(false)
   const [stylizedSelection, setStylizedSelection] = useState<StylizedSelection>(null)
@@ -184,6 +189,34 @@ export default memo(() => {
   const [selectedPlaylist, setSelectedPlaylist] = useState<ListInfoItem | null>(null)
   const selectedPlaylistRef = useRef(selectedPlaylist)
   selectedPlaylistRef.current = selectedPlaylist
+
+  // 【第 40 轮·重新进入回落默认】本页是 useHomeLazyPage 的「访问过即常驻」页
+  // （Vertical/Main.tsx 的 DailyRecPage）：离开再回来组件不重挂载，只靠 useState 初值的话
+  // 「打开时默认显示推荐歌单」只在本次会话第一次打开时成立。这里订阅导航 id 变化——
+  // 从**别的页面**切进本页时把主 tab 拨回默认的「推荐歌单」，并让 PagerView 落到 page1。
+  //   · 只有「id 是这一页、且上一个 id 不是它」才算「一次进入」（prev 存上一跳的快照）：
+  //     forceSyncNavActiveId()（core/common.ts，不受同值短路影响）会重播**当前** id，
+  //     少了这半道判定，用户在页内切到「推荐歌曲」后任何一次重复广播都会把他拨回去。
+  //   · 页内动作（切 tab、打开歌单详情浮层、进播放器再回来）都不改 navActiveId，不受影响。
+  //   · 已经停在「推荐歌单」就什么都不做（不重复下发切页）；切页用**无动画**版本 ——
+  //     此刻本层还被详情宿主盖着（useHomeLazyPage 的 setVisible 在下一帧的 rAF 里），
+  //     带动画会先闪一段从 page0 滑到 page1 的过程。
+  const activeTabRef = useRef(activeTab)
+  activeTabRef.current = activeTab
+  useEffect(() => {
+    let prevId: string = commonState.navActiveId
+    const handleNavActiveIdUpdate = (id: string) => {
+      const prev = prevId
+      prevId = id
+      if (id !== 'nav_daily_rec' || prev === 'nav_daily_rec') return
+      if (activeTabRef.current === 'playlists') return
+      setActiveTab('playlists')
+      pagerViewRef.current?.setPageWithoutAnimation(1)
+    }
+    global.state_event.on('navActiveIdUpdated', handleNavActiveIdUpdate)
+    return () => { global.state_event.off('navActiveIdUpdated', handleNavActiveIdUpdate) }
+  }, [])
+
   const t = useI18n()
   const handleTabChange = (newTab: 'songs' | 'playlists') => {
     if (activeTab === newTab) return
