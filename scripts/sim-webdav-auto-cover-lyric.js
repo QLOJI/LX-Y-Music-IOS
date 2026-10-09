@@ -71,6 +71,23 @@
  *   新增断言：loadConfig 三个形状、页面不许出现 prefetchCovers([...])、必须调用
  *   refreshWebdavCover；新增反例 c23–c25。
  *
+ * 第 36 轮增量（需求原话：「加载在线封面应该持续刷新，直到刷新出来为止，目前存在越到后面的歌，
+ * 封面越刷不出来的情况，然后不论是刷新、扫描、还是重新进入列表都不会再刷了，请修复这个问题，
+ * 保证封面可以 100% 可以刷出」）：
+ *   · 巡检「不会停」：① 删掉整轮作废标记（coverSweepToken）—— 它对在飞的那一轮是整轮掐死，
+ *     而新的一轮又从表头重来，每次进列表/刷新/扫描都把进度清零，靠后的歌永远排不到；
+ *     结果落地按 song.id 写回（setSongs 的 map 对不在列表的 id 天然空操作）。
+ *     ② 一轮跑完还有没拿到封面的歌就自己安排续巡（15s / 5min 两档，按 isWebdavCoverKnownMiss
+ *     区分「可能救得回来」与「确凿没结果」），不拿到就不停手。
+ *   · 名额不再泄漏：getOtherSourceByLocal → findMusic 走 SDK 的 HTTP、SDK 内部没有超时，
+ *     一首卡住就永不 settle，finally 里的 releaseWebdavCoverSearch() 永不执行 ——
+ *     2 个名额漏光后模块级闸门再也不放行任何请求（「之后怎么刷都刷不出来」的真正成因）。
+ *     现在整段搜索套 WEBDAV_COVER_SEARCH_TIMEOUT_MS（12s，短于 coverUrl.ts 的 15s 外层超时），
+ *     并且只把「确凿跑完、没有任何候选给出封面」（err.message === 'source not found'）记进失败备忘；
+ *     超时 / 异常算「这次没搜成」，留给续巡重试。
+ *   本脚本新增不变量 E 与反例 f1–f10 钉住以上全部形状（含「注释锚点会漂移」这一坑：
+ *   stripComments 会把整行 `//` 抹成空行，续巡分支的切片改用 sweep 之前最近的 `} else {`）。
+ *
  * 为什么必须靠契约脚本：这几条全是「形状 / 顺序 / 上限」而非类型 —— 把无条件 return 放回去、
  * 把兜底删掉、把 onToggleSource 换成真的换源、把空串 return 提到兜底之前、把上限改成整表、
  * 把去重删掉、把 fallback 挪到空歌词之后，或者把第 29 轮的 file:// 校验 / 失败备忘清空 /
@@ -109,6 +126,15 @@ const REAL = {}
 for (const [key, file] of Object.entries(F)) REAL[key] = read(file)
 
 const countOf = (haystack, needle) => haystack.split(needle).length - 1
+
+// 取 from 之后、下一个 to 之前的片段（锚点漂移返回 null，由调用方报 FAIL）
+const slice = (src, from, to) => {
+  const start = src.indexOf(from)
+  if (start < 0) return null
+  const end = src.indexOf(to, start + from.length)
+  if (end <= start) return null
+  return src.slice(start, end)
+}
 
 // ---------------------------------------------------------------------------
 // 切片工具（锚点漂移必须报 FAIL，不能静默放行）
@@ -291,8 +317,11 @@ const prefetchInvariants = (rawPage) => {
       reasons.push(`MAX_PREFETCH_COVERS=${n} 不在 (0, 50] 内（扫描 325 首时会变成一次批量请求风暴）`)
     }
   }
-  if (!body.includes('started >= MAX_PREFETCH_COVERS')) {
-    reasons.push('预热循环没有条数上限判断（会把整份曲库都发出去）')
+  // 【第 36 轮第 3 条】批大小必须就是 MAX_PREFETCH_COVERS：第 27 轮的 `started >= MAX_PREFETCH_COVERS`
+  // 计数上限（只补前 20 首）已经删掉 —— 现在的口径是「整表都要走到，靠分批 + 并发闸收口」，
+  // 所以这里改钉「一批切多少」（切整段 = 一次把 queue 全发出去，扫描 325 首就是请求风暴）。
+  if (!body.includes('queue.slice(i, i + MAX_PREFETCH_COVERS)')) {
+    reasons.push('巡检的批大小不是 MAX_PREFETCH_COVERS（一次把整份曲库发出去会打成请求风暴；或分批写法被改得不是「每批 20 首」）')
   }
   if (!body.includes('if (prefetchedCoverIds.current.has(song.id)) continue')) {
     reasons.push('预热没有按 song.id 去重（扫描/刷新/进列表来回切会重复补同一首）')
@@ -361,8 +390,11 @@ const prefetchInvariants = (rawPage) => {
   //   ① 计数下限回到 5：进列表 / 扫描 / 扫描并下载 / 下拉刷新 / 播放回填（实现体那一处仍计入）；
   //   ② 页面里不许再出现单首形式的 prefetchCovers([...])；
   //   ③ 页面必须走 refreshWebdavCover（行内封面挂了得有人补）。
-  if (countOf(code, 'prefetchCovers(') < 5) {
-    reasons.push(`预热调用点不足：prefetchCovers( 只有 ${countOf(code, 'prefetchCovers(')} 处（进列表/扫描/扫描并下载/刷新/播放回填 至少 5 处）`)
+  // 【第 36 轮第 3 条】下限从 5 提到 6：多出来的一处是巡检自己的续巡入口
+  // `prefetchCovers(failed, { auto: true })` —— 它就是「持续刷新，直到刷出来为止」的落点，
+  // 少一处都说明某条入口断了（定义那一处是 `const prefetchCovers = useCallback(`，不含 `(`，不计入）。
+  if (countOf(code, 'prefetchCovers(') < 6) {
+    reasons.push(`预热调用点不足：prefetchCovers( 只有 ${countOf(code, 'prefetchCovers(')} 处（进列表/扫描/扫描并下载/刷新/播放回填 + 续巡 共 6 处）`)
   }
   if (code.includes('prefetchCovers([')) {
     reasons.push('页面里又出现单首形式的 prefetchCovers([...])（行内自愈不许再借整轮巡检入口：会打断在飞的那一轮）')
@@ -391,6 +423,147 @@ const prefetchInvariants = (rawPage) => {
   // 第 25 轮删掉的整表批量下载不能回来，也不能再引 fetchWebDAVPic 做封面
   if (code.includes('fetchWebDAVPic')) {
     reasons.push('页面里又出现了 fetchWebDAVPic（第 25 轮已删除的整表批量下载）')
+  }
+
+  return reasons
+}
+
+// ---------------------------------------------------------------------------
+// 不变量 E（第 36 轮第 3 条）：巡检「不会停」（去掉整轮作废 + 跑完自续巡）
+//   + 名额不再泄漏（搜索套超时 + 超时/异常不记失败备忘）
+// ---------------------------------------------------------------------------
+
+const followupSweepInvariants = (files) => {
+  const reasons = []
+  const page = stripComments(files.page)
+  const localCode = stripComments(files.local)
+  const coverCode = stripComments(files.coverUrl)
+
+  // ① 整轮作废标记不许回来：它对在飞的那一轮是「整轮掐死」，而新的一轮又从表头重来 ——
+  //    每次进列表 / 刷新 / 扫描都把进度清零，靠后的歌永远排不到（用户原话「越到后面的歌，
+  //    封面越刷不出来」）。结果落地已改成按 song.id 写回（map 对不在列表的 id 天然空操作）。
+  if (/\bcoverSweepToken\b/.test(page) || /\bsweepToken\b/.test(page)) {
+    reasons.push('巡检又出现轮次作废标记 sweepToken / coverSweepToken（在飞的那一轮会被整轮掐死，而新一轮从表头重来 —— 靠后的歌永远排不到）')
+  }
+
+  const body = prefetchBody(page)
+  if (!body) {
+    reasons.push('prefetchCovers 实现体切片失败（锚点漂移：prefetchedCoverIds / loadConfig）')
+    return reasons
+  }
+
+  // ② 跑完还有没拿到封面的歌 → 自己安排续巡（用户原话「持续刷新，直到刷新出来为止」）
+  if (!body.includes('prefetchCovers(failed, { auto: true })')) {
+    reasons.push('巡检跑完不安排续巡（失败 / 超时的歌没有第二次机会，用户不动手就永远停在灰占位）')
+  }
+  if (!body.includes('const hasRetryable = failed.some(song => !isWebdavCoverKnownMiss(song))')) {
+    reasons.push('续巡没有按「确凿没结果 / 可能救得回来」分级（要么对查不到的歌无限空转，要么把暂时失败判死）')
+  }
+  if (!body.includes('hasRetryable ? COVER_FOLLOWUP_SHORT_MS : COVER_FOLLOWUP_LONG_MS')) {
+    reasons.push('续巡节奏没有长短两档（COVER_FOLLOWUP_SHORT_MS / COVER_FOLLOWUP_LONG_MS）')
+  }
+  // ③ 续巡只重查没拿到的那批：先把这些 id 从已试名单里摘掉，否则上面那道 has() 去重
+  //    会把这批整批跳过 —— 「再也不重试」换个地方原样复现。
+  if (!body.includes('for (const song of list) prefetchedCoverIds.current.delete(song.id)')) {
+    reasons.push('续巡没有把待重查的 id 从已试名单里摘掉（去重会把这批整批跳过 —— 「再也不重试」换个地方复现）')
+  }
+  // ④ 续巡不许清「搜过没结果」的备忘：那是确凿结论，也是长短两档节奏的判据。
+  //    切片用「sweep 之前最近的那个 `} else {`」—— 不能锚注释（本脚本的 stripComments 会把
+  //    整行 `//` 注释抹成空行，锚注释必然漂移）。
+  const sweepAt = page.indexOf('const sweep = async()')
+  const elseAt = sweepAt < 0 ? -1 : page.lastIndexOf('    } else {', sweepAt)
+  if (sweepAt < 0 || elseAt < 0) {
+    reasons.push('续巡分支切片失败（锚点漂移：} else { / const sweep）')
+  } else {
+    const autoBranch = page.slice(elseAt, sweepAt)
+    if (autoBranch.includes('clearWebdavCoverMisses()')) {
+      reasons.push('续巡把「搜过没结果」的备忘一起清了（确凿结论丢失：长短周期判据失效 + 搜索风暴回来）')
+    }
+    if (!autoBranch.includes('prefetchedCoverIds.current.delete(song.id)')) {
+      reasons.push('续巡没有把待重查的 id 从已试名单里摘掉（去重会把这批整批跳过 —— 「再也不重试」换个地方复现）')
+    }
+  }
+  // ⑤ 同一时刻只挂一个续巡定时器：新一轮巡检先清旧的，卸载时也要清
+  if (!body.includes('if (coverFollowupTimer.current) {\n      clearTimeout(coverFollowupTimer.current)')) {
+    reasons.push('新一轮巡检没有先清掉旧的续巡定时器（多个定时器叠着跑，越滚越多）')
+  }
+  const unmount = slice(page, '  useEffect(() => () => {', '  }, [])')
+  if (!unmount || !unmount.includes('clearTimeout(coverFollowupTimer.current)')) {
+    reasons.push('页面卸载没有清掉续巡定时器（离开 WebDAV 后定时器还在跑，回调落在已卸载的组件上）')
+  }
+  // ⑥ 常量有界：短周期是「秒级重试」、长周期是「确凿失败的兜底」，都不许退化成 0 / 无限大
+  const shortMs = Number((/const COVER_FOLLOWUP_SHORT_MS = (\d+)/.exec(page) ?? [])[1])
+  const longMs = Number((/const COVER_FOLLOWUP_LONG_MS = (\d+)/.exec(page) ?? [])[1])
+  if (!(shortMs >= 3000 && shortMs <= 120000)) {
+    reasons.push(`续巡短周期 ${shortMs}ms 不在 [3000, 120000]（太小变成请求风暴，太大等于不重试）`)
+  }
+  if (!(longMs >= shortMs && longMs <= 1800000)) {
+    reasons.push(`续巡长周期 ${longMs}ms 不合理（必须 ≥ 短周期且 ≤ 30 分钟，否则确凿没结果的歌要么被无限空转要么被彻底放弃）`)
+  }
+  if (!page.includes("import { clearWebdavCoverMisses, isWebdavCoverKnownMiss } from '@/core/music/local'")) {
+    reasons.push('列表页没有引 isWebdavCoverKnownMiss（续巡的节奏分级拿不到「确凿没结果」这个判据）')
+  }
+  if (!localCode.includes('export const isWebdavCoverKnownMiss = (musicInfo: LX.Music.MusicInfoLocal) =>')) {
+    reasons.push('local.ts 没有导出 isWebdavCoverKnownMiss（续巡无从区分「确凿没结果」与「这次没搜成」）')
+  }
+
+  // ⑦ 名额泄漏的两道修（local.ts）：搜索套 12 秒上限 + 超时/异常不记失败备忘。
+  //    病根：findMusic 走音源 SDK 的 HTTP、SDK 内部没有超时，一首卡住就永不 settle，
+  //    finally 里的 release 永不执行；2 个名额漏光后模块级闸门再也不放行任何请求 ——
+  //    之后**每一次**封面兜底都永远排在 acquireWebdavCoverSearch() 上，界面上就是
+  //    「后面的歌封面全刷不出来，而且刷新、扫描、重新进列表都不再刷了」。
+  const searchMs = Number((/const WEBDAV_COVER_SEARCH_TIMEOUT_MS = (\d+)/.exec(localCode) ?? [])[1])
+  if (!Number.isFinite(searchMs) || searchMs <= 0) {
+    reasons.push('local.ts 没有 WEBDAV_COVER_SEARCH_TIMEOUT_MS（卡死的搜索会永久占住并发名额 —— 两个名额漏光后全表封面永久停摆）')
+  } else {
+    const outerMs = Number((/const COVER_FETCH_TIMEOUT_MS = (\d+)/.exec(coverCode) ?? [])[1])
+    if (Number.isFinite(outerMs) && searchMs >= outerMs) {
+      reasons.push(`搜索上限 ${searchMs}ms 不短于外层封面超时 ${outerMs}ms（外层早把这一首放弃了，这边还占着名额干一份已经被丢弃的活）`)
+    }
+  }
+  if (!localCode.includes('const withWebdavCoverSearchTimeout = (')) {
+    reasons.push('local.ts 没有 withWebdavCoverSearchTimeout（搜索没有时长上限，名额会漏光）')
+  } else {
+    // 切片末尾锚「下一个顶层声明」：不能锚 `/**`（块注释已被 stripComments 抹掉）
+    const helper = slice(localCode, 'const withWebdavCoverSearchTimeout = (', 'export const getOtherSourceByLocal = async <T>(')
+    if (!helper) {
+      reasons.push('withWebdavCoverSearchTimeout 切片失败（锚点漂移）')
+    } else {
+      const timeoutBranch = slice(helper, 'const timer = setTimeout(() => {', '}, WEBDAV_COVER_SEARCH_TIMEOUT_MS)')
+      if (!timeoutBranch || !timeoutBranch.includes("resolve({ url: '', definitive: false })")) {
+        reasons.push('搜索超时分支不按「这次没搜成」落地（超时要能放行名额、并把这次失败留给续巡重试）')
+      } else if (/\bthrow\b|\breject\b/.test(timeoutBranch)) {
+        reasons.push('搜索超时分支里出现 throw/reject（超时必须静默落地，名额才放得掉）')
+      }
+      if (countOf(helper, 'clearTimeout(timer)') < 2) {
+        reasons.push(`withWebdavCoverSearchTimeout 只在 ${countOf(helper, 'clearTimeout(timer)')} 条路径上清定时器（成功 / 失败两条路径都要清）`)
+      }
+    }
+  }
+  const picBranch = webdavPicOnly(localCode)
+  if (!picBranch) {
+    reasons.push('getPicUrl 的 WebDAV 分支切片失败（锚点漂移：isWebDAVMusic 标记 / onToggleSource() 行）')
+  } else {
+    if (!picBranch.includes("err?.message === 'source not found'")) {
+      reasons.push('「确凿没有结果」与「超时/异常」没有分开（一次网络抖动就把这首歌判死刑，续巡也不会再试）')
+    }
+    const markBranch = slice(picBranch, 'if (searchResult.definitive) {', '} finally {')
+    if (!markBranch) {
+      reasons.push('失败备忘的落地分支切片失败（锚点漂移：if (searchResult.definitive) / } finally）')
+    } else {
+      if (!markBranch.includes('markWebdavCoverMiss(musicInfo)')) {
+        reasons.push('确凿没结果的歌没有记失败备忘（每次进列表都会为它重发整轮搜索）')
+      }
+      if (!markBranch.includes('webDAVLog?.warn(')) {
+        reasons.push('非确凿失败没有落日志（「这次没搜成」为什么被重试，日志里查不到）')
+      }
+    }
+    if (!picBranch.includes('} finally {\n        releaseWebdavCoverSearch()')) {
+      reasons.push('并发名额不是在 finally 里放行的（任何一条提前 return / 抛错都会泄漏名额 —— 漏两个全表停摆）')
+    }
+    if (!picBranch.includes('await acquireWebdavCoverSearch()')) {
+      reasons.push('封面兜底搜索不再进并发闸（几百行同时发搜索，第 28 轮的风暴回来）')
+    }
   }
 
   return reasons
@@ -488,19 +661,22 @@ const runCounterExamples = () => {
   '无条件')
 
   // c2 封面删掉搜索兜底
-  // 锚点不带缩进：第 28 轮给这段加了失败备忘 + 并发闸（多套了一层 if/else + try），
-  // `const matchedUrl = await getOtherSourceByLocal(` 整体缩进从 4 格变 8 格，锚进缩进会假失败。
+  // 锚点 = 「10 格缩进的 getOtherSourceByLocal 调用」：第 36 轮把整段搜索包进了
+  // withWebdavCoverSearchTimeout(...)，调用点缩进变成 10 格、前面也不再是 `const matchedUrl = await`。
+  // 文件里 `getOtherSourceByLocal(musicInfo, async(otherSource) => {` 共 3 处（行内封面兜底 /
+  // 普通本地换源 / 歌词兜底），只有这一处是 10 格缩进 —— 锚进缩进才打得准。
   check('c2 封面删掉搜索兜底', webdavCoverFallbackInvariants(tamper(REAL.local,
-    'const matchedUrl = await getOtherSourceByLocal(musicInfo, async(otherSource) => {',
-    'const matchedUrl = await Promise.resolve(\'\') && await (async(otherSource: any) => {')),
+    '          getOtherSourceByLocal(musicInfo, async(otherSource) => {',
+    '          Promise.resolve(musicInfo).then(async(otherSource: any) => {')),
   '缺少 getOtherSourceByLocal')
 
   // c3 封面兜底改成真的换源
-  // 同理，锚点只取「12 格缩进的 musicInfos/onToggleSource/isRefresh」这一小段：
-  // 歌词那段同样的三行是 10 格缩进，靠缩进区分，锚点不会串到歌词分支。
+  // 锚点只取「14 格缩进的 musicInfos/onToggleSource/isRefresh」这一小段：歌词那段同样的三行是
+  // 10 格缩进、行内封面兜底那段是 6 格，靠缩进区分。（第 36 轮把整段包进
+  // withWebdavCoverSearchTimeout 后又深了一层，12 格 → 14 格。）
   check('c3 封面兜底换源', webdavCoverFallbackInvariants(tamper(REAL.local,
-    '            musicInfos: [...otherSource],\n            onToggleSource: () => {},\n            isRefresh,\n          })',
-    '            musicInfos: [...otherSource],\n            onToggleSource,\n            isRefresh,\n          })')),
+    '              musicInfos: [...otherSource],\n              onToggleSource: () => {},\n              isRefresh,\n            })',
+    '              musicInfos: [...otherSource],\n              onToggleSource,\n              isRefresh,\n            })')),
   '不是空函数')
 
   // c4 封面兜底不写回 meta
@@ -521,11 +697,12 @@ const runCounterExamples = () => {
     'void matchedUrl')),
   '没有广播')
 
-  // c7 预热没有上限（第 29 轮：循环挪进 sweep 内层，锚点缩进跟着变，字面量仍然唯一）
-  check('c7 预热无上限', prefetchInvariants(tamper(REAL.page,
-    '          if (started >= MAX_PREFETCH_COVERS) break',
-    '          // no bound')),
-  '没有条数上限')
+  // c7 巡检一次把整批全发出去（第 36 轮：第 27 轮的 `started >= MAX_PREFETCH_COVERS` 计数上限
+  //    已按新口径删除，改钉「一批切多少」）
+  check('c7 巡检一批全发出去', prefetchInvariants(tamper(REAL.page,
+    'queue.slice(i, i + MAX_PREFETCH_COVERS)',
+    'queue.slice(i)')),
+  '批大小不是 MAX_PREFETCH_COVERS')
 
   // c8 预热没有 id 去重
   check('c8 预热无去重', prefetchInvariants(tamper(REAL.page,
@@ -651,6 +828,90 @@ const runCounterExamples = () => {
     '    void Promise.resolve(song).then((newPicUrl) => {')),
   'refreshWebdavCover')
 
+  // ---- 第 36 轮第 3 条：巡检不会停（去掉整轮作废 + 跑完自续巡）+ 名额不再泄漏 ----
+
+  // f1 轮次作废标记回来（在飞的那一轮被整轮掐死，新一轮从表头重来）
+  check('f1 轮次作废标记回来', followupSweepInvariants({
+    ...REAL,
+    page: tamper(REAL.page,
+      '  const prefetchedCoverIds = useRef(new Set<string>())',
+      '  const prefetchedCoverIds = useRef(new Set<string>())\n  const coverSweepToken = useRef(0)'),
+  }),
+  '轮次作废标记')
+
+  // f2 跑完不再续巡（失败/超时的歌没有第二次机会）
+  check('f2 跑完不续巡', followupSweepInvariants({
+    ...REAL,
+    page: tamper(REAL.page, '        prefetchCovers(failed, { auto: true })', '        void failed'),
+  }),
+  '不安排续巡')
+
+  // f3 续巡把确凿没结果的备忘一起清了（判据失效 + 搜索风暴）
+  check('f3 续巡清掉备忘', followupSweepInvariants({
+    ...REAL,
+    page: tamper(REAL.page,
+      '      for (const song of list) prefetchedCoverIds.current.delete(song.id)',
+      '      clearWebdavCoverMisses()\n      for (const song of list) prefetchedCoverIds.current.delete(song.id)'),
+  }),
+  '备忘一起清')
+
+  // f4 续巡不摘已试名单（去重把这批整批跳过 —— 换汤不换药）
+  check('f4 续巡不摘已试名单', followupSweepInvariants({
+    ...REAL,
+    page: tamper(REAL.page,
+      '      for (const song of list) prefetchedCoverIds.current.delete(song.id)',
+      '      void list'),
+  }),
+  '已试名单里摘掉')
+
+  // f5 卸载不收定时器（离开 WebDAV 后定时器还在跑）
+  check('f5 卸载不收定时器', followupSweepInvariants({
+    ...REAL,
+    page: tamper(REAL.page,
+      '  useEffect(() => () => {\n    if (coverFollowupTimer.current) {\n      clearTimeout(coverFollowupTimer.current)\n      coverFollowupTimer.current = null\n    }\n  }, [])',
+      '  useEffect(() => () => {}, [])'),
+  }),
+  '卸载没有清掉续巡定时器')
+
+  // f6 续巡短周期被改成毫秒级（请求风暴）
+  check('f6 续巡短周期超界', followupSweepInvariants({
+    ...REAL,
+    page: tamper(REAL.page, 'const COVER_FOLLOWUP_SHORT_MS = 15000', 'const COVER_FOLLOWUP_SHORT_MS = 5'),
+  }),
+  '短周期')
+
+  // f7 搜索上限被删（名额漏光后全表封面永久停摆）
+  check('f7 搜索上限被删', followupSweepInvariants({
+    ...REAL,
+    local: tamper(REAL.local, 'const WEBDAV_COVER_SEARCH_TIMEOUT_MS = 12000\n', ''),
+  }),
+  '没有 WEBDAV_COVER_SEARCH_TIMEOUT_MS')
+
+  // f8 搜索上限不再短于外层封面超时（占着名额干已被丢弃的活）
+  check('f8 搜索上限不短于外层', followupSweepInvariants({
+    ...REAL,
+    local: tamper(REAL.local, 'const WEBDAV_COVER_SEARCH_TIMEOUT_MS = 12000', 'const WEBDAV_COVER_SEARCH_TIMEOUT_MS = 60000'),
+  }),
+  '不短于外层封面超时')
+
+  // f9 超时/异常也记失败备忘（一次抖动就把这首判死刑）
+  check('f9 超时也记备忘', followupSweepInvariants({
+    ...REAL,
+    local: tamper(REAL.local,
+      "              const definitive = err?.message === 'source not found'",
+      '              const definitive = true'),
+  }),
+  '判死刑')
+
+  // f10 名额不在 finally 里放行（任何一条提前 return / 抛错都泄漏名额）
+  check('f10 名额不在 finally 放行', followupSweepInvariants({
+    ...REAL,
+    local: tamper(REAL.local,
+      '      } finally {\n        releaseWebdavCoverSearch()',
+      '      }\n      if (true) {\n        releaseWebdavCoverSearch()'),
+  }),
+  'finally 里放行')
+
   return results
 }
 
@@ -667,6 +928,7 @@ const checks = [
   ['条一③ 列表页巡检（整表分批 ≤50 / 每轮清失败备忘 / file:// 失效封面重补 / 跳缓存）+ 预热点齐全 + 没回退成整表批量下载', () => prefetchInvariants(REAL.page)],
   ['条二 WebDAV 歌词兜底 + saveLyric + 空歌词仍是最后收口', () => webdavLyricFallbackInvariants(REAL.local)],
   ['兜底链路复核：helper 走 searchMusic/内置平台接口，内置 apiList 仍为空，并发上限仍是 4', () => helperInvariants(REAL)],
+  ['第 36 轮第 3 条 巡检不会停（无轮次作废 / 跑完按失败性质分档续巡 / 续巡只重查没拿到的那批并摘掉已试 id）+ 名额不再泄漏（搜索套 12s 上限且短于外层超时 / 超时异常不记备忘 / finally 放行）', () => followupSweepInvariants(REAL)],
 ]
 
 let invOk = true

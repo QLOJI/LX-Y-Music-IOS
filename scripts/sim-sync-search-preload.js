@@ -9,8 +9,12 @@
  *         iOS 上 overlay 会被挂到正在消失的宿主 VC 上、随它一起消失，而 Promise 照常
  *         resolve —— 只监听 reject 的实现会漏掉这种静默失败。IsEnable 改为「先关输入框，
  *         延时 400ms 再 connectServer」，延时值对齐「先卸载 Dialog 再调起原生面板」的既有口径。
- *      b. overlay resolve 之后延时复查「SyncModeModal 是否真的挂上了」：判据是它挂载时写进
- *         store 的 syncModeComponentId；仍为空 → 按失败重试呈现（上限 5 次 / 间隔 700ms）。
+ *      b. overlay resolve 之后延时复查「SyncModeModal 是否真的挂上了」：判据是它挂载时点亮的
+ *         「在屏幕上」标记（syncModeModalVisible）；仍为 false → 按失败重试呈现（上限 5 次 / 间隔 700ms）。
+ *         【第 36 轮第 1 条】判据从 store 里的 syncModeComponentId 换成 syncModeModalVisible：
+ *         id 是「挂载时写回、卸载清理时清掉」的，原生把 overlay 收走却没跑到 JS 卸载清理时它就是
+ *         一条残留 —— 拿 id 当「挂上了」会误判成已挂载而停止重试，选择框再也弹不出来（用户第 36
+ *         轮第 1 条：状态一直「等待选择同步方式...」、框不弹、也没有「已连接」）。
  *      c. 复查必须能作废：用户已作答 / 取消 / 连接断开时 core/sync 的 closeSyncModeModal
  *         无条件调用 cancelSyncModeModalRetries()（代次 +1），否则到点的复查会把用户已经
  *         回答过的选择框再弹一次（幽灵弹窗）。另外 overlay 是 interceptTouchOutside 的
@@ -169,10 +173,13 @@ const GROUP_A = [
       /const maxAttempts = 5/.test(s.utils)],
   ['utils：resolve 之后才复查，且先比代次（已作答 / 已取消就作废）',
     (s) => /\.then\(\(\) => \{\s*\n\s*setTimeout\(\(\) => \{[\s\S]{0,200}?if \(seq !== syncModeModalSeq\) return/.test(s.utils)],
-  ['utils：复查判据 = store 里的 componentId（已挂上就停手，绝不叠第二个）',
-    // 【第 35 轮第 2 条】present() 入口也有一句同样的判据（防重复呈现），所以这里必须连
-    // 「判据为空 → handleFail('overlay not mounted')」一起钉，否则拿掉复查那句也判绿。
-    (s) => /if \(syncState\.syncModeComponentId\) return\s*\n\s*handleFail\(attempt, new Error\('overlay not mounted'\)\)/.test(s.utils)],
+  ['utils：复查判据 = 「选择框确实在屏幕上」（已挂上就停手，绝不叠第二个）',
+    // 【第 35 轮第 2 条】present() 入口也有一句同样家族的判据（防重复呈现），所以这里必须连
+    // 「判据为假 → handleFail('overlay not mounted')」一起钉，否则拿掉复查那句也判绿。
+    // 【第 36 轮第 1 条】判据 = syncModeModalVisible（组件挂载点亮 / 卸载摘掉）；不能再按
+    // store 里的 id 判 —— 残留 id 会让复查误判成「已挂载」，重试停止、选择框再也不出现。
+    (s) => /if \(syncState\.syncModeModalVisible\) return\s*\n\s*handleFail\(attempt, new Error\('overlay not mounted'\)\)/.test(s.utils) &&
+      !/if \(syncState\.syncModeComponentId\) return/.test(s.utils)],
   ['utils：判据为空才按「没挂上」走重试（handleFail）',
     (s) => /handleFail\(attempt, new Error\('overlay not mounted'\)\)/.test(s.utils)],
   ['utils：showOverlay 的 reject 与静默失败走同一条重试路径',
@@ -358,10 +365,11 @@ const mutated = (src, key, from, to) => {
 const caught = (group, src) => runGroup(group, src).some((r) => !r.ok)
 
 // n1: utils 拿掉「已挂上就停手」的判据（复查变成无条件重试）
-// 【第 35 轮第 2 条】present() 入口也加了同样一句（防重复呈现），所以锚点带上它的下一行
+// 【第 35 轮第 2 条】present() 入口也加了同样家族的一句（防重复呈现），所以锚点带上它的下一行
 // ——只锚那一句的话 .replace 会命中新加的那处，复查判据还在，反例就拦不下来了。
+// 【第 36 轮第 1 条】判据本身改成 syncModeModalVisible（见上），锚点随之更新。
 const n1 = mutated(SRC_A, 'utils',
-  "if (syncState.syncModeComponentId) return\n            handleFail(attempt",
+  "if (syncState.syncModeModalVisible) return\n            handleFail(attempt",
   "if (false) return\n            handleFail(attempt")
 // n2: sync 删掉复查作废（幽灵弹窗防线没了）
 const n2 = mutated(SRC_A, 'sync',

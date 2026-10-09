@@ -34,7 +34,16 @@
  * 为什么必须靠契约脚本：这三条都是「点了没反应」的形态 —— 编译通过、页面正常、没有任何报错，
  * tsc/eslint 对 disabled 的真假、loading 有没有复位、Promise 有没有 catch 全部无感。
  * 谁把 `!isEnableWebdav` 加回 disabled、把 finally 拿掉、把 isSyncing 挪出 try、或把 toast 的
- * catch 删掉，脚本立刻红。带反例自检（m1–m8）。
+ * catch 删掉，脚本立刻红。带反例自检（m1–m11）。
+ *
+ * 【第 36 轮第 2 条】新增不变量 F —— 六个按钮的状态文案必须写在**本区块自己**的那一行：
+ *   用户原话：「点击测试连接按钮时，提示信息显示在同步服务地址的状态一栏，其实这两个功能是
+ *   相互独立的，上面 WebDAV 是一个功能，下面同步服务地址是另一个功能，互不干扰，点击测试连接、
+ *   立即同步歌单按钮后，应该在"上次歌单同步时间"上面增加一行状态提示，字体与上次歌单同步时间
+ *   一致」。第 35 轮把这 18 句写进了 core/sync 的 setSyncMessage（= 下面「同步服务地址」那一栏），
+ *   于是点上面的按钮、动的是下面那一栏。现在改成本页局部 state `webdavStatus`：
+ *   六个处理函数各 3 句（起/成/败）= 18 句，且**一个字都不许写进 setSyncMessage**；
+ *   渲染位置在「上次歌单同步时间」**上面**一行，样式/字号/颜色与它完全一致。
  *
  * 运行：node scripts/sim-webdav-button-feedback.js
  * 退出码：不变量全过、且全部反例被拦下时为 0，否则 1。
@@ -74,6 +83,15 @@ const extractBracedBody = (src, signature) => {
 }
 
 const countOf = (src, needle) => src.split(needle).length - 1
+
+/** 取 from 之后、下一个 to 之前的片段（锚点漂移返回 null，由调用方报 FAIL） */
+const slice = (src, from, to) => {
+  const start = src.indexOf(from)
+  if (start < 0) return null
+  const end = src.indexOf(to, start + from.length)
+  if (end <= start) return null
+  return src.slice(start, end)
+}
 
 const F = {
   sync: 'src/screens/Home/Views/Setting/settings/Sync/index.tsx',
@@ -188,6 +206,57 @@ const handlerInvariants = (raw) => {
     const finallyAt = body.search(/\}\s*finally\s*\{/)
     if (finallyAt >= 0 && body.indexOf(h.reset) < finallyAt) {
       reasons.push(`「${h.name}」的 ${h.reset} 写在 finally 之前：抛错时不会执行，等于没复位`)
+    }
+  }
+  return reasons
+}
+
+// ---------------------------------------------------------------------------
+// 不变量 F（第 36 轮第 2 条）：六个按钮的状态文案写在 WebDAV 区块自己那一行
+// ---------------------------------------------------------------------------
+const webdavStatusInvariants = (raw) => {
+  const reasons = []
+  const code = stripComments(raw)
+
+  if (!code.includes("const [webdavStatus, setWebdavStatus] = useState('')")) {
+    reasons.push('本区块没有自己的状态行 state（webdavStatus）：按钮文案又会写到别处去')
+  }
+  let writes = 0
+  for (const h of HANDLERS) {
+    const body = extractBracedBody(code, h.sig)
+    if (!body) {
+      reasons.push(`找不到「${h.name}」处理函数体（锚点漂移，先修脚本锚点）`)
+      continue
+    }
+    const n = countOf(body, 'setWebdavStatus(')
+    writes += n
+    if (n !== 3) {
+      reasons.push(`「${h.name}」的状态行写入是 ${n} 句（应为 3：点击 / 成功 / 失败）——`
+        + '少一句就是有一次操作静默无反馈')
+    }
+  }
+  if (writes !== 18) {
+    reasons.push(`状态行写入总次数是 ${writes}（应为 18 = 六个动作 × 三句）`)
+  }
+  if (code.includes('setSyncMessage(')) {
+    reasons.push('WebDAV 区块又往 setSyncMessage 里写状态：那是下面「同步服务地址」（WebSocket 同步）'
+      + '那一栏的状态行，两个功能互不干扰（用户第 36 轮第 2 条原话）')
+  }
+  // 渲染位置：本区块内、紧挨「上次歌单同步时间」上面一行。
+  // 切片终点必须落在**下一行的 `<Text`**上（外层缩进 10 空格 = 「上次歌单同步时间」那一行），
+  // 不能切到「上次歌单同步时间」这几个字 —— 那样会把下行自己的 styles.lastSyncText/size={12}
+  // 也框进来，于是「字体换掉了」这种改动永远查不出来（反例 m11 就是钉这个的）。
+  const block = slice(code, '{webdavStatus ? (', '\n          <Text ')
+  if (block === null) {
+    reasons.push('状态提示不在「上次歌单同步时间」上面（切片失败：要么根本没渲染，要么被挪到它下面了）')
+  } else {
+    if (!block.includes('WebDAV 状态: {webdavStatus}')) {
+      reasons.push('状态提示没有把 webdavStatus 渲染出来（有 state 却不显示 = 还是没有反馈）')
+    }
+    if (!block.includes('styles.lastSyncText') || !block.includes('size={12}')
+      || !block.includes("color={theme['c-font-label']}")) {
+      reasons.push('状态提示的字体与「上次歌单同步时间」不一致（要同款 styles.lastSyncText + size={12} '
+        + '+ c-font-label —— 用户原话「字体与上次歌单同步时间一致」）')
     }
   }
   return reasons
@@ -342,11 +411,12 @@ const runCounterExamples = () => {
   '只剩 1 处')
 
   // m4 上传按钮退回「三行直筒」写法（无 try/finally）
-  // 【第 35 轮第 2 条】六个处理函数各加了起止/失败三条状态行（setSyncMessage），
-  // 锚点随之更新；反例拆的仍是「这段到底还有没有 try/finally」，语义不变。
+  // 【第 35 轮第 2 条】六个处理函数各加了起止/失败三条状态行；【第 36 轮第 2 条】这三行
+  // 从 setSyncMessage 改成 setWebdavStatus（本区块自己的状态行），锚点随之更新；
+  // 反例拆的仍是「这段到底还有没有 try/finally」，语义不变。
   check('m4 「上传设置与音源」去掉 try/finally', handlerInvariants(tamper(REAL.sync,
-    "    setIsUploading(true)\n    setSyncMessage('正在上传设置与音源...')\n    try {\n      await manualUploadSettingsAndApis()\n      setSyncMessage('设置与音源上传完成')\n    } catch (error: any) {\n      toast(`上传失败: ${error?.message ?? error}`, 'long')\n      setSyncMessage('设置与音源上传失败，详情见下方提示')\n    } finally {\n      setIsUploading(false)\n    }",
-    "    setIsUploading(true)\n    setSyncMessage('正在上传设置与音源...')\n    await manualUploadSettingsAndApis()\n    setSyncMessage('设置与音源上传完成')\n    setIsUploading(false)")),
+    "    setIsUploading(true)\n    setWebdavStatus('正在上传设置与音源...')\n    try {\n      await manualUploadSettingsAndApis()\n      setWebdavStatus('设置与音源上传完成')\n    } catch (error: any) {\n      toast(`上传失败: ${error?.message ?? error}`, 'long')\n      setWebdavStatus('设置与音源上传失败，详情见下方提示')\n    } finally {\n      setIsUploading(false)\n    }",
+    "    setIsUploading(true)\n    setWebdavStatus('正在上传设置与音源...')\n    await manualUploadSettingsAndApis()\n    setWebdavStatus('设置与音源上传完成')\n    setIsUploading(false)")),
   '没有 try')
 
   // m5 testConnection 退回无超时的裸调用
@@ -371,6 +441,27 @@ const runCounterExamples = () => {
     '.finally(() => { showOverlay() })', '.finally(showOverlay)')),
   '裸传')
 
+  // m9 某个动作的状态又写进下面「同步服务地址」那一栏（两个功能串台）
+  check('m9 测试连接的状态写回 setSyncMessage（串到下面那一栏）',
+    webdavStatusInvariants(tamper(REAL.sync,
+      "      setWebdavStatus('连接成功')",
+      "      setSyncMessage('连接成功')")),
+    'setSyncMessage')
+
+  // m10 状态行挪到「上次歌单同步时间」下面
+  check('m10 状态行挪到「上次歌单同步时间」下面',
+    webdavStatusInvariants(tamper(REAL.sync,
+      "          {webdavStatus ? (\n            <Text style={styles.lastSyncText} size={12} color={theme['c-font-label']}>\n              WebDAV 状态: {webdavStatus}\n            </Text>\n          ) : null}\n          <Text style={styles.lastSyncText} size={12} color={theme['c-font-label']}>\n            上次歌单同步时间: {lastSyncTimeListsStr}\n          </Text>",
+      "          <Text style={styles.lastSyncText} size={12} color={theme['c-font-label']}>\n            上次歌单同步时间: {lastSyncTimeListsStr}\n          </Text>\n          {webdavStatus ? (\n            <Text style={styles.lastSyncText} size={12} color={theme['c-font-label']}>\n              WebDAV 状态: {webdavStatus}\n            </Text>\n          ) : null}")),
+    '上面')
+
+  // m11 状态行的字体和「上次歌单同步时间」不一致
+  check('m11 状态行换了别的字体样式',
+    webdavStatusInvariants(tamper(REAL.sync,
+      "          {webdavStatus ? (\n            <Text style={styles.lastSyncText} size={12} color={theme['c-font-label']}>",
+      "          {webdavStatus ? (\n            <Text style={styles.statusText} size={13} color={theme['c-font-label']}>")),
+    '字体')
+
   return results
 }
 
@@ -387,6 +478,8 @@ const checks = [
     () => pageInvariants(REAL.sync)],
   ['六个处理函数（loading 标记一律 try/finally 复位 + 失败给原因）',
     () => handlerInvariants(REAL.sync)],
+  ['六个按钮的状态文案写在 WebDAV 区块自己那一行（18 句，不串到同步服务地址）',
+    () => webdavStatusInvariants(REAL.sync)],
   ['testConnection（超时 + 探同步路径 + 404 容忍 + 日志）',
     () => testConnectionInvariants(REAL.webdav)],
   ['webdavSync（isSyncing 进 try + 未启用/并发点击都有可见提示）',

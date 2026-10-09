@@ -36,6 +36,13 @@
  *     开始 / 成功 / 失败三句状态。**文案里不得出现地址、账号、路径**（第 25 轮凭据口径），
  *     失败详情只留在 toast 里。
  *
+ *  【第 36 轮第 2 条】对 ③ 的改写：这 18 句**不许再写进 syncStatus.message** ——
+ *  用户原话「点击测试连接按钮时，提示信息显示在同步服务地址的状态一栏，其实这两个功能是
+ *  相互独立的……互不干扰」。它写的是设置页 WebDAV 区块自己的局部 state（setWebdavStatus，
+ *  渲染在「上次歌单同步时间」上面一行）。本脚本的判据随之从 setSyncMessage 换成
+ *  setWebdavStatus，并新增「页面里一个 setSyncMessage( 都不许有」这条负向判据；
+ *  「等待选择同步方式...」这些由 core/sync 写的字仍然属于**下面那块**同步服务地址，两者互不覆盖。
+ *
  * 运行：node scripts/sim-sync-mode-modal-watchdog.js
  * 退出码：不变量全过、且全部反例被拦下时为 0，否则 1。
  */
@@ -174,7 +181,10 @@ const syncWatchdogInvariants = (raw) => {
   }
 
   // ⑤ 组件卸载主动上报（免掉「卸载先清 store id、RNN 事件后到」的竞态）
-  const unmounted = extractBracedBody(code, 'export const handleSyncModeModalUnmounted = () =>')
+  // 【第 36 轮第 1 条】形参改成 componentId?: string —— 要能精确比对「消失的是不是当前
+  // 问句的那个选择框」（反向误杀：上一轮问句的选择框卸载回调姗姗来迟，把**新**问句杀掉的
+  // 表现与原始 bug 一模一样）。
+  const unmounted = extractBracedBody(code, 'export const handleSyncModeModalUnmounted = (componentId?: string) =>')
   if (!unmounted) {
     reasons.push('handleSyncModeModalUnmounted 缺失或抽取失败（只靠 RNN 关闭事件会漏：卸载清理会先把 store 里的 id 清成空串）')
   } else {
@@ -186,6 +196,18 @@ const syncWatchdogInvariants = (raw) => {
     }
     if (!unmounted.includes('removeSyncModeEvent()')) {
       reasons.push('handleSyncModeModalUnmounted 没走取消通路（removeSyncModeEvent() 缺失）')
+    }
+    // 【第 36 轮第 1 条】先摘「在屏幕上」的标记，再判取消：标记说的是物理状态，卸载即不在
+    // 屏幕上；而「要不要按取消收尾」是业务判断，必须留在标记摘掉之后按问句态决定。
+    if (!unmounted.includes('markSyncModeModalHidden()')) {
+      reasons.push('卸载回调没有摘掉「选择框在屏幕上」的标记：showSyncModeModal 的重试入口与 client.ts 的'
+        + '握手看门狗会一直以为用户正盯着一个早已消失的选择框 —— 既不重试也不催，'
+        + '正是用户第 36 轮第 1 条「状态一直等待选择同步方式、框不弹、也等不到已连接」的死路')
+    }
+    // 精确比对不能少（成分：只对「消失的正是当前那个」收尾）
+    if (!unmounted.includes('componentId != syncState.syncModeComponentId')) {
+      reasons.push('卸载回调没有用 componentId 比对当前问句（迟到的卸载回调会把**新**问句当成被取消而杀掉，'
+        + '表现同样是「状态写着等待选择同步方式、选择框却不出现」）')
     }
   }
 
@@ -200,17 +222,33 @@ const presentGuardInvariants = (raw) => {
   const reasons = []
   const code = stripComments(raw)
 
-  if (!/const present = \(attempt: number\) => \{\s*\n\s*if \(syncState\.syncModeComponentId\) return/.test(code)) {
-    reasons.push('present() 入口没有「已经有一个活着的选择框就绝不再呈现第二个」守卫（复查是延时 1000ms 才看的；挂载慢一点就先判没挂上 → 700ms 后补呈现，副本挂载时反手把第一个关掉 ⇒ 两个都没了，正是「状态写着等待选择同步方式、选择框却迟迟不出现」）')
+  // 【第 36 轮第 1 条】守卫的判据从「有 id」换成「确实在屏幕上」（syncModeModalVisible）：
+  // 原生把 overlay 收走却没跑到 JS 卸载清理时，store 里的 id 是一条残留 —— 用 id 当判据，
+  // 此后每一次呈现都在这里静默 return（不呈现、不重试、不上报失败），问句与状态文案一起悬着。
+  const GUARD = 'if (syncState.syncModeModalVisible) return'
+  if (!new RegExp('const present = \\(attempt: number\\) => \\{\\s*\\n\\s*' + GUARD.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).test(code)) {
+    reasons.push('present() 入口没有「已经有一个活着的选择框就绝不再呈现第二个」守卫（复查是延时 1000ms 才看的；'
+      + '挂载慢一点就先判没挂上 → 700ms 后补呈现，副本挂载时反手把第一个关掉 ⇒ 两个都没了，'
+      + '正是「状态写着等待选择同步方式、选择框却迟迟不出现」）。第 36 轮起判据必须是'
+      + 'syncState.syncModeModalVisible（「确实在屏幕上」）—— 用 id 判会把残留 id 当成「还在」，静默 return')
   }
   const body = sliceBy(code, 'const present = (attempt: number) => {', '\n  present(1)')
   if (!body) {
     reasons.push('present() 抽取失败（锚点漂移）')
   } else {
-    const iGuard = body.indexOf('if (syncState.syncModeComponentId) return')
+    const iGuard = body.indexOf(GUARD)
     const iOverlay = body.indexOf('Navigation.showOverlay')
     if (iGuard < 0 || iOverlay < 0 || iGuard > iOverlay) {
       reasons.push('守卫必须在 showOverlay 之前（再往后放就拦不住这一次呈现了）')
+    }
+    // 不在屏幕上却留着 id = 残留：必须清掉再照常呈现，不许静默 return（否则就是第 36 轮第 1 条的原始症状）
+    const iStale = body.indexOf("syncActions.setSyncModeComponentId('')")
+    if (iStale < 0 || (iGuard >= 0 && iStale < iGuard)) {
+      reasons.push('残留 id 没有清理分支（不在屏幕上却留着 id 时必须先清掉再呈现 —— 只判断不清理，'
+        + '或者干脆 return，都会让选择框再也弹不出来）')
+    }
+    if (!body.includes('stale syncModeComponentId')) {
+      reasons.push('残留 id 的清理没有日志（用户日志里看不到「为什么这次呈现被跳过」）')
     }
   }
   return reasons
@@ -227,17 +265,30 @@ const modalInvariants = (raw) => {
   if (!code.includes('handleSyncModeModalUnmounted')) {
     reasons.push('SyncModeModal 卸载不上报 core/sync（只靠 RNN 关闭事件会漏：卸载清理先把 store 里的 id 清成空串，事件到达时已无从比对）')
   }
-  if (!/setSyncModeComponentId\(''\)\s*\n\s*handleSyncModeModalUnmounted\(\)/.test(code)) {
-    reasons.push('SyncModeModal 卸载不上报 core/sync（清理里 handleSyncModeModalUnmounted() 缺失，或次序不对 —— 必须在清掉自己那份 id 之后调用）')
+  // 【第 36 轮第 1 条】次序与第 35 轮相反：**先**带 componentId 回调 core/sync，**再**清自己的 id。
+  // core/sync 要用这个 id 精确比对「消失的是不是当前问句的那个选择框」；先清掉就等于把比对
+  // 依据抹掉了（迟到的卸载回调会把新问句误杀）。带参调用是这件事的判据。
+  if (!/handleSyncModeModalUnmounted\(componentId\)[\s\S]{0,600}?setSyncModeComponentId\(''\)/.test(code)) {
+    reasons.push('SyncModeModal 卸载上报次序不对：必须先 handleSyncModeModalUnmounted(componentId) 再 setSyncModeComponentId(\'\')'
+      + '（反过来的话 core/sync 拿到的 id 已经没了，无从比对「消失的是不是当前那个」，'
+      + '迟到的卸载回调会把新问句当成被取消而杀掉）')
   }
   if (!/if \(syncState\.type != 'list' && syncState\.type != 'dislike'\) \{[\s\S]{0,500}?dismissOverlay\(componentId\)/.test(code)) {
     reasons.push('未知问答类型的自撤缺失（画 null 的 overlay 仍带 interceptTouchOutside: true —— 用户看不到任何选择框、触摸却被整片吃掉，就是「卡住又一声不吭」）')
+  }
+  // 【第 36 轮第 1 条】挂载即点亮「在屏幕上」—— 这是 present() 守卫与 client.ts 握手看门狗
+  // 共用的唯一依据，没人点亮的话它永远为 false，两处守卫都成了摆设。
+  if (!code.includes('markSyncModeModalVisible()')) {
+    reasons.push('SyncModeModal 挂载没有点亮「在屏幕上」标记（markSyncModeModalVisible 缺失：'
+      + 'present() 的重复呈现守卫与 client.ts 的握手看门狗都靠它，没人点亮就都成了摆设）')
   }
   return reasons
 }
 
 // ---------------------------------------------------------------------------
-// 不变量 C：设置页六个动作各自写「开始 / 成功 / 失败」三句状态，且文案不含地址账号
+// 不变量 C：设置页六个动作各自写「开始 / 成功 / 失败」三句状态，且文案不含地址账号。
+// 【第 36 轮第 2 条】这 18 句写的是**本区块自己**的状态行（setWebdavStatus）——
+// 用户原话：「上面 WebDAV 是一个功能，下面同步服务地址是另一个功能，互不干扰」。
 // ---------------------------------------------------------------------------
 
 const HANDLERS = [
@@ -259,17 +310,22 @@ const syncPageInvariants = (raw) => {
       reasons.push(`${h} 抽取失败（锚点漂移）`)
       continue
     }
-    const n = (body.match(/setSyncMessage\(/g) || []).length
+    const n = (body.match(/setWebdavStatus\(/g) || []).length
     if (n !== 3) {
-      reasons.push(`${h} 的状态行写入次数是 ${n}（应为 3：开始 / 成功 / 失败 —— 用户原话「点击上面的按钮后，下面的提示还是没有」）`)
+      reasons.push(`${h} 的状态行写入次数是 ${n}（应为 3：开始 / 成功 / 失败 —— 点完必须有一句明确的反馈）`)
     }
   }
-  const calls = (code.match(/setSyncMessage\(/g) || []).length
+  const calls = (code.match(/setWebdavStatus\(/g) || []).length
   if (calls !== HANDLERS.length * 3) {
     reasons.push(`状态行写入总次数是 ${calls}（应为 ${HANDLERS.length * 3} = 六个动作 × 三句）`)
   }
+  // 【第 36 轮第 2 条】负向判据：WebDAV 区块一个字都不许写进下面「同步服务地址」那一栏
+  if (code.includes('setSyncMessage(')) {
+    reasons.push('设置页往 setSyncMessage 里写状态：那是下面「同步服务地址」（WebSocket 同步）那一栏的状态行，'
+      + '两个功能必须互不干扰（用户第 36 轮第 2 条原话「提示信息显示在同步服务地址的状态一栏」）')
+  }
   // 第 25 轮凭据口径：界面文案不得回显主机名 / 账号 / 路径（失败详情留在 toast 里）
-  const bad = (code.match(/setSyncMessage\([^)]*\)/g) || [])
+  const bad = (code.match(/setWebdavStatus\([^)]*\)/g) || [])
     .filter(s => /https?|\S@\S|\d+\.\d+\.\d+\.\d+/.test(s))
   if (bad.length) {
     reasons.push(`状态文案里出现了地址/账号形态的内容（第 25 轮凭据口径：不得回显主机名、账号、路径）—— ${bad.slice(0, 2).join(' | ')}`)
@@ -320,8 +376,8 @@ const runCounterExamples = () => {
 
   // c4 present() 入口的重复呈现守卫被删
   check('c4 present 入口守卫被删', () => presentGuardInvariants(tamper(REAL.utils,
-    '    if (syncState.syncModeComponentId) return\n    try {',
-    '    try {')),
+    '    if (syncState.syncModeModalVisible) return\n',
+    '')),
   '绝不再呈现第二个')
 
   // c5 卸载上报不看 syncModeSelecting（用户刚作答就被收回）
@@ -332,21 +388,51 @@ const runCounterExamples = () => {
 
   // c6 选择框卸载不再上报（锚点只取调用那行：它前后都是中文注释，跨行锚点会命中不到）
   check('c6 选择框卸载不上报', () => modalInvariants(tamper(REAL.modal,
-    '      handleSyncModeModalUnmounted()\n',
+    '      handleSyncModeModalUnmounted(componentId)\n',
     '')),
-  '卸载不上报')
+  '卸载上报次序不对')
 
   // c7 某个动作不再写状态行（点了下面那行字纹丝不动）
   check('c7 某个动作不再写状态行', () => syncPageInvariants(tamper(REAL.page,
-    "      setSyncMessage('歌单同步完成')\n",
+    "      setWebdavStatus('歌单同步完成')\n",
     '')),
   '状态行写入次数')
 
   // c8 状态文案回显服务器地址（第 25 轮凭据口径）
   check('c8 状态文案回显地址', () => syncPageInvariants(tamper(REAL.page,
-    "      setSyncMessage('连接成功')\n",
-    "      setSyncMessage('连接成功 https://example.invalid/x')\n")),
+    "      setWebdavStatus('连接成功')\n",
+    "      setWebdavStatus('连接成功 https://example.invalid/x')\n")),
   '不得回显')
+
+  // c9 WebDAV 的状态又写进下面「同步服务地址」那一栏（两个功能串台 —— 第 36 轮第 2 条的原始 bug）
+  check('c9 状态写回 setSyncMessage（串到下面那一栏）', () => syncPageInvariants(tamper(REAL.page,
+    "      setWebdavStatus('连接成功')\n",
+    "      setSyncMessage('连接成功')\n")),
+  '互不干扰')
+
+  // c10 卸载回调不带 componentId（core/sync 无从精确比对「消失的是不是当前那个」）
+  check('c10 卸载回调不带 componentId', () => modalInvariants(tamper(REAL.modal,
+    '      handleSyncModeModalUnmounted(componentId)\n',
+    '      handleSyncModeModalUnmounted()\n')),
+  '卸载上报次序不对')
+
+  // c11 残留 id 的清理分支被删（呈现入口只判不救 → 选择框再也弹不出来）
+  check('c11 残留 id 不再清理', () => presentGuardInvariants(tamper(REAL.utils,
+    "      console.warn('[SyncMode] stale syncModeComponentId, clear before presenting:', syncState.syncModeComponentId)\n      syncActions.setSyncModeComponentId('')\n",
+    '')),
+  '残留 id')
+
+  // c12 守卫退回按 id 判（残留 id 会被当成「还在屏幕上」→ 静默 return）
+  check('c12 守卫退回按 id 判', () => presentGuardInvariants(tamper(REAL.utils,
+    '    if (syncState.syncModeModalVisible) return\n',
+    '    if (syncState.syncModeComponentId) return\n')),
+  '确实在屏幕上')
+
+  // c13 挂载不再点亮「在屏幕上」标记
+  check('c13 挂载不点亮在屏标记', () => modalInvariants(tamper(REAL.modal,
+    '    markSyncModeModalVisible()\n',
+    '')),
+  '挂载没有点亮')
 
   return results
 }

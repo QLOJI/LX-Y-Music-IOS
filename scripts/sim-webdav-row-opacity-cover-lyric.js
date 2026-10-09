@@ -316,9 +316,11 @@ const runCounterExamples = () => {
   '歌曲行未订阅 theme.buttonOpacity')
 
   // c4 改用容器 opacity 淡出（文字与图标会一起淡）
+  // 锚点从「...styles.songItem, 下一行就是 width」缩到 width 那一行：第 36 轮第 4 条把
+  // height / marginBottom 挪进行内 style 并带了一段说明注释，两行之间不再相邻。
   check('c4 改用容器 opacity', () => rowOpacityInvariants(tamper(REAL.page,
-    '          ...styles.songItem,\n          width: rowWidth,',
-    '          ...styles.songItem,\n          width: rowWidth,\n          opacity: buttonOpacity / 100,')),
+    '          width: rowWidth,\n',
+    '          width: rowWidth,\n          opacity: buttonOpacity / 100,\n')),
   '歌曲行用了容器 opacity')
 
   // c5 行封面退回静态 meta.picUrl（按需链路被绕过）

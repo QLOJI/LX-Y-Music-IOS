@@ -473,12 +473,21 @@ const coverStormInvariants = (rawLocal) => {
   if (!branch.includes('getOtherSourceByLocal(musicInfo')) {
     reasons.push('WebDAV 封面搜索兜底被删了（第 27 轮的能力回退）')
   }
-  const missCheck = branch.indexOf('webdavCoverSearchMisses.has(')
+  // 【第 36 轮第 3 条】备忘的读判据从内联的 `webdavCoverSearchMisses.has(getWebdavCoverMissKey(…))`
+  // 换成导出的 isWebdavCoverKnownMiss(musicInfo)（列表页的续巡要拿同一个判据分档重试节奏）。
+  // 两种写法都接受，但「查备忘」必须仍然排在取并发名额之前 —— 否则等于没省（照样排队照样搜）。
+  const missCheck = branch.indexOf('isWebdavCoverKnownMiss(musicInfo)') >= 0
+    ? branch.indexOf('isWebdavCoverKnownMiss(musicInfo)')
+    : branch.indexOf('webdavCoverSearchMisses.has(')
   const acquire = branch.indexOf('acquireWebdavCoverSearch()')
   if (missCheck < 0) {
     reasons.push('封面分支没有先查失败备忘（同一次会话里会反复重发必然失败的搜索）')
   } else if (acquire >= 0 && missCheck > acquire) {
     reasons.push('失败备忘的查询排在取并发名额之后（等于没省，照样排队照样搜）')
+  }
+  // 判据本身要真读那个 Set：helper 被改成恒 false 的话，上面那处「查了备忘」就是空壳
+  if (!code.includes('webdavCoverSearchMisses.has(getWebdavCoverMissKey(musicInfo))')) {
+    reasons.push('失败备忘的判据不再读那个 Set（isWebdavCoverKnownMiss 成了空壳，跳过逻辑失效）')
   }
   if (acquire < 0) reasons.push('封面搜索没有进并发闸')
   if (!branch.includes('releaseWebdavCoverSearch()')) reasons.push('并发名额没有归还')
@@ -632,11 +641,11 @@ const runCounterExamples = () => {
 
   // c17 备忘查询排在取名额之后（等于没省）
   // 反例形态就是「把取名额提到查备忘前面」：锚点跟着第 28 轮最终结构（备忘判定是 if/else，
-  // 取名额在 else 里），把 acquire 那一行挪到 if 之前。
+  // 取名额在 else 里），把 acquire 那一行挪到 if 之前。【第 36 轮】if 条件自 isWebdavCoverKnownMiss。
   check('c17 备忘查询顺序反了',
     coverStormInvariants(tamper(REAL.local,
-      "    if (webdavCoverSearchMisses.has(getWebdavCoverMissKey(musicInfo))) {\n      webDAVLog?.info('getPicUrl: WebDAV cover search skipped (known miss)', { musicId: musicInfo.id })\n    } else {\n      // 【第 28 轮】没搜过的进并发闸，最多 WEBDAV_COVER_SEARCH_CONCURRENCY 个搜索同时飞\n      await acquireWebdavCoverSearch()",
-      '    await acquireWebdavCoverSearch()\n    if (webdavCoverSearchMisses.has(getWebdavCoverMissKey(musicInfo))) {\n      webDAVLog?.info(\'getPicUrl: WebDAV cover search skipped (known miss)\', { musicId: musicInfo.id })\n    } else {')),
+      "    if (isWebdavCoverKnownMiss(musicInfo)) {\n      webDAVLog?.info('getPicUrl: WebDAV cover search skipped (known miss)', { musicId: musicInfo.id })\n    } else {\n      // 【第 28 轮】没搜过的进并发闸，最多 WEBDAV_COVER_SEARCH_CONCURRENCY 个搜索同时飞\n      await acquireWebdavCoverSearch()",
+      '    await acquireWebdavCoverSearch()\n    if (isWebdavCoverKnownMiss(musicInfo)) {\n      webDAVLog?.info(\'getPicUrl: WebDAV cover search skipped (known miss)\', { musicId: musicInfo.id })\n    } else {')),
     '排在取并发名额之后')
 
   // c18 finally 里不还名额

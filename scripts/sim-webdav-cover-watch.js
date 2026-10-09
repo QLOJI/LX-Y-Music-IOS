@@ -83,6 +83,20 @@
  *      b) 整批的 `await Promise.all(tasks)` 等的是「这批都成功」：一个永不 settle 的任务让这一批
  *         永远返回不了，循环不再往下走，后面几百首一批都不推进。改成 allSettled（不变量 D④）。
  *
+ * 第 36 轮补记（用户图一/图二：「加载在线封面应该持续刷新，直到刷新出来为止……不论是刷新、
+ * 扫描、还是重新进入列表都不会再刷了，请修复这个问题，保证封面可以 100% 可以刷出」；
+ * 「滑动到最底部时，如果再向上滑动，会出现间断的向下跳动」）：
+ *   ① 抽动那条第 34 轮修得不彻底：它只让 getItemLayout 的**回报值**加上了 marginBottom，
+ *      而卡片自身的 height / marginBottom 仍写在 createStyle 里 —— createStyle 的产物会被
+ *      trasformeStyle 再乘一次 scaleSizeH（utils/tools.ts），@3x 机型上渲染值 68pt ≠ 回报值 66pt，
+ *      逐行仍有 2pt 偏差，滑到末尾照旧跳。现在这两个纵向数值**写在行内 style**（不经二次换算），
+ *      「渲染值 == 回报值」由构造保证。不变量 D① 改钉行内 style；反例 n36a 钉「不许把 height 放回
+ *      createStyle」，n36b 钉「行内不许丢掉 height」。
+ *   ② 行内自愈的一次性守卫改成「带冷却的持久重试」：第 29 轮的 Set 一次失败就把这一行判死
+ *      （CDN 抖一下、图片刚换、网络刚切换都算永久失败），正是用户说的「刷不出来就再也不会刷了」。
+ *      现在是 (id|url) 冷却窗口（COVER_ERROR_RETRY_COOLDOWN_MS），窗口外允许再自愈。
+ *   续巡（跑完还有空封面就自己安排下一轮）由 sim-webdav-auto-cover-lyric.js 钉住，本脚本不重复。
+ *
  * 为什么必须靠契约脚本：「整表分批 / 先探活再当缺失 / 每轮清备忘 / 刷新带 isRefresh /
  * onError 只重试一次 / 按钮不再被 disabled 吞掉 / 失败一定有日志和提示」全是形状与顺序，
  * 不是类型 —— 把 file:// 校验删掉、把清备忘删掉、把分批换回前 20 首、把 isRefresh 去掉、
@@ -244,19 +258,29 @@ const inlineHealInvariants = (files) => {
     reasons.push('renderSong 的依赖项里少了 handleCoverError（行渲染不会跟自愈回调更新）')
   }
 
-  const heal = slice(page, 'const coverErrorRetriedKeys = useRef(', 'const handleEditMetadata = useCallback(')
+  const heal = slice(page, 'const coverErrorRetriedAt = useRef(', 'const handleEditMetadata = useCallback(')
   if (!heal) {
-    reasons.push('handleCoverError 切片失败（锚点漂移：coverErrorRetriedKeys / handleEditMetadata）')
+    reasons.push('handleCoverError 切片失败（锚点漂移：coverErrorRetriedAt / handleEditMetadata）')
     return reasons
   }
   if (!heal.includes('`${song.id}|${url}`')) {
     reasons.push('handleCoverError 没有按 (id|url) 组键（同一行不同 URL 会被误判成重试过）')
   }
-  if (!heal.includes('if (coverErrorRetriedKeys.current.has(key)) return')) {
-    reasons.push('handleCoverError 没有一次性守卫（换来的封面又挂就会无限重试，变成请求风暴）')
+  // 【第 36 轮第 3 条】守卫从「一次性 Set」改成「带冷却的持久重试」：封面加载失败往往是暂时的
+  // （CDN 抖一下 / 图片刚换 / 网络刚切换），一次失败就判死 = 用户说的「刷不出来就再也不会刷了」。
+  // 但冷却仍是必须的：窗口内同一个 (id|url) 只能触发一次，否则死图会来回换造成请求风暴。
+  if (!heal.includes('if (lastRetryAt && now - lastRetryAt < COVER_ERROR_RETRY_COOLDOWN_MS) return')) {
+    reasons.push('handleCoverError 没有冷却守卫（同一张挂掉的图会被无限重试，变成请求风暴）')
   }
-  if (!heal.includes('coverErrorRetriedKeys.current.add(key)')) {
-    reasons.push('handleCoverError 没有把重试过的键记下来（守卫形同虚设）')
+  if (!heal.includes('coverErrorRetriedAt.current.set(key, now)')) {
+    reasons.push('handleCoverError 没有把这次的触发时刻记下来（冷却守卫形同虚设）')
+  }
+  if (heal.includes('useRef(new Set')) {
+    reasons.push('handleCoverError 又退回一次性 Set（首次失败即判死：网络抖一下这一行就永远补不上，第 36 轮第 3 条的老毛病）')
+  }
+  const cooldown = Number((/const COVER_ERROR_RETRY_COOLDOWN_MS = (\d+)/.exec(page) ?? [])[1])
+  if (!Number.isFinite(cooldown) || !(cooldown >= 1000 && cooldown <= 300000)) {
+    reasons.push(`封面自愈冷却 ${cooldown}ms 不在合理区间 [1000, 300000]（太小死图来回换，太大等于没有持久重试）`)
   }
   // 【第 31 轮】自愈落点：refreshWebdavCover（加法式单曲补齐），且不许再借道整轮巡检入口。
   // prefetchCovers 一进来就 clear 已试名单 + 清空全部失败备忘 + 轮次 +1 —— 行内失败发生在
@@ -434,19 +458,35 @@ const round34ListInvariants = (files) => {
   const page = stripComments(files.page)
   const coverCode = stripComments(files.coverUrl)
 
-  // ① 行高常量 = 卡片高 + songItem 的下外边距（同一个来源，不许各算各的）
+  // ① 行高常量 = 卡片高 + 行下外边距（同一个来源，不许各算各的）；且这两个纵向数值必须写在
+  //    **行内 style**：createStyle 的产物会被 trasformeStyle 再乘一次 scaleSizeH
+  //    （utils/tools.ts:619-659），而 ITEM_HEIGHT 本身已经是 scaleSizeH 的结果 ——
+  //    @3x 机型上渲染值 scaleSizeH(scaleSizeH(64)) = 68 ≠ getItemLayout 回报值 66，
+  //    逐行 2pt、到第 300 行累计 600pt，FlatList 在末尾反复重算内容尺寸 → 向下跳动。
+  //    行内写死即「渲染值 == 回报值」由构造保证（与其它歌曲列表同口径）。
   if (!page.includes('const ITEM_ROW_HEIGHT = ITEM_HEIGHT + designSpacing.sm')) {
-    reasons.push('getItemLayout 的行高常量不是「卡片高 + songItem 下外边距」（少加 marginBottom → 逐行累计偏移，列表末尾抽动）')
+    reasons.push('getItemLayout 的行高常量不是「卡片高 + 行下外边距」（少加 marginBottom → 逐行累计偏移，列表末尾抽动）')
+  }
+  const rowStyle = slice(page, '          ...styles.songItem,', '          backgroundColor: applyOpacity(')
+  if (!rowStyle) {
+    reasons.push('renderSong 行内 style 切片失败（锚点漂移：...styles.songItem / backgroundColor —— 实渲行高来源无法核对）')
+  } else {
+    if (!rowStyle.includes('height: ITEM_HEIGHT,')) {
+      reasons.push('行内 style 没有带 height: ITEM_HEIGHT（退回 createStyle 后会被 trasformeStyle 二次 scaleSizeH，渲染值比 getItemLayout 回报值大 → 列表末尾向下跳动复发）')
+    }
+    if (!rowStyle.includes('marginBottom: designSpacing.sm,')) {
+      reasons.push('行内 style 没有带 marginBottom: designSpacing.sm（行距被二次换算，实渲行高与回报行高不同源）')
+    }
   }
   const songItem = slice(page, '  songItem: {', '  songItemLeft: {')
   if (!songItem) {
     reasons.push('styles.songItem 切片失败（锚点漂移：songItem / songItemLeft —— 行高来源无法核对）')
   } else {
-    if (!songItem.includes('height: ITEM_HEIGHT,')) {
-      reasons.push('styles.songItem 的高度不再是 ITEM_HEIGHT（行高常量与真实卡片几何脱钩）')
+    if (/(^|\n)\s*height\s*:/.test(songItem)) {
+      reasons.push('createStyle 的 songItem 里又出现 height（纵向数值会被 trasformeStyle 再乘一次 scaleSizeH，渲染值 ≠ getItemLayout 回报值 → 末尾向下跳动）')
     }
-    if (!songItem.includes('marginBottom: designSpacing.sm,')) {
-      reasons.push('styles.songItem 的下外边距不再是 designSpacing.sm（行高常量与真实行距脱钩）')
+    if (/(^|\n)\s*marginBottom\s*:/.test(songItem)) {
+      reasons.push('createStyle 的 songItem 里又出现 marginBottom（行距被二次换算，实渲行高与回报行高不同源）')
     }
   }
 
@@ -688,12 +728,28 @@ const runCounterExamples = () => {
   }),
   '没有 onError 回调')
 
-  // c15 自愈没有一次性守卫（死图会无限重试）
-  check('c15 自愈没有一次性守卫', inlineHealInvariants({
+  // c15 自愈没有冷却守卫（死图会无限重试）
+  check('c15 自愈没有冷却守卫', inlineHealInvariants({
     ...REAL,
-    page: tamper(REAL.page, '    if (coverErrorRetriedKeys.current.has(key)) return', '    void key'),
+    page: tamper(REAL.page, '    if (lastRetryAt && now - lastRetryAt < COVER_ERROR_RETRY_COOLDOWN_MS) return', '    void key'),
   }),
-  '没有一次性守卫')
+  '没有冷却守卫')
+
+  // n36a 自愈又退回一次性 Set（首次失败即判死 —— 第 36 轮第 3 条要修的正是这个）
+  check('n36a 自愈退回一次性 Set', inlineHealInvariants({
+    ...REAL,
+    page: tamper(REAL.page,
+      'const coverErrorRetriedAt = useRef(new Map<string, number>())',
+      'const coverErrorRetriedAt = useRef(new Set<string>())'),
+  }),
+  '又退回一次性 Set')
+
+  // n36b 冷却窗口被改成毫秒级（死图来回换造成请求风暴）
+  check('n36b 冷却窗口超界', inlineHealInvariants({
+    ...REAL,
+    page: tamper(REAL.page, 'const COVER_ERROR_RETRY_COOLDOWN_MS = 30000', 'const COVER_ERROR_RETRY_COOLDOWN_MS = 5'),
+  }),
+  '不在合理区间')
 
   // c16 自愈清了 picUrl 却没人补
   check('c16 自愈不触发重补', inlineHealInvariants({
@@ -901,6 +957,24 @@ const runCounterExamples = () => {
   }),
   '没有单张封面的获取超时')
 
+  // ---- 第 36 轮第 4 条：行高数值必须留在行内 style ----
+
+  // n36c 行高数值又放回 createStyle（二次 scaleSizeH，渲染值 ≠ 回报值，末尾照旧跳）
+  check('n36c 行高放回 createStyle', round34ListInvariants({
+    ...REAL,
+    page: tamper(REAL.page, '  songItem: {\n',
+      '  songItem: {\n    height: ITEM_HEIGHT,\n    marginBottom: designSpacing.sm,\n'),
+  }),
+  'createStyle 的 songItem 里又出现')
+
+  // n36d 行内 style 丢掉 height（实渲行高与 getItemLayout 回报值不同源）
+  check('n36d 行内丢掉 height', round34ListInvariants({
+    ...REAL,
+    page: tamper(REAL.page,
+      '          height: ITEM_HEIGHT,\n          marginBottom: designSpacing.sm,\n', ''),
+  }),
+  '行内 style 没有带 height')
+
   return results
 }
 
@@ -912,6 +986,7 @@ console.log('=== sim-webdav-cover-watch ===')
 console.log('WebDAV：封面时刻关注（整表分批巡检 + 失效本地封面重补 + 每轮清备忘 + 刷新复核最新 + 行内 onError 自愈）')
 console.log('        下载按钮按了有反应（响应式 hasConfig + 不被 disabled 吞 + 失败必有日志与提示）（第 29 轮）')
 console.log('        末尾抽动（getItemLayout 与 songItem 几何同源）+ 封面全量加载（入队任务内部超时 + 批次 allSettled）（第 34 轮第 3 条）')
+console.log('        末尾抽动（行高数值写在行内 style，渲染值 == 回报值）+ 行内自愈带冷却持久重试（第 36 轮第 3/4 条）')
 console.log()
 
 const checks = [
