@@ -23,6 +23,21 @@
  *     反复「圆→扁→圆→扁」（用户说的一会儿圆一会儿扁），点击切页时模型值瞬移
  *     还会喂出一个巨大假激励（抽搐）。现在改为速度驱动 + 跳变样本剔除（C 段）。
  *
+ *  ③ **第 37 轮**（2026-10-09 用户第 1 条 + 新增样式）
+ *     bug：「底部 tab 栏有个椭圆形气泡，在左右滑动切换界面时，会出现推荐、歌单、搜索、
+ *     我的、设置的文字不在气泡正中心的情况，特别是在滑动界面不切换界面的时候，右滑一点，
+ *     文字偏右，左滑一点，文字偏左，不滑动改成点击后，文字就在气泡正中心了。」
+ *     → 第 35 轮只修了位置，漏了**状态**：那个「气泡」不是静止药丸，而是抬起的液态玻璃。
+ *       跟手通道每一笔都 removeAllAnimations，把在途的点击弹簧打断成 finished == NO，
+ *       而 completion 当时在 !finished 时直接 return → 落回被跳过、透镜永久停在抬起态。
+ *       修法（B17-B20 / C19-C20）：① 收尾/复位写全部 force（跳过两头去重）；
+ *       ② 被跟手打断的弹簧由 _followTookOver 补做落回；③ 让位条件收紧成「只在真拖动中
+ *       让位」（arm 标志挂 8s 不再吞 pager 收尾）；④ endFollow 复位到 -1 哨兵。
+ *     新增样式：「底部 tab 栏，长按后椭圆形气泡会变大，类似水珠的样式，功能和一起一样，
+ *     只是多了这个样式。」→ 水珠 = 边长 1.45 × 栏高的正方形 bounds（长按 arm 时经
+ *     droplet prop 下发），Swift 侧 min(w,h)/2 画成正圆、纵向溢出栏体（C16-C18 / D11）；
+ *     为此栏体不再裁剪（A11，overflow: 'visible'），玻璃的圆角由宿主自己转发自持。
+ *
  * 运行：node scripts/sim-tabbar-lens-geometry.js
  * 退出码：不变量全过且反例全被拦下时为 0，否则 1。
  */
@@ -159,17 +174,28 @@ const runSourceInvariants = () => {
     pageIds.join(',') === idsOrder.join(','), pageIds.join(' > '))
   push('A10 子页面归父 tab 后再定位（否则 findIndex = -1 药丸跑到推荐位）',
     /const resolvedActiveId = CHILD_TAB_PARENT\[activeId\] \?\? activeId/.test(tab))
+  // 【第 37 轮】栏体必须**不裁剪**：新增样式「长按后气泡长成水珠」要求透镜纵向溢出
+  // 栏体上下边缘（透镜是栏体的兄弟子节点，栏体一裁就被削平成宽胶囊）。栏体圆角不靠
+  // 这层裁剪：玻璃宿主自己把 RN 的 borderRadius 转发给玻璃容器与材质视图
+  // （见 C21 的源码锚点），两处圆角本来就同 token（designRadius.glass）。
+  // ⚠️ 也不能改成「给玻璃套一层裁剪 wrapper」：液态路径的捕获排除根 = 玻璃宿主的
+  // superview，套 wrapper 会把 tab 图标/文字漏进捕获纹理（重影）。
+  push('A11 栏体不裁剪（overflow: visible）+ 玻璃圆角自持（不靠父级裁剪，也不套 wrapper）',
+    /overflow: 'visible'/.test(barBlock) && !/overflow: ?'hidden'/.test(barBlock) &&
+    host.includes('_glassView.layer.cornerRadius = self.layer.cornerRadius') &&
+    host.includes('_glassBacking.layer.cornerRadius = self.layer.cornerRadius'))
 
   // ---------------- B. 跟手会话收尾重锚 ----------------
   push('B1 跟手通道记录最后写入的 x（判定本次会话是否驱动过药丸）',
     tab.includes('const lastFollowXRef = useRef(-1)') &&
     tab.includes('lastFollowXRef.current = followX'))
   push('B2 重锚函数存在，且第一条语句就是「本次会话没驱动过 → 直接返回」',
-    /const snapLensToRestingSlot = useCallback\(\(\) => \{\s*\n\s*if \(lastFollowXRef\.current < 0\) return\s*\n\s*lastFollowXRef\.current = -1\s*\n\s*lensRef\.current\?\.setFollowX\(resolveRestingSlotX\(\)\)/.test(tab))
+    /const snapLensToRestingSlot = useCallback\(\(\) => \{\s*\n\s*if \(lastFollowXRef\.current < 0\) return\s*\n\s*lastFollowXRef\.current = -1\s*\n\s*lensRef\.current\?\.setFollowX\(resolveRestingSlotX\(\), true\)/.test(tab))
   // 【第 35 轮第 3 条】重锚目标从 lensXRef 换成 resolveRestingSlotX：见 B16。
+  // 【第 37 轮第 1 条】重锚是**权威落位**，必须 force 写：见 B17。
   push('B3 重锚目标是「当前归属 tab 的槽心」（静止槽心公式），不是四舍五入的跟手落点',
     /return \(\(index \+ 0\.5\) \* width\) \/ TAB_IDS\.length/.test(tab) &&
-    tab.includes('lensRef.current?.setFollowX(resolveRestingSlotX())'))
+    tab.includes('lensRef.current?.setFollowX(resolveRestingSlotX(), true)'))
   // 顺序：必须在 endFollow() 之前，否则 LiquidLens 的去重值已被复位，正常跟手也会多写一次原生
   const dragSub = /subscribePagerDrag\(\(dragging\) => \{([\s\S]*?)\n  \}\), \[/.exec(tab)
   const dragBody = dragSub ? dragSub[1] : ''
@@ -179,9 +205,9 @@ const runSourceInvariants = () => {
     dragBody.replace(/\s+/g, ' ').trim().slice(0, 90))
   push('B5 A-5 长按接管时作废跟手标记（避免被下一次 pager 收尾误消费）',
     /handleTabLongPress[\s\S]{0,600}?lastFollowXRef\.current = -1/.test(tab))
-  push('B6 跟手写入走 setNativeProps（不触发 React 重渲染）+ 0.1pt 去重（B4 顺序的前提）',
+  push('B6 跟手写入走 setNativeProps（不触发 React 重渲染）+ 0.1pt 去重（B4 顺序的前提）+ force 可跳过该去重（第 37 轮第 1 条）',
     S.lensJs.includes('setNativeProps?.({ followX: nextX })') &&
-    S.lensJs.includes('if (Math.abs(nextX - lastFollowXRef.current) < 0.1) return'))
+    S.lensJs.includes('if (!force && Math.abs(nextX - lastFollowXRef.current) < 0.1) return'))
 
   // ---------------- B7-B12. 静止锚点自愈 + B-7 会话看门狗（2026-10-08 用户报「椭圆与其中
   //                  文字和图标没有中心对齐」） ----------------
@@ -195,15 +221,15 @@ const runSourceInvariants = () => {
     /setRestX: \(nextX: number\) => \{[\s\S]{0,400}?setNativeProps\?\.\(\{ x: nextX \}\)/.test(S.lensJs))
   push('B8 锚点输入变化就重申静止位（挂载 / 切 tab / 子页面归属 / 栏宽 / 收起展开 / 液态开关），A-5 会话期间让位',
     /useEffect\(\(\) => \{\s*if \(!liquidGlassOn \|\| collapsed \|\| barWidth <= 0\) return\s*if \(dragArmedRef\.current \|\| draggingRef\.current\) return\s*lensRef\.current\?\.setRestX\(lensX\)\s*\}, \[lensX, resolvedActiveId, barWidth, collapsed, liquidGlassOn\]\)/.test(tab))
-  push('B9 B-7 会话看门狗存在，且记账口径是「无新帧 12s」的 debounce（不是会话总时长：按住不动时 pager 会停止发帧，阈值太小会误判成收尾丢失）',
-    tab.includes('const FOLLOW_SESSION_TIMEOUT_MS = 12000') &&
+  push('B9 B-7 会话看门狗存在，且记账口径是「无新帧 4s」的 debounce（不是会话总时长；4000 = Main 的 2000ms 静默兜底的两倍，正常收尾轮不到它，只有整条收尾链都丢了才由它兜底）',
+    tab.includes('const FOLLOW_SESSION_TIMEOUT_MS = 4000') &&
     tab.includes('const followWatchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null)') &&
     /const armFollowWatchdog = useCallback\(\(\) => \{\s*if \(followWatchdogRef\.current\) clearTimeout\(followWatchdogRef\.current\)\s*followWatchdogRef\.current = setTimeout\(\(\) => \{\s*followWatchdogRef\.current = null\s*if \(dragArmedRef\.current \|\| draggingRef\.current\) return\s*closePagerFollowSession\(\)\s*\}, FOLLOW_SESSION_TIMEOUT_MS\)\s*\}, \[closePagerFollowSession\]\)/.test(tab))
-  push('B10 记账三处齐全：跟手帧重新 arm / 会话开始 arm（与首帧顺序不保证）/ 正常收尾销毁',
+  push('B10 记账三处齐全：跟手帧重新 arm / 会话开始 arm（与首帧顺序不保证）/ 正常收尾销毁；正常收尾同时收水珠（第 37 轮）',
     /lensRef\.current\?\.setFollowX\(followX\)\s*armFollowWatchdog\(\)/.test(tab) &&
-    /if \(dragging\) \{[\s\S]{0,400}?armFollowWatchdog\(\)[\s\S]{0,400}?clearRestReassert\(\)\s*\} else \{\s*if \(followWatchdogRef\.current\) \{\s*clearTimeout\(followWatchdogRef\.current\)\s*followWatchdogRef\.current = null\s*\}\s*snapLensToRestingSlot\(\)\s*lensRef\.current\?\.endFollow\(\)\s*reassertRestingSlot\(\)/.test(tab))
-  push('B11 兜底收尾 = 正常收尾同一套动作、同一顺序（锚回槽心 → 落回静止药丸 → 复位跟手去重 → 重申静止位；顺序换了会打断在途弹簧）',
-    /const closePagerFollowSession = useCallback\(\(\) => \{\s*snapLensToRestingSlot\(\)\s*lensRef\.current\?\.setLifted\(false\)\s*lensRef\.current\?\.endFollow\(\)\s*reassertRestingSlot\(\)\s*\}, \[snapLensToRestingSlot, reassertRestingSlot\]\)/.test(tab))
+    /if \(dragging\) \{[\s\S]{0,400}?armFollowWatchdog\(\)[\s\S]{0,400}?clearRestReassert\(\)\s*\} else \{\s*if \(followWatchdogRef\.current\) \{\s*clearTimeout\(followWatchdogRef\.current\)\s*followWatchdogRef\.current = null\s*\}\s*snapLensToRestingSlot\(\)\s*lensRef\.current\?\.setDroplet\(false\)\s*lensRef\.current\?\.endFollow\(\)\s*reassertRestingSlot\(\)/.test(tab))
+  push('B11 兜底收尾 = 正常收尾同一套动作、同一顺序（锚回槽心 → 落回静止药丸 → 收水珠 → 复位跟手去重 → 重申静止位；顺序换了会打断在途弹簧）',
+    /const closePagerFollowSession = useCallback\(\(\) => \{\s*snapLensToRestingSlot\(\)\s*lensRef\.current\?\.setLifted\(false\)\s*lensRef\.current\?\.setDroplet\(false\)\s*lensRef\.current\?\.endFollow\(\)\s*reassertRestingSlot\(\)\s*\}, \[snapLensToRestingSlot, reassertRestingSlot\]\)/.test(tab))
   push('B12 A-5 接管（长按 arm）与卸载清理都销毁看门狗（不留一次凭空触发的收尾 / 不在已卸载组件上跑）',
     /lastFollowXRef\.current = -1\s*if \(followWatchdogRef\.current\) \{\s*clearTimeout\(followWatchdogRef\.current\)\s*followWatchdogRef\.current = null\s*\}/.test(tab) &&
     /if \(pressOutTimerRef\.current\) \{ clearTimeout\(pressOutTimerRef\.current\); pressOutTimerRef\.current = null \}\s*if \(followWatchdogRef\.current\) \{ clearTimeout\(followWatchdogRef\.current\); followWatchdogRef\.current = null \}/.test(tab))
@@ -227,12 +253,42 @@ const runSourceInvariants = () => {
     tab.includes('const REST_REASSERT_DELAYS = [120, 360, 800, 1600]') &&
     /const clearRestReassert = useCallback\(\(\) => \{\s*for \(const timer of restReassertTimersRef\.current\) clearTimeout\(timer\)\s*restReassertTimersRef\.current = \[\]\s*\}, \[\]\)/.test(tab) &&
     /const reassertRestingSlot = useCallback\(\(\) => \{\s*clearRestReassert\(\)\s*for \(const delay of REST_REASSERT_DELAYS\) \{/.test(tab))
-  push('B15 重申带两道让位守卫 + 两处清账（手指按住/长按接管时不得拽回药丸；新一轮会话开始与卸载都要清账）',
-    /if \(dragArmedRef\.current \|\| draggingRef\.current\) return\s*\n\s*if \(lastFollowXRef\.current >= 0\) return\s*\n\s*lensRef\.current\?\.setFollowX\(resolveRestingSlotX\(\)\)/.test(tab) &&
+  push('B15 重申带两道让位守卫（拖动中让位、跟手会话让位；arm 未接管不再拦 —— 第 37 轮第 1 条）+ 两处清账（新一轮会话开始与卸载）',
+    /if \(draggingRef\.current\) return\s*\n\s*if \(lastFollowXRef\.current >= 0\) return\s*\n\s*lensRef\.current\?\.setFollowX\(resolveRestingSlotX\(\), true\)/.test(tab) &&
     /if \(dragging\) \{[\s\S]{0,400}?clearRestReassert\(\)/.test(tab) &&
     /useEffect\(\(\) => clearRestReassert, \[clearRestReassert\]\)/.test(tab))
   push('B16 重锚不再读 lensXRef（迟一个提交的旧值就是「只有滑动才错位、点一下就好」的根因）',
     !/const snapLensToRestingSlot = useCallback\(\(\) => \{[\s\S]{0,400}?setFollowX\(lensXRef\.current\)/.test(tab))
+
+  // ---------------- B17-B20. 第 37 轮第 1 条：气泡不居中 ----------------
+  // 用户原话：「底部 tab 栏有个椭圆形气泡，在左右滑动切换界面时，会出现推荐、歌单、
+  // 搜索、我的、设置的文字不在气泡正中心的情况，特别是在滑动界面不切换界面的时候，
+  // 右滑一点，文字偏右，左滑一点，文字偏左，不滑动改成点击后，文字就在气泡正中心了。」
+  //
+  // 第 35 轮只修了「位置」（收尾重锚 + 有界重申），漏了「状态」——这个气泡根本不是静止
+  // 药丸，而是**抬起的液态玻璃**：跟手通道每一笔都 [lens.layer removeAllAnimations]，
+  // 把在途的点击弹簧打断成 finished == NO，而 completion 当时在 !finished 时直接
+  // return ⇒「落回静止药丸」被整个跳过，透镜永久停在抬起玻璃态（宽度 ≠ 槽宽、边缘
+  // 还带速度形变，文字自然不在它的正中心）。点一下之所以就好，是因为新弹簧的
+  // completion（finished == YES）补做了落回。宿主侧的修复见 C19/C20。
+  push('B17 收尾/复位写全是 force 写（跳过 JS 0.1pt 去重），逐帧跟手写保持普通去重',
+    (tab.match(/setFollowX\([^;]{0,60}?, true\)/g) || []).length >= 6 &&
+    /lensRef\.current\?\.setFollowX\(followX\)\s*armFollowWatchdog\(\)/.test(tab),
+    `force 写 ${(tab.match(/setFollowX\([^;]{0,60}?, true\)/g) || []).length} 处`)
+  push('B18 A-5 让位条件收紧成「只在真的拖动中让位」：抬起照旧丢弃，放下必须放行（arm 标志挂 8s 不再吞掉 pager 收尾）',
+    /if \(dragging && dragArmedRef\.current\) return\s*\n\s*lensRef\.current\?\.setLifted\(dragging\)/.test(tab) &&
+    !/if \(dragArmedRef\.current \|\| draggingRef\.current\) return\s*\n\s*lensRef\.current\?\.setLifted\(dragging\)/.test(tab))
+  push('B19 水珠不跨会话存活：所有收尾路径都下发 setDroplet(false)（长按臂/会话收尾/拖动收尾/抬手回退/兜底收尾 ≥5 处），长按臂下发 setDroplet(true)',
+    (tab.match(/setDroplet\(false\)/g) || []).length >= 5 &&
+    /handleTabLongPress[\s\S]{0,2000}?setDroplet\(true\)/.test(tab),
+    `setDroplet(false) ${(tab.match(/setDroplet\(false\)/g) || []).length} 处`)
+  push('B20 LiquidLens 面：droplet prop/handle 齐全；endFollow 复位到 -1 哨兵（0 是合法坐标——最左槽左缘附近，不能拿它当「无会话」）',
+    S.lensJs.includes('droplet?: boolean') &&
+    /setDroplet: \(on: boolean\) => void/.test(S.lensJs) &&
+    S.lensJs.includes('setNativeProps?.({ droplet: on })') &&
+    /endFollow: \(\) => \{\s*lastFollowXRef\.current = -1\s*\}/.test(S.lensJs) &&
+    !/endFollow: \(\) => \{\s*lastFollowXRef\.current = 0\s*\}/.test(S.lensJs) &&
+    S.lensJs.includes('lastFollowXRef = useRef(-1)'))
 
   // ---------------- C. 原生形变：速度驱动 + 跳变剔除 ----------------
   const SW = ['sampleWindowDuration', 'speedScaleCoefficient', 'idleSpeedThreshold', 'maxScaleDeviation',
@@ -283,6 +339,32 @@ const runSourceInvariants = () => {
   push('C15 宿主 x 仅在宿主宽度变化时等比重映射（不会逐帧累积漂移）',
     host.includes('if (_hasX && _lastWidth > 0 && width > 0 && fabs(width - _lastWidth) > 0.5)') &&
     host.includes('_lastWidth = width;'))
+
+  // ---------------- C16-C21. 第 37 轮：水珠造型 + 被打断的点击弹簧 ----------------
+  // 新增样式需求（用户原话）：「如图二：底部 tab 栏，长按后椭圆形气泡会变大，类似水珠
+  // 的样式，功能和一起一样，只是多了这个样式。」
+  push('C16 水珠几何：边长 = kLGDropletScale × 栏高 的正方形 bounds，中心锁槽心（纵向溢出栏体上下各 (1.45−1)/2×栏高）',
+    host.includes('static const CGFloat kLGDropletScale = 1.45') &&
+    /if \(_droplet && height > 0\) \{\s*CGFloat side = \(height \* kLGDropletScale\)\.rounded\(\);\s*_lens\.bounds = CGRectMake\(0, 0, side, side\);\s*_lens\.center = CGPointMake\(_x, height \/ 2\.0\);/.test(host))
+  push('C17 水珠圆角必须走胶囊几何极限（override = -1 ⇒ 正方形 bounds 下 min(w,h)/2 = 正圆；沿用栏体圆角 28 会画成圆角方形，不是水珠）',
+    /if \(_droplet\) \{[\s\S]{0,300}?setLensCornerRadius:-1\]/.test(host) &&
+    lens.includes('cornerRadiusOverride >= 0'))
+  push('C18 水珠开关幂等 + 带弹簧动画（同值直接 return，不重播）；透镜宿主保留 clipsToBounds = NO（越界是造型的一部分）',
+    /-\s*\(void\)setDroplet:\(BOOL\)droplet \{\s*if \(_droplet == droplet\) return/.test(host) &&
+    /\(void\)setDroplet:\(BOOL\)droplet \{[\s\S]{0,600}?usingSpringWithDamping/.test(host) &&
+    host.includes('self.clipsToBounds = NO'))
+  push('C19 被打断的点击弹簧必须补做落回：跟手一笔打断在途弹簧（finished == NO）时，completion 不能再直接 return（否则透镜永久停在抬起玻璃态 —— 就是用户报的那个「椭圆形气泡」）',
+    host.includes('if (!finished && !self->_followTookOver) return;') &&
+    (host.match(/_followTookOver/g) || []).length >= 4,
+    `_followTookOver 出现 ${(host.match(/_followTookOver/g) || []).length} 次`)
+  push('C20 followX 走 applyFollowX（无同位守卫、无条件落位）：守卫的判据「新目标 ≈ _x」在被跟手打断的弹簧上不成立，纠正写会被整体吞掉、错位就地固化',
+    /RCT_CUSTOM_VIEW_PROPERTY\(followX,[\s\S]{0,300}?applyFollowX:\[json doubleValue\]/.test(host) &&
+    /-\s*\(void\)applyFollowX:\(CGFloat\)x \{[\s\S]{0,900}?_lens\.center = CGPointMake\(x, self\.bounds\.size\.height \/ 2\.0\)/.test(host) &&
+    /-\s*\(void\)applyFollowX:\(CGFloat\)x \{[\s\S]{0,300}?_followTookOver = YES;/.test(host))
+  push('C21 玻璃圆角自持（栏体不裁剪的前提）：宿主 layoutSubviews 把 RN 下发的 layer.cornerRadius 转发给玻璃容器与材质视图；捕获排除根仍是宿主 superview（不套 wrapper）',
+    /_glassView\.layer\.cornerRadius = self\.layer\.cornerRadius/.test(host) &&
+    host.includes('container.clipsToBounds = YES') &&
+    host.includes('[backing setCaptureExclusionView:self.superview]'))
 
   // ---------------- D. 数值模型 ----------------
   push('D0 设计令牌可读（lg / tabBarBaseHeight / glass 三个数缺失则后面的几何断言全部失真）',
@@ -501,6 +583,19 @@ const runSourceInvariants = () => {
       half > nh / 2)
   }
 
+  // D11：水珠造型的量化 —— 直径 / 纵向溢出量 / 与静止药丸（槽宽 × 栏高）的关系
+  {
+    const m = /static const CGFloat kLGDropletScale = ([\d.]+)/.exec(host)
+    const scale = m ? Number(m[1]) : 0
+    const d = DEVICES[0]
+    const side = Math.round(BAR_H * scale)
+    const overflow = (side - BAR_H) / 2
+    const slot = slotOf(d)
+    push(`D11 水珠直径 = ${scale} × 栏高 ${BAR_H} = ${side}pt：比静止药丸高 ${(side - BAR_H).toFixed(1)}pt` +
+      `（上下各溢出栏体 ${overflow.toFixed(1)}pt，长按造型一眼可辨）、比一个槽宽 ${slot.toFixed(1)}pt 宽 ${(side - slot).toFixed(1)}pt`,
+      scale > 1.2 && scale < 2 && overflow >= 8 && side > slot * 0.9, d.name)
+  }
+
   return out
 }
 
@@ -627,7 +722,7 @@ const tamper = [
   {
     label: 'ModernTabBar 重锚退回 lensXRef（迟一个提交的旧值 —— 第 35 轮第 3 条的原始 bug）',
     file: 'tabBar',
-    mutate: (s) => s.replace('    lensRef.current?.setFollowX(resolveRestingSlotX())\n  }, [resolveRestingSlotX])', '    lensRef.current?.setFollowX(lensXRef.current)\n  }, [resolveRestingSlotX])'),
+    mutate: (s) => s.replace('    lensRef.current?.setFollowX(resolveRestingSlotX(), true)\n  }, [resolveRestingSlotX])', '    lensRef.current?.setFollowX(lensXRef.current)\n  }, [resolveRestingSlotX])'),
   },
   {
     label: 'ModernTabBar 去掉收尾后的静止位重申（收尾拿到旧槽就再也不自愈）',
@@ -641,12 +736,63 @@ const tamper = [
     file: 'tabBar',
     // 【第 35 轮第 3 条】锚点必须带上两道守卫各自上面的注释（源码里注释夹在中间），
     // 且首行 8 空格缩进 —— 4/6 空格的同名守卫在别处还有三份，纯单行锚点会打错地方。
-    mutate: (s) => s.replace('        if (dragArmedRef.current || draggingRef.current) return\n        // 新一轮 B-7 跟手已经开始（有帧驱动过药丸）：让位，别和手指抢位置\n        if (lastFollowXRef.current >= 0) return\n', ''),
+    // 【第 37 轮第 1 条】第一道守卫的形状变成 `if (draggingRef.current) return`。
+    mutate: (s) => s.replace('        if (draggingRef.current) return\n        // 新一轮 B-7 跟手已经开始（有帧驱动过药丸）：让位，别和手指抢位置\n        if (lastFollowXRef.current >= 0) return\n', ''),
   },
   {
     label: 'ModernTabBar 重申目标改读 lensXRef（重申本身就又变回迟到的值，等于没修）',
     file: 'tabBar',
-    mutate: (s) => s.replace('        lensRef.current?.setFollowX(resolveRestingSlotX())\n      }, delay))', '        lensRef.current?.setFollowX(lensXRef.current)\n      }, delay))'),
+    mutate: (s) => s.replace('        lensRef.current?.setFollowX(resolveRestingSlotX(), true)\n      }, delay))', '        lensRef.current?.setFollowX(lensXRef.current)\n      }, delay))'),
+  },
+  {
+    label: 'ModernTabBar 收尾不再 force 写（被 JS 0.1pt 去重吞掉，纠正写落不到原生）',
+    file: 'tabBar',
+    mutate: (s) => s.replace('    lensRef.current?.setFollowX(resolveRestingSlotX(), true)\n  }, [resolveRestingSlotX])', '    lensRef.current?.setFollowX(resolveRestingSlotX())\n  }, [resolveRestingSlotX])'),
+  },
+  {
+    label: 'LiquidLens force 标志失效（去重恢复成无条件吞写）',
+    file: 'lensJs',
+    mutate: (s) => s.replace('if (!force && Math.abs(nextX - lastFollowXRef.current) < 0.1) return', 'if (Math.abs(nextX - lastFollowXRef.current) < 0.1) return'),
+  },
+  {
+    label: 'LiquidLens endFollow 复位回 0（0 是合法坐标，不能当「无会话」哨兵）',
+    file: 'lensJs',
+    mutate: (s) => s.replace('      lastFollowXRef.current = -1\n    },\n    setRestX', '      lastFollowXRef.current = 0\n    },\n    setRestX'),
+  },
+  {
+    label: 'ModernTabBar 让位条件退回「arm 也算」（长按抬手事件丢失时吞掉 pager 收尾）',
+    file: 'tabBar',
+    mutate: (s) => s.replace('    if (draggingRef.current) return\n    if (dragging && dragArmedRef.current) return\n', '    if (dragArmedRef.current || draggingRef.current) return\n'),
+  },
+  {
+    label: 'ModernTabBar 正常收尾不收水珠（长按造型挂在栏上）',
+    file: 'tabBar',
+    mutate: (s) => s.replace('      snapLensToRestingSlot()\n      lensRef.current?.setDroplet(false)\n      lensRef.current?.endFollow()', '      snapLensToRestingSlot()\n      lensRef.current?.endFollow()'),
+  },
+  {
+    label: '宿主 completion 退回 if (!finished) return（跟手一笔就把药丸永久卡在抬起态）',
+    file: 'hostMm',
+    mutate: (s) => s.replace('if (!finished && !self->_followTookOver) return;', 'if (!finished) return;'),
+  },
+  {
+    label: '宿主跟手落位走回 setTargetX（同位守卫吞掉「_x ≈ 槽心但显示停在别处」的纠正写）',
+    file: 'hostMm',
+    mutate: (s) => s.replace('  [view.lens.layer removeAllAnimations];\n  [view applyFollowX:[json doubleValue]];', '  [view.lens.layer removeAllAnimations];\n  [view setTargetX:[json doubleValue] animated:NO];'),
+  },
+  {
+    label: '宿主水珠不再钳制圆角（沿用栏体 28 → 圆角方形，不是水珠）',
+    file: 'hostMm',
+    mutate: (s) => s.replace('      [lensCustom setLensCornerRadius:-1];', '      [lensCustom setLensCornerRadius:28];'),
+  },
+  {
+    label: '宿主水珠边长缩回栏高（不再溢出，造型丢失）',
+    file: 'hostMm',
+    mutate: (s) => s.replace('static const CGFloat kLGDropletScale = 1.45', 'static const CGFloat kLGDropletScale = 1.0'),
+  },
+  {
+    label: 'ModernTabBar 栏体退回裁剪（水珠被上下削平成宽胶囊）',
+    file: 'tabBar',
+    mutate: (s) => s.replace("    overflow: 'visible',\n", "    overflow: 'hidden',\n"),
   },
 ]
 
