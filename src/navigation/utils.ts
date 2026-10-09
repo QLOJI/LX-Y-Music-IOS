@@ -194,12 +194,23 @@ export const showVersionModal = () => {
  *   由它 reject 掉那次问询 —— 服务端据此中止本次同步，界面给出明确状态。
  */
 export const showSyncModeModal = (onUnavailable?: () => void) => {
+  // 【第 38 轮第 2 条】进入本次呈现时的代次快照：下面去抖分支排队重来时用它判「这次请求
+  // 是不是已经过期」。任何一条收尾路径（作答 / 取消 / 断开 / 新一轮呈现）都会同步递增
+  // syncModeModalSeq（handleSelectMode → closeSyncModeModal → cancelSyncModeModalRetries；
+  // 新一轮呈现自己在下面 ++），所以「代次变了」= 用户那边已经有结果了。
+  const entrySeq = syncModeModalSeq
   if (pendingOverlays.has(SYNC_MODE_MODAL)) {
     // 去抖窗口里又来了一个呈现请求：不能静默吞掉（上面的历史 bug 就是它造成的）。
     // 等窗口过期再自己重来一次；连试 3 次仍然占着，就按「呈现不可用」上报。
     if (guardRetryCount < 3) {
       guardRetryCount += 1
-      setTimeout(() => { showSyncModeModal(onUnavailable) }, 600)
+      setTimeout(() => {
+        // 【第 38 轮第 2 条】等窗口这段时间里用户已经作答 / 取消 / 断开了（代次递增）——
+        // 这次呈现请求作废，绝不能再补弹一个「幽灵选择框」（用户会看到一个自己早已
+        // 回答过的问题，而且它会顶掉新一轮问句的呈现）。旧写法没有这道检查。
+        if (syncModeModalSeq !== entrySeq) return
+        showSyncModeModal(onUnavailable)
+      }, 600)
       return
     }
     console.error('[SyncMode] overlay debounce occupied, give up')
@@ -228,6 +239,9 @@ export const showSyncModeModal = (onUnavailable?: () => void) => {
   const retryDelay = 700
   const maxAttempts = 5
   const seq = ++syncModeModalSeq
+  // 【第 38 轮第 2 条】本轮呈现（含重试）是否已经**真的**把 overlay 推出去过。
+  // 用来区分 present() 入口那个「已经有选择框在屏幕上」判据的两种来源：见下面的长注释。
+  let presentedThisRound = false
 
   const handleFail = (attempt: number, err: unknown) => {
     console.error('[SyncMode] showOverlay failed:', attempt, err)
@@ -264,12 +278,35 @@ export const showSyncModeModal = (onUnavailable?: () => void) => {
     // 问句与状态文案一起永久悬着。用户第 36 轮第 1 条看到的三件事（状态一直
     // 「等待选择同步方式」、选择框不弹、也等不到「已连接」）正是这条静默死路的连锁反应。
     // 判据改用「确实在屏幕上」（由 SyncModeModal 挂载 / 卸载维护）。
-    if (syncState.syncModeModalVisible) return
+    if (syncState.syncModeModalVisible) {
+      // 【第 38 轮第 2 条】这条判据本身是对的（不许叠第二个 overlay），但旧写法是
+      // **无条件静默 return** —— 于是它同时成了一个死路：标记只要因为任何一种
+      // 「原生把选择框收走、JS 侧的卸载清理没跑到」而残留成 true，本轮每一次
+      // present()（含 5 次重试）都在这里无声返回：不呈现、不重试、不上报失败，
+      // core/sync.ts 的 20 秒问句复查又因为 isSyncModeModalVisible() 为 true 而无限续期
+      // ⇒ 服务端的问句永远等不到回答、状态文案永远钉在「等待选择同步方式...」
+      // （用户第 38 轮第 2 条：状态只会显示等待选择同步方式，弹不出选择窗口）。
+      //
+      // 现在把两种来源分开：
+      //   · presentedThisRound 为 true = 本轮自己刚把 overlay 推出去过（挂载复查到点前的
+      //     去抖重入 / 复查失败后的重试）—— 真的可能已经在屏幕上了，静默停手是正解；
+      //   · 否则 = 上一轮留下的陈旧标记。走到这里说明本轮已经过
+      //     selectSyncMode → removeSyncModeEvent → closeSyncModeModal（它先摘标记、
+      //     再 dismissOverlay 掉手里的 id），上一轮的选择框必然已经被要求关闭 ——
+      //     标记与事实不符，就地纠正（清标记 + 清 id）后照常呈现，绝不静默 return。
+      if (presentedThisRound) return
+      console.warn('[SyncMode] stale syncModeModalVisible, reset before presenting')
+      syncState.syncModeModalVisible = false
+    }
     if (syncState.syncModeComponentId) {
       // 不在屏幕上却留着 id = 残留，先清掉再照常呈现（绝不静默 return）
       console.warn('[SyncMode] stale syncModeComponentId, clear before presenting:', syncState.syncModeComponentId)
       syncActions.setSyncModeComponentId('')
     }
+    // 从这里开始算「本轮真的推过 overlay 了」：上面的挂载复查（1000ms）与失败重试
+    // （700ms）都只在 presentedThisRound 为 true 之后才可能重入 present()，
+    // 于是重入时那道 visible 判据对「本轮已推、可能已挂上」和「上一轮残留」给出不同结论。
+    presentedThisRound = true
     try {
       void Navigation.showOverlay({
         component: {
