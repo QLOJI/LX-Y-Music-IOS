@@ -490,7 +490,11 @@ static const CGFloat kLGDropletScale = 1.45;
   // 玻璃都按 bounds 现算，正方形 bounds + 圆角 override = -1 ⇒ min(w,h)/2 = 正圆，
   // 即水珠。
   if (_droplet && height > 0) {
-    CGFloat side = (height * kLGDropletScale).rounded();
+    // 取整必须用 C 函数 round()：这里曾写成 Swift 风格的 (…).rounded()，
+    // 而 ObjC++ 里 CGFloat（= double）是标量、没有成员函数 —— clang 直接判错，
+    // CI（LiquidGlassKit 目标 CompileC）实锤编译失败。Swift 侧（LiquidLensView.swift）
+    // 的 .rounded() 是合法 Swift，不受影响。
+    CGFloat side = round(height * kLGDropletScale);
     _lens.bounds = CGRectMake(0, 0, side, side);
     _lens.center = CGPointMake(_x, height / 2.0);
   } else {
