@@ -349,7 +349,27 @@ export interface WebDAVMusicMetaUpdate {
   filePath?: string | null
 }
 
+// 【第 36 轮第 3 条】把「读配置 → 改一首 → 写配置」整段串行化。
+//
+// 病根：这段是三段式的读改写（getWebDAVConfig → 改 song.meta → saveWebDAVConfig），
+// 没有任何互斥。而封面补全侧是**并发**写回：列表页一轮巡检每批 20 首同时落地，
+// 每首命中封面后都要 updateWebDAVMusicMeta。于是典型丢更新是这样的：
+//   A 读到「X 没有封面」的快照 → B 读到「Y 没有封面」的快照（此时 A 还没写）
+//   → A 写上 X 的封面 → B 把自己那份**不含 X 封面**的快照整个写回去 ⇒ X 的封面落盘丢失。
+// 内存里的行照样显示（fetchCoverUrl 有内存缓存兜着），所以用户看到的是「这次刷出来了，
+// 下次冷启动进列表又没了 / 重新扫描后仍缺」——正是第 36 轮第 3 条要按死的那类反复。
+// 串行化之后每次读改写都基于前一次的结果，谁都不会覆盖谁。
+// 只串行化本函数：其他写配置的路径（扫描、下载完成）本来就有自己的时序，不在这里改。
+let webdavMetaWriteChain: Promise<void> = Promise.resolve()
 export const updateWebDAVMusicMeta = async(musicId: string, update: WebDAVMusicMetaUpdate): Promise<void> => {
+  const run = async() => updateWebDAVMusicMetaNow(musicId, update)
+  // then 的成功/失败两条都接：前一次写入失败也不能把后面的写入永久堵死
+  const next = webdavMetaWriteChain.then(run, run)
+  webdavMetaWriteChain = next.catch(() => {})
+  return next
+}
+
+const updateWebDAVMusicMetaNow = async(musicId: string, update: WebDAVMusicMetaUpdate): Promise<void> => {
   const config = await getWebDAVConfig()
   const songIndex = config.songs.findIndex(song => song.id === musicId)
   if (songIndex === -1) {

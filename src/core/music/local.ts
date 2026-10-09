@@ -113,6 +113,70 @@ export const clearWebdavCoverMiss = (musicInfo: LX.Music.MusicInfoLocal) => {
 }
 
 /**
+ * 【第 36 轮第 3 条】某首歌是不是「确凿搜过、没有任何结果」。
+ *
+ * 列表页的「续巡」据此决定重试节奏：不在备忘里的失败歌 = 超时 / 异常这类**可能救得回来**的
+ * 失败，短周期重试；在备忘里的 = 搜索源本身就没有这首歌（多轮组合都试过了），只留长周期兜底。
+ * 备忘只记确凿的「全轮搜索跑完、没有候选给出封面」——超时和异常不再记（见本文件
+ * withWebdavCoverSearchTimeout 的说明），否则这个判据会把超时误判成「不必再试」。
+ */
+export const isWebdavCoverKnownMiss = (musicInfo: LX.Music.MusicInfoLocal) =>
+  webdavCoverSearchMisses.has(getWebdavCoverMissKey(musicInfo))
+
+/**
+ * 【第 36 轮第 3 条】WebDAV 封面兜底搜索的**时长上限**（只在拿到 2 并发闸名额之后计时）。
+ *
+ * 病根：getOtherSourceByLocal → findMusic 走的是音源 SDK 起 HTTP 请求这条路，SDK 内部没有任何
+ * 超时。某一首的搜索在底层卡住（服务器半死 / TCP 连上不回包）时它返回的 Promise 永不 settle，
+ * 于是 finally 里的 releaseWebdavCoverSearch() 永不执行 —— **名额永久泄漏**。泄漏两个
+ * （WEBDAV_COVER_SEARCH_CONCURRENCY = 2）之后，这个模块级的闸门再也不会放行任何请求：
+ * 之后每一次封面兜底搜索都会永远排在 acquireWebdavCoverSearch() 上，界面上就是
+ * 「后面的歌封面全刷不出来，而且刷新、扫描、重新进列表都不再刷了」——因为闸门是模块级的，
+ * 换页面、重启一次巡检、清空失败备忘都救不了它（用户第 36 轮第 3 条原话）。
+ *
+ * 上限取值必须**短于** coverUrl.ts 的 COVER_FETCH_TIMEOUT_MS（15 秒外层超时）：
+ * 反过来的话外层早就放弃这一首、把失败结果交给列表了，我们这边还在占着名额干一份已经被
+ * 丢弃的活。12 秒留出 3 秒余量：慢但在合理范围内的搜索仍然能把结果交给外层。
+ * 到点后：放行名额（finally 必然执行）、把这次失败当「可能救回来」处理（不记备忘录），
+ * 由列表页的续巡在短周期后重试。被放弃的那份搜索若之后才返回，其结果会被丢弃 ——
+ * 它内部成功时的写回与广播（updateWebDAVMusicMeta + webdavPicUpdated）本来就发生在
+ * 调用方那一层，丢了也只是「这次没赶上」，续巡会再来。
+ */
+const WEBDAV_COVER_SEARCH_TIMEOUT_MS = 12000
+
+/**
+ * 给兜底搜索套超时。入参已经由调用方把「成功/失败」翻译成了
+ * { url, definitive }：definitive = 这次搜索**跑完了**（哪怕没有任何结果），
+ * 非 definitive = 超时 / 异常这类「这次没搜成」。超时分支一律按非 definitive 处理。
+ */
+const withWebdavCoverSearchTimeout = (
+  p: Promise<{ url: string, definitive: boolean }>,
+): Promise<{ url: string, definitive: boolean }> =>
+  new Promise((resolve) => {
+    let settled = false
+    const timer = setTimeout(() => {
+      if (settled) return
+      settled = true
+      resolve({ url: '', definitive: false })
+    }, WEBDAV_COVER_SEARCH_TIMEOUT_MS)
+    p.then(
+      (result) => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        resolve(result)
+      },
+      () => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        // 走到这里说明 .then 里的翻译层自己抛了（不该发生）：按「没搜成」处理，宁可重试
+        resolve({ url: '', definitive: false })
+      },
+    )
+  })
+
+/**
  * 本地条目 → 在线候选的多轮匹配（原样 → 「歌名-歌手」两种拆法 → 文件名两种拆法 →
  * 只按歌名模糊），每轮把候选交给 handler，handler 抛错就换下一轮。
  * 【第 31 轮】改为导出：localPlay（本地与下载专用链路）的在线歌词匹配复用它，
@@ -476,22 +540,40 @@ export const getPicUrl = async({
   if (isWebDAVMusic) {
     // 【第 28 轮】搜过没结果的歌（失败备忘）直接跳过搜索：列表是逐行要封面的，同一首"查过没有"的
     // 歌反复重发 findMusic 搜索毫无意义（见文件上方 WEBDAV_COVER_SEARCH_* 注释）。
-    if (webdavCoverSearchMisses.has(getWebdavCoverMissKey(musicInfo))) {
+    if (isWebdavCoverKnownMiss(musicInfo)) {
       webDAVLog?.info('getPicUrl: WebDAV cover search skipped (known miss)', { musicId: musicInfo.id })
     } else {
       // 【第 28 轮】没搜过的进并发闸，最多 WEBDAV_COVER_SEARCH_CONCURRENCY 个搜索同时飞
       await acquireWebdavCoverSearch()
       try {
-        const matchedUrl = await getOtherSourceByLocal(musicInfo, async(otherSource) => {
-          const { url } = await getOnlineOtherSourcePicUrl({
-            musicInfos: [...otherSource],
-            onToggleSource: () => {},
-            isRefresh,
-          })
-          // 空串当失败处理，好让 getOtherSourceByLocal 继续用下一套 歌名/歌手 组合重试
-          if (!url) throw new Error('empty cover url')
-          return url
-        }).catch(() => '')
+        // 【第 36 轮第 3 条】整段搜索套 12 秒上限：
+        //   ① 卡死的搜索再也不可能永久占住并发名额（名额泄漏 = 全表封面永久停摆，见
+        //      withWebdavCoverSearchTimeout 的说明）；
+        //   ② 区分「确凿没有结果」与「超时/异常」：前者才记失败备忘，后者留给续巡重试
+        //      （以前一律记备忘，一次网络抖动就把这首歌判了死刑）。
+        const searchResult = await withWebdavCoverSearchTimeout(
+          getOtherSourceByLocal(musicInfo, async(otherSource) => {
+            const { url } = await getOnlineOtherSourcePicUrl({
+              musicInfos: [...otherSource],
+              onToggleSource: () => {},
+              isRefresh,
+            })
+            // 空串当失败处理，好让 getOtherSourceByLocal 继续用下一套 歌名/歌手 组合重试
+            if (!url) throw new Error('empty cover url')
+            return url
+          }).then(
+            (url) => ({ url: typeof url === 'string' ? url : '', definitive: true }),
+            (err: any) => {
+              // getOtherSourceByLocal 把「所有组合都试完、没有任何候选给出封面」（含模糊搜索）
+              // 落到最后一行 `throw new Error('source not found')` —— 这是确凿的「没有结果」，
+              // 记备忘。其余抛错（findMusic / searchMusic 网络异常之类）算「这次没搜成」，不记。
+              const definitive = err?.message === 'source not found'
+              if (!definitive) webDAVLog?.warn('getPicUrl: WebDAV cover search threw', { message: err?.message })
+              return { url: '', definitive }
+            },
+          ),
+        )
+        const matchedUrl = searchResult.url
 
         if (matchedUrl) {
           webDAVLog?.info('getPicUrl: WebDAV cover matched by online search', { url: matchedUrl })
@@ -508,7 +590,13 @@ export const getPicUrl = async({
         }
 
         // 【第 28 轮】搜不到就记进备忘，本会话内不再为这首歌重发搜索（上限见 WEBDAV_COVER_MISS_CACHE_MAX）
-        markWebdavCoverMiss(musicInfo)
+        // 【第 36 轮第 3 条】只记**确凿**的「全轮搜索跑完、没有结果」；超时 / 异常不记 ——
+        // 那两种情况不是「没有这首歌」，是「这次没搜成」，列表页的续巡还要靠这个区分重试节奏。
+        if (searchResult.definitive) {
+          markWebdavCoverMiss(musicInfo)
+        } else {
+          webDAVLog?.warn('getPicUrl: WebDAV cover search failed without result, keep retryable', { musicId: musicInfo.id })
+        }
       } finally {
         releaseWebdavCoverSearch()
       }
