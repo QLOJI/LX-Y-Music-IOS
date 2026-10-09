@@ -19,4 +19,13 @@ export default {
   setSyncModeComponentId(id: string) {
     state.syncModeComponentId = id
   },
+  /**
+   * 【第 42 轮第 1 条】主树兜底面（SyncModeAskHost）的显示开关。
+   * 这是**渲染状态**：必须 emit，否则 Home 树里那个常驻宿主不知道自己该画出来了。
+   */
+  setSyncModeAskFallbackVisible(visible: boolean) {
+    if (state.syncModeAskFallbackVisible == visible) return
+    state.syncModeAskFallbackVisible = visible
+    global.state_event.syncModeAskFallbackUpdated(visible)
+  },
 }
