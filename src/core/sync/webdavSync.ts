@@ -9,7 +9,7 @@ import { debounce } from '@/utils/common'
 import { getOperationQueue, clearOperationQueue, loadOperationQueue } from './opQueue'
 import { applyListOperation } from '@/utils/listManage'
 import { overwriteUserApis } from '@/core/userApi.ts'
-import { getPlayHistory, savePlayHistory } from '@/utils/data'
+import { getPlayHistory, savePlayHistory, setSyncHost, addSyncHostHistory } from '@/utils/data'
 import {
   normalizeDownloadTasksForSync,
   normalizeRemoteSyncedDownloadTasks,
@@ -277,11 +277,15 @@ async function applyMergedExtraData(remoteData: ListsSyncFile) {
 
 async function uploadSettings(path: string): Promise<number> {
   const timestamp = Date.now()
-  const { settings } = await getAllDataForSync()
+  const { settings, syncHost } = await getAllDataForSync()
+  // 【第 39 轮第 3 条】「同步服务地址」（@sync_host）随设置快照一起上传：
+  // 它不是设置项，拿不到 settings 那份里，所以单独作为 syncHost 字段写进 settings.json。
+  // 旧版本客户端读这份文件时忽略这个字段（只取 data），互不干扰。
   const dataObject = {
     version: '2',
     lastModified: timestamp,
     data: settings,
+    syncHost,
   }
   await webdav.uploadFile(path, JSON.stringify(dataObject))
   return timestamp
@@ -352,7 +356,18 @@ export async function manualDownloadSettingsAndApis() {
     const remoteSettingsContent = await webdav.downloadFile(remoteSettingsPath)
     if (remoteSettingsContent) {
       const remoteSettingsData = JSON.parse(remoteSettingsContent)
+      // 设置项里的网易云 Cookie 等按 filterSensitiveSettingsForSync 的口径落地（第 39 轮第 3 条）
       updateSetting(filterSensitiveSettingsForSync(remoteSettingsData.data))
+      // 【第 39 轮第 3 条】「同步服务地址」回填：上传侧写在 settings.json 顶层的 syncHost 字段。
+      // 与设置项同一条路径往返（下载设置与音源 → 本机的同步服务地址跟着云端走），
+      // 所以新设备不必再手抄一遍地址。只认非空字符串：旧版上传的文件没有这个字段（undefined）
+      // 或存了脏值时，本机现有地址保持不动 —— 绝不用空值把用户已经配好的地址清掉。
+      if (typeof remoteSettingsData.syncHost === 'string' && remoteSettingsData.syncHost) {
+        await setSyncHost(remoteSettingsData.syncHost)
+        // 顺手记进「同步服务地址」的历史列表（数据同步页的历史下拉就是这个列表），
+        // 用户在那边切换地址时能看到刚同步过来的这一条。
+        void addSyncHostHistory(remoteSettingsData.syncHost).catch(() => {})
+      }
     } else {
       toast('云端未找到设置文件，跳过设置同步')
     }

@@ -16,10 +16,32 @@ const coverCache = new Map<string, string>()
 const coverInflight = new Map<string, Promise<string>>()
 
 const MAX_CONCURRENT = 4
+
+/**
+ * 【第 39 轮第 2 条】等位队列拆成「插队 / 常规」两条 —— 治「换了当前目录再点扫描，
+ * 新歌单的封面一首都不开始加载」。
+ *
+ * 病根是**全局单一 FIFO 队列 + 单首耗时很长**：本文件是整份 App 的封面入口（本地歌单、
+ * 播放列表、WebDAV……共用这 4 个并发槽），而 WebDAV 里一首歌的取封面要走
+ * 「网盘同目录封面 → 内嵌 → 在线跨平台搜索」整条链（local.ts 的在线搜索另有 2 并发闸 +
+ * 12 秒上限）。用户在 /music 目录点了扫描 → 325 首整表巡检把这 4 个槽位**占满好几分钟**；
+ * 这时他切到 /music1 再点扫描，新歌单的 325 首只能排在旧歌单的几百个任务**后面** ——
+ * 屏幕上这批歌的封面连请求都还没发出去，看起来就是「点了扫描，在线封面无法自动开始加载」。
+ *
+ * 修法：等位任务分两条队列，「插队队列永远优先出队」。WebDAV 列表页（整表巡检 + 可视列表
+ * 巡检 + ⋮ 菜单单曲补图）全部走插队通道 —— 它们代表**用户此刻正盯着看的那份列表**；
+ * 旧目录剩下的常规任务不丢，等插队队列空了自然继续（结果回写按歌曲 id 落地，不影响新列表）。
+ * 只让 4 个并发槽的**出队顺序**变化，并发上限 / 在飞去重 / 15 秒超时口径全部照旧。
+ */
 let activeCount = 0
 const taskQueue: Array<() => void> = []
+const priorityTaskQueue: Array<() => void> = []
 
-const runWithLimit = async(fn: () => Promise<string>): Promise<string> => {
+// 出队：插队队列优先；两条都空则没人接手（当前任务的 finally 就到此为止）
+const takeNextTask = (): (() => void) | undefined =>
+  priorityTaskQueue.shift() ?? taskQueue.shift()
+
+const runWithLimit = async(fn: () => Promise<string>, isPriority = false): Promise<string> => {
   return new Promise<string>((resolve, reject) => {
     const execute = (): void => {
       activeCount++
@@ -27,12 +49,12 @@ const runWithLimit = async(fn: () => Promise<string>): Promise<string> => {
         .then(resolve, reject)
         .finally(() => {
           activeCount--
-          const next = taskQueue.shift()
+          const next = takeNextTask()
           if (next) next()
         })
     }
     if (activeCount < MAX_CONCURRENT) execute()
-    else taskQueue.push(execute)
+    else (isPriority ? priorityTaskQueue : taskQueue).push(execute)
   })
 }
 
@@ -102,7 +124,15 @@ export const invalidateCoverCache = (song: CoverSong): void => {
 
 export const fetchCoverUrl = async(
   song: CoverSong,
-  options?: { isRefresh?: boolean },
+  options?: {
+    isRefresh?: boolean
+    /**
+     * 【第 39 轮第 2 条】入「插队队列」：出队时优先于所有常规任务（见上方两条队列的说明）。
+     * WebDAV 列表页那一批调用点（整表巡检 / 可视列表巡检 / 菜单单曲补图）全部传 true ——
+     * 它们代表用户此刻正看着的那份列表，不该排在任何旧列表的几百个任务后面。
+     */
+    highPriority?: boolean
+  },
 ): Promise<string> => {
   // qs 源沿用既有跨平台匹配逻辑（含其独立缓存）
   if (song.source === 'qs') return fetchQsCover(song as LX.Music.MusicInfoOnline)
@@ -120,11 +150,14 @@ export const fetchCoverUrl = async(
 
   // 【第 34 轮第 3 条】超时包在**入队任务的内部**：只有任务真的 settle 了，runWithLimit 的
   // finally 才会跑、槽位才会让给下一个任务（包在外面等于槽位照样被占死）。
-  const task = runWithLimit(async() =>
-    withCoverTimeout(
-      getPicPath({ musicInfo: song as LX.Music.MusicInfo, isRefresh: options?.isRefresh === true }),
-      COVER_FETCH_TIMEOUT_MS,
-    ),
+  const task = runWithLimit(
+    async() =>
+      withCoverTimeout(
+        getPicPath({ musicInfo: song as LX.Music.MusicInfo, isRefresh: options?.isRefresh === true }),
+        COVER_FETCH_TIMEOUT_MS,
+      ),
+    // 【第 39 轮第 2 条】插队标记透传到队列（默认 false ⇒ 其他页面口径零变化）
+    options?.highPriority === true,
   )
     .then((url) => {
       // getPicPath 的类型标的是 string，但运行期它会把上游（音源 SDK / 网盘 meta）拿到的值原样带出来：
