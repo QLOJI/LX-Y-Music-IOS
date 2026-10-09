@@ -25,7 +25,9 @@
 //            与上游行为一致）。
 //        触摸眩光（touchPoint）只在 Metal 档生效：26.2+ 档的背衬是磨砂视图、不实现
 //        对应 selector，respondsToSelector 分流自然跳过。
-//  - The parent container should have `borderRadius` + `overflow: 'hidden'` (rounds the bar).
+//  - The parent container should have `borderRadius` (the host forwards it to the glass;
+//    see layoutSubviews). It must NOT be relied on to clip: round 37 removed the tab bar's
+//    `overflow: 'hidden'` so the lens droplet can overflow the bar vertically.
 //  - `tint` prop：染色基色（不透明主题色，明暗自适应）。两种背衬都吃：磨砂档与 26.2+
 //    的液态档 → 覆层基色；14～26.1 的液态档 → shader materialTint。本应用不传（纯玻璃，
 //    不跟随主题色）：磨砂型走中性覆层色（浅色白/深色黑），Metal 档走 kit 预设动态色。
@@ -421,6 +423,13 @@ RCT_CUSTOM_VIEW_PROPERTY(live, NSNumber, LGLiquidGlassHostView) {
 @interface LGLiquidLensHostView : RCTView
 @end
 
+// 【第 37 轮新增样式】水珠态几何：长按激活拖动时，透镜从「与槽等宽的胶囊」长成
+// 直径 = 1.45 × 栏高的圆（56 → ~81pt），纵向溢出栏体上下边缘各 ~12.6pt。
+// 取值依据：用户参考图里那颗水珠明显比栏体高、横向略宽于一个图标位（栏宽/5），
+// 1.45 在 iPhone 16 Pro Max（栏高 56 / 槽宽 ~78）下得 81pt ≈ 略宽于槽，与图一致；
+// 由于透镜是正方形 frame，Swift 侧取 min(w,h)/2 恰好画成正圆。
+static const CGFloat kLGDropletScale = 1.45;
+
 @implementation LGLiquidLensHostView {
   // 恒为自研 LiquidLensView（LGLensFactory 统一创建）。上游亦为自研复刻，
   // 从不调用系统私有 _UILiquidLensView（其不响应本组件方法面，且形状不可控）；
@@ -430,6 +439,17 @@ RCT_CUSTOM_VIEW_PROPERTY(live, NSNumber, LGLiquidGlassHostView) {
   BOOL _hasX;
   CGFloat _pillWidth;
   CGFloat _lastWidth; // 上一次布局的宿主宽度（等比重映射的基准，0 = 尚未布局）
+  // 水珠态（第 37 轮新增样式，JS 经 droplet prop 下发）
+  BOOL _droplet;
+  // 【第 37 轮第 1 条】「在途的点击弹簧被跟手一笔打断」标记。
+  // setTargetX:animated:YES 的 completion 原本在 finished == NO 时直接 return，
+  // 把「落回静止药丸」整个跳过——而跟手通道（followX）每一次写入都会
+  // [lens.layer removeAllAnimations]，于是「点击弹簧在途时来了一笔跟手」就必然
+  // 让 finished == NO ⇒ 透镜永远停在抬起态（用户看到的就是那个「椭圆形气泡」，
+  // 即抬起玻璃本身：宽度 ≠ 槽宽、上下还带形变），点一下才会由新的点击弹簧收尾。
+  // 标记的语义：本笔跟手打断了点击弹簧，弹簧的 completion 必须补做落回；
+  // 若换成新的点击弹簧（animated:YES 分支）则清掉标记，由新弹簧自己负责收尾。
+  BOOL _followTookOver;
 }
 
 - (instancetype)initWithFrame:(CGRect)frame {
@@ -443,7 +463,10 @@ RCT_CUSTOM_VIEW_PROPERTY(live, NSNumber, LGLiquidGlassHostView) {
     _lens.autoresizingMask = UIViewAutoresizingFlexibleHeight;
     [self addSubview:_lens];
     _pillWidth = 56.0;
-    self.clipsToBounds = NO; // 挤压/拉伸变形时允许略微越界，整体仍由 tab 栏容器裁剪
+    // 挤压/拉伸变形（以及第 37 轮的水珠态）都会越界：透镜自身从不裁剪。
+    // 第 37 轮起外层 tab 栏也不再裁剪（ModernTabBar 的 bar 样式 overflow: 'visible'，
+    // 水珠要纵向溢出栏体），越界部分直接可见。
+    self.clipsToBounds = NO;
   }
   return self;
 }
@@ -460,8 +483,20 @@ RCT_CUSTOM_VIEW_PROPERTY(live, NSNumber, LGLiquidGlassHostView) {
     _x = _x * (width / _lastWidth);
   }
   _lastWidth = width;
-  _lens.frame = CGRectMake(0, 0, _pillWidth, self.bounds.size.height);
-  _lens.center = CGPointMake(_x, self.bounds.size.height / 2.0);
+  CGFloat height = self.bounds.size.height;
+  // 【第 37 轮新增样式】水珠态：正方形 frame（边长 = kLGDropletScale × 栏高），
+  // 中心仍锁在槽心 (_x, h/2) —— 纵向溢出栏体上下边缘由 JS 侧解除栏体裁剪后可见
+  // （见 ModernTabBar 的 bar 样式：overflow: 'visible'）。Swift 侧的静止药丸/抬起
+  // 玻璃都按 bounds 现算，正方形 bounds + 圆角 override = -1 ⇒ min(w,h)/2 = 正圆，
+  // 即水珠。
+  if (_droplet && height > 0) {
+    CGFloat side = (height * kLGDropletScale).rounded();
+    _lens.bounds = CGRectMake(0, 0, side, side);
+    _lens.center = CGPointMake(_x, height / 2.0);
+  } else {
+    _lens.frame = CGRectMake(0, 0, _pillWidth, height);
+    _lens.center = CGPointMake(_x, height / 2.0);
+  }
   // 圆角对齐宿主（JS 条带样式当前未设 borderRadius → 宿主 cornerRadius = 0，
   // 不推送圆角，透镜走默认胶囊 = min(宽,高)/2 = 28，与栏体 designRadius.glass
   // 一致；若未来 JS 设了圆角，此处钳制后推送），但必须钳制到
@@ -470,10 +505,14 @@ RCT_CUSTOM_VIEW_PROPERTY(live, NSNumber, LGLiquidGlassHostView) {
   // 且与栏体圆角在视觉上一致（UIKit 对 layer.cornerRadius 同样按短边一半收敛）。
   id<LGLensCustomizations> lensCustom = (id<LGLensCustomizations>)_lens;
   if ([lensCustom respondsToSelector:@selector(setLensCornerRadius:)]) {
-    // 几何无效（首帧未布局 / RN 样式尚未应用）时不推送圆角：此时短边一半 = 0，
-    // 推送 0 会把透镜 override 毒化成 0，下一次抬起玻璃即被 shader 画成矩形
-    // （「透镜偶发变矩形」）。跳过本次，等几何有效的下一轮 layout 再对齐。
-    if (self.bounds.size.height > 0 && _pillWidth > 0 && self.layer.cornerRadius > 0) {
+    if (_droplet) {
+      // 水珠态必须走「胶囊几何极限」（override = -1 ⇒ min(w,h)/2 = 正圆）。
+      // 不能沿用栏体圆角：正方形 bounds 下推送 28 会画成圆角方形，不是水珠。
+      [lensCustom setLensCornerRadius:-1];
+    } else if (self.bounds.size.height > 0 && _pillWidth > 0 && self.layer.cornerRadius > 0) {
+      // 几何无效（首帧未布局 / RN 样式尚未应用）时不推送圆角：此时短边一半 = 0，
+      // 推送 0 会把透镜 override 毒化成 0，下一次抬起玻璃即被 shader 画成矩形
+      // （「透镜偶发变矩形」）。跳过本次，等几何有效的下一轮 layout 再对齐。
       CGFloat radius = MIN(MIN(self.layer.cornerRadius, _pillWidth / 2.0), self.bounds.size.height / 2.0);
       [lensCustom setLensCornerRadius:radius];
     }
@@ -508,6 +547,8 @@ RCT_CUSTOM_VIEW_PROPERTY(live, NSNumber, LGLiquidGlassHostView) {
   if (animated) {
     // 点击切换：淡入 + 抬起 morph + 弹簧滑动（加速度挤压/拉伸由透镜内部
     // displayLink 跟踪位置产生），落定后先淡出再回落药丸（见 completion）
+    // 新的点击弹簧接管：落回收尾由本次弹簧负责，清掉跟手打断标记
+    _followTookOver = NO;
     [UIView animateWithDuration:0.1 animations:^{
       self->_lens.alpha = 1;
     }];
@@ -521,13 +562,69 @@ RCT_CUSTOM_VIEW_PROPERTY(live, NSNumber, LGLiquidGlassHostView) {
                      animations:^{
       self->_lens.center = CGPointMake(x, self.bounds.size.height / 2.0);
     } completion:^(BOOL finished) {
-      if (!finished) return; // 连续点击时被新动画接管，由最后一次动画负责收尾
+      // 【第 37 轮第 1 条】原写法是 `if (!finished) return;` —— 把「落回静止药丸」
+      // 整个跳过。finished == NO 有两种成因，语义完全不同：
+      //   ① 被**新的点击弹簧**接管（_followTookOver == NO）：新弹簧自己会在收尾时
+      //      落回，这里跳过是对的（连续点击不闪）；
+      //   ② 被**跟手一笔**打断（_followTookOver == YES）：跟手通道（followX）每次
+      //      写入都先 [lens.layer removeAllAnimations]，弹簧必然 finished == NO，
+      //      而跟手不会再补一次落回 ⇒ 透镜永远停在抬起态。用户看到的就是那个
+      //      「椭圆形气泡」（抬起玻璃本身：宽度 ≠ 槽宽、边缘还带速度形变），
+      //      文字自然不在它的正中心；点击换 tab 时新的弹簧收尾才把它落回。
+      //      本分支必须补做落回，否则这一笔跟手就把药丸永久卡在抬起态。
+      if (!finished && !self->_followTookOver) return;
+      self->_followTookOver = NO;
       // 落定回落药丸（跳过 morph 动画），保持静止常显（上游 resting 状态）
       [self->_lens setLifted:NO animated:NO alongsideAnimations:nil completion:nil];
     }];
   } else {
     _lens.center = CGPointMake(x, self.bounds.size.height / 2.0);
   }
+}
+
+// 【第 37 轮第 1 条】跟手/收尾专用的直落通道（JS 的 followX prop 走这里）。
+// 与 setTargetX:animated:NO 的区别只有一个，但很关键：**跳过同位守卫**。
+// 守卫的判据是「新目标与 _x（上一次命令的目标）之差 < 0.5pt」，而守卫就绪的前提
+// 是「显示确实停在 _x 上」。跟手通道打破了这个前提：它用 removeAllAnimations
+// 停掉在途弹簧（显示冻结在当前 presentation 位置），紧接着写 _x —— 于是
+// _x 是新的、显示却可能停在别处。此后所有纠正写（收尾锚回槽心、静止位重申）
+// 的目标恰好都 ≈ _x，全被守卫吞掉，错位就地永久固化（这正是用户报的
+// 「滑一下就不对中、点一下才好」：点击走 x prop —— 它改的是 _x，值一变守卫就放行）。
+// 所以跟手通道的每一笔都必须无条件落位；JS 侧的 0.1pt 去重仍在，桥流量不变。
+- (void)applyFollowX:(CGFloat)x {
+  // 记账：本笔会打断在途的点击弹簧，它的 completion 需要补做落回（见上面的分支）
+  _followTookOver = YES;
+  _x = x;
+  if (!_hasX) {
+    // 首次落位（与 setTargetX 的首次分支同义）：直接落位并进入静止常显态
+    _hasX = YES;
+    [self setNeedsLayout];
+    _lens.alpha = 1.0;
+    return;
+  }
+  _lens.center = CGPointMake(x, self.bounds.size.height / 2.0);
+}
+
+// 【第 37 轮新增样式】水珠态开关：长按激活拖动时长成圆、所有收尾路径缩回胶囊。
+// 几何在 layoutSubviews 里算（droplet 会影响每一轮布局），这里只负责动画：
+// 用 0.3s 弹簧（damping 0.72）把 bounds/center 的变化补成「水珠胀开/收回」的观感，
+// BeginFromCurrentState 保证长按-松手快速交替时不会从上次动画的旧起点重播。
+- (void)setDroplet:(BOOL)droplet {
+  if (_droplet == droplet) return;
+  _droplet = droplet;
+  [UIView animateWithDuration:droplet ? 0.28 : 0.22
+                        delay:0
+       usingSpringWithDamping:0.72
+        initialSpringVelocity:0
+                      options:UIViewAnimationOptionBeginFromCurrentState |
+                              UIViewAnimationOptionAllowUserInteraction
+                   animations:^{
+    // setNeedsLayout 必须先调：layoutIfNeeded 只在有脏布局时才真的跑
+    // layoutSubviews（droplet 分支重算 _lens 的 bounds/center；子视图
+    // LiquidLensView 的 layoutSubviews 随之重排圆角与玻璃）
+    [self setNeedsLayout];
+    [self layoutIfNeeded];
+  } completion:nil];
 }
 
 - (void)setPillWidth:(CGFloat)width {
@@ -566,14 +663,26 @@ RCT_CUSTOM_VIEW_PROPERTY(x, NSNumber, LGLiquidLensHostView) {
 // setNativeProps 每帧写入药丸中心 X。与 x prop 的区别：x 恒定走 0.1s 淡入 +
 // 0.3s 弹簧（点击切页路径），跟手必须零动画直落——否则每帧都会重启弹簧、
 // 透镜永远追不上手指。进入本分支前先对透镜图层 removeAllAnimations，停掉
-// 可能仍在途的点击弹簧（移除动画不改模型值，紧接着由非动画分支写入新中心，
-// 不会出现「先弹回旧目标再跳新位置」）；随后复用既有的 setTargetX:animated:NO
-// 直落分支（不重播淡入/抬落，也不触碰其同位守卫与首次落位逻辑）。
+// 可能仍在途的点击弹簧（移除动画不改模型值，紧接着由直落分支写入新中心，
+// 不会出现「先弹回旧目标再跳新位置」），并置 _followTookOver 让那颗被停掉的
+// 弹簧在 completion 里补做「落回静止药丸」（第 37 轮第 1 条，见 applyFollowX）。
+// 【第 37 轮第 1 条】改走 applyFollowX:（无条件落位、不吃同位守卫）：收尾锚回
+// 与静止位重申也走这条通道，若它们的值与 _x 只差零点几 pt 就被守卫吞掉，
+// 「显示冻结在打断点、_x 却已经是槽心」这类错位就永远纠不回来。
 // 纯增量属性：原生未重编译时 JS 侧写入静默失败（followX 为可选 prop，不写不触发）。
 RCT_CUSTOM_VIEW_PROPERTY(followX, NSNumber, LGLiquidLensHostView) {
   if (json == nil) return;
   [view.lens.layer removeAllAnimations];
-  [view setTargetX:[json doubleValue] animated:NO];
+  [view applyFollowX:[json doubleValue]];
+}
+
+// 【第 37 轮新增样式】水珠态（长按激活拖动）：true → 透镜长成圆、溢出栏体上下边缘
+// （几何见 layoutSubviews 的 droplet 分支）。命令式 prop：JS 经 setNativeProps
+// 下发（LiquidLens 的 setDroplet），声明式也可以传（undefined 不下发）。
+// 纯增量属性：原生未重编译时静默失败，只少一个造型，不影响长按动力学。
+RCT_CUSTOM_VIEW_PROPERTY(droplet, NSNumber, LGLiquidLensHostView) {
+  if (json == nil) return;
+  [view setDroplet:[json boolValue]];
 }
 
 // 主题染色：透镜覆层与底部栏玻璃同色（不透明基色，明暗自适应）
