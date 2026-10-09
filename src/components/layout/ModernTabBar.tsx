@@ -37,6 +37,22 @@ const styles = createStyle({
     right: 0,
     bottom: 0,
     paddingHorizontal: designSpacing.lg,
+    // 【第 38 轮·优化1】长按水珠必须压在迷你播放条之上（用户原话：「长按后的椭圆形气泡保持
+    // 最上层，现在迷你播放器栏遮住了椭圆形气泡上边」）。
+    //
+    // 层级事实（Vertical 布局）：Vertical/Content.tsx 返回的是**Fragment** —— Header / Main /
+    // ModernTabBar 三者与 PlayerBar 同属 Vertical/index.tsx 那个 `flex:1` View 的直接子节点，
+    // 所以这里的 zIndex 与 PlayerBar 在**同一层**竞争（不是「孙子打叔叔」，不依赖 RN 的
+    // layout-only 视图提升）。PlayerBar 的 wrapper 没有 zIndex（默认 0），本层取 3 ⇒ 水珠
+    // 溢出栏体上缘的那一截画在迷你播放条之上。
+    //   · 只抬 tab 栏这一层：Main（歌曲列表滚动内容）仍是 0 ⇒ 列表照旧从迷你播放条**下面**
+    //     滚过去（若连 Main 一起抬，列表会盖住胶囊，那是更严重的回归）；
+    //   · Header 是 10（Home/Vertical/Header.tsx），本就高于本层，相对次序不变（一上一下，
+    //     本来也不重叠）；
+    //   · pillLayer（收起态圆钮图层）与水珠的放大态同源，取同一个值，免得两态一切换就抢层。
+    // Horizontal 布局下同样是 PlayerBar 的直接兄弟（见 Horizontal/index.tsx），同一套生效。
+    // ⚠️ 别改成给 Content 套一层带 zIndex 的容器：那会连带把 Main 抬到迷你播放条之上。
+    zIndex: 3,
   },
   bar: {
     // 与迷你播放条胶囊(~54)接近的纤细高度；透镜条带高度按 BAR_HEIGHT 推导。
@@ -84,6 +100,9 @@ const styles = createStyle({
     left: 0,
     right: 0,
     bottom: 0,
+    // 【第 38 轮·优化1】与 wrapper 同值：收起态圆钮与长按水珠是同一颗透镜的两个形态，
+    // 两图层必须同层，否则长按/松手的一瞬间会跟迷你播放条抢一次层（见 wrapper 的 zIndex 说明）。
+    zIndex: 3,
   },
   // 深浅色模式均无描边（纯玻璃质感，玻璃材质自带边缘光；覆层为中性色不随主题色）
   pillWrapper: {

@@ -38,11 +38,17 @@ type LiquidLensProps = ViewProps & {
    */
   tint?: string
   /**
-   * 【第 37 轮新增样式】水珠态：true 时透镜从「与槽等宽的胶囊」长成**直径约
-   * 1.45 倍栏高的圆**，纵向溢出栏体上下边缘（对齐用户给的参考图：长按后椭圆
-   * 气泡变大、像一颗挂在栏上的水珠）。几何/圆角/弹簧全部在原生宿主里算，JS 只
-   * 下发开关（见 LiquidGlassViewManager.mm 的 droplet prop）。
+   * 【第 37 轮新增样式 / 第 38 轮优化】水珠态：true 时透镜从「与槽等宽的胶囊」长成
+   * **直径约 1.30 倍栏高的圆**（第 37 轮是 1.45，用户反馈「有点大了」，第 38 轮收小），
+   * 纵向溢出栏体上下边缘（对齐用户给的参考图：长按后椭圆气泡变大、像一颗挂在栏上的
+   * 水珠）。几何/圆角/弹簧全部在原生宿主里算，JS 只下发开关
+   * （见 LiquidGlassViewManager.mm 的 droplet prop 与 kLGDropletScale 常量）。
    * 由 ModernTabBar 在长按激活拖动（A-5 arm）时置 true，所有收尾路径置回 false。
+   *
+   * 【第 38 轮优化】放大/缩小不再是一帧到位：原生宿主按 CADisplayLink 逐帧把
+   * _dropletProgress（0..1）用近临界阻尼弹簧推到目标，每帧把**模型**几何写实
+   * （玻璃形状由 shader 现读 bounds 现算，所以过程真的看得见）。长按→变大、
+   * 松手→变小，两段都有连续形变过程；长按途中松手时进度与速度接力，不会重播。
    */
   droplet?: boolean
 }
