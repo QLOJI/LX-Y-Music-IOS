@@ -36,6 +36,14 @@
  * 谁把 `!isEnableWebdav` 加回 disabled、把 finally 拿掉、把 isSyncing 挪出 try、或把 toast 的
  * catch 删掉，脚本立刻红。带反例自检（m1–m11）。
  *
+ * 【第 39 轮第 3 条】用户把禁用口径**改回去了**（本条是需求变更，不是回归）：
+ *   原话：「如果未勾选启用WebDAV同步选项，下方的测试连接、立即同步歌单、上传设置与音源、
+ *   下载设置与音源、上传歌单、下载歌单按钮无法点击，只有勾选了选项，下面按钮才能点击」。
+ *   于是不变量 A 从「禁用不许带 !isEnableWebdav」翻转为「禁用必须恰好是
+ *   !isEnableWebdav || isXxx」—— 未启用整排不可点；启用之后仍只允许各自的 loading 标记
+ *   暂时禁用（第三道门一律判红：第 33 轮「门越叠越多 → 全部锁死」的病根就是它）。
+ *   「点了必有反馈」的其余部分不变：加载文案、try/finally 复位、失败给原因、状态行不串台。
+ *
  * 【第 36 轮第 2 条】新增不变量 F —— 六个按钮的状态文案必须写在**本区块自己**的那一行：
  *   用户原话：「点击测试连接按钮时，提示信息显示在同步服务地址的状态一栏，其实这两个功能是
  *   相互独立的，上面 WebDAV 是一个功能，下面同步服务地址是另一个功能，互不干扰，点击测试连接、
@@ -140,16 +148,20 @@ const pageInvariants = (raw) => {
   }
   const region = code.slice(firstRow, lastSync)
 
-  if (region.includes('!isEnableWebdav')) {
-    reasons.push('动作按钮又回到「未启用 WebDAV 就 disabled」的假禁用：开关默认就是关的，'
-      + '按下去没有加载文案、没有任何提示（用户第 33 轮第 3 条的原症状）')
-  }
+  // 【第 39 轮第 3 条】禁用口径（用户原文）：「如果未勾选启用WebDAV同步选项，下方的测试连接、
+  // 立即同步歌单、上传设置与音源、下载设置与音源、上传歌单、下载歌单按钮无法点击，只有勾选了
+  // 选项，下面按钮才能点击」。六个按钮的 disabled 统一收窄成唯一一种形状
+  // `!isEnableWebdav || isXxx`：未启用整排不可点；启用之后只允许各自的 loading 标记暂时禁用
+  // —— 不许再叠加第三道门（第 33 轮「门越叠越多 → 全部锁死」的病根就是它）。
   for (const b of BUTTONS) {
-    const want = `disabled={${b.flag}}`
+    const want = `disabled={!isEnableWebdav || ${b.flag}}`
     const n = countOf(region, want)
     if (n !== 1) {
       reasons.push(`「${b.name}」的 disabled 应恰好是 ${want}（出现 ${n} 次）：`
-        + '只能由它自己的 loading 标记决定，不能再叠加其它门')
+        + '第 39 轮第 3 条要求「未启用整排不可点、启用后只由自身 loading 暂时禁用」，不许再叠加别的门')
+    }
+    if (region.includes(`disabled={${b.flag}}`)) {
+      reasons.push(`「${b.name}」丢了「未启用整排禁用」的门（disabled 里没有 !isEnableWebdav，未勾选启用时按钮仍可点）`)
     }
   }
   // 加载文案：六个按钮都要有 `flag ? 'xxx中...' : '原文案'` 的三元
@@ -394,10 +406,15 @@ const runCounterExamples = () => {
     results.push({ name, ok: hit, detail: hit ? '已拦下' : '未拦下（缺失期望理由：' + expectKeyword + '）' })
   }
 
-  // m1 恢复「未启用就 disabled」的假禁用（第一颗按钮）
-  check('m1 「测试连接」退回 !isEnableWebdav 假禁用', pageInvariants(tamper(REAL.sync,
-    'disabled={isTesting}', 'disabled={!isEnableWebdav || isTesting}')),
-  '假禁用')
+  // m1 【第 39 轮第 3 条】去掉「未启用整排禁用」的门（未勾选启用时按钮仍然可点）
+  check('m1 「测试连接」丢掉 !isEnableWebdav 门（未启用也能点）', pageInvariants(tamper(REAL.sync,
+    'disabled={!isEnableWebdav || isTesting}', 'disabled={isTesting}')),
+  '未启用整排禁用')
+
+  // m12 【第 39 轮第 3 条】某颗按钮又叠加第三道门（第 33 轮「全部锁死」的病根形状）
+  check('m12 「测试连接」又叠加第二道门（isSyncing）', pageInvariants(tamper(REAL.sync,
+    'disabled={!isEnableWebdav || isTesting}', 'disabled={!isEnableWebdav || isTesting || isSyncing}')),
+  '不许再叠加')
 
   // m2 删掉「同步中...」加载文案
   check('m2 删掉「立即同步歌单」的加载文案', pageInvariants(tamper(REAL.sync,
@@ -471,10 +488,11 @@ const runCounterExamples = () => {
 
 console.log('=== sim-webdav-button-feedback ===')
 console.log('WebDAV 六按钮：点了必有反馈 + 加载中一定复位 + 模块级锁与提示链路都不许卡死（第 33 轮第 3 条）')
+console.log('        禁用口径（第 39 轮第 3 条）：未勾选启用 → 整排不可点；启用后只由各自 loading 暂时禁用')
 console.log()
 
 const checks = [
-  ['Sync 页（按钮不假禁用 + 六个加载文案 + 按钮区不再置灰 + 缺配置先给提示）',
+  ['Sync 页（未启用整排不可点 + 禁用形状唯一 + 六个加载文案 + 按钮区不再置灰 + 缺配置先给提示）',
     () => pageInvariants(REAL.sync)],
   ['六个处理函数（loading 标记一律 try/finally 复位 + 失败给原因）',
     () => handlerInvariants(REAL.sync)],

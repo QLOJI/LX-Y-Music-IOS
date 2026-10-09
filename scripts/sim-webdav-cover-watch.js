@@ -97,6 +97,15 @@
  *      现在是 (id|url) 冷却窗口（COVER_ERROR_RETRY_COOLDOWN_MS），窗口外允许再自愈。
  *   续巡（跑完还有空封面就自己安排下一轮）由 sim-webdav-auto-cover-lyric.js 钉住，本脚本不重复。
  *
+ * 第 39 轮第 2 条补记（用户图二：选 /music 点扫描、封面开始加载；再切 /music1 点扫描，封面
+ * 「一首都不开始加载」。修好后要求「重新进入 WebDAV 界面、下滑刷新、点击扫描按钮都会重新
+ * 自动刷新在线封面」）：
+ *   病根在 coverUrl.ts：4 并发槽是全 App 共用的**单一 FIFO**，换目录前那份歌单（325 首）的
+ *   整表巡检还在排队时，新歌单的任务全部落在它们后面 —— 屏幕上这批歌连请求都还没发出去。
+ *   修法：等位任务分「插队 / 常规」两条队列（出队时插队优先），WebDAV 的整表巡检 / 可视列表
+ *   巡检 / ⋮ 菜单单曲补图全部走插队通道；并发上限仍是 4（只改顺序，不加槽位）。
+ *   本脚本新增不变量 E 与反例 p1–p6 钉住这条通道（含「其他页面口径零变化」的默认 false）。
+ *
  * 为什么必须靠契约脚本：「整表分批 / 先探活再当缺失 / 每轮清备忘 / 刷新带 isRefresh /
  * onError 只重试一次 / 按钮不再被 disabled 吞掉 / 失败一定有日志和提示」全是形状与顺序，
  * 不是类型 —— 把 file:// 校验删掉、把清备忘删掉、把分批换回前 20 首、把 isRefresh 去掉、
@@ -190,9 +199,14 @@ const coverWatchInvariants = (files) => {
     reasons.push('巡检没有按 MAX_PREFETCH_COVERS 分批推进整份列表（只补前 20 首，滚下去的歌没有封面也不补）')
   }
 
-  // ④ 刷新 = 连封面是不是最新都重查
-  if (!body.includes('fetchCoverUrl(song, { isRefresh })')) {
-    reasons.push('巡检没有把刷新标记透传给 fetchCoverUrl（刷新时不会复核封面是否最新）')
+  // ④ 刷新 = 连封面是不是最新都重查（刷新标记一路透传到 coverUrl.ts 的 fetchCoverUrl）
+  // 【第 38 轮第 1 条】页面里的取封面收敛成本页唯一漏斗 fetchCoverForSong；【第 39 轮第 2 条】
+  // 漏斗再多带一个 highPriority（插队标记，见不变量 E），所以这里的锚点跟着漏斗的调用形状走。
+  if (!body.includes('fetchCoverForSong(song, isRefresh, true)')) {
+    reasons.push('巡检没有把刷新标记透传给取封面漏斗（刷新时不会复核封面是否最新）')
+  }
+  if (!body.includes('return fetchCoverUrl(song, { isRefresh, highPriority }).then((url) => {')) {
+    reasons.push('取封面漏斗没有把 { isRefresh, highPriority } 透传给 fetchCoverUrl（刷新复核 / 插队通道一起断）')
   }
   if (!page.includes('const forceCoverRefresh = useRef(false)')) {
     reasons.push('列表页没有 forceCoverRefresh 刷新标记（刷新与普通进列表分不开，无法复核最新封面）')
@@ -212,8 +226,11 @@ const coverWatchInvariants = (files) => {
   if (!coverCode.includes('coverCache.delete(keyOf(song))')) {
     reasons.push('coverUrl.ts 的 invalidateCoverCache 没有真删缓存项（作废等于没作废）')
   }
-  if (!coverCode.includes('options?: { isRefresh?: boolean }')) {
-    reasons.push('coverUrl.ts 的 fetchCoverUrl 不接受 isRefresh 选项（刷新复核没有入口）')
+  // 【第 39 轮第 2 条】选项从「只有 isRefresh」扩成「isRefresh + highPriority」：按签名切片看
+  // 两个选项都在（不锚死具体排版，但少一个就判红 —— 刷新复核与插队各缺一边都不可）
+  const coverOptions = slice(coverCode, 'export const fetchCoverUrl = async(', '): Promise<string> => {')
+  if (!coverOptions || !coverOptions.includes('isRefresh?: boolean') || !coverOptions.includes('highPriority?: boolean')) {
+    reasons.push('coverUrl.ts 的 fetchCoverUrl 选项里少了 isRefresh / highPriority（刷新复核或插队通道没有入口）')
   }
   if (!coverCode.includes('if (!options?.isRefresh) {')) {
     reasons.push('coverUrl.ts 的 fetchCoverUrl 在刷新时仍然先吃内存缓存（复核不到「未更新」）')
@@ -584,11 +601,75 @@ const round34ListInvariants = (files) => {
     }
   }
   // 包在**入队任务的内部**：只有任务自己 settle，runWithLimit 的 finally 才会让出槽位
-  if (!coverCode.includes('const task = runWithLimit(async() =>\n    withCoverTimeout(')) {
+  // 【第 39 轮第 2 条】入队调用多了一个 isPriority 实参（插队标记），任务本体（async() => 的
+  // 第一句就是 withCoverTimeout）不变 —— 锚点跟着新排版走，钉的仍是「超时在任务内部」。
+  if (!/const task = runWithLimit\(\s*\n\s*async\(\) =>\s*\n\s*withCoverTimeout\(/.test(coverCode)) {
     reasons.push('超时没包在 runWithLimit 的任务内部（包在外面 = 槽位仍被永不 settle 的任务占死，并发被逐个吃光）')
   }
   if (!coverCode.includes('getPicPath({ musicInfo: song as LX.Music.MusicInfo, isRefresh: options?.isRefresh === true })')) {
     reasons.push('入队任务里取封面的调用形状变了（isRefresh 透传或入参形状需复核）')
+  }
+
+  return reasons
+}
+
+// ---------------------------------------------------------------------------
+// 不变量 E（第 39 轮第 2 条）：WebDAV 取封面走「插队通道」
+//
+//   用户原话：「在配置中选择当前目录 music，点击列表中的扫描按钮，在线封面开始加载，当我再点击
+//   配置中选择当前目录 music1，点击列表中的扫描按钮，在线封面无法自动开始加载，请修复，修复后，
+//   重新进入 WebDAV 界面、下滑刷新、点击扫描按钮，都会重新自动刷新在线封面，使封面 100% 显示」。
+//
+//   病根：coverUrl.ts 的 MAX_CONCURRENT=4 是**全 App 共用**的单一 FIFO —— 换目录之前那份歌单
+//   （325 首）的整表巡检还在排队，新歌单的任务全部排在它们后面。屏幕上这批歌连请求都还没发出去，
+//   观感就是「点了扫描，在线封面一首都不开始加载」。
+//
+//   修法：等位任务分「插队 / 常规」两条队列，出队时插队队优先；WebDAV 页的所有取封面
+//   （整表巡检 / 可视列表巡检 / ⋮ 菜单单曲补图）都走插队通道 —— 它们代表用户此刻盯着看的列表。
+//   并发上限仍是 4：插队只改**出队顺序**，不许靠放大并发来「变快」（第 34 轮那套
+//   「入队任务内部超时 + 批次 allSettled」仍是唯一的堵死防线，见不变量 D）。
+// ---------------------------------------------------------------------------
+
+const priorityLaneInvariants = (files) => {
+  const reasons = []
+  const page = stripComments(files.page)
+  const coverCode = stripComments(files.coverUrl)
+  const actionCode = stripComments(files.action)
+
+  // ① coverUrl.ts：两条队列 + 出队插队优先 + 入队按标记分流 + 并发上限不变
+  if (!coverCode.includes('const priorityTaskQueue: Array<() => void> = []')) {
+    reasons.push('coverUrl.ts 没有插队队列（换目录后的新歌单仍排在旧歌单几百个任务后面 → 封面一首都不开始加载）')
+  }
+  if (!coverCode.includes('priorityTaskQueue.shift() ?? taskQueue.shift()')) {
+    reasons.push('出队没有「插队队列优先」（两条队列都在，出队还是先进先出 = 没插队）')
+  }
+  if (!/const runWithLimit = async\(fn: \(\) => Promise<string>, isPriority = false\): Promise<string> => \{/.test(coverCode)) {
+    reasons.push('runWithLimit 没有 isPriority 形参（调用方无处标记插队任务）')
+  }
+  if (!coverCode.includes('(isPriority ? priorityTaskQueue : taskQueue).push(execute)')) {
+    reasons.push('入队没有按标记分流到两条队列（所有任务仍挤在一条 FIFO 上）')
+  }
+  if (!coverCode.includes('const MAX_CONCURRENT = 4')) {
+    reasons.push('并发上限不再是 4（插队只该改出队顺序，不许靠放大并发来「变快」）')
+  }
+
+  // ② 页面：整表巡检 / 可视列表巡检都走插队；漏斗把 highPriority 透传给 fetchCoverUrl
+  if (!page.includes('const fetchCoverForSong = useCallback((song: LX.WebDAV.MusicInfo, isRefresh: boolean, highPriority = false) => {')) {
+    reasons.push('取封面漏斗没有 highPriority 参数（页面里的取封面无处标记插队）')
+  }
+  if (!page.includes('return fetchCoverUrl(song, { isRefresh, highPriority }).then((url) => {')) {
+    reasons.push('漏斗没有把 highPriority 透传给 fetchCoverUrl（插队标记在半路丢了）')
+  }
+  if (!page.includes('fetchCoverForSong(song, isRefresh, true)')) {
+    reasons.push('整表巡检没有走插队通道（它正是把 4 个槽位占满好几分钟的那一批，新歌单排在它后面）')
+  }
+  if (!page.includes('void fetchCoverForSong(song, false, true)')) {
+    reasons.push('可视列表巡检没有走插队通道（屏幕上这几十首仍排在旧歌单几百首后面）')
+  }
+
+  // ③ ⋮ 菜单单曲补图（第 31 轮的加法式自愈）：也走插队
+  if (!actionCode.includes('fetchCoverUrl(target, { isRefresh: true, highPriority: true })')) {
+    reasons.push('refreshWebdavCover 单曲补图没有走插队通道（对着这一首点的「从在线获取封面」还要排旧歌单的队）')
   }
 
   return reasons
@@ -679,9 +760,10 @@ const runCounterExamples = () => {
   '分批推进整份列表')
 
   // c9 巡检不带 isRefresh（刷新不复核最新）
+  // 【第 38/39 轮】锚点跟着页面漏斗 fetchCoverForSong 的调用形状走（它内部才是 fetchCoverUrl）
   check('c9 巡检不带刷新标记', coverWatchInvariants({
     ...REAL,
-    page: tamper(REAL.page, 'fetchCoverUrl(song, { isRefresh })', 'fetchCoverUrl(song)'),
+    page: tamper(REAL.page, 'fetchCoverForSong(song, isRefresh, true)', 'fetchCoverForSong(song, false, true)'),
   }),
   '刷新标记')
 
@@ -770,7 +852,7 @@ const runCounterExamples = () => {
   // c28 自愈不带 isRefresh（只是再吃一遍缓存，换不到新图）
   check('c28 自愈不带刷新标记', inlineHealInvariants({
     ...REAL,
-    action: tamper(REAL.action, 'fetchCoverUrl(target, { isRefresh: true })', 'fetchCoverUrl(target)'),
+    action: tamper(REAL.action, 'fetchCoverUrl(target, { isRefresh: true, highPriority: true })', 'fetchCoverUrl(target)'),
   }),
   '没有带 isRefresh')
 
@@ -917,11 +999,13 @@ const runCounterExamples = () => {
   'allSettled')
 
   // n34f 超时挪到 runWithLimit 外面（槽位照样被永不 settle 的任务占死）
+  // 【第 39 轮第 2 条】入队调用多了一个 isPriority 实参，锚点只取「任务本体那三行」——
+  // 替完之后的余下实参（插队标记）在静态检查里没有意义，语义仍是「超时跑到队外」。
   check('n34f 超时挪到入队之外', round34ListInvariants({
     ...REAL,
     coverUrl: tamper(REAL.coverUrl,
-      '  const task = runWithLimit(async() =>\n    withCoverTimeout(\n      getPicPath({ musicInfo: song as LX.Music.MusicInfo, isRefresh: options?.isRefresh === true }),\n      COVER_FETCH_TIMEOUT_MS,\n    ),\n  )',
-      '  const task = withCoverTimeout(runWithLimit(() =>\n    getPicPath({ musicInfo: song as LX.Music.MusicInfo, isRefresh: options?.isRefresh === true }),\n  ), COVER_FETCH_TIMEOUT_MS)'),
+      '  const task = runWithLimit(\n    async() =>\n      withCoverTimeout(',
+      '  const task = withCoverTimeout(runWithLimit(async() => '),
   }),
   '没包在 runWithLimit 的任务内部')
 
@@ -975,6 +1059,50 @@ const runCounterExamples = () => {
   }),
   '行内 style 没有带 height')
 
+  // ---- 第 39 轮第 2 条：取封面插队通道 ----
+
+  // p1 出队退回单队列 FIFO（两条队列形同虚设）
+  check('p1 出队不再插队优先', priorityLaneInvariants({
+    ...REAL,
+    coverUrl: tamper(REAL.coverUrl, 'priorityTaskQueue.shift() ?? taskQueue.shift()', 'taskQueue.shift()'),
+  }),
+  '插队队列优先')
+
+  // p2 入队不再按标记分流（插队任务照样落进常规队尾）
+  check('p2 入队不分流', priorityLaneInvariants({
+    ...REAL,
+    coverUrl: tamper(REAL.coverUrl, '(isPriority ? priorityTaskQueue : taskQueue).push(execute)', 'taskQueue.push(execute)'),
+  }),
+  '按标记分流')
+
+  // p3 整表巡检不插队（换目录后再扫描，新歌单排在旧歌单几百个任务后面 —— 用户第 39 轮第 2 条原症状）
+  check('p3 整表巡检不插队', priorityLaneInvariants({
+    ...REAL,
+    page: tamper(REAL.page, 'fetchCoverForSong(song, isRefresh, true)', 'fetchCoverForSong(song, isRefresh)'),
+  }),
+  '整表巡检没有走插队通道')
+
+  // p4 可视列表巡检不插队（屏幕上这几十首仍排在旧歌单后面）
+  check('p4 可视巡检不插队', priorityLaneInvariants({
+    ...REAL,
+    page: tamper(REAL.page, 'void fetchCoverForSong(song, false, true)', 'void fetchCoverForSong(song, false)'),
+  }),
+  '可视列表巡检没有走插队通道')
+
+  // p5 单曲补图不插队（对着这一首点的「从在线获取封面」还要排旧歌单的队）
+  check('p5 单曲补图不插队', priorityLaneInvariants({
+    ...REAL,
+    action: tamper(REAL.action, 'fetchCoverUrl(target, { isRefresh: true, highPriority: true })', 'fetchCoverUrl(target, { isRefresh: true })'),
+  }),
+  '单曲补图没有走插队通道')
+
+  // p6 并发上限被放大来「变快」（插队只该改顺序；槽位口径是第 34 轮两层闸之一）
+  check('p6 并发上限被改', priorityLaneInvariants({
+    ...REAL,
+    coverUrl: tamper(REAL.coverUrl, 'const MAX_CONCURRENT = 4', 'const MAX_CONCURRENT = 12'),
+  }),
+  '并发上限不再是 4')
+
   return results
 }
 
@@ -987,6 +1115,7 @@ console.log('WebDAV：封面时刻关注（整表分批巡检 + 失效本地封�
 console.log('        下载按钮按了有反应（响应式 hasConfig + 不被 disabled 吞 + 失败必有日志与提示）（第 29 轮）')
 console.log('        末尾抽动（getItemLayout 与 songItem 几何同源）+ 封面全量加载（入队任务内部超时 + 批次 allSettled）（第 34 轮第 3 条）')
 console.log('        末尾抽动（行高数值写在行内 style，渲染值 == 回报值）+ 行内自愈带冷却持久重试（第 36 轮第 3/4 条）')
+console.log('        取封面插队通道（两条队列出队插队优先；WebDAV 整表巡检 / 可视巡检 / 单曲补图全走插队）（第 39 轮第 2 条）')
 console.log()
 
 const checks = [
@@ -994,6 +1123,7 @@ const checks = [
   ['条一⑤ 行内 onError 自愈（一次性重试 + 清 picUrl + 单首重补，且不新增 fetchCoverUrl 直调点）', () => inlineHealInvariants(REAL)],
   ['条二 下载按钮按了有反应（响应式 hasConfig / 不再被 disabled 吞 / 入口日志与 catch / 半截文件先删）', () => downloadButtonInvariants(REAL)],
   ['第 34 轮第 3 条 末尾抽动（getItemLayout 的 length/offset 与 songItem 实测几何同源）+ 封面全量加载（入队任务内部 15s 超时落地成空串 + 批次 allSettled）', () => round34ListInvariants(REAL)],
+  ['第 39 轮第 2 条 取封面插队通道（两条队列出队插队优先 / WebDAV 三条取封面路线全走插队 / 并发上限不变）', () => priorityLaneInvariants(REAL)],
 ]
 
 let invOk = true

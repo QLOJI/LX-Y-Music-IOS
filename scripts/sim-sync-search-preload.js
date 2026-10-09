@@ -74,6 +74,17 @@
  *    ② 写侧映射的闸门（只在天梯模式 + 真的降级时写）；③ 读侧带回退。
  *    映射键前缀沿用 storageDataPrefix.musicUrl、清理走 startsWith，不留孤儿键。
  *
+ * ⑤【第 39 轮第 1 条】选择框「弹出来了却看不见」（用户原话：「数据同步界面，同步服务地址的
+ *    状态还是卡在等待选择同步方式，按理说应该弹出选择同步方式的窗口在最上层」）：
+ *    RNN 的 overlay 是独立 UIWindow，windowLevel 与主窗口同为 UIWindowLevelNormal —— 同级按
+ *    「后建者在上」，主窗口被 makeKeyAndVisible（原生面板 / 文件选择器关闭后的 LXEnsureKeyWindow）
+ *    或出现后建原生窗口时，选择框所在的浮层窗口被压到最下面。JS 侧一切正常（visible 标记为
+ *    true、握手看门狗因此一直让行），屏幕上什么都没有。修法沿用第 6 轮为 Toast 立的原生通道：
+ *    showOverlay 一 resolve 就提层（navigation/utils.ts），组件挂载时再提一次并按
+ *    OVERLAY_RAISE_INTERVAL_MS 持续提（SyncModeModal），卸载先停定时器；提层幂等、旧构建
+ *    安全降级为 no-op（nativeModules/utils.ts 的 typeof 判定）。本脚本把这条链整条钉住
+ *    （GROUP_A 四条新断言 + 反例 n25–n28）。
+ *
  * 本脚本是**静态源码解析**（正则 + 位置比较），钉的是「结构还在不在」，证明不了真机行为。
  * 每条断言都配了一个「改回旧实现就该判红」的反例，反例全部用当前源码变异，防止断言写成
  * 永远为真的空壳。
@@ -111,6 +122,8 @@ const F = {
   data: 'src/utils/data.ts',
   online: 'src/core/music/online.ts',
   musicUtils: 'src/core/music/utils.ts',
+  // 【第 39 轮第 1 条】浮层提层的原生通道（raiseOverlayWindows → UtilsModule）
+  nativeUtils: 'src/utils/nativeModules/utils.ts',
 }
 const readSet = (keys) => {
   const s = {}
@@ -181,8 +194,26 @@ const GROUP_A = [
     (s) => /const verifyDelay = 1000/.test(s.utils) &&
       /const retryDelay = 700/.test(s.utils) &&
       /const maxAttempts = 5/.test(s.utils)],
-  ['utils：resolve 之后才复查，且先比代次（已作答 / 已取消就作废）',
-    (s) => /\.then\(\(\) => \{\s*\n\s*setTimeout\(\(\) => \{[\s\S]{0,200}?if \(seq !== syncModeModalSeq\) return/.test(s.utils)],
+  ['utils：resolve 之后立刻提层、再延时复查，且先比代次（已作答 / 已取消就作废）',
+    // 【第 39 轮第 1 条】.then 里第一件事变成 raiseSyncModeOverlay()：overlay 已推给原生，
+    // 立刻把浮层窗口提到最上层（RNN overlay 与主窗口同为 UIWindowLevelNormal，谁的窗口后建谁
+    // 在上面 —— 主窗口被 makeKeyAndVisible / 后建原生面板出现时选择框就被压到看不见）。
+    // 随后才是 1000ms 的挂载复查；顺序固定为「推出去 → 提上来 → 复查挂没挂上」，复查先比代次。
+    (s) => /\.then\(\(\) => \{[\s\S]{0,900}?raiseSyncModeOverlay\(\)[\s\S]{0,900}?setTimeout\(\(\) => \{[\s\S]{0,200}?if \(seq !== syncModeModalSeq\) return/.test(s.utils)],
+  // 【第 39 轮第 1 条】提层通道：nativeUtils 走 UtilsModule 的原生方法（旧构建 typeof 判定
+  // 安全降级为 no-op），raiseSyncModeOverlay / raiseToastOverlay 都是它的别名（同一实现）。
+  ['nativeUtils：raiseOverlayWindows 走原生通道且旧构建安全降级',
+    (s) => /export const raiseOverlayWindows = \(\): void => \{[\s\S]{0,200}?typeof UtilsModule\?\.raiseOverlayWindows != 'function'[\s\S]{0,60}?UtilsModule\.raiseOverlayWindows\(\)/.test(s.nativeUtils)],
+  ['nativeUtils：raiseSyncModeOverlay / raiseToastOverlay 与它同一实现（别名，不是第二套通道）',
+    (s) => /export const raiseSyncModeOverlay = raiseOverlayWindows/.test(s.nativeUtils) &&
+      /export const raiseToastOverlay = raiseOverlayWindows/.test(s.nativeUtils)],
+  ['modal：挂载即提层，并在存活期间按周期持续提（窗口重排可能发生在选择框弹着的时候）',
+    (s) => /raiseSyncModeOverlay\(\)\s*\n\s*const overlayRaiseTimer = setInterval\(raiseSyncModeOverlay, OVERLAY_RAISE_INTERVAL_MS\)/.test(s.modal)],
+  ['modal：提层周期有界（200–5000ms），且卸载先清定时器（没人看的定时器不许再跑）',
+    (s) => {
+      const ms = Number((/const OVERLAY_RAISE_INTERVAL_MS = (\d+)/.exec(s.modal) ?? [])[1])
+      return Number.isFinite(ms) && ms >= 200 && ms <= 5000 && /clearInterval\(overlayRaiseTimer\)/.test(s.modal)
+    }],
   ['utils：复查判据 = 「选择框确实在屏幕上」（已挂上就停手，绝不叠第二个）',
     // 【第 35 轮第 2 条】present() 入口也有一句同样家族的判据（防重复呈现），所以这里必须连
     // 「判据为假 → handleFail('overlay not mounted')」一起钉，否则拿掉复查那句也判绿。
@@ -357,7 +388,7 @@ const GROUP_D = [
 
 const SRC_D = readSet(['preloadNext', 'data', 'online', 'musicUtils'])
 
-const SRC_A = readSet(['utils', 'sync', 'modal', 'isEnable'])
+const SRC_A = readSet(['utils', 'sync', 'modal', 'isEnable', 'nativeUtils'])
 const SRC_B = readSet(['search', 'headerBar'])
 const SRC_C = readSet(['preload', 'preloadNext'])
 
@@ -494,6 +525,23 @@ const n23 = mutated(SRC_A, 'sync',
 const n24 = mutated(SRC_A, 'sync',
   'showSyncModeModal(handleUnavailable)',
   'showSyncModeModal()')
+// n25: utils 的 .then 里不再「已推给原生就立刻提层」（选择框弹了却被压在窗口层下面 = 用户看到
+//      「状态一直停在等待选择同步方式…」而屏幕上什么都没有）
+const n25 = mutated(SRC_A, 'utils',
+  '          raiseSyncModeOverlay()\n',
+  '')
+// n26: modal 挂载只提一次层（弹着的时候窗口再被重排 —— 主窗口 makeKey、原生面板出现 —— 又会被压下去）
+const n26 = mutated(SRC_A, 'modal',
+  '    raiseSyncModeOverlay()\n    const overlayRaiseTimer = setInterval(raiseSyncModeOverlay, OVERLAY_RAISE_INTERVAL_MS)',
+  '    raiseSyncModeOverlay()')
+// n27: 提层别名断链（选择框不再和 Toast 走同一条原生通道，改成一个不疼不痒的 no-op）
+const n27 = mutated(SRC_A, 'nativeUtils',
+  'export const raiseSyncModeOverlay = raiseOverlayWindows',
+  'export const raiseSyncModeOverlay = (): void => { console.log("noop") }')
+// n28: 卸载不清提层定时器（选择框都没了还在后台每 800ms 敲原生）
+const n28 = mutated(SRC_A, 'modal',
+  '      clearInterval(overlayRaiseTimer)\n',
+  '')
 
 // —— 输出 ——
 console.log('='.repeat(92))
@@ -543,6 +591,10 @@ neg('反例 n21：重试用尽退回静默 return（弹不出来 ≡ 永远等�
 neg('反例 n22：失败回调不 reject（服务端干等无人回答），被 A 判红', n22.changed && caught(GROUP_A, n22.m))
 neg('反例 n23：等待作答时不写状态文案（界面继续挂死等提示），被 A 判红', n23.changed && caught(GROUP_A, n23.m))
 neg('反例 n24：呈现时不接失败回调（上报通道断开），被 A 判红', n24.changed && caught(GROUP_A, n24.m))
+neg('反例 n25：.then 里不再立即提层（选择框弹了却被压在下面），被 A 判红', n25.changed && caught(GROUP_A, n25.m))
+neg('反例 n26：挂载只提一次层（窗口重排后又被压下去），被 A 判红', n26.changed && caught(GROUP_A, n26.m))
+neg('反例 n27：提层别名断链（选择框不再走原生通道），被 A 判红', n27.changed && caught(GROUP_A, n27.m))
+neg('反例 n28：卸载不清提层定时器（没人看的定时器还在跑），被 A 判红', n28.changed && caught(GROUP_A, n28.m))
 
 console.log()
 for (const r of results) {
