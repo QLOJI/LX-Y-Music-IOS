@@ -10,6 +10,8 @@ import { initUnifiedPlayerController } from './controller'
 import { exitApp } from '@/core/common'
 import playerState from '@/store/player/state'
 import settingState from '@/store/setting/state'
+// 【第 41 轮】打断恢复后的音量重贴也是一次「外部直写」：同步渐入渐出模块的当前音量账本
+import { syncVolumeFadeState } from './volumeFade'
 
 let isInitialized = false
 let shouldResumeAfterDuck = false
@@ -188,6 +190,9 @@ const restoreConfiguredVolume = () => {
   clearDuckRecoveryTimeouts()
 
   const applyVolume = () => {
+    // 【第 41 轮】打断恢复（duck 回填）的直写同样要同步账本：账本脱节会让下一次
+    // 渐入/渐出的第一拍变成跳变（那一声爆音）。斜坡在跑时以斜坡写入为准，不覆盖。
+    syncVolumeFadeState(settingState.setting['player.volume'])
     void TrackPlayer.setVolume(settingState.setting['player.volume']).catch(() => {})
   }
 

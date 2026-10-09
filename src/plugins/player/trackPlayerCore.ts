@@ -3,6 +3,8 @@ import { defaultUrl } from '@/config'
 import { NativeModules, Platform } from 'react-native'
 import settingState from '@/store/setting/state'
 import { seekToTime } from './seek'
+// 【第 41 轮】直写音量后要同步渐入渐出模块的「当前音量」账本（斜坡起点取自它，见 volumeFade.ts）
+import { syncVolumeFadeState } from './volumeFade'
 import { clearNowPlayingInfo, updateNowPlayingInfo } from '@/utils/nativeModules/nowPlaying'
 
 const list: LX.Player.Track[] = []
@@ -108,6 +110,10 @@ export const getCurrentTrack = async() => {
 }
 
 export const applyCurrentVolume = async() => {
+  // 【第 41 轮】起播 / 恢复曲路径是「先 TrackPlayer.play() 再走到这里重贴音量」：
+  // 这是外部直写，账本必须跟着走 —— 否则紧接着的渐入斜坡会从 0 起步（先瘪下去再升上来，
+  // 反而多一次音量抖动）。渐入渐出模块的斜坡在跑时不覆盖（以斜坡的写入为准）。
+  syncVolumeFadeState(settingState.setting['player.volume'])
   await TrackPlayer.setVolume(settingState.setting['player.volume'])
 }
 

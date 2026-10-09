@@ -21,6 +21,10 @@ import {
   stopNativeFlacPlayback,
 } from './nativeFlac'
 import { onUnifiedPlayerEvent } from './engine'
+// 【第 39 轮第 4 条】播放 / 暂停的渐入渐出（本模块只依赖 nativeFlac + TrackPlayer，不成环）
+// 【第 41 轮】多一个 syncVolumeFadeState：音量条 / 回前台重贴音量这类「直写」要把
+// 渐入渐出模块的「当前音量」账本一起改掉，否则下一次斜坡的起点是错的（第一拍就是跳变）。
+import { armVolumeFadeIn, fadeOutThenPause, syncVolumeFadeState } from './volumeFade'
 import playerState from '@/store/player/state'
 // import { PlayerMusicInfo } from '@/store/modules/player/playInfo'
 
@@ -199,6 +203,9 @@ export const setResource = (musicInfo: LX.Player.PlayMusic, url: string, duratio
 }
 
 export const setPlay = async() => {
+  // 【第 39 轮第 4 条】预约「播放开始时渐入」：此刻是暂停态，先把音量压到 0（听不见），
+  // 真正出声时由 controller.ts 的 'playing' 分支把音量斜坡升上去（见 volumeFade.ts）。
+  armVolumeFadeIn()
   if (Platform.OS == 'ios' && isNativeFlacActive()) return resumeNativeFlacPlayback()
   return TrackPlayer.play()
 }
@@ -263,8 +270,13 @@ export const setStop = async() => {
 export const setLoop = async(loop: boolean) => TrackPlayer.setRepeatMode(loop ? RepeatMode.Off : RepeatMode.Track)
 
 export const setPause = async() => {
-  if (Platform.OS == 'ios' && isNativeFlacActive()) return pauseNativeFlacPlayback()
-  return TrackPlayer.pause()
+  // 【第 39 轮第 4 条】先渐出（斜坡降到 0）再真暂停 —— 直接掐断正在出声的流就是那声
+  // 「嘶哑 / 噪声」（见 volumeFade.ts 的说明）。真正的暂停动作以函数传入，斜坡跑完才执行；
+  // 非 iOS 平台在 fadeOutThenPause 内部直通（同步调用真暂停），行为与改动前一致。
+  if (Platform.OS == 'ios' && isNativeFlacActive()) {
+    return fadeOutThenPause(() => pauseNativeFlacPlayback())
+  }
+  return fadeOutThenPause(() => TrackPlayer.pause())
 }
 // export const skipToNext = () => TrackPlayer.skipToNext()
 export const setCurrentTime = async(time: number) => {
@@ -272,6 +284,9 @@ export const setCurrentTime = async(time: number) => {
   return seekToTime(time)
 }
 export const setVolume = async(num: number) => {
+  // 【第 41 轮】音量条 / 冷启动 / 回前台重贴音量都会走这里：这是「外部直写」，
+  // 必须同步渐入渐出模块的当前音量账本（斜坡起点取自它，账本错了下一拍就是一声跳变）。
+  syncVolumeFadeState(num)
   if (Platform.OS == 'ios' && isNativeFlacActive()) return setNativeFlacVolume(num)
   return TrackPlayer.setVolume(num)
 }

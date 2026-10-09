@@ -3,8 +3,10 @@ import { Platform } from 'react-native'
 import BackgroundTimer from 'react-native-background-timer'
 import { updateMetaData } from './playList'
 import { initUnifiedPlayerEngine, onUnifiedPlayerEvent } from './engine'
-import { getNativeFlacTrackId, setNativeFlacRate, setNativeFlacVolume } from './nativeFlac'
+import { getNativeFlacTrackId, setNativeFlacRate } from './nativeFlac'
 import { getPositionStamped, elapsedSnapshotFields, isEmpty, setStop } from './utils'
+// 【第 39 轮第 4 条】播放真正开始时的音量落地（带渐入预约时走斜坡）——见 volumeFade.ts
+import { applyVolumeOnPlayStart } from './volumeFade'
 import { exitApp } from '@/core/common'
 import { playNext, setMusicUrl } from '@/core/player/player'
 import { getNextTryQuality, getLastTryQuality, removeMusicUrl, clearAllLastTryQuality } from '@/core/music/utils'
@@ -164,11 +166,15 @@ export const initUnifiedPlayerController = () => {
               global.lx.playerTrackId = getNativeFlacTrackId()
               // 每次 playing 都恢复音量；高码率音质的“seek 冻结静音”由进度模块的 catchUp
               // 轮询持续维持，不再依赖全局静音标志，避免标志泄漏到其它音质导致“没声音”。
-              void setNativeFlacVolume(settingState.setting['player.volume'])
+              // 【第 39 轮第 4 条】改走 applyVolumeOnPlayStart：有渐入预约（setPlay 刚按下播放）
+              // 时从 0 斜坡升到用户设定音量，没有时与原来那句 setNativeFlacVolume 完全等价 ——
+              // 它同时是「别的恢复路径没走 setPlay」时的兜底（音量绝不会停在渐出后的 0）。
+              void applyVolumeOnPlayStart()
               void setNativeFlacRate(settingState.setting['player.playbackRate'])
               void getPositionStamped().then(async(stamped) => playNowPlaying({ elapsedTime: stamped.position, ...elapsedSnapshotFields(stamped), playbackRate: settingState.setting['player.playbackRate'] }).catch(() => {}))
             } else if (Platform.OS == 'ios') {
-              void TrackPlayer.setVolume(settingState.setting['player.volume'])
+              // 【第 39 轮第 4 条】同上：带渐入预约时走斜坡，否则等价于原来的 setVolume（AVPlayer 路径）
+              void applyVolumeOnPlayStart()
             }
             if (Platform.OS == 'ios' && playerState.musicInfo.id) {
               // Refresh duration/elapsed metadata after playback actually starts so the
@@ -202,7 +208,9 @@ export const initUnifiedPlayerController = () => {
         if (event.info?.track == null) return
         if (global.lx.isPlayedStop) return handleExitApp('Timeout Exit')
         if (Platform.OS == 'ios' && event.driver == 'trackPlayer') {
-          void TrackPlayer.setVolume(settingState.setting['player.volume'])
+          // 【第 39 轮第 4 条】同 'playing' 分支：换曲时也要服渐入预约（从 0 升上来），
+          // 没有预约时就是原来那句 setVolume。
+          void applyVolumeOnPlayStart()
         }
         if (Platform.OS != 'ios' && event.driver == 'trackPlayer' && isEmpty()) {
           stopPreload()
