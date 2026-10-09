@@ -48,7 +48,24 @@ const styles = createStyle({
     borderRadius: designRadius.glass,
     // 外圈投影已移除（用户反馈胶囊下方有「底子」）：纯玻璃质感，立体感由玻璃
     // 自身边缘光 + 原生 0.5pt 内缘线提供
-    overflow: 'hidden',
+    //
+    // 【第 37 轮】这里**不再裁剪**（原 overflow: 'hidden' → 'visible'）：
+    //   · 新增样式「长按后气泡变大成水珠」要求透镜纵向溢出栏体上下边缘（参考图里
+    //     水珠明显高出栏体一头）。透镜是栏体的**兄弟子节点**，栏体一裁剪，水珠就被
+    //     上下削平成一条宽胶囊，造型根本出不来。
+    //   · 栏体的圆角不依赖这层裁剪：LiquidGlass 宿主自己把 RN 下发的 borderRadius
+    //     转发给玻璃容器（LiquidGlassViewManager.mm 的 layoutSubviews：container
+    //     .clipsToBounds + cornerRadius；Metal 路径另有 shader uniforms.cornerRadius
+    //     驱动折射形状），两处圆角本来就是同一个 token（designRadius.glass），
+    //     裁剪只是历史冗余。
+    //   · 透镜的速度形变纵向只缩不涨（LiquidLensView.applySpeedSize 的
+    //     scaleY = 1 - s ≤ 1）：静止药丸不会往上顶出去；横向最多涨到约 1.18 倍槽宽，
+    //     只在快速切页的一瞬间贴近栏体左右端头，与上游（系统 tab 栏同样不裁剪透镜）
+    //     观感一致，可接受。
+    //   · ⚠️ 也不能改成「给玻璃单独套一层裁剪 wrapper」：液态路径的捕获排除根 =
+    //     玻璃宿主的 superview（见 installGlassBacking 注释），套 wrapper 会把 tab
+    //     图标/文字漏进玻璃的背景捕获纹理，产生重影。
+    overflow: 'visible',
   },
   item: {
     flex: 1,
@@ -158,11 +175,16 @@ const CHILD_TAB_PARENT: Partial<Record<NAV_ID_Type, (typeof TAB_IDS)[number]['id
 const LONG_PRESS_MS = 150
 const TAP_FALLBACK_MS = 350
 
-// B-7 横滑跟手会话的超时兜底（见 armFollowWatchdog 的注释）。比 A-5 两道看门狗的 8s
-// 更长：本定时器会在每个跟手帧上**重新记账**（测的是「多久没有新的跟手帧」而不是
-// 「会话开了多久」），取值要足够大——手指按住不动时 pager 会停止发帧，若阈值太小，
-// 一次「滑到一半停住 > 阈值」的按住就会被误判成收尾丢失（药丸提前弹回槽心）。
-const FOLLOW_SESSION_TIMEOUT_MS = 12000
+// B-7 横滑跟手会话的超时兜底（见 armFollowWatchdog 的注释）。本定时器会在每个跟手帧上
+// **重新记账**（测的是「多久没有新的跟手帧」而不是「会话开了多久」）。
+// 【第 37 轮第 1 条】12s → 4s。理由：Main 侧的同名兜底（PAGER_DRAG_SILENCE_MS = 2000）
+// 本来就会在「最后一帧之后 2s」收尾并 emitPagerDrag(false)，正常路径根本轮不到本
+// 看门狗；它只在「Main 的收尾链路整个没跑」时兜底（例如事件在桥上层被丢弃）。而 12s
+// 意味着真出这种事时用户要盯着一个错位/抬起态的药丸 12 秒——这正是用户报的「只有滑动
+// 会错位、点一下才好」（点击路径会立刻收尾）。4s = Main 的 2s + 一整个往返的余量，
+// 比 Main 的判据更保守，不会和它抢：真实拖动每帧都在续期，按住不动最长 2s 就由 Main
+// 先行收尾（本看门狗随即被销毁）。
+const FOLLOW_SESSION_TIMEOUT_MS = 4000
 
 // 【第 35 轮第 3 条】手势收尾后「静止位重申」的时刻表（ms，相对收尾瞬间）。
 // 用户原话：「当我左右滑动主界面时，底部 tab 的椭圆形水泡边缘与我的文字不是中心对齐，
@@ -360,7 +382,10 @@ export default memo(() => {
     // 而收尾事件（pager idle）可能与这次提交赛跑。提交还没跑完就收尾 ⇒ 锚回**旧槽**，
     // 药丸就停在旧槽上 —— 且「滑回同一个 tab」根本不产生 lensX 变化，不会再有下一次
     // 重发把它拽回来（用户第 35 轮第 3 条：只有滑动会错位、点一下就好）。
-    lensRef.current?.setFollowX(resolveRestingSlotX())
+    // 【第 37 轮第 1 条】force 写：收尾锚回是「权威落位」，必须过桥、且原生侧不过
+    // 同位守卫（见 LiquidLens.setFollowX / applyFollowX 的注释）——它要纠正的恰恰是
+    // 「原生 _x 已经等于槽心、显示却停在别处」这种错位，普通写会被两头去重吞掉。
+    lensRef.current?.setFollowX(resolveRestingSlotX(), true)
   }, [resolveRestingSlotX])
 
   // 【第 35 轮第 3 条】静止位重申（收尾自愈，见 REST_REASSERT_DELAYS 的注释）。
@@ -373,11 +398,17 @@ export default memo(() => {
     clearRestReassert()
     for (const delay of REST_REASSERT_DELAYS) {
       restReassertTimersRef.current.push(setTimeout(() => {
-        // A-5（长按拖动）期间药丸归手势管
-        if (dragArmedRef.current || draggingRef.current) return
+        // 【第 37 轮第 1 条】让位条件收紧成「真的在拖动」。
+        // 原写法把 dragArmedRef 也算进来：A-5 的 arm 只表示「长按已触发、等待移动
+        // 接管」，它靠三道超时（400ms 抬手 / 8s arm / 8s drag）解除——任何一次抬手
+        // 事件被系统手势吃掉，arm 就会挂在那里最多 8s。这 8s 里 B-7 的每一次静止位
+        // 重申都被这句话挡掉，而药丸此刻既没跟手、也没人管 —— 用户看到的就是
+        // 「滑一下之后椭圆与文字不对中，点一下才好」。拖动中（draggingRef）让位是
+        // 必须的（手指正握着药丸），arm 未接管时药丸仍在槽上，重申是幂等的零写入。
+        if (draggingRef.current) return
         // 新一轮 B-7 跟手已经开始（有帧驱动过药丸）：让位，别和手指抢位置
         if (lastFollowXRef.current >= 0) return
-        lensRef.current?.setFollowX(resolveRestingSlotX())
+        lensRef.current?.setFollowX(resolveRestingSlotX(), true)
       }, delay))
     }
   }, [clearRestReassert, resolveRestingSlotX])
@@ -392,6 +423,10 @@ export default memo(() => {
   const closePagerFollowSession = useCallback(() => {
     snapLensToRestingSlot()
     lensRef.current?.setLifted(false)
+    // 【第 37 轮第 1 条】兜底收尾也要收水珠：水珠是 A-5 长按的造型，理论上本分支
+    // 不会在 A-5 会话里执行（调用点都有 dragging 守卫），但收尾路径宁可多一句幂等
+    // 的复位——一个卡在抬起/水珠态的透镜会一直挂在栏上，比少一次造型难看得多。
+    lensRef.current?.setDroplet(false)
     lensRef.current?.endFollow()
     // 【第 35 轮第 3 条】兜底收尾同样要走「重申」：这条路径出现时收尾事件本来就丢了，
     // 此刻读到的归属 tab 更可能是旧值（提交没跑完），一次重锚不足以定住。
@@ -460,10 +495,20 @@ export default memo(() => {
 
   // Main → TabBar：手势会话开始/结束（抬起/放下透镜；结束时会话收尾）
   useEffect(() => subscribePagerDrag((dragging) => {
-    // 同上：A-5 拖动/待拖动期间不接受 pager 的抬落指令，否则透镜会被
-    // 「放下 → 抬起」来回翻转（抽动的另一半）。A-5 自己负责抬落（arm 时抬、
-    // finishTabDrag 里落），不会因此卡在抬起态。
-    if (dragArmedRef.current || draggingRef.current) return
+    // A-5 拖动期间不接受 pager 的抬落指令，否则透镜会被「放下 → 抬起」来回翻转
+    //（抽动的另一半）。A-5 自己负责抬落（arm 时抬、finishTabDrag 里落）。
+    // 【第 37 轮第 1 条】让位条件从 `dragArmedRef || draggingRef` 收紧成
+    // **只在真的拖动中让位**（与上一轮 reassertRestingSlot 同一处病根）：
+    //   · 「抬起」（true）在 arm 期间照旧丢弃 —— 手在栏上，抬落归 A-5；
+    //   · 「放下」（false）**必须放行**：这是 B-7 会话的收尾信号（Main 的 idle 或
+    //     2s 静默兜底）。原写法里只要 arm 标志还挂着（长按抬手事件被系统手势吃掉
+    //     时最长挂 8s），这个收尾就会被整句吞掉——透镜既不落回、药丸也不锚回槽心，
+    //     而 A-5 因为根本没接管（dragging=false）也不会来收尾，于是药丸停在手指
+    //     离开的那一帧、还是抬起玻璃的造型（用户看到的「椭圆形气泡」）。
+    //     arm 未接管时药丸仍在槽上，让收尾跑完是安全的（幂等的零写入）；
+    //     真在拖动中才让位（那时 A-5 的 finishTabDrag 负责全部收尾）。
+    if (draggingRef.current) return
+    if (dragging && dragArmedRef.current) return
     lensRef.current?.setLifted(dragging)
     if (dragging) {
       // B-7 会话开始：启动兜底看门狗（真收尾在下面的 !dragging 分支销毁它）。
@@ -478,10 +523,13 @@ export default memo(() => {
         clearTimeout(followWatchdogRef.current)
         followWatchdogRef.current = null
       }
-      // 收尾重锚必须在 endFollow() 之前：endFollow 会把 LiquidLens 的跟手去重值复位，
-      // 之后任何 setFollowX 都必定写一次原生（含 removeAllAnimations）。先锚则正常
-      // 情况下被去重吞掉，只有真的停在半路（值不同）才写。
+      // 收尾重锚必须在 endFollow() 之前：endFollow 会把 LiquidLens 的跟手去重值复位
+      //（第 37 轮起复位到 -1 哨兵），先锚则这一笔走的是「上一帧的目标值」去重口径，
+      // 语义上没有歧义（且它本身是 force 写，两头都不会吞）。
+      // 【第 37 轮第 1 条】收尾是「落回静止药丸」的唯一时机：这里必须把水珠一起收掉
+      //（本分支只可能在真实 pager 会话结束时到达，A-5 的造型不该跨会话存活）。
       snapLensToRestingSlot()
+      lensRef.current?.setDroplet(false)
       lensRef.current?.endFollow()
       // 【第 35 轮第 3 条】收尾之后再重申几次静止位（见 REST_REASSERT_DELAYS 注释）
       reassertRestingSlot()
@@ -505,7 +553,14 @@ export default memo(() => {
       clearTimeout(followWatchdogRef.current)
       followWatchdogRef.current = null
     }
+    // 【第 37 轮第 1 条】新一轮 A-5 会话开始：撤掉上一轮留下的静止位重申
+    //（否则它会在手指还按着的时候把药丸拽回槽心）
+    clearRestReassert()
     lensRef.current?.setLifted(true)
+    // 【第 37 轮新增样式】长按即长成水珠（直径 ≈ 1.45 × 栏高、纵向溢出栏体，
+    // 见 LiquidGlassViewManager 的 kLGDropletScale）。与抬起同拍下发：抬起负责
+    // 「亮出液态玻璃」，水珠负责「变大成圆」。所有收尾路径都会 setDroplet(false)。
+    lensRef.current?.setDroplet(true)
     // arm 看门狗：只 arm 不接管（抬手被系统手势吃掉 / 抬手事件丢失）时自动解除，
     // 否则下一次触摸在栏体上滑动会被 PanResponder 当成拖动接管，连点击都受影响
     if (armWatchdogRef.current) clearTimeout(armWatchdogRef.current)
@@ -513,11 +568,14 @@ export default memo(() => {
       armWatchdogRef.current = null
       if (draggingRef.current || !dragArmedRef.current) return
       dragArmedRef.current = false
-      lensRef.current?.setFollowX(lensXRef.current)
+      // force 写：arm 未接管就解除时药丸本来就在槽上，这一笔是「权威复位」，
+      // 无需被 0.1pt 去重挡下（真被别的东西写到别处时它必须落下去）
+      lensRef.current?.setFollowX(lensXRef.current, true)
       lensRef.current?.setLifted(false)
+      lensRef.current?.setDroplet(false)
       lensRef.current?.endFollow()
     }, 8000)
-  }, [])
+  }, [clearRestReassert])
 
   // A-5 收尾：吸附 + 切页 + 解除 arm（commit=false 为系统终止：落回当前槽心）
   const finishTabDrag = useCallback((commit: boolean) => {
@@ -539,24 +597,28 @@ export default memo(() => {
     if (commit && width > 0) {
       if (Math.abs(centerX - dragStartLensXRef.current) < 1) {
         // 位移 < 1pt：视作原地（长按未拖动），不切页
-        lensRef.current?.setFollowX(lensXRef.current)
+        lensRef.current?.setFollowX(lensXRef.current, true)
       } else {
         // 吸附公式（需求指定）：index = clamp(round(centerX / slot - 0.5), 0, 4)
         const index = Math.min(Math.max(Math.round(centerX / slot - 0.5), 0), TAB_IDS.length - 1)
         const targetId = TAB_IDS[index].id
         // 直接落到目标槽心（不走 x prop 的弹簧，松手即吸附）。落回原 tab 时
         // x prop 不会重发（React 不会因相同 props 重新下发），必须在这里收尾，
-        // 否则药丸会停在松手点。
-        lensRef.current?.setFollowX((index + 0.5) * slot)
+        // 否则药丸会停在松手点。force 写（第 37 轮第 1 条）：吸附是权威落位，
+        // 不吃 0.1pt 去重。
+        lensRef.current?.setFollowX((index + 0.5) * slot, true)
         // 落点就是当前归属 tab 时只吸附回位、不切页（C-2：子页面激活时药丸停在
         // 父 tab 上，拖回父 tab 不应把用户从子页面里弹出去）
         if (targetId !== resolvedActiveIdRef.current) setNavActiveId(targetId)
       }
     } else {
       // 系统终止/拖动会话异常：落回当前 tab 槽心
-      lensRef.current?.setFollowX(lensXRef.current)
+      lensRef.current?.setFollowX(lensXRef.current, true)
     }
     lensRef.current?.setLifted(false)
+    // 【第 37 轮新增样式】收尾即缩回胶囊：A-5 的所有结束路径都必须收水珠，
+    // 否则长按的水珠造型会一直挂在栏上（比少一个造型难看得多）
+    lensRef.current?.setDroplet(false)
     lensRef.current?.endFollow()
   }, [])
 
@@ -585,8 +647,10 @@ export default memo(() => {
       if (draggingRef.current) return
       if (!dragArmedRef.current) return
       dragArmedRef.current = false
-      lensRef.current?.setFollowX(lensXRef.current)
+      lensRef.current?.setFollowX(lensXRef.current, true)
       lensRef.current?.setLifted(false)
+      // 【第 37 轮新增样式】长按未拖动就抬手：水珠同样要收（不然它会一直挂着）
+      lensRef.current?.setDroplet(false)
       lensRef.current?.endFollow()
       // 点击语义回退（LONG_PRESS_MS 压到 150 的配套）：长按触发了、但既没拖动、
       // 按压时长又短于 TAP_FALLBACK_MS —— 用户本意就是「点一下这个 tab」，

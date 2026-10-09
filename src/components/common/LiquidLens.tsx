@@ -37,6 +37,14 @@ type LiquidLensProps = ViewProps & {
    * .lens 预设的玻璃动态色。
    */
   tint?: string
+  /**
+   * 【第 37 轮新增样式】水珠态：true 时透镜从「与槽等宽的胶囊」长成**直径约
+   * 1.45 倍栏高的圆**，纵向溢出栏体上下边缘（对齐用户给的参考图：长按后椭圆
+   * 气泡变大、像一颗挂在栏上的水珠）。几何/圆角/弹簧全部在原生宿主里算，JS 只
+   * 下发开关（见 LiquidGlassViewManager.mm 的 droplet prop）。
+   * 由 ModernTabBar 在长按激活拖动（A-5 arm）时置 true，所有收尾路径置回 false。
+   */
+  droplet?: boolean
 }
 
 /**
@@ -49,10 +57,19 @@ const NativeLiquidLens = requireNativeComponent<LiquidLensNativeProps>('LiquidGl
 
 /** 命令式句柄：跟手/抬落/结束跟手，全部经 ref 直写原生，不触发 React 渲染 */
 export interface LiquidLensHandle {
-  /** 跟手直落：把药丸中心直接落到 x（原生非动画分支；<0.1pt 的变化跳过） */
-  setFollowX: (x: number) => void
+  /**
+   * 跟手直落：把药丸中心直接落到 x（原生非动画分支；<0.1pt 的变化跳过）。
+   *
+   * 【第 37 轮第 1 条】force = true 时**跳过 JS 侧 0.1pt 去重**，保证这一笔一定
+   * 过桥。收尾/重申用的都是 force 写：它们的目标是「当下算出来的静止槽心」，
+   * 不是「手指帧」，哪怕与上一笔只差 0.05pt 也必须落到原生——0.1pt 去重吞掉的
+   * 恰恰是「上一帧停在槽心附近、但显示停在了别处」这类需要纠正的一笔。
+   */
+  setFollowX: (x: number, force?: boolean) => void
   /** 抬落透镜（拖动开始时抬起、结束时落下），走原生 lifted prop（带动画） */
   setLifted: (lifted: boolean) => void
+  /** 水珠态开关（第 37 轮新增样式）：长按长成圆、收尾缩回胶囊，原生带弹簧 */
+  setDroplet: (on: boolean) => void
   /** 结束跟手会话：清掉 JS 侧去重值，下一次会话从干净状态开始 */
   endFollow: () => void
   /**
@@ -103,16 +120,21 @@ const LiquidLens = memo(forwardRef<LiquidLensHandle, LiquidLensProps>(({
   pillColor,
   pillWidth,
   tint,
+  droplet,
   style,
 }, ref) => {
   const nativeRef = useRef<ComponentRef<typeof NativeLiquidLens>>(null)
   // JS 侧跟手去重值：原生同位守卫是 0.5pt，这里更细（0.1pt），避免拖动起手时
-  // 「先跳到整槽再跟手」的可见跳变
-  const lastFollowXRef = useRef(0)
+  // 「先跳到整槽再跟手」的可见跳变。
+  // 【第 37 轮第 1 条】-1 = 「本次会话还没驱动过药丸」的哨兵值，不再用 0：
+  // 0 是合法坐标（最左槽的左边缘附近），当成「无会话」会让「去重基线是否已被
+  // 写过」这件事判断不出来。endFollow 统一复位到 -1。
+  const lastFollowXRef = useRef(-1)
 
   useImperativeHandle(ref, () => ({
-    setFollowX: (nextX: number) => {
-      if (Math.abs(nextX - lastFollowXRef.current) < 0.1) return
+    setFollowX: (nextX: number, force?: boolean) => {
+      // force 写（收尾/重申）必须过桥：见 handle 注释
+      if (!force && Math.abs(nextX - lastFollowXRef.current) < 0.1) return
       lastFollowXRef.current = nextX
       try {
         const instance = nativeRef.current as unknown as NativeLensInstance | null
@@ -129,8 +151,18 @@ const LiquidLens = memo(forwardRef<LiquidLensHandle, LiquidLensProps>(({
         // 同上，静默降级
       }
     },
+    // 水珠态（第 37 轮新增样式）：与 followX/lifted 同一条命令式通道。原生未
+    // 重编译时静默降级（只是没有水珠造型，长按动力学原样保留）。
+    setDroplet: (on: boolean) => {
+      try {
+        const instance = nativeRef.current as unknown as NativeLensInstance | null
+        instance?.setNativeProps?.({ droplet: on })
+      } catch {
+        // 同上，静默降级
+      }
+    },
     endFollow: () => {
-      lastFollowXRef.current = 0
+      lastFollowXRef.current = -1
     },
     setRestX: (nextX: number) => {
       try {
@@ -161,6 +193,7 @@ const LiquidLens = memo(forwardRef<LiquidLensHandle, LiquidLensProps>(({
       pillColor={pillColor}
       pillWidth={pillWidth}
       tint={nativeTint}
+      droplet={droplet}
       pointerEvents="none"
     />
   )
