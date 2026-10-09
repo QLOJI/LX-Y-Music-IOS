@@ -194,17 +194,28 @@ export const selectSyncMode = async <T extends keyof LX.Sync.ModeTypes>(
  * 关掉选择框时，这里不会被误当成「用户跑了」。
  */
 export const handleSyncModeModalUnmounted = (componentId?: string) => {
-  // 【第 36 轮第 1 条】不管后面判不判「取消」，先摘掉「在屏幕上」的标记 ——
-  // 它下一秒就要被原生拆掉了，属于**已经**不在屏幕上。
+  // 【第 38 轮第 2 条】身份比对必须**排在摘标记之前**（旧写法是先无条件
+  // markSyncModeModalHidden，再比对 —— 顺序反了）。
+  //
+  // 反了会怎样：新一轮问句已经把自己的选择框换上去了，上一个选择框姗姗来迟的卸载回调
+  // 到 JS 时，第一句就把**新**选择框的「在屏幕上」标记清成 false。连锁反应有三步：
+  //   ① navigation/utils.ts 的挂载复查（1000ms 到点读这个标记）读到 false ⇒ 判「没挂上」
+  //      ⇒ 700ms 后再 present 一个 overlay，盖在那个活着的选择框上面；第二个挂载时发现
+  //      store 里是别人的 id，会把第一个 dismissOverlay 掉 —— 屏幕上两个都没了（或者
+  //      闪一下就没），正是用户读到的「选择框迟迟不出现」；
+  //   ② core/sync.ts 的 20 秒问句复查也会因为标记为 false 而把这次问句判死
+  //      （文案变成「同步方式选择框未能显示，已中止本次同步」）；
+  //   ③ client.ts 的握手看门狗同一判据。
+  // 现在：不是自己人的卸载回调，整个忽略 —— 标记、文案、问句全都不动。
+  //
+  // 只有「消失的正是当前问句的那个选择框」才算取消。传了 componentId 才比对
+  // （不传 = 调用方只是要报告消失，见下）；比对的两个值都非空才作数，
+  // 作答路径清空 id 的先后顺序不影响（closeSyncModeModal 先清 id 再 dismiss，
+  // 于是它引发的卸载回调会落到「store id 为空」这一支，由下面的 syncModeSelecting 接管）。
+  if (componentId && syncState.syncModeComponentId && componentId != syncState.syncModeComponentId) return
+  // 比对通过（自己人，或调用方没带 id）：它下一秒就要被原生拆掉了，属于**已经**不在屏幕上。
   markSyncModeModalHidden()
   if (!syncModeSelecting) return
-  // 【第 36 轮第 1 条】只有「消失的正是当前问句的那个选择框」才算取消。
-  // 少了这道比对时有个反向误杀：新一轮问句已经把问句对象换成新的了，上一个选择框
-  // 的卸载回调才姗姗来迟（原生转场是异步的），它会把**新**问句当成被取消而杀掉 ——
-  // 表现同样是「状态写着等待选择同步方式，选择框却不出现」。
-  // 传了 componentId 才比对（不传 = 调用方只是要报告消失，见下）；
-  // 比对的两个值都非空才作数，作答路径清空 id 的先后顺序不影响。
-  if (componentId && syncState.syncModeComponentId && componentId != syncState.syncModeComponentId) return
   // 状态文案必须跟着改：旧路径下这里一声不吭，那行字会一直停在「等待选择同步方式...」
   setSyncMessage('同步方式选择已取消，本次同步已中止')
   // 走既有的取消通路：置 settled、撤监听、reject('cancel')，服务端据此中止本次同步

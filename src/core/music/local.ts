@@ -383,7 +383,25 @@ export const getPicUrl = async({
 }): Promise<string> => {
   const isWebDAVMusic = 'webdav' in musicInfo.meta && (musicInfo.meta as any).webdav === true
 
-  if (!isRefresh && !skipFilePic) {
+  // 【第 38 轮第 1 条】网盘歌曲的「本地/网盘内」封面来源**必须不受 isRefresh 影响** ——
+  // 旧写法是 `if (!isRefresh && !skipFilePic)`，把整段（网盘内同名封面、封面缓存目录、
+  // 已下载音频内嵌封面）一并挡在强制刷新之外。用户原话：「当我更改了配置中的当前目录，
+  // 点击扫描后，无论是刷新还是扫描，不会自动加载在线封面，只有退出软件后再次进入
+  // WebDAV 界面，才能开始自动加载在线封面，而且只会加载部分歌曲」。
+  //
+  // 为什么会这样：扫描 / 下拉刷新 / 进入列表这条巡检链路全都带 isRefresh=true
+  // （forceCoverRefresh，见 WebDAV/index.tsx），于是巡检对**每一首**歌都跳过了本地
+  // 三条快路径、只走末尾的在线跨平台搜索 —— 那个搜索有 2 并发闸 + 单首 12 秒上限，
+  // 几百首的列表按批慢慢爬，界面上就是「基本不加载 / 只加载了一部分 / 只有零星几张」。
+  // 退出重进之所以好一点，只是因为它把巡检又从头排了一遍队，仍然爬不完。
+  //
+  // 为什么这三种来源可以不分刷新与否：它们是**目录/文件作用域**的，不随时间过期 ——
+  //   · fetchWebDAVPic 按当前曲目的远端路径去（新）目录里找封面，换目录后自然取到新目录的；
+  //   · 封面缓存目录按「歌名包含」命中，命中的就是这首歌自己的缓存文件；
+  //   · 内嵌封面直接读已下载的那份音频文件。
+  // 过期的是下面那份 meta.picUrl（在线匹配结果），它仍然只在 !isRefresh 时提前返回：
+  // 「刷新」就是要绕过它重新匹配（第 29/31 轮口径，第 468 行与第 494 行两处都保持）。
+  if ((!isRefresh || isWebDAVMusic) && !skipFilePic) {
     if (isWebDAVMusic) {
       // 网盘内封面文件优先（同目录同名 / 目录通用封面），下载到本地缓存
       try {
@@ -465,7 +483,11 @@ export const getPicUrl = async({
       // 只认字符串：历史落盘的脏 meta.picUrl（音源 SDK getPic 未解包的请求对象）既不能拿去
       // `.startsWith`（直接抛 undefined is not a function），也不能当封面返回出去。
       // 脏值当「没有封面」，继续往下走在线匹配，命中后会把它覆盖成正常 URL。
-      if (typeof musicInfo.meta.picUrl === 'string' && musicInfo.meta.picUrl) {
+      //
+      // 【第 38 轮第 1 条】这份 meta.picUrl 是**会过期**的在线匹配缓存，强制刷新
+      // （isRefresh=true）时不能提前返回它 —— 那等于「刷新了但什么都刷不出来」。
+      // 加了 `!isRefresh` 之后，刷新路径会跳过它、继续往下重新匹配（与第 494 行同口径）。
+      if (!isRefresh && typeof musicInfo.meta.picUrl === 'string' && musicInfo.meta.picUrl) {
         if (musicInfo.meta.picUrl.startsWith('file://')) {
           const picFilePath = musicInfo.meta.picUrl.replace('file://', '')
           const picExists = await existsFile(picFilePath).catch(() => false)
@@ -491,7 +513,8 @@ export const getPicUrl = async({
       return pic
     }
 
-    if (typeof musicInfo.meta.picUrl === 'string' && musicInfo.meta.picUrl) return musicInfo.meta.picUrl
+    // 【第 38 轮第 1 条】同上：会过期的在线匹配缓存，只在非刷新时提前返回
+    if (!isRefresh && typeof musicInfo.meta.picUrl === 'string' && musicInfo.meta.picUrl) return musicInfo.meta.picUrl
   }
 
   try {

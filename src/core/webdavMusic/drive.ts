@@ -250,6 +250,21 @@ export const scanWebDAVSongs = async(
   config.selectedFolder = folder
   config.songs = mergedSongs
   config.scannedAt = Date.now()
+  // 【第 38 轮第 1 条】换目录后把**指向旧目录**的筛选路径清掉。
+  // filterPath 是「文件夹」页选出来的、指向**上一次扫描结果**里的某个目录；用户换一个当前目录
+  // 再扫描，那个路径在新曲库里根本不存在，filteredSongs 过滤后是空列表 —— 界面上只剩
+  // 「文件夹：旧目录名」加一片空白（会被当成「封面全都不加载了」）。扫描完就地校验一次：
+  // 路径在新曲库里还找得到就留着（同目录重复扫描不受影响），找不到就清成 null 并落盘。
+  // 界面上的 filterPath state 由各调用点按返回的 config 同步（见 WebDAV/index.tsx 的 handleScan
+  // 与 handleBatchDownload 里的 setFilterPath）。
+  if (config.filterPath && !mergedSongs.some(song => {
+    const path = song.meta.remotePath
+    if (!path) return false
+    const lastSlashIndex = path.lastIndexOf('/')
+    return (path.substring(0, lastSlashIndex) || '/') === config.filterPath
+  })) {
+    config.filterPath = null
+  }
   await saveWebDAVConfig(config)
   return config
 }
