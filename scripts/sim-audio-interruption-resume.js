@@ -363,9 +363,12 @@ neg('反例 m5：pause 重新保持会话激活（其他音频没声音的根因
   m5 !== src && !m5r.pause_noSessionActivation)
 
 // m6 旧 DidBecomeActive：无条件 setActive:YES
+// 锚点必须带上紧随其后的那行注释：第 44 轮起，AppDelegate.mm 的 LXApplyNowPlayingInfo
+// 里也有一行同形的 `if (LXNowPlayingState == ...) {`（且位置更靠前），只给裸行的
+// `String.replace` 会改到那一处 —— 反例便悄悄失效（真机行为不变，但防线没了）。
 const m6 = src.replace(
-  '      if (LXNowPlayingState == MPNowPlayingPlaybackStatePlaying) {\n',
-  '      if (YES) {\n',
+  '      if (LXNowPlayingState == MPNowPlayingPlaybackStatePlaying) {\n        // iOS 27 Beta 7 可能在应用切换/控制中心展开后丢弃当前媒体会话；\n',
+  '      if (YES) {\n        // iOS 27 Beta 7 可能在应用切换/控制中心展开后丢弃当前媒体会话；\n',
 )
 const m6r = evaluate(m6, JS)
 neg('反例 m6：DidBecomeActive 无条件抢回会话（暂停态压住其他音频）被拦下',

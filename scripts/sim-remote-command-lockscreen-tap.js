@@ -50,6 +50,17 @@
  *      「手动暂停要卸载占用音频」会在 pause 让出会话，而参考工程的会话常驻 ——
  *      让出之后必须在这一按的瞬间夺回（不然起播链路一旦晚一步/失败，卡片就永远停在 ▶）。
  *
+ * 【第 44 轮】用户原话＋现场截图：「这是锁屏卡片按钮失灵的样子，然后无论点击什么都没有用」
+ * （截图里卡片显示 ▶、那个 ▶ 是**灰的**、进度冻结在 0:10、右侧 -3:16 不再走）。
+ * 这张图把分叉的第三根腿钉死了：**卡片上画什么按钮只看 info 里的 PlaybackRate**
+ * （0 = 没在播，进度条也按它外推），**命令启不启用只看 LXNowPlayingState**。
+ * 速率历史上在三个写者之间流转（播放态发布 / 元数据发布里 JS 的 playerState.isPlay /
+ * 歌词步进兜底），只要有一次元数据发布带着「JS 认为没在播」的 0 落进缓存（换歌、起播瞬间
+ * 就会发生），就会出现「画着 ▶ 而 playCommand 已被关掉」的灰按钮 —— 点击被静默吞掉，
+ * 而且**再也回不来**（没有任何一条链路会去纠正它）。
+ *   ⑤ 因此第 44 轮在唯一写入口的**发布前**加一道归一：速率必须与 LXNowPlayingState 同源
+ *      （播放中 ⇒ > 0，保留倍速；非播放 ⇒ 0），与下面的 playbackState / 命令 enabled 同刻同真。
+ *
  * 反例专盯「回归 tsc / eslint 都无感」的部分：原生不参与 TS 检查，把判据改回按播放态单算、
  * 漏一句 beginReceivingRemoteControlEvents、把主线程闸门删掉、让看门狗回来、
  * 或又把 playbackState 翻转加回来，静态检查与单测全都看不见。
@@ -377,6 +388,50 @@ const remoteInvariants = (raw) => {
 }
 
 // ---------------------------------------------------------------------------
+// 不变量 E：发布前速率与播放态同源（第 44 轮）
+//
+// 卡片上「显示 ▶ 还是 ⏸」由 info 里的 PlaybackRate 决定（iOS 也看 playbackState 属性，
+// 但字典里的 PlaybackRate 是进度外推与渲染的直接依据）；命令启不启用由 LXNowPlayingState
+// 决定。这两者必须在**同一次发布**里同源，否则就是用户第 44 轮截图里的
+// 「▶ 是灰的、点了一点反应都没有」——iOS 对 enabled = NO 的命令不投递。
+// ---------------------------------------------------------------------------
+
+const rateStateInvariants = (raw) => {
+  const reasons = []
+  const apply = extractBracedBody(raw, 'static void LXApplyNowPlayingInfo(void)')
+  if (!apply) {
+    reasons.push('LXApplyNowPlayingInfo 缺失或抽取失败（锚点漂移）')
+    return reasons
+  }
+  const body = stripComments(apply)
+
+  // ① 归一的三个要素：读缓存速率、读播放态、两个方向各写一次
+  if (!body.includes('MPNowPlayingInfoPropertyPlaybackRate')) {
+    reasons.push('LXApplyNowPlayingInfo 不再归一出速率（缺 MPNowPlayingInfoPropertyPlaybackRate —— 卡片显示 ▶/⏸ 与进度外推都看这条 info 里的速率，而命令 enabled 看 LXNowPlayingState：三个写者（播放态发布 / 元数据发布里 JS 的 isPlay / 歌词步进兜底）任何一个把 0 写进缓存，就会出现「画着 ▶ 而 playCommand 已关」的灰按钮，点击被静默吞掉且再也回不来）')
+  }
+  if (!body.includes('LXNowPlayingState == MPNowPlayingPlaybackStatePlaying')) {
+    reasons.push('速率归一不再读播放态（缺 `LXNowPlayingState == MPNowPlayingPlaybackStatePlaying` —— 归一必须按 LXNowPlayingState 走，否则仍是「最后写入的那个写者」说了算，显示态与启停态可以分叉）')
+  }
+  if (!/= @1;/.test(body)) {
+    reasons.push('播放中的速率兜底丢了（速率 0 / 缺失时必须补一个正速率，否则播放中卡片画成 ▶，而 playCommand 是关的 ⇒ 灰按钮点不动）')
+  }
+  if (!/= @0;/.test(body)) {
+    reasons.push('非播放的速率清零丢了（非播放态带着正速率 ⇒ 卡片画出 ⏸ 而 pauseCommand 是关的，点了同样没反应）')
+  }
+
+  // ② 归一必须在发布**之前**（归一后不重新发布，系统看到的还是脏速率）
+  const iRate = body.indexOf('MPNowPlayingInfoPropertyPlaybackRate')
+  const iPub = body.indexOf('center.nowPlayingInfo =')
+  if (iPub < 0) {
+    reasons.push('找不到 center.nowPlayingInfo 发布点（锚点漂移）')
+  } else if (iRate < 0 || iRate > iPub) {
+    reasons.push('速率归一必须落在 center.nowPlayingInfo 发布之前（归一挪到发布之后等于没归一：系统拿到的仍是那个被写脏的速率）')
+  }
+
+  return reasons
+}
+
+// ---------------------------------------------------------------------------
 // 反例（对篡改后的源码跑同一套判断，必须被拦下）
 // ---------------------------------------------------------------------------
 
@@ -483,6 +538,24 @@ const runCounterExamples = () => {
     '')),
   '没有先抢回音频会话')
 
+  // s7 发布前的速率归一被废（回到「三个写者谁最后写谁说了算」）→ 报「不再读播放态」
+  check('s7 发布前速率归一被废（不再读播放态）', () => rateStateInvariants(tamper(REAL_APPDELEGATE,
+    '      if (LXNowPlayingState == MPNowPlayingPlaybackStatePlaying) {\n        if (cachedRate == nil || cachedRate.doubleValue <= 0) {',
+    '      if (NO) {\n        if (cachedRate == nil || cachedRate.doubleValue <= 0) {')),
+  '不再读播放态')
+
+  // s8 归一被挪到发布之后（等于没归一）→ 报「必须在 center.nowPlayingInfo 发布之前」
+  check('s8 速率归一被挪到发布之后', () => rateStateInvariants(tamper(REAL_APPDELEGATE,
+    '    if (LXNowPlayingInfoCache.count) {\n      NSNumber *cachedRate',
+    '    center.nowPlayingInfo = nil;\n    if (LXNowPlayingInfoCache.count) {\n      NSNumber *cachedRate')),
+  '发布之前')
+
+  // s9 非播放方向的清零被删（只留播放中兜底）→ 报「非播放的速率清零丢了」
+  check('s9 非播放方向的速率清零被删', () => rateStateInvariants(tamper(REAL_APPDELEGATE,
+    '      } else if (cachedRate != nil && cachedRate.doubleValue != 0) {\n        LXNowPlayingInfoCache[MPNowPlayingInfoPropertyPlaybackRate] = @0;\n      }\n',
+    '      }\n')),
+  '非播放的速率清零丢了')
+
   // r11 JS 侧无条件落闸（第 35 轮第 1 条要拦的就是这个）→ 报「前置判据」
   check('r11 JS 侧 pause 无条件落闸', () => remoteInvariants(tamper(REAL_REMOTE,
     '        if (playerState.isPlay) markManualPause()',
@@ -508,6 +581,7 @@ const checks = [
   ['原生：命令启停与参考工程 1:1（显示态 / 启停态同源）', () => availabilityInvariants(REAL_APPDELEGATE)],
   ['原生：全文件只允许一处 playbackState 赋值且赋真实态（两处说谎翻转已删）', () => singleSourceInvariants(REAL_APPDELEGATE)],
   ['原生：写入一律主线程 + 无看门狗 + 无会话拆除 + 播放键先抢会话（第 43 轮）', () => mainThreadInvariants(REAL_APPDELEGATE)],
+  ['原生：发布前速率与播放态同源（卡片显示 ⟺ 命令启停，第 44 轮）', () => rateStateInvariants(REAL_APPDELEGATE)],
   ['JS：pause 只在真的会暂停时落闸（六命令覆盖 + 去重窗口）', () => remoteInvariants(REAL_REMOTE)],
 ]
 
