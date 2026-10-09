@@ -16,6 +16,7 @@ import { useBackHandler } from '@/utils/hooks/useBackHandler.ts'
 
 import { setSearchText as setSearchState } from '@/core/search/search'
 import DownloadBall from '@/components/DownloadBall'
+import SyncModeAskHost from '@/navigation/components/SyncModeAskHost'
 interface Props {
   componentId: string
 }
@@ -106,6 +107,10 @@ export default ({ componentId }: Props) => {
           Home 被 push 的原生页面覆盖后视图树脱离窗口，挂在 Home 里的弹窗永远无法呈现，
           表现为设置详情页里的登录按钮点了没反应。 */}
       <DownloadBall />
+      {/* 【第 42 轮第 1 条】「同步方式」问句的主树兜底面：RNN overlay 画不出来时，
+          同一个选择框改由这一层呈现（常驻挂载、默认返回 null，详见组件内注释）。
+          放在本 fragment 的最后一位 ⇒ 在本屏所有浮层之上（另有 zIndex 200 兜底）。 */}
+      <SyncModeAskHost />
     </>
   )
 }
