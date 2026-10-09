@@ -1,5 +1,6 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
+  AppState,
   FlatList,
   Keyboard,
   RefreshControl,
@@ -433,6 +434,27 @@ export default memo(() => {
   const forceCoverRefresh = useRef(false)
   // 【第 36 轮第 3 条】续巡定时器（同一时刻只挂一个：后安排的会顶掉前一个）。
   const coverFollowupTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // 【第 42 轮第 2 条】续巡的「名单 + 前后台门」。
+  //
+  // 病根（本轮耗电排查第一现场）：本页是 useHomeLazyPage 的**惰性常驻页** —— 访问过一次就
+  // 永不卸载，而续巡（COVER_FOLLOWUP_*）只在「整轮巡检结束还有歌没拿到封面」时才排期，
+  // 全程没有任何前后台判断。只要曲库里有几首永远拿不到封面（离线加的歌、源里没有、
+  // 搜过超时），它就会 15 秒一轮地拉着在线封面搜索跑下去 —— 退后台也不停（iOS 后台播放
+  // 音频时 JS 不被冻结），一整夜都在发请求、解码图片、写 setState。
+  // 现在：名单存在这里，退后台把已排期的定时器收掉（后台一遍都不跑），回前台立刻补一发；
+  // 另外「连续几轮没有新进展」就按 2 倍退避（封顶长周期），把「永远拿不到的那一首」从
+  // 15 秒循环里摘出来 —— 用户要的「持续刷新直到刷出来」照旧，只是不再无脑空转。
+  const coverFollowupSongs = useRef<LX.WebDAV.MusicInfo[] | null>(null)
+  // 连续「续巡了但还是没进展」的轮数（用户触发的整轮巡检会清零，见 prefetchCovers）。
+  const coverFollowupRounds = useRef(0)
+  // 上一轮续巡的失败名单长度：这一轮比上一轮短就说明有进展（退避计数清零）。
+  const coverFollowupLastCount = useRef(0)
+  const cancelCoverFollowup = useCallback(() => {
+    if (coverFollowupTimer.current) {
+      clearTimeout(coverFollowupTimer.current)
+      coverFollowupTimer.current = null
+    }
+  }, [])
 
   // 【第 38 轮第 1 条】本页**唯一**的取封面漏斗：整表巡检（prefetchCovers）与可视列表巡检
   // （sweepVisibleCovers）都从这里进出 —— 页面里 `fetchCoverUrl(` 只有这一处（契约脚本按字面
@@ -462,14 +484,15 @@ export default memo(() => {
     const isRefresh = forceCoverRefresh.current
     forceCoverRefresh.current = false
     // 新一轮巡检安排上了，旧续巡作废：它只负责「还没拿到封面的那批」，而这次会把整表重看一遍。
-    if (coverFollowupTimer.current) {
-      clearTimeout(coverFollowupTimer.current)
-      coverFollowupTimer.current = null
-    }
+    cancelCoverFollowup()
+    coverFollowupSongs.current = null
     if (!isAuto) {
       // 用户触发的巡检是「新的一轮」：上一轮试过的 id、上一轮确认查不到的歌全部作废，重新查一遍。
       prefetchedCoverIds.current.clear()
       clearWebdavCoverMisses()
+      // 【第 42 轮第 2 条】退避计数同样作废：这是用户主动发起的一轮，节奏从头来过。
+      coverFollowupRounds.current = 0
+      coverFollowupLastCount.current = 0
     } else {
       // 【第 36 轮第 3 条】续巡只重查「还没拿到封面的那一批」：先把这些 id 从已试名单里摘掉，
       // 否则 ① 的 has() 会把它们整批跳过 —— 那正是「再也不重试」的老毛病换个地方复现。
@@ -532,16 +555,39 @@ export default memo(() => {
     }
 
     void sweep().then((failed) => {
-      if (!failed.length) return
+      if (!failed.length) {
+        // 【第 42 轮第 2 条】全拿到了：退避计数清零，续巡自然停（不再排下一发）。
+        coverFollowupRounds.current = 0
+        coverFollowupLastCount.current = 0
+        coverFollowupSongs.current = null
+        return
+      }
       // 【第 36 轮第 3 条】续巡：还有歌没拿到封面就再来一遍，直到刷出来为止。
       // 节奏按失败性质分档（见文件上方 COVER_FOLLOWUP_* 的说明）：还可能救得回来的短周期，
       // 确凿没有结果的只留长周期兜底。failed 里的歌都不带封面，续巡的 ① 只做
       // 「file:// 探活 + 已试名单」两道轻检查，不会重新扫全表。
       const hasRetryable = failed.some(song => !isWebdavCoverKnownMiss(song))
+      // 【第 42 轮第 2 条】没进展就退避：
+      //   · 这一轮失败名单比上一轮**短**（名单在缩）⇒ 有进展，退避计数清零，继续按短周期尽快补；
+      //   · 一轮没缩 ⇒ 轮数 +1，间隔 15s → 30s → 60s → … 封顶到长周期（5 分钟）。
+      // 没有这道退避时，几首永远拿不到封面的歌会把这条链路钉在 15 秒一轮的循环上 —— 前台
+      // 是持续的发热源，后台（音频播放中 JS 不冻结）就是纯粹的耗电（本轮耗电排查第一现场）。
+      if (failed.length < coverFollowupLastCount.current) coverFollowupRounds.current = 0
+      coverFollowupLastCount.current = failed.length
+      const round = coverFollowupRounds.current
+      const backoff = Math.min(COVER_FOLLOWUP_SHORT_MS * Math.pow(2, round), COVER_FOLLOWUP_LONG_MS)
+      const delay = hasRetryable ? backoff : COVER_FOLLOWUP_LONG_MS
+      coverFollowupRounds.current = round + 1
+      coverFollowupSongs.current = failed
+      // 【第 42 轮第 2 条】后台不排期：退后台时连已排的那一发也一并收掉（见下面的 AppState
+      // 监听），名单留在 coverFollowupSongs 里，回前台立刻补一发 —— 后台一遍封面网络巡都不跑。
+      if (AppState.currentState !== 'active') return
+      cancelCoverFollowup()
       coverFollowupTimer.current = setTimeout(() => {
         coverFollowupTimer.current = null
+        coverFollowupSongs.current = null
         prefetchCovers(failed, { auto: true })
-      }, hasRetryable ? COVER_FOLLOWUP_SHORT_MS : COVER_FOLLOWUP_LONG_MS)
+      }, delay)
     })
     // 依赖项里带上漏斗本身（它自己是 useCallback([], …)，身份稳定 ⇒ prefetchCovers 也稳定，
     // 依赖它的 effect / useCallback 不会每次渲染重建）
@@ -935,12 +981,39 @@ export default memo(() => {
   // 【第 36 轮第 3 条】卸载时把封面续巡的定时器收掉。
   // 本页是惰性常驻页：切到别的 Tab 不会卸载（续巡照跑，正是用户要的「持续刷新」）；
   // 真卸载（页面重建、退出）时不能让一个没人看的定时器继续按时辰去搜封面。
+  // 【第 42 轮第 2 条】连名单一起清：页面都没了，没有「回前台补一发」的宿主，
+  // 留着的名额只会让下一次挂载之前的一次前后台切换去跑一份没人看的巡检。
   useEffect(() => () => {
-    if (coverFollowupTimer.current) {
-      clearTimeout(coverFollowupTimer.current)
-      coverFollowupTimer.current = null
-    }
-  }, [])
+    cancelCoverFollowup()
+    coverFollowupSongs.current = null
+  }, [cancelCoverFollowup])
+
+  // 【第 42 轮第 2 条】封面续巡的前后台门（本轮耗电修复的主开关）。
+  //
+  // 为什么退后台必须真停：本页是惰性常驻页，续巡一旦排上就一直在这条链上；iOS 上音频在后台
+  // 播放时 JS 线程**不会被冻结**，于是整夜都在「定时器到点 → 联网搜封面 → 解码图片 → 写
+  // setState」地循环（用户原话「发热严重，电量消耗快……减少后台运行占用」）。退后台不再排期、
+  // 回前台立刻补一发：用户看到的「持续刷新直到刷出来」不受影响（前台照跑），后台一遍都不跑。
+  // 名单不丢：退后台时留在 coverFollowupSongs 里，回前台的补发把它整批重新推进。
+  useEffect(() => {
+    let lastAppState: string = AppState.currentState
+    const sub = AppState.addEventListener('change', (next) => {
+      const prev = lastAppState
+      lastAppState = next
+      if (next !== 'active') {
+        // 退后台（含 iOS 的瞬时 inactive）：把已排期的那一发收掉，名单留着。
+        cancelCoverFollowup()
+        return
+      }
+      if (prev === 'active') return
+      // 回前台：有欠账就立刻补一发。用 auto 模式（只重查没封面那批，不清失败备忘）。
+      const pending = coverFollowupSongs.current
+      if (!pending?.length) return
+      coverFollowupSongs.current = null
+      prefetchCovers(pending, { auto: true })
+    })
+    return () => { sub.remove() }
+  }, [cancelCoverFollowup, prefetchCovers])
 
   // 【第 30 轮·图六】每次从别的页面切进 WebDAV 歌单，都重新读一次配置并立刻按列表顺序从上到
   // 下起一轮封面巡检。本页是 useHomeLazyPage 常驻挂载（切走不卸载）：只有上面那条挂载 effect
