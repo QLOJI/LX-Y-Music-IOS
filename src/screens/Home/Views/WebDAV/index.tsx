@@ -434,6 +434,24 @@ export default memo(() => {
   // 【第 36 轮第 3 条】续巡定时器（同一时刻只挂一个：后安排的会顶掉前一个）。
   const coverFollowupTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
+  // 【第 38 轮第 1 条】本页**唯一**的取封面漏斗：整表巡检（prefetchCovers）与可视列表巡检
+  // （sweepVisibleCovers）都从这里进出 —— 页面里 `fetchCoverUrl(` 只有这一处（契约脚本按字面
+  // 数次数：多出来的多半是渲染路径上的逐首直调，会绕开 4 并发全局队列与内存缓存）。
+  //
+  // 拿到封面就按 song.id 写回列表状态（map 对不在当前列表的 id 天然是空操作）：即使 meta
+  // 落盘那一步失败（updateWebDAVMusicMeta 抛错时不会广播 webdavPicUpdated），已经渲染出来的
+  // 行也能立刻换图。拿不到时返回空串，算不算「失败」由调用方决定（整表巡检据此安排续巡，
+  // 插队的可视巡检不记账）。
+  const fetchCoverForSong = useCallback((song: LX.WebDAV.MusicInfo, isRefresh: boolean) => {
+    return fetchCoverUrl(song, { isRefresh }).then((url) => {
+      if (!url) return ''
+      setSongs(prevSongs => prevSongs.map(item =>
+        item.id === song.id ? { ...item, meta: { ...item.meta, picUrl: url } } : item,
+      ))
+      return url
+    })
+  }, [])
+
   const prefetchCovers = useCallback((list: LX.WebDAV.MusicInfo[], options?: { auto?: boolean }) => {
     const isAuto = options?.auto === true
     const isRefresh = forceCoverRefresh.current
@@ -490,19 +508,11 @@ export default memo(() => {
       const failed: LX.WebDAV.MusicInfo[] = []
       for (let i = 0; i < queue.length; i += MAX_PREFETCH_COVERS) {
         const tasks = queue.slice(i, i + MAX_PREFETCH_COVERS).map(song =>
-          // fetchCoverUrl 内部已 catch（失败返回空串），这里再把拿到手的封面推回列表状态：
-          // 即使 meta 落盘那一步失败（updateWebDAVMusicMeta 抛错时不会广播 webdavPicUpdated），
-          // 已经渲染出来的行也能立刻换图。
-          fetchCoverUrl(song, { isRefresh }).then((url) => {
-            if (!url) {
-              failed.push(song)
-              return
-            }
-            setSongs(prevSongs => prevSongs.map(item =>
-              item.id === song.id
-                ? { ...item, meta: { ...item.meta, picUrl: url } }
-                : item,
-            ))
+          // 【第 38 轮第 1 条】取封面走本页漏斗 fetchCoverForSong（它内部就是
+          // fetchCoverUrl(song, { isRefresh }) + 按 id 写回）：刷新标记照样透传，页面里
+          // `fetchCoverUrl(` 仍只有漏斗那一处。拿不到封面（空串）的计入 failed，交给下面的续巡。
+          fetchCoverForSong(song, isRefresh).then((url) => {
+            if (!url) failed.push(song)
           }),
         )
         // 【第 34 轮第 3 条】原来是 `await Promise.all(tasks)`：整批 20 首里只要有一首的
@@ -528,7 +538,63 @@ export default memo(() => {
         prefetchCovers(failed, { auto: true })
       }, hasRetryable ? COVER_FOLLOWUP_SHORT_MS : COVER_FOLLOWUP_LONG_MS)
     })
-  }, [])
+    // 依赖项里带上漏斗本身（它自己是 useCallback([], …)，身份稳定 ⇒ prefetchCovers 也稳定，
+    // 依赖它的 effect / useCallback 不会每次渲染重建）
+  }, [fetchCoverForSong])
+
+  // 【第 38 轮第 1 条】「保证展示在画面中的歌曲都有在线封面显示」的最后一道 —— 可视列表巡检。
+  //
+  // 上面的 prefetchCovers 是按**整份曲库**顺序推进的（每批 20 首），而屏幕上的列表经常只是
+  // 曲库的一个子集：「文件夹」页选了某个目录（filterPath）、搜索框里打了字（searchText）。
+  // 子集里的歌若排在曲库靠后，全表巡检要爬很久才轮到它 —— 用户看到的就是「只加载了部分歌曲」。
+  // 这一条把**当前真正渲染出来的这一份列表**单独提前扫一遍：屏幕上有多少首，就有多少首立刻
+  // 进入同一条 fetchCoverUrl 队列（4 并发上限、在飞去重、15 秒超时兜底全都照旧）。
+  //
+  // 为什么用「结构签名」而不是直接把 filteredSongs 当依赖：filteredSongs 的引用每次 setSongs
+  // 都会变（封面写回、播放态更新……），当依赖会「写回一张封面就又扫一轮」—— 扫描自己被自己
+  // 触发。签名只认**结构变化**（切 tab / 换筛选 / 改搜索词 / 曲库条数变了 / 重新扫描过），
+  // 封面写回不改其中任何一项，天然不会自激。
+  //
+  // 这一条是**纯追加**：不碰 prefetchedCoverIds、不清失败备忘、也不动上面的续巡定时器
+  // （第 36 轮好不容易拆掉「整轮作废」这个病根，不能再引入一个同类的）。重复请求由
+  // fetchCoverUrl 的在飞去重与内存缓存合并，不会放大并发。
+  const coverScreenKey = `${activeTab}|${filterPath ?? ''}|${searchText.trim()}|${songs.length}|${scannedAt ?? 0}`
+  const lastCoverScreenKey = useRef('')
+
+  const sweepVisibleCovers = useCallback((list: LX.WebDAV.MusicInfo[]) => {
+    for (const song of list) {
+      if (!song?.id || !song.meta) continue
+      // 已经有封面（在线匹配 / 网盘内封面 / 内嵌封面）的行不用管：行内 useCoverUrl 直接用它，
+      // 那张图万一加载失败还有 onError 的自愈（handleCoverError），这里不必重复取。
+      if (typeof song.meta.picUrl === 'string' && song.meta.picUrl) continue
+      // 「搜过确认没有」的歌不重复搜（与 prefetchCovers 共用同一份失败了备忘）
+      if (isWebdavCoverKnownMiss(song)) continue
+      // 取封面走本页漏斗（唯一那处 fetchCoverUrl(）：4 并发全局队列 + 在飞去重 + 15 秒超时兜底
+      // 全都照旧；拿到封面它会按 song.id 写回列表状态）。落盘那一步由 getPicPath 内部负责
+      // （网盘内封面走本地缓存、在线匹配写回 meta）。
+      // 失败不做任何记账：这些歌本来就在整表巡检的名单里，重试由它那套续巡管 —— 本条不碰
+      // prefetchedCoverIds、不清失败备忘、也不动整表巡检的续巡定时器。
+      void fetchCoverForSong(song, false)
+    }
+  }, [fetchCoverForSong])
+
+  useEffect(() => {
+    if (activeTab !== 'list') return
+    if (coverScreenKey === lastCoverScreenKey.current) return
+    // 400ms 去抖：搜索框每敲一个字、筛选连点几次，都只在停下来之后扫一次
+    // （签名一变，上一帧的定时器就被清理函数收掉，只有最后一次真的跑）。
+    // filteredSongs 有意不进依赖：进了的话「封面写回」这种同签名的重渲染会把还没到点的
+    // 定时器清掉又因为签名没变直接 return —— 巡检反而被自己的结果取消了。
+    const timer = setTimeout(() => {
+      lastCoverScreenKey.current = coverScreenKey
+      const list = filteredSongs
+      webDAVLog.info('sweepVisibleCovers: visible list changed, prefetch covers', {
+        count: list.length, key: coverScreenKey,
+      })
+      sweepVisibleCovers(list)
+    }, 400)
+    return () => clearTimeout(timer)
+  }, [activeTab, coverScreenKey, sweepVisibleCovers])
 
   const loadConfig = useCallback(async() => {
     return getWebDAVConfig().then(config => {
@@ -802,6 +868,9 @@ export default memo(() => {
           const scannedSongs = config.songs ?? []
           setSongs(scannedSongs)
           setScannedAt(config.scannedAt)
+          // 【第 38 轮第 1 条】同 handleScan：扫描结果里的 filterPath 可能已被清成 null（换过目录），
+          // 界面 state 必须跟着同步，否则列表会被旧路径过滤成空
+          setFilterPath(config.filterPath ?? null)
           setScanText('')
           // 【第 27 轮】扫描完立刻自动补在线封面（有上限，见 MAX_PREFETCH_COVERS）
           // 【第 30 轮】同 handleScan：这是「点了一次扫描」，封面也强制刷新一轮
@@ -927,6 +996,10 @@ export default memo(() => {
           const scannedSongs = config.songs ?? []
           setSongs(scannedSongs)
           setScannedAt(config.scannedAt)
+          // 【第 38 轮第 1 条】跟着扫描结果同步筛选路径：换目录后 scanWebDAVSongs 会把指向旧目录的
+          // filterPath 清成 null（新曲库里没有那个目录了），这里不跟着更新的话，界面上的 state
+          // 还停在旧路径 —— filteredSongs 过滤出一份空列表，用户看到的就是「扫描完了什么都没有」。
+          setFilterPath(config.filterPath ?? null)
           setScanText('')
           setActiveTab('list')
           toast(`扫描完成：${config.songs.length} 首`)
