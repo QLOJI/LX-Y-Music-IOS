@@ -29,7 +29,9 @@ import useCoverUrl from '@/utils/hooks/useCoverUrl'
 // 【第 29 轮】再加 invalidateCoverCache：本地封面文件失效 / 行内加载失败时作废内存缓存。
 import { fetchCoverUrl, getCachedCoverUrl, invalidateCoverCache } from '@/core/music/coverUrl'
 // 【第 29 轮】每轮封面巡检开始时清空 local.ts 的「搜过没结果」失败备忘（否则失败一次就永不重试）
-import { clearWebdavCoverMisses } from '@/core/music/local'
+// 【第 36 轮第 3 条】再加 isWebdavCoverKnownMiss：续巡据此区分「确凿没有结果」（长周期兜底重试）
+// 与「这次没搜成 / 超时」（短周期重试），见组件里 prefetchCovers 的 ②③。
+import { clearWebdavCoverMisses, isWebdavCoverKnownMiss } from '@/core/music/local'
 import { webDAVLog } from '@/core/webdavMusic/logger'
 import { useButtonRadius } from '@/utils/buttonRadius'
 import { confirmDialog, createStyle, toast, getRowInfo } from '@/utils/tools'
@@ -79,13 +81,18 @@ type ActiveTab = 'config' | 'list' | 'folders'
 const ITEM_HEIGHT = scaleSizeH(LIST_ITEM_HEIGHT)
 
 // 【第 34 轮第 3 条】列表项**实测行高**：卡片自身高度是 ITEM_HEIGHT，但它下面还挂着
-// marginBottom（styles.songItem 里 = designSpacing.sm），一个单元格占的是两者之和。
-// FlatList 的 getItemLayout 必须回报这个真实值（length 与 offset 同一来源）：
-// 以前 length 只报 ITEM_HEIGHT、比真实值小 designSpacing.sm，逐行累计后 FlatList 算出的
-// 内容总高、可视窗口和滚动偏移全部偏小，配合 removeClippedSubviews 在列表末尾卸载/回挂
-// 单元格时内容高度反复收缩 —— 用户看到的正是「滑到最后继续往上滑时列表抽动、
-// 向上滑的过程中会出现间断的向下滑」（用户第 34 轮第 3 条原话）。
-// 改的是常量来源，不改任何视觉：卡片高度、间距、圆角一概不动。
+// marginBottom（= designSpacing.sm），一个单元格占的是两者之和。FlatList 的
+// getItemLayout 必须回报这个真实值（length 与 offset 同一来源），否则内容总高、
+// 可视窗口和滚动偏移全部偏小，FlatList 在列表末尾反复重算尺寸 —— 用户看到的正是
+// 「滑到最后继续往上滑时列表抽动、向上滑的过程中会出现间断的向下滑」。
+//
+// 【第 36 轮第 4 条】把它坐实到「回报值 == 渲染值」：这两个数现在**只**写在
+// renderSong 的行内 style 里（不经 createStyle 的 trasformeStyle 二次换算）。
+// 以前它们写在 createStyle 的 songItem 里，纵向数值会被 scaleSizeH 再乘一遍：
+// 实渲行高 = scaleSizeH(scaleSizeH(64)) + scaleSizeH(12) = 68 + 12 = 80，
+// 而这里回报 66 + 12 = 78 —— @3x 机型上每行差 2pt，三百行就是 600pt 的累计偏差，
+// 这才是「越滑到后面跳得越明显」的根。行内写法与 OnlineList / MusicList /
+// DuplicateMusic / NavList 等没有此问题的列表完全一致。
 const ITEM_ROW_HEIGHT = ITEM_HEIGHT + designSpacing.sm
 
 const formatTime = (time?: number) => {
@@ -114,6 +121,22 @@ const getFolderName = (folder?: LX.WebDAV.DriveFolder | null) => folder?.path ||
 // 批与批之间等上一批落地，免得曲库里几百首一次性压进 coverUrl.ts 的 4 并发队列，
 // 把行内按需请求排在长队后面。单批 20 首也保证首屏那几首先出图。
 const MAX_PREFETCH_COVERS = 20
+
+// 【第 36 轮第 3 条】巡检跑完还有歌没拿到封面时，续巡的间隔（用户原话：「加载在线封面应该
+// 持续刷新，直到刷新出来为止……保证封面可以 100% 可以刷出」）。
+//   · 短周期：失败里还有「不一定真的没有、可能只是超时 / 被掐断」的歌 —— 尽快再来一遍；
+//   · 长周期：剩下的全是确凿「搜索源里没有这首歌」（多轮组合都试过、记过备忘）——
+//     连点没有意义，只做兜底（网络恢复、源侧补数据之后还能捡回来）。
+// 续巡只重查「还没拿到封面的那一批」，拿到就自然停 —— 不会空转，也不会无限压接口。
+const COVER_FOLLOWUP_SHORT_MS = 15000
+const COVER_FOLLOWUP_LONG_MS = 300000
+
+// 【第 36 轮第 3 条】行内封面加载失败（远程图 404 / file:// 已被系统清掉）后的自愈冷却。
+// 第 29 轮写的是「同一行 + 同一个 URL 只自愈一次」（一次性 Set）：第一次失败后这一行就再也
+// 不重试了，而错误往往是暂时的（CDN 抖一下、图片刚换、网络切换）。改成按 key 记时间戳、
+// 冷却期内不重复触发（防死循环的初衷不变），冷却期外允许再来 —— 配合上面的续巡，
+// 空封面行会被反复照顾到。
+const COVER_ERROR_RETRY_COOLDOWN_MS = 30000
 
 const SongItem = memo(
   ({
@@ -169,6 +192,21 @@ const SongItem = memo(
       <View
         style={{
           ...styles.songItem,
+          // 【第 36 轮第 4 条】行高与下外边距**必须写在行内**（不经 createStyle 二次换算）：
+          // createStyle/trasformeStyle 会把 height / marginBottom 这类纵向数值再过一遍
+          // scaleSizeH（见 utils/tools.ts 的 trasformeStyle），而 ITEM_HEIGHT 本身已经是
+          // scaleSizeH 的结果、designSpacing.sm 是设计原始值 —— 于是「渲染出来的行高」
+          // 与 getItemLayout 回报的 ITEM_ROW_HEIGHT 在 @3x 机型上每行差 2pt：
+          //   height      实渲 scaleSizeH(scaleSizeH(64)) = 68 ≠ 回报 66
+          //   marginBottom 实渲 scaleSizeH(12)           = 12（碰巧撞对）
+          // 逐行累计到末尾就是几十上百 pt 的内容高度偏差 —— FlatList 在列表末尾反复
+          // 重算内容尺寸、夹紧滚动偏移，用户看到的就是「滑到最底部继续往上滑时，
+          // 出现间断的向下跳动」（第 34 轮修过一次，方向对但没修到根上：只改了
+          // getItemLayout 的回报值，没有让实渲值与之相等，两边还是差 2pt/行）。
+          // 行内写法与其它歌曲列表（OnlineList / MusicList / DuplicateMusic / NavList）
+          // 完全一致，那些列表没有这个跳动问题。
+          height: ITEM_HEIGHT,
+          marginBottom: designSpacing.sm,
           width: rowWidth,
           // 【第 25 轮】卡片底色与边框**任何状态**都受「按钮透明度」控制。
           // 此前只有播放中的那一行套了 applyOpacity，未播放行用的是不透明的
@@ -370,22 +408,53 @@ export default memo(() => {
   //      重新选目录后的新歌单整份挡掉 —— 图七/图八的「歌单切了封面不刷新」）。另外每次从别的
   //      页面切进本页都会重新 loadConfig 一次 ⇒ 随即按列表顺序从上到下起一轮巡检（图六）。
   // 请求量仍由 coverUrl.ts 的 4 并发全局队列 + local.ts 的 2 并发搜索闸 + 这里的分批收口。
+  //
+  // 【第 36 轮第 3 条】巡检升级为「不会停的巡检」（用户原话：「加载在线封面应该持续刷新，
+  // 直到刷新出来为止，目前存在越到后面的歌，封面越刷不出来的情况，然后不论是刷新、扫描、
+  // 还是重新进入列表都不会再刷了，请修复这个问题，保证封面可以 100% 可以刷出」）。
+  // 两处病根：
+  //   ① 轮次作废把在飞的巡检整轮掐死：以前 prefetchCovers 一进来就 coverSweepToken +1，
+  //      旧的一轮在下一个批次边界 `if (coverSweepToken.current !== token) return` 整轮退出；
+  //      而新的一轮又是从列表头部重新来过 —— 每次进列表 / 下拉 / 扫描，进度都从头开始，
+  //      靠后的歌永远排不到（「越到后面的歌，封面越刷不出来」）。
+  //      【修】去掉整轮作废：结果落地按歌曲 id 写回（setSongs 的 map 对不在当前列表的 id
+  //      天然是空操作，不会把旧列表的封面写进新列表）；重复请求由 fetchCoverUrl 的
+  //      「在飞去重 + 内存缓存」合并，不会放大并发。
+  //   ② 一轮跑完就彻底停手：失败（超时 / 被掐断 / 源侧一时抽风）没有第二次机会，
+  //      用户不动手就永远停在灰占位。
+  //      【修】巡检跑完还有没拿到封面的歌就自己安排续巡（见下面的 follow-up）：
+  //      可能只是暂时失败的短周期重试（15 秒），确凿「搜索源没有这首歌」的长周期兜底
+  //      （5 分钟）。只要页面上还有空封面这条链子就不会断（「持续刷新，直到刷新出来为止」）；
+  //      全部拿到后自然停止，不空转。
+  // 另：行内 onError 的单曲自愈也从「一次性」改成「带冷却的持久重试」（见 handleCoverError）。
   const prefetchedCoverIds = useRef(new Set<string>())
-  // 巡检轮次号：每轮 +1。上一轮的异步结果落地前先核对轮次，避免把上一份列表的封面写进新列表。
-  const coverSweepToken = useRef(0)
   // 「刷新」= 连封面是否最新都重查。用 ref 传递而不是给 prefetchCovers 加第二个参数：
   // 四个调用点的文本保持不变（第 27 轮契约按字面匹配调用点）。
   const forceCoverRefresh = useRef(false)
+  // 【第 36 轮第 3 条】续巡定时器（同一时刻只挂一个：后安排的会顶掉前一个）。
+  const coverFollowupTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  const prefetchCovers = useCallback((list: LX.WebDAV.MusicInfo[]) => {
+  const prefetchCovers = useCallback((list: LX.WebDAV.MusicInfo[], options?: { auto?: boolean }) => {
+    const isAuto = options?.auto === true
     const isRefresh = forceCoverRefresh.current
     forceCoverRefresh.current = false
-    // 每轮巡检都是新的一轮：上一轮试过的 id、上一轮确认查不到的歌全部作废，重新查一遍。
-    prefetchedCoverIds.current.clear()
-    clearWebdavCoverMisses()
-    const token = ++coverSweepToken.current
+    // 新一轮巡检安排上了，旧续巡作废：它只负责「还没拿到封面的那批」，而这次会把整表重看一遍。
+    if (coverFollowupTimer.current) {
+      clearTimeout(coverFollowupTimer.current)
+      coverFollowupTimer.current = null
+    }
+    if (!isAuto) {
+      // 用户触发的巡检是「新的一轮」：上一轮试过的 id、上一轮确认查不到的歌全部作废，重新查一遍。
+      prefetchedCoverIds.current.clear()
+      clearWebdavCoverMisses()
+    } else {
+      // 【第 36 轮第 3 条】续巡只重查「还没拿到封面的那一批」：先把这些 id 从已试名单里摘掉，
+      // 否则 ① 的 has() 会把它们整批跳过 —— 那正是「再也不重试」的老毛病换个地方复现。
+      // 续巡**不清**「搜过没结果」的备忘：那是确凿结论的记录，续巡的节奏靠它来分级（长短周期）。
+      for (const song of list) prefetchedCoverIds.current.delete(song.id)
+    }
 
-    const sweep = async() => {
+    const sweep = async(): Promise<LX.WebDAV.MusicInfo[]> => {
       // ① 不用联网的先做：校验 file:// 封面文件是否还在（被系统清掉的必须当「缺失」）
       const queue: LX.WebDAV.MusicInfo[] = []
       for (const rawSong of list) {
@@ -417,27 +486,25 @@ export default memo(() => {
         queue.push(song)
       }
 
-      // ② 分批推进整份列表
+      // ② 分批推进本批列表，并记下这一遍仍然没拿到封面的歌（续巡的下一批）
+      const failed: LX.WebDAV.MusicInfo[] = []
       for (let i = 0; i < queue.length; i += MAX_PREFETCH_COVERS) {
-        if (coverSweepToken.current !== token) return
-        const tasks: Array<Promise<void>> = []
-        let started = 0
-        for (const song of queue.slice(i, i + MAX_PREFETCH_COVERS)) {
-          if (started >= MAX_PREFETCH_COVERS) break
-          started++
+        const tasks = queue.slice(i, i + MAX_PREFETCH_COVERS).map(song =>
           // fetchCoverUrl 内部已 catch（失败返回空串），这里再把拿到手的封面推回列表状态：
           // 即使 meta 落盘那一步失败（updateWebDAVMusicMeta 抛错时不会广播 webdavPicUpdated），
           // 已经渲染出来的行也能立刻换图。
-          tasks.push(fetchCoverUrl(song, { isRefresh }).then(url => {
-            if (!url) return
-            if (coverSweepToken.current !== token) return
+          fetchCoverUrl(song, { isRefresh }).then((url) => {
+            if (!url) {
+              failed.push(song)
+              return
+            }
             setSongs(prevSongs => prevSongs.map(item =>
               item.id === song.id
                 ? { ...item, meta: { ...item.meta, picUrl: url } }
                 : item,
             ))
-          }))
-        }
+          }),
+        )
         // 【第 34 轮第 3 条】原来是 `await Promise.all(tasks)`：整批 20 首里只要有一首的
         // Promise 永不 settle（音源 SDK 卡在底层 HTTP 上，见 core/music/coverUrl.ts 的超时说明），
         // 这一批就永远等不到返回 —— 循环不再往下走，**后面所有歌曲的封面全部不再加载**，
@@ -446,9 +513,21 @@ export default memo(() => {
         // 个别失败 / 卡死（超时后按空串落地）也照样推进下一批。
         await Promise.allSettled(tasks)
       }
+      return failed
     }
 
-    void sweep()
+    void sweep().then((failed) => {
+      if (!failed.length) return
+      // 【第 36 轮第 3 条】续巡：还有歌没拿到封面就再来一遍，直到刷出来为止。
+      // 节奏按失败性质分档（见文件上方 COVER_FOLLOWUP_* 的说明）：还可能救得回来的短周期，
+      // 确凿没有结果的只留长周期兜底。failed 里的歌都不带封面，续巡的 ① 只做
+      // 「file:// 探活 + 已试名单」两道轻检查，不会重新扫全表。
+      const hasRetryable = failed.some(song => !isWebdavCoverKnownMiss(song))
+      coverFollowupTimer.current = setTimeout(() => {
+        coverFollowupTimer.current = null
+        prefetchCovers(failed, { auto: true })
+      }, hasRetryable ? COVER_FOLLOWUP_SHORT_MS : COVER_FOLLOWUP_LONG_MS)
+    })
   }, [])
 
   const loadConfig = useCallback(async() => {
@@ -647,13 +726,19 @@ export default memo(() => {
   // 过程中被行内失败触发时，会把**正在飞的那一轮**判成过期而整体中止 —— 一首歌的封面
   // 加载失败就能掐死后面所有歌的封面补全（用户这一轮报的「WebDAV 还是存在不自动加载
   // 在线封面」的另一半成因）。后者是加法式单曲补齐，不碰轮次、不清别人进度。
-  // 同一行 + 同一个 URL 只自愈一次：否则「换来的封面又挂 → 再失败 → 再换」会变成死循环。
-  const coverErrorRetriedKeys = useRef(new Set<string>())
+  // 【第 36 轮第 3 条】同一行 + 同一个 URL 的自愈从「一次性」改成「带冷却的持久重试」：
+  // 第 29 轮写成一次性 Set（首次失败后这一行再也不会重试），而封面加载失败往往是暂时的
+  // ——CDN 抖一下、图片刚换、网络刚切换，一次失败就把这一行判死，表现就是用户说的
+  // 「刷不出来，然后不论是刷新、扫描、还是重新进入列表都不会再刷了」。
+  // 保留「防死循环」的初衷：同一个 key 在冷却期内只触发一次自愈。
+  const coverErrorRetriedAt = useRef(new Map<string, number>())
   const handleCoverError = useCallback((song: LX.WebDAV.MusicInfo, url: string) => {
     const key = `${song.id}|${url}`
-    if (coverErrorRetriedKeys.current.has(key)) return
-    coverErrorRetriedKeys.current.add(key)
-    webDAVLog.warn('handleCoverError: cover load failed, retrying once', { musicId: song.id, url })
+    const lastRetryAt = coverErrorRetriedAt.current.get(key) ?? 0
+    const now = Date.now()
+    if (lastRetryAt && now - lastRetryAt < COVER_ERROR_RETRY_COOLDOWN_MS) return
+    coverErrorRetriedAt.current.set(key, now)
+    webDAVLog.warn('handleCoverError: cover load failed, retrying', { musicId: song.id, url })
     // 行内状态先清成空占位（行内 useCoverUrl 才会重新走 fetchCoverUrl）
     setSongs(prevSongs => prevSongs.map(item =>
       item.id === song.id ? { ...item, meta: { ...item.meta, picUrl: '' } } : item,
@@ -772,6 +857,16 @@ export default memo(() => {
   useEffect(() => {
     loadConfig()
   }, [loadConfig])
+
+  // 【第 36 轮第 3 条】卸载时把封面续巡的定时器收掉。
+  // 本页是惰性常驻页：切到别的 Tab 不会卸载（续巡照跑，正是用户要的「持续刷新」）；
+  // 真卸载（页面重建、退出）时不能让一个没人看的定时器继续按时辰去搜封面。
+  useEffect(() => () => {
+    if (coverFollowupTimer.current) {
+      clearTimeout(coverFollowupTimer.current)
+      coverFollowupTimer.current = null
+    }
+  }, [])
 
   // 【第 30 轮·图六】每次从别的页面切进 WebDAV 歌单，都重新读一次配置并立刻按列表顺序从上到
   // 下起一轮封面巡检。本页是 useHomeLazyPage 常驻挂载（切走不卸载）：只有上面那条挂载 effect
@@ -1396,7 +1491,10 @@ const styles = createStyle({
     borderRadius: 4,
   },
   songItem: {
-    height: ITEM_HEIGHT,
+    // 【第 36 轮第 4 条】height / marginBottom 已移到行内 style（见 renderSong 的注释）：
+    // 这里是 createStyle 的产物，纵向数值会被 trasformeStyle 再乘一次 scaleSizeH，
+    // 与 getItemLayout 回报的 ITEM_ROW_HEIGHT 对不上（@3x 上 2pt/行），是列表末尾
+    // 向下跳动的根因。行内写死即「渲染值 == 回报值」，两边同源。
     flexDirection: 'row',
     flexWrap: 'nowrap',
     alignItems: 'center',
@@ -1404,7 +1502,6 @@ const styles = createStyle({
     // 歌单详情 / 歌单」各处同一竖线（行内留 16 + 按钮右 margin 8）
     paddingLeft: designSpacing.md,
     paddingRight: designSpacing.md,
-    marginBottom: designSpacing.sm,
     borderWidth: 1,
     borderRadius: designRadius.lg,
   },
