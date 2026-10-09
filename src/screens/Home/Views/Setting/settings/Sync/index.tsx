@@ -297,20 +297,25 @@ export default memo(() => {
             `disabled={!isEnableWebdav || isXxx}`。而 `sync.webdav.enable` 默认是 false ——
             于是「启用 WebDAV 同步」没勾时：六个按钮全部无响应、没有加载中文字、没有任何提示
             （用户原话「按钮点击后，上面文字没有显示加载中的情况……点击后没有任何反应」）。
-            现在按钮始终可点，真正的门交给各处理函数：缺配置就明说缺什么，未启用就提示去启用
-            （core/sync/webdavSync.ts 里每个动作都会给出具体原因）。视觉上也不再置灰——半透明
-            会被读成「坏了」。（勾选项那一块的 0.5 保留：那几个开关确实是跟着启用状态走。） */}
+            第 33 轮当时把门控整个拿掉、改成「始终可点 + 各处理函数自己给原因」。
+            【第 39 轮第 3 条】用户把口径改回**显式禁用**：「如果未勾选启用WebDAV同步选项，
+            下方的测试连接、立即同步歌单、上传设置与音源、下载设置与音源、上传歌单、下载歌单按钮
+            无法点击，只有勾选了选项，下面按钮才能点击」。现在六个按钮统一
+            `disabled={!isEnableWebdav || isXxx}`：未启用就是灰的、按不动；勾上之后照旧
+            由各自的忙碌态（测试中/同步中/上传中/下载中）暂时禁用。
+            区块外的 Credentials 输入框（地址/账号/密码/路径）**不跟着禁用** —— 必须先填好
+            才能开「测试连接」、也才能把同步打开（见下方那段的说明）。 */}
         <View>
           {/* 【第 23 轮】六个动作按钮两列网格对齐：每格 flexBasis 45% + flexGrow 1（同设置页
               两列勾选网格的单元格几何），两格等宽 → 左右缘全部对齐；block 去掉并排右外边距。 */}
           <View style={styles.btnRow}>
             <View style={styles.btnCell}>
-              <Button block onPress={handleTestConnection} disabled={isTesting}>
+              <Button block onPress={handleTestConnection} disabled={!isEnableWebdav || isTesting}>
                 {isTesting ? '测试中...' : '测试连接'}
               </Button>
             </View>
             <View style={styles.btnCell}>
-              <Button block onPress={handleSyncNow} disabled={isSyncing}>
+              <Button block onPress={handleSyncNow} disabled={!isEnableWebdav || isSyncing}>
                 {isSyncing ? '同步中...' : '立即同步歌单'}
               </Button>
             </View>
@@ -318,12 +323,12 @@ export default memo(() => {
 
           <View style={styles.btnRow}>
             <View style={styles.btnCell}>
-              <Button block onPress={handleUpload} disabled={isUploading}>
+              <Button block onPress={handleUpload} disabled={!isEnableWebdav || isUploading}>
                 {isUploading ? '上传中...' : '上传设置与音源'}
               </Button>
             </View>
             <View style={styles.btnCell}>
-              <Button block onPress={handleDownload} disabled={isDownloading}>
+              <Button block onPress={handleDownload} disabled={!isEnableWebdav || isDownloading}>
                 {isDownloading ? '下载中...' : '下载设置与音源'}
               </Button>
             </View>
@@ -331,12 +336,12 @@ export default memo(() => {
 
           <View style={styles.btnRow}>
             <View style={styles.btnCell}>
-              <Button block onPress={handleUploadLists} disabled={isUploadingLists}>
+              <Button block onPress={handleUploadLists} disabled={!isEnableWebdav || isUploadingLists}>
                 {isUploadingLists ? '上传中...' : '上传歌单'}
               </Button>
             </View>
             <View style={styles.btnCell}>
-              <Button block onPress={handleDownloadLists} disabled={isDownloadingLists}>
+              <Button block onPress={handleDownloadLists} disabled={!isEnableWebdav || isDownloadingLists}>
                 {isDownloadingLists ? '下载中...' : '下载歌单'}
               </Button>
             </View>
