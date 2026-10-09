@@ -6055,6 +6055,26 @@ static BOOL LXTabBarManualExpanded = NO;
 static NSNotificationName const LXTabBarCollapseChangedNotification = @"LXTabBarCollapseChanged";
 static void LXSetTabBarCollapsed(BOOL collapsed);
 
+// 【第 41 轮】遥控命令「不许静默丢弃」暂存区。
+//
+// 用户原话：「锁屏界面和灵动岛界面的上一首、下一首、播放/暂停按钮点击后还是无法控制，
+// 特别是播放一段时间后，上面的按钮就不管作用了」。
+// 用户按下的每一个锁屏 / 灵动岛按键都必须有下落：旧实现在 handleRemoteCommandNotification:
+// 开头就有一句「监听者没挂上就 return」，JS 监听者还没就位时会把用户的按键**直接吞掉**——
+// 这是所有「点了没反应」里最难查的一种（原生侧看不到任何异常，JS 侧连事件都没收到）。
+// 现在改成：监听者不在就暂存，startObserving（JS 第一次 addListener）时按序补投。
+// 上限 8 条：补投只对「刚发生的那几下」有意义，堆多了在挂载瞬间连放十几下才是灾难。
+static NSMutableArray<NSDictionary *> *LXPendingRemoteCommandBodies = nil;
+static const NSUInteger LXPendingRemoteCommandLimit = 8;
+static void LXEnqueuePendingRemoteCommandBody(NSDictionary *body) {
+  if (body == nil) return;
+  if (LXPendingRemoteCommandBodies == nil) LXPendingRemoteCommandBodies = [NSMutableArray array];
+  [LXPendingRemoteCommandBodies addObject:body];
+  while (LXPendingRemoteCommandBodies.count > LXPendingRemoteCommandLimit) {
+    [LXPendingRemoteCommandBodies removeObjectAtIndex:0];
+  }
+}
+
 @interface UtilsModule : RCTEventEmitter<RCTBridgeModule>
 @property (nonatomic, assign) BOOL hasListeners;
 @end
@@ -6144,6 +6164,15 @@ RCT_EXPORT_MODULE();
 
 - (void)startObserving {
   self.hasListeners = YES;
+  // 【第 41 轮】把「监听者不在时」暂存的遥控命令按序补投（见 LXPendingRemoteCommandBodies
+  // 的说明）。用户按下的键不许凭空消失：这里补投掉，否则锁屏 / 灵动岛的按键就是「点了没反应」。
+  // 只补投 remote-command：其它事件都是状态广播（重播无意义），按键是用户的**意图**。
+  if (LXPendingRemoteCommandBodies.count == 0) return;
+  NSArray<NSDictionary *> *pending = [LXPendingRemoteCommandBodies copy];
+  [LXPendingRemoteCommandBodies removeAllObjects];
+  for (NSDictionary *body in pending) {
+    [self sendEventWithName:@"remote-command" body:body];
+  }
 }
 
 - (void)stopObserving {
@@ -6234,14 +6263,20 @@ RCT_EXPORT_MODULE();
 }
 
 - (void)handleRemoteCommandNotification:(NSNotification *)notification {
-  if (!self.hasListeners) return;
-
   NSDictionary *userInfo = [notification.userInfo isKindOfClass:[NSDictionary class]] ? notification.userInfo : @{};
   NSString *command = [userInfo[@"command"] isKindOfClass:[NSString class]] ? userInfo[@"command"] : @"";
   if (!command.length) return;
 
   NSMutableDictionary *body = [NSMutableDictionary dictionaryWithDictionary:userInfo];
   body[@"command"] = command;
+
+  // 【第 41 轮】监听者还没挂上时**不许把用户的按键丢掉**（旧实现在这里直接 return 丢掉，
+  // 正是「点了没反应」里最难查的一种：原生侧一切正常，JS 侧连事件都没收到）。
+  // 暂存下来，startObserving 时按序补投；监听者在就直接发。
+  if (!self.hasListeners) {
+    LXEnqueuePendingRemoteCommandBody(body);
+    return;
+  }
 
   dispatch_async(dispatch_get_main_queue(), ^{
     [self sendEventWithName:@"remote-command" body:body];
