@@ -90,7 +90,10 @@ const styles = createStyle({
   },
 })
 
-const ListModeModal = () => {
+// 【第 42 轮第 1 条】两个问答面板改为具名导出：主树兜底面（SyncModeAskHost）要复用
+// **同一套**按钮与文案 —— 复制一份必然走样（第 39/40 轮「一比一」的教训），
+// 而且以后改文案只需要改一处。
+export const ListModeModal = () => {
   const theme = useTheme()
   const buttonOpacity = useSettingValue('theme.buttonOpacity')
   const buttonRadius = useButtonRadius()
@@ -248,7 +251,7 @@ const ListModeModal = () => {
   )
 }
 
-const DislikeModeModal = () => {
+export const DislikeModeModal = () => {
   const theme = useTheme()
   const buttonOpacity = useSettingValue('theme.buttonOpacity')
   const buttonRadius = useButtonRadius()

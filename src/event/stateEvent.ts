@@ -151,6 +151,17 @@ export class StateEvent extends Event {
     this.emit('syncStatusUpdated', status)
   }
 
+  /**
+   * 【第 42 轮第 1 条】「同步方式」问句切换到**主树兜底面**（Home 视图树里的 SyncModeAskHost）。
+   *
+   * 与 syncStatusUpdated 不同，这条事件专门驱动渲染：兜底面在 Home 树里常驻挂载、默认返回 null，
+   * 收到 true 才画出来。同步状态行那套文案是给「下面那块状态栏」看的，不能拿它当呈现开关
+   * （它每次同步心跳都在变）。
+   */
+  syncModeAskFallbackUpdated(visible: boolean) {
+    this.emit('syncModeAskFallbackUpdated', visible)
+  }
+
   versionInfoUpdated(info: VersionState['versionInfo']) {
     this.emit('versionInfoUpdated', info)
   }
