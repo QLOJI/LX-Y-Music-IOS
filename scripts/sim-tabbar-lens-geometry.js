@@ -345,7 +345,7 @@ const runSourceInvariants = () => {
   // 的样式，功能和一起一样，只是多了这个样式。」
   push('C16 水珠几何：边长 = kLGDropletScale × 栏高 的正方形 bounds，中心锁槽心（纵向溢出栏体上下各 (1.45−1)/2×栏高）',
     host.includes('static const CGFloat kLGDropletScale = 1.45') &&
-    /if \(_droplet && height > 0\) \{\s*CGFloat side = \(height \* kLGDropletScale\)\.rounded\(\);\s*_lens\.bounds = CGRectMake\(0, 0, side, side\);\s*_lens\.center = CGPointMake\(_x, height \/ 2\.0\);/.test(host))
+    /if \(_droplet && height > 0\) \{[\s\S]{0,300}?CGFloat side = round\(height \* kLGDropletScale\);\s*_lens\.bounds = CGRectMake\(0, 0, side, side\);\s*_lens\.center = CGPointMake\(_x, height \/ 2\.0\);/.test(host))
   push('C17 水珠圆角必须走胶囊几何极限（override = -1 ⇒ 正方形 bounds 下 min(w,h)/2 = 正圆；沿用栏体圆角 28 会画成圆角方形，不是水珠）',
     /if \(_droplet\) \{[\s\S]{0,300}?setLensCornerRadius:-1\]/.test(host) &&
     lens.includes('cornerRadiusOverride >= 0'))
@@ -365,6 +365,13 @@ const runSourceInvariants = () => {
     /_glassView\.layer\.cornerRadius = self\.layer\.cornerRadius/.test(host) &&
     host.includes('container.clipsToBounds = YES') &&
     host.includes('[backing setCaptureExclusionView:self.superview]'))
+  // 【第 37 轮补丁】取整必须走 C 函数：本文件曾写成 Swift 风格的 (…).rounded()，
+  // ObjC++ 里 double 不是结构/类、没有成员函数，CI（LiquidGlassKit 目标 CompileC）
+  // 实锤编译失败。这条同时钉两件事：正确的 round() 调用在场 + 全文件零 .rounded() 残留
+  // （Swift 侧（LiquidLensView.swift）的 .rounded() 是合法 Swift 语法，不受本条约束）。
+  push('C22 原生宿主取整必须用 C 函数 round()（Swift 风格 (x).rounded() 在 ObjC++ 编不过 —— 第 37 轮 CI 实锤）；全文件不许再有 .rounded() 残留',
+    /\bround\(height \* kLGDropletScale\)/.test(host) &&
+    !/\.rounded\s*\(/.test(host))
 
   // ---------------- D. 数值模型 ----------------
   push('D0 设计令牌可读（lg / tabBarBaseHeight / glass 三个数缺失则后面的几何断言全部失真）',
@@ -793,6 +800,11 @@ const tamper = [
     label: 'ModernTabBar 栏体退回裁剪（水珠被上下削平成宽胶囊）',
     file: 'tabBar',
     mutate: (s) => s.replace("    overflow: 'visible',\n", "    overflow: 'hidden',\n"),
+  },
+  {
+    label: '宿主取整退回 Swift 风格 .rounded()（ObjC++ 编不过 —— 第 37 轮 CI 实锤）',
+    file: 'hostMm',
+    mutate: (s) => s.replace('round(height * kLGDropletScale)', '(height * kLGDropletScale).rounded()'),
   },
 ]
 
