@@ -898,6 +898,37 @@ static void LXApplyNowPlayingInfo(void) {
   }
   @synchronized (LXLyricLock()) {
     MPNowPlayingInfoCenter *center = [MPNowPlayingInfoCenter defaultCenter];
+
+    // 【第 44 轮】发布前把「速率」钉在播放态上。
+    // 现场（用户第 44 轮的锁屏截图）：卡片显示 ▶ 并且那个 ▶ 是**灰的**，点了一点反应都没有。
+    //   · 卡片上显示 ▶ 还是 ⏸，系统看的是这条 info 里的 PlaybackRate（0 = 没在播），
+    //     进度条也按它外推（截图里进度冻结在 0:10、右侧 -3:16 不再走，就是 rate 被写成了 0）；
+    //   · 六个命令的 enabled，看的是 LXNowPlayingState（唯一写入口下面 LXSyncRemoteCommandAvailability
+    //     刚同步过）。iOS 对 enabled = NO 的命令**不投递**。
+    //   ⇒ 一旦「info 里的速率」与「LXNowPlayingState」分叉，就会出现「卡片画着 ▶（用户以为能按）
+    //     而 playCommand 已被关掉」的灰按钮，点击凭空消失；反过来（非播放态却带着正速率）
+    //     会画出 ⏸ 而 pauseCommand 是关的，同样点不动。
+    //   这条速率在三个写者之间漏过：播放态发布（LXSetNowPlayingPlaybackState）/
+    //   元数据发布（LXSetNowPlayingInfo 里 JS 传的 playbackRate，取值是 JS 的 playerState.isPlay）/
+    //   歌词步进兜底（LXNowPlayingLyricStep 内）。只要有一次元数据发布带着「JS 认为没在播」的 0
+    //   落进缓存（换歌 / 起播瞬间 JS 的 isPlay 还没翻过来就会发生），缓存速率就与原生播放态分叉。
+    //   修法与第 43 轮同一原则（显示态与启停态必须同源同刻）：谁先谁后都不影响 ——
+    //   发布前的最后一刻按 LXNowPlayingState 归一，与下面的 playbackState / enabled 同源：
+    //     播放中 ⇒ 速率必须 > 0（已有正速率 = 倍速，原样保留；只有 0 / 缺失才补 1）；
+    //     非播放 ⇒ 速率必须为 0（只纠正非 0 的冲突值，不新增键）。
+    if (LXNowPlayingInfoCache.count) {
+      NSNumber *cachedRate = [LXNowPlayingInfoCache[MPNowPlayingInfoPropertyPlaybackRate] isKindOfClass:[NSNumber class]]
+        ? LXNowPlayingInfoCache[MPNowPlayingInfoPropertyPlaybackRate]
+        : nil;
+      if (LXNowPlayingState == MPNowPlayingPlaybackStatePlaying) {
+        if (cachedRate == nil || cachedRate.doubleValue <= 0) {
+          LXNowPlayingInfoCache[MPNowPlayingInfoPropertyPlaybackRate] = @1;
+        }
+      } else if (cachedRate != nil && cachedRate.doubleValue != 0) {
+        LXNowPlayingInfoCache[MPNowPlayingInfoPropertyPlaybackRate] = @0;
+      }
+    }
+
     center.nowPlayingInfo = LXNowPlayingInfoCache.count ? [LXNowPlayingInfoCache copy] : nil;
     if (@available(iOS 13.0, *)) {
       center.playbackState = LXNowPlayingState;
