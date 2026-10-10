@@ -93,10 +93,13 @@ export default forwardRef<MultipleModeBarType, MultipleModeBarProps>(
       () => ({
         ...styles.container,
         // backgroundColor: theme['c-content-background'],
-        borderBottomColor: theme['c-border-background'],
+        // 【第 46 轮】底边框同样跟「主题设置 → 按钮透明度」走。这条栏与返回栏/搜索栏共用
+        // 顶部同一个槽位、自己不带底色（底色那行本来就被注释掉，这里不动它），所以能受
+        // 设置影响的就只有这条分隔线；不接的话整条栏对那个设置毫无反应。
+        borderBottomColor: applyOpacity(theme['c-border-background'], buttonOpacity),
         opacity: visibleBar ? animFade : 0, // Bind opacity to animated value
       }),
-      [animFade, theme, visibleBar],
+      [animFade, theme, visibleBar, buttonOpacity],
     )
 
     const handleSelectAll = useCallback(() => {

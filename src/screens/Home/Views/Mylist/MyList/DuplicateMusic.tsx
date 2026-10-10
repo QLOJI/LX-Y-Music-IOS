@@ -80,8 +80,9 @@ const ListItem = memo(
           ...styles.listItem,
           height: ITEM_HEIGHT,
           // 选中态底色随「按钮透明度」淡出：只改颜色 alpha，不用容器 opacity（会把文字一起淡掉）
+          // 【第 46 轮】改用专门的歌曲行语义 token（比 c-primary-background-hover 深一档）
           backgroundColor: isSelected
-            ? applyOpacity(theme['c-primary-background-hover'], buttonOpacity)
+            ? applyOpacity(theme['c-list-item-background-selected'], buttonOpacity)
             : 'rgba(0,0,0,0)',
         }}
         onStartShouldSetResponder={() => true}

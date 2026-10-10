@@ -214,8 +214,10 @@ const SongItem = memo(
           // theme['c-content-background'] —— 于是同一个列表里只有正在播的那张卡片是半透明的
           // （用户：WebDAV 的歌曲栏背景透明度没有受到控制，点击播放后才有透明度）。
           // 只改颜色 alpha，不用容器 style.opacity：否则文字与图标会跟着一起淡。
+          // 【第 46 轮】播放中行改用专门的歌曲行语义 token（比 c-primary-background-hover
+          // 深一档）；未播放行不动。
           backgroundColor: applyOpacity(
-            isPlaying ? theme['c-primary-background-hover'] : theme['c-content-background'],
+            isPlaying ? theme['c-list-item-background-selected'] : theme['c-content-background'],
             buttonOpacity,
           ),
           borderColor: applyOpacity(

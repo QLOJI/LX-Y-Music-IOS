@@ -120,8 +120,10 @@ const SongRow = memo(
           // 设置 —— 下载 / 本地两栏每首歌都像贴着一块实心底板，点下去进入 isPlaying 态才变成
           // 跟随透明度的高亮底，用户看到的「点击后才正常」就是这个差。现在与页头「批量管理 /
           // 刷新」按钮、播放中/选中行同一口径：同一个 c-primary-background token + applyOpacity。
+          // 【第 46 轮】播放中/选中行走专门的歌曲行语义 token（比 c-primary-background-hover
+          // 深一档）；未播放/未选中行不动——它本来就是浅底，加深的是「选中/播放中」这一档。
           backgroundColor: isPlaying || selected
-            ? applyOpacity(theme['c-primary-background-hover'], buttonOpacity)
+            ? applyOpacity(theme['c-list-item-background-selected'], buttonOpacity)
             : applyOpacity(theme['c-primary-background'], buttonOpacity),
           borderColor: isPlaying || selected
             ? theme['c-primary-background-active']

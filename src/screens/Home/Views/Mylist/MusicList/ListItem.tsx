@@ -152,7 +152,9 @@ const ListItem = memo(
           width: rowInfo.rowWidth,
           height: ITEM_HEIGHT,
           // 选中行高亮底色：只改颜色 alpha 随「按钮透明度」淡出，不用容器 opacity——否则文字图标会一起变淡
-          backgroundColor: isSelected ? applyOpacity(theme['c-primary-background-hover'], buttonOpacity) : 'rgba(0,0,0,0)',
+          // 【第 46 轮】底色改用专门的歌曲行语义 token（比原先的 c-primary-background-hover 深一档），
+          // 后者还兼着评论输入框等非行面；见 theme/themes/index.ts。
+          backgroundColor: isSelected ? applyOpacity(theme['c-list-item-background-selected'], buttonOpacity) : 'rgba(0,0,0,0)',
           opacity: isSupported ? 1 : 0.5,
         }}
       >
