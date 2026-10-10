@@ -1,11 +1,18 @@
 /* eslint-disable @typescript-eslint/no-misused-promises */
 import TrackPlayer, { Event as TPEvent } from 'react-native-track-player'
 import { AppState, Platform } from 'react-native'
-// 切歌（playNext/playPrev）与 markTimeoutExitInteraction 已随重复监听一并移出本文件：
-// 现在只由唯一入口 remoteCommand.ts 调用（第 20 轮·遥控命令单一通路）。
-import { pause, play } from '@/core/player/player'
+// 【第 49 轮·双通路单一漏斗（2026-10-10）】切歌（playNext/playPrev）与 markTimeoutExitInteraction
+// 重新回到本文件：锁屏 / 灵动岛的遥控命令现在统一进本文件的 dispatchRemoteCommand 漏斗。
+// 第 20 轮曾把 RNTP 侧的五段监听连同这两个调用一并删掉（当时的理由是「一次按键跳两首」），
+// 但用户第 43~49 轮连续复现「锁屏/灵动岛按键没反应、进度条拖不动」，而参考工程
+// （lx-music-mobile-ios-adaptation）两条通路都在、锁屏一切正常 —— 第 49 轮按用户授权
+// 1:1 恢复这条通路；两条通路并存时的重复投递由漏斗的窗口去重兜住（见漏斗注释）。
+import { pause, play, playNext, playPrev, togglePlay } from '@/core/player/player'
+// 【第 49 轮】任何遥控命令（两条通路进来的都算）都要续期「超时退出」的交互时间
+import { markTimeoutExitInteraction } from '@/core/player/timeoutExit'
 // 【第 22 轮】用户手动暂停闸门：置位后所有自动续播入口都不许出声（见 core/player/manualPause.ts）
-import { clearManualPause, isManualPause } from '@/core/player/manualPause'
+// 【第 49 轮】遥控漏斗的 pause 分支落闸（markManualPause）—— remoteCommand.ts 已瘦身为纯适配器
+import { clearManualPause, isManualPause, markManualPause } from '@/core/player/manualPause'
 import { initUnifiedPlayerController } from './controller'
 import { exitApp } from '@/core/common'
 import playerState from '@/store/player/state'
@@ -110,7 +117,8 @@ const clearResumeTimer = () => {
   }
 }
 
-// 【第 20 轮·遥控命令单一通路（2026-10-03）】导出给唯一入口 remoteCommand.ts 调用：
+// 【第 20 轮·遥控命令单一通路（2026-10-03）】导出给遥控命令漏斗调用（第 49 轮起是本文件的
+// dispatchRemoteCommand；在此之前是 remoteCommand.ts）：
 // 用户手动播放/暂停（锁屏 / 控制中心 / 车机方向盘）后必须现场作废「被抢占自动续播」
 // 的待恢复标记，否则用户手动暂停后仍会被 scheduleAutoResume 兜底逻辑重新拉起。
 // 不能改挂到 app_event 'pause' 上：缓冲时的暂停也发那个事件，会把标记误清。
@@ -124,6 +132,110 @@ export const cancelResumePending = () => {
   // 【第 31 轮·追加】任何「用户意图 / 播放状态明确」的动作都会走到这里（播放、手动暂停、
   // 切歌、停止、遥控、自然播完）：一并撤销短暂系统音窗口里的待决暂停。
   clearInterruptionPauseTimer()
+}
+
+// —— 第 49 轮·漏斗去重（双通路并存）——
+// 窗口取值依据：真实连按间隔 ≥100ms，远大于一次命令的处理时间；被丢弃的重复项
+// **不刷新**时间戳（否则持续投递会把窗口无限延长，把之后用户的正常连按一并吞掉）。
+// play / pause / toggle 共用一条合成的「播放暂停」键，两条通路给的命令名可能不同
+//（原生侧固定发 toggle，RNTP 侧按状态发 play 或 pause），所以按命令名各自计时即可 ——
+// 不同名命令本就该各执行一次，不会互相吞。
+const ACTION_DEDUP_WINDOW_MS = 150
+const SKIP_DEDUP_WINDOW_MS = 100
+const SEEK_DEDUP_WINDOW_MS = 100
+const SEEK_DEDUP_POSITION_TOLERANCE = 0.5
+
+const lastActionCommandAt: Record<'play' | 'pause' | 'toggle', number> = { play: 0, pause: 0, toggle: 0 }
+const lastSkipCommandAt: Record<'next' | 'previous', number> = { next: 0, previous: 0 }
+const lastSeek = { at: 0, position: Number.NaN }
+
+// 返回 true = 重复投递，丢弃。
+const shouldSuppressActionCommand = (command: 'play' | 'pause' | 'toggle') => {
+  const now = Date.now()
+  if (now - lastActionCommandAt[command] < ACTION_DEDUP_WINDOW_MS) return true
+  lastActionCommandAt[command] = now
+  return false
+}
+
+// 返回 true = 重复投递，丢弃。
+const shouldSuppressSkipCommand = (command: 'next' | 'previous') => {
+  const now = Date.now()
+  if (now - lastSkipCommandAt[command] < SKIP_DEDUP_WINDOW_MS) return true
+  lastSkipCommandAt[command] = now
+  return false
+}
+
+// seek 的重复判据是「同一位置」：拖动本身会送来一串**不同**位置，纯时间窗会把拖动吞掉。
+const shouldSuppressSeekCommand = (position: number) => {
+  const now = Date.now()
+  if (now - lastSeek.at < SEEK_DEDUP_WINDOW_MS && Math.abs(position - lastSeek.position) <= SEEK_DEDUP_POSITION_TOLERANCE) return true
+  lastSeek.at = now
+  lastSeek.position = position
+  return false
+}
+
+// —— 第 49 轮·双通路单一漏斗（2026-10-10）——
+// 锁屏 / 灵动岛 / 控制中心 / 车机 / 耳机的遥控命令有**两条**原生通路可以送达 JS：
+//   ① 本工程原生侧：MPRemoteCommandCenter 的 target（AppDelegate.mm LXInstallRemoteCommandHandlers）
+//      → NSNotification 'LXRemoteCommand' → UtilsModule 'remote-command' 事件
+//      → src/core/init/player/remoteCommand.ts（第 49 轮起为纯适配器，转手调本漏斗）；
+//   ② RNTP 原生侧：SwiftAudioEx RemoteCommandController 的 target → remote-play / remote-pause /
+//      remote-next / remote-previous / remote-seek 事件 → 本文件（下方 registerPlaybackService）。
+// 第 20 轮曾把 ② 整条删掉以消除「一次按键跳两首」（iOS 会把同一条命令投递给**所有** target，
+// 两条通路各跑一遍 playNext）；但只留 ① 时 ① 一旦失效就没有任何兜底 —— 用户第 43~49 轮连续
+// 复现的「锁屏/灵动岛按键没反应、进度条拖不动」正落在这种只剩单点的情况下。参考工程
+//（lx-music-mobile-ios-adaptation）两条通路都在、锁屏一切正常（它能拖进度条，靠的正是 ② 的
+// RemoteSeek 监听）—— 第 49 轮据此按用户授权 1:1 恢复 ②。并存后的重复投递一律由本漏斗的
+// 窗口去重兜住：无论命令来自哪条通路、甚至两条都来，都只执行一次。
+// 任何遥控命令都先续期「超时退出」的交互时间（用户正在操作，超时不许在操作中途触发）。
+export const dispatchRemoteCommand = (command: string, position?: number) => {
+  markTimeoutExitInteraction()
+
+  switch (command) {
+    case 'play':
+      // 用户手动(锁屏/通知栏/耳机/车机)要求播放：作废「被抢占后自动续播」的
+      // 待恢复标记，直接播放（与旧 RNTP RemotePlay 监听同一口径）
+      if (shouldSuppressActionCommand('play')) break
+      cancelResumePending()
+      play()
+      break
+    case 'pause':
+      // 用户手动要求暂停：清除自动续播标记，避免之后被兜底逻辑误自动播放
+      // 【第 22 轮】再落一道「手动暂停」闸门：只清一次标记挡不住打断开始 / 回前台这类
+      // **重新**置位的途径（用户报的「手动暂停后，其它音频播完回软件又自己开始播放」）。
+      // 【第 35 轮第 1 条】闸门只在「这次 pause 真的会暂停」时才落。配合原生侧
+      // 「显示态与启停态同源」的可用性判据（AppDelegate.mm LXSyncRemoteCommandAvailability，
+      // 第 36 轮按参考工程定），
+      // 锁屏卡片重绘期间（playbackState 被短暂切成相反值）系统可能按**显示出来的**状态
+      // 投递一条与真实播放态相反的 pause/play —— 那条 pause 落到一首本来就在暂停的歌上时，
+      // 只会白白把闸门锁死，之后所有自动续播入口都不再出声（第 22 轮那个 bug 的另一种成因）。
+      // 已经暂停就不动闸门：pause() 本身幂等，重复调用无副作用。
+      if (shouldSuppressActionCommand('pause')) break
+      if (playerState.isPlay) markManualPause()
+      cancelResumePending()
+      void pause()
+      break
+    case 'toggle':
+      if (shouldSuppressActionCommand('toggle')) break
+      cancelResumePending()
+      togglePlay()
+      break
+    case 'next':
+      if (shouldSuppressSkipCommand('next')) break
+      void playNext()
+      break
+    case 'previous':
+      if (shouldSuppressSkipCommand('previous')) break
+      void playPrev()
+      break
+    case 'seek':
+      // 拖进度条：位置非法（事件里没带字段）直接丢；两条通路同时送达的**同一位置**
+      // 只认第一份（拖动过程本身是一串变化的位置，不受影响）
+      if (typeof position != 'number') break
+      if (shouldSuppressSeekCommand(position)) break
+      global.app_event.setProgress(position)
+      break
+  }
 }
 
 const scheduleAutoResume = () => {
@@ -206,23 +318,34 @@ const registerPlaybackService = async() => {
   console.log('reg services...')
   initUnifiedPlayerController()
 
-  // 【第 20 轮·遥控命令单一通路（2026-10-03）】这里**不再**监听 RNTP 的
-  // RemotePlay / RemotePause / RemoteNext / RemotePrevious / RemoteSeek
-  //（原来的五段监听已删除）。
-  //
-  // 根因（用户实锤，越狱 CarPlay）：同一批 MPRemoteCommandCenter 命令被挂了两套
-  // target —— ① RNTP 原生侧（SwiftAudioEx RemoteCommandController）→ remote-* 事件
-  // → 本文件；② 本工程原生侧（AppDelegate.mm 的 LXInstallRemoteCommandHandlers）
-  // → 'remote-command' 事件 → core/init/player/remoteCommand.ts。一次物理按键两条
-  // 通路各跑一遍 playNext() ⇒ 一次跳两首（短列表就成了「只在少数几首之间循环」）；
-  // 播放/暂停则是开关两下互相抵消；控制中心进度条重复 seek。
-  //
-  // 现在的唯一入口是 remoteCommand.ts。RNTP 原生侧的 target 仍在、也仍会往 JS 发
-  // remote-* 事件（命令能力由 plugins/player/utils.ts 的 defaultUpdateOptions 统一
-  // 写入，两侧共享同一批命令对象，不要动它），但这里已无监听者，静默即无害。
-  //
-  // 只保留两个 RNTP 独有、本工程原生侧不转发的：RemoteStop（停止退出）与
-  // RemoteDuck（来电/路由打断的音量闪避与自动续播见下方 autoResume 兜底注释）。
+  // 【第 49 轮·双通路单一漏斗（2026-10-10）】五段 RNTP 遥控监听恢复（1:1 对齐参考工程
+  // lx-music-mobile-ios-adaptation 的 registerPlaybackService —— 用户的锁屏能点、进度条
+  // 能拖就是靠这条路；第 20 轮删掉它们是为「一次按键跳两首」，现在重复投递改由
+  // dispatchRemoteCommand 的窗口去重兜住，不再靠删通路）。
+  // 处理逻辑一律不写在这儿：命令名转手交给漏斗，语义（播放/暂停落点、手动暂停闸门、
+  // 去重）只有一份实现，与 remoteCommand.ts 转手的 'remote-command' 事件共用。
+  TrackPlayer.addEventListener(TPEvent.RemotePlay, () => {
+    dispatchRemoteCommand('play')
+  })
+
+  TrackPlayer.addEventListener(TPEvent.RemotePause, () => {
+    dispatchRemoteCommand('pause')
+  })
+
+  TrackPlayer.addEventListener(TPEvent.RemoteNext, () => {
+    dispatchRemoteCommand('next')
+  })
+
+  TrackPlayer.addEventListener(TPEvent.RemotePrevious, () => {
+    dispatchRemoteCommand('previous')
+  })
+
+  TrackPlayer.addEventListener(TPEvent.RemoteSeek, ({ position }) => {
+    dispatchRemoteCommand('seek', position as number)
+  })
+
+  // RemoteStop（停止退出）与 RemoteDuck（来电/路由打断的音量闪避与自动续播见下方
+  // autoResume 兜底注释）是 RNTP 独有的两条：本工程原生侧不转发，落点只能在这里。
   TrackPlayer.addEventListener(TPEvent.RemoteStop, () => {
     // console.log('remote-stop')
     cancelResumePending()
