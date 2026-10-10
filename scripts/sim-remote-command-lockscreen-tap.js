@@ -111,6 +111,20 @@
  *   ⑪ 「按下即对表」（第 45 轮 ⑥）与 `LXPostRemoteCommandNotification` 都保留：
  *      会话常驻之后它们才是处理器里仅剩的正确动作。
  *
+ * 【第 49 轮】用户原话：「重大bug：1、锁屏界面和灵动岛界面的功能无法使用，点击按钮和拖拽
+ * 进度条都没有用，需要修复，我是IOS18.4系统，手机是iPhone 16 Pro max」。
+ * 第 43~48 轮同族症状的第七次报告（第 48 轮的授权「如果还是不行就一比一复制它的」由此生效）：
+ *   ⑫ 原生侧改为**幂等自愈安装**（不变量 A' 新增）：一次性守卫（装上就永不再装）换成
+ *      「每次同步都先摘掉自己上一轮的 token 再重挂」。RNTP 的 SwiftAudioEx 重配共享命令
+ *      target 时会把本工程那份清掉，而一次性守卫让它**永不重装** ⇒ 'remote-command' 通路
+ *      永久静默（「前几次能点，用一段时间后按键彻底没反应」）。**绝不许 removeTarget:nil**
+ *      （那会把 RNTP 的 target 一起清掉，等于亲手打死另一条通路）。
+ *   ⑬ JS 侧改为「双通路 → 单漏斗」（不变量 D 重写）：RNTP 的五段遥控监听（含 RemoteSeek，
+ *      参考工程能拖进度条全靠它）恢复在 service.ts，与 remoteCommand.ts 转手的
+ *      'remote-command' 事件一起汇进 service.ts 的 dispatchRemoteCommand 漏斗；
+ *      remoteCommand.ts 瘦身为纯适配器。重复投递由漏斗的窗口去重兜住（两条通路并存时
+ *      iOS 会把同一条命令投递给所有 target）。
+ *
  * 反例专盯「回归 tsc / eslint 都无感」的部分：原生不参与 TS 检查，把判据改回按播放态单算、
  * 漏一句 beginReceivingRemoteControlEvents、把主线程闸门删掉、让看门狗回来、
  * 或又把 playbackState 翻转加回来，静态检查与单测全都看不见。
@@ -128,10 +142,12 @@ const ROOT = path.join(__dirname, '..')
 const read = (p) => fs.readFileSync(path.join(ROOT, p), 'utf8').replace(/\r\n/g, '\n')
 
 const APP_DELEGATE = 'ios/LxMusicMobile/AppDelegate.mm'
-const REMOTE_COMMAND = 'src/core/init/player/remoteCommand.ts'
+// 【第 49 轮】命令语义（pause 落闸 / 六命令覆盖 / 去重窗口）在 service.ts 的唯一漏斗里；
+// remoteCommand.ts 已瘦身为纯适配器（见 sim-remote-command-single-source.js）。
+const REMOTE_FUNNEL = 'src/plugins/player/service.ts'
 
 const REAL_APPDELEGATE = read(APP_DELEGATE)
-const REAL_REMOTE = read(REMOTE_COMMAND)
+const REAL_FUNNEL = read(REMOTE_FUNNEL)
 
 const stripComments = (src) =>
   src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '')
@@ -399,15 +415,24 @@ const remoteInvariants = (raw) => {
   const code = stripComments(raw)
 
   if (!code.includes("import playerState from '@/store/player/state'")) {
-    reasons.push('remoteCommand.ts 未引入 playerState（pause 分支判不了「这次是不是真的会暂停」）')
+    reasons.push('service.ts 未引入 playerState（pause 分支判不了「这次是不是真的会暂停」）')
   }
 
-  const pauseStart = code.indexOf("case 'pause':")
-  const pauseEnd = code.indexOf("case 'toggle':")
+  // 【第 49 轮】命令语义在 service.ts 的唯一漏斗里（两条原生通路汇进这里）
+  const funnelStart = code.indexOf('export const dispatchRemoteCommand = (command: string')
+  const funnelEnd = funnelStart < 0 ? -1 : code.indexOf('\n}', funnelStart)
+  if (funnelStart < 0 || funnelEnd < 0) {
+    reasons.push('service.ts 里找不到遥控命令漏斗 dispatchRemoteCommand 的函数体（锚点漂移）')
+    return reasons
+  }
+  const funnel = code.slice(funnelStart, funnelEnd)
+
+  const pauseStart = funnel.indexOf("case 'pause':")
+  const pauseEnd = funnel.indexOf("case 'toggle':")
   if (pauseStart < 0 || pauseEnd <= pauseStart) {
     reasons.push("case 'pause' 分支缺失或抽取失败（锚点漂移 —— case 'pause' / case 'toggle' 顺序被改动）")
   } else {
-    const seg = code.slice(pauseStart, pauseEnd)
+    const seg = funnel.slice(pauseStart, pauseEnd)
     if (!seg.includes('if (playerState.isPlay) markManualPause()')) {
       reasons.push('pause 分支未按「这次 pause 真的会暂停」落闸（缺前置判据：卡片重绘窗口里系统会按显示出来的状态投递反向命令，无条件落闸会把闸门白锁死）')
     }
@@ -424,13 +449,53 @@ const remoteInvariants = (raw) => {
 
   // 六个命令仍各有落点（少一个 = 锁屏/车机对应键静默失效）
   for (const cmd of ['play', 'pause', 'toggle', 'next', 'previous', 'seek']) {
-    if (!code.includes(`case '${cmd}':`)) {
+    if (!funnel.includes(`case '${cmd}':`)) {
       reasons.push(`遥控命令覆盖不全（缺 case '${cmd}'）`)
     }
+  }
+  // 六个分支每个都要有去重守卫：两条原生通路并存时，同一次按键可能各投递一份命令
+  const guards = (funnel.match(/if \(shouldSuppress\w+\(/g) ?? []).length
+  if (guards !== 6) {
+    reasons.push(`漏斗的去重守卫不是 6 处（实测 ${guards}）：两条通路可能对同一次按键各投递一份命令，少一处就是一次操作执行两遍（一次按键跳两首的老病根）`)
   }
   // 切歌在途去重窗口不得被顺手改动（第 20 轮契约）
   if (!code.includes('const SKIP_DEDUP_WINDOW_MS = 100')) {
     reasons.push('切歌去重窗口被改动（应为 100ms）')
+  }
+
+  return reasons
+}
+
+// ---------------------------------------------------------------------------
+// 不变量 A'：【第 49 轮】原生侧幂等自愈安装（一次性守卫不许回魂，removeTarget:nil 禁用）
+// ---------------------------------------------------------------------------
+
+const selfHealingInvariants = (raw) => {
+  const reasons = []
+  const code = stripComments(raw)
+
+  if (!code.includes('static id LXRemoteCommandTargetTokens[6] = { nil, nil, nil, nil, nil, nil };')) {
+    reasons.push('原生侧没有记住自己的 target token（没有 token 就只能用 removeTarget:nil 清空，而那会连 RNTP 的 target 一起打死）')
+  }
+  const removals = (code.match(/removeTarget:LXRemoteCommandTargetTokens\[/g) ?? []).length
+  if (removals !== 6) {
+    reasons.push(`原生侧「摘掉自己上一轮 token」的次数不是 6（实测 ${removals}）：每次同步都要先精确摘掉自己那一份再重挂，一次性守卫会让通路永久死亡`)
+  }
+  if (/removeTarget\s*:\s*nil\s*\]/.test(code)) {
+    reasons.push('出现 removeTarget:nil —— 那会把 RNTP 的 target 一起清掉（另一条通路当场死亡，锁屏按键全灭）')
+  }
+  if (!code.includes('if (LXInsideRemoteCommandHandler) return;')) {
+    reasons.push('原生侧缺「handler 执行期间不重装」的守卫（removeTarget 掉此刻正在跑的 target 是未定义行为）')
+  }
+  // 注意行首锚定：静态声明那句是 `static BOOL LXInsideRemoteCommandHandler = NO;`，
+  // 裸子串计数会把它也算成一次「复位」（实测 2 YES / 3 NO 的假失败就是这么来的）
+  const setOn = (code.match(/\n\s*LXInsideRemoteCommandHandler = YES;/g) ?? []).length
+  const setOff = (code.match(/\n\s*LXInsideRemoteCommandHandler = NO;/g) ?? []).length
+  if (setOn < 2 || setOff !== setOn) {
+    reasons.push(`handler 的 in-handler 守卫置位/复位不成对（YES ${setOn} 处 / NO ${setOff} 处）：漏复位会让重装永久停摆，漏置位会在 handler 里摘掉自己`)
+  }
+  if (code.includes('LXRemoteCommandHandlersInstalled')) {
+    reasons.push('一次性守卫 LXRemoteCommandHandlersInstalled 又回来了（装上就再也不管：RNTP 清掉本工程 target 后通路永久死亡，正是第 43~49 轮那个「用一段时间后按键没反应」）')
   }
 
   return reasons
@@ -856,9 +921,10 @@ const runCounterExamples = () => {
   '被调用 2 处')
 
   // s3 有人把 1s 重申看门狗加回来 → 报「又回来了」
+  // 【第 49 轮】锚点从一次性守卫那行（已删除）换到自愈安装的收尾（最后一块 target 的块尾）
   check('s3 看门狗被加回来', () => mainThreadInvariants(tamper(REAL_APPDELEGATE,
-    '  LXRemoteCommandHandlersInstalled = YES;\n}',
-    '  LXRemoteCommandHandlersInstalled = YES;\n  LXStartRemoteCommandWatchdog();\n}')),
+    '    return LXHandleRemoteChangePlaybackPositionEvent((MPChangePlaybackPositionCommandEvent *)event);\n  }];\n}',
+    '    return LXHandleRemoteChangePlaybackPositionEvent((MPChangePlaybackPositionCommandEvent *)event);\n  }];\n  LXStartRemoteCommandWatchdog();\n}')),
   '又回来了')
 
   // s4 封面链路又把整条信息置空（会话拆除窗口回来）→ 报「nowPlayingInfo = nil」
@@ -904,16 +970,41 @@ const runCounterExamples = () => {
   '非播放的速率清零丢了')
 
   // r11 JS 侧无条件落闸（第 35 轮第 1 条要拦的就是这个）→ 报「前置判据」
-  check('r11 JS 侧 pause 无条件落闸', () => remoteInvariants(tamper(REAL_REMOTE,
-    '        if (playerState.isPlay) markManualPause()',
-    '        markManualPause()')),
+  // 【第 49 轮】锚点改到 service.ts 的漏斗（命令语义由 remoteCommand.ts 移入）
+  check('r11 JS 侧 pause 无条件落闸', () => remoteInvariants(tamper(REAL_FUNNEL,
+    '      if (playerState.isPlay) markManualPause()',
+    '      markManualPause()')),
   '前置判据')
 
   // r12 pause 分支在暂停态提前 return（暂停键点不动）→ 报「提前 return」
-  check('r12 pause 分支在暂停态提前 return', () => remoteInvariants(tamper(REAL_REMOTE,
-    '        if (playerState.isPlay) markManualPause()\n',
-    '        if (!playerState.isPlay) return\n        markManualPause()\n')),
+  check('r12 pause 分支在暂停态提前 return', () => remoteInvariants(tamper(REAL_FUNNEL,
+    '      if (playerState.isPlay) markManualPause()\n',
+    '      if (!playerState.isPlay) return\n      markManualPause()\n')),
   '提前 return')
+
+  // r13 【第 49 轮】一次性守卫回魂（装上就永不再装）→ 报「一次性守卫」
+  check('r13 一次性安装守卫回魂', () => selfHealingInvariants(tamper(REAL_APPDELEGATE,
+    '  if (LXInsideRemoteCommandHandler) return;\n',
+    '  if (LXRemoteCommandHandlersInstalled) return;\n')),
+  '一次性守卫')
+
+  // r14 【第 49 轮】用 removeTarget:nil 清空命令 target（把 RNTP 那条通路一起打死）→ 报「removeTarget:nil」
+  check('r14 removeTarget:nil 清空命令 target', () => selfHealingInvariants(tamper(REAL_APPDELEGATE,
+    '  if (LXRemoteCommandTargetTokens[5] != nil) {\n    [commandCenter.changePlaybackPositionCommand removeTarget:LXRemoteCommandTargetTokens[5]];\n    LXRemoteCommandTargetTokens[5] = nil;\n  }\n',
+    '  [commandCenter.changePlaybackPositionCommand removeTarget:nil];\n')),
+  'removeTarget:nil')
+
+  // r15 【第 49 轮】handler 执行期间不再置守卫（重装会摘掉此刻正在跑的 target）→ 报「不成对」
+  check('r15 handler 不置 in-handler 守卫', () => selfHealingInvariants(tamper(REAL_APPDELEGATE,
+    '  LXInsideRemoteCommandHandler = YES;\n  LXApplyNowPlayingInfo();',
+    '  LXApplyNowPlayingInfo();')),
+  '不成对')
+
+  // r16 【第 49 轮】自愈重装不再摘自己上一轮的 token（反复重挂 = target 越积越多，一次按键多条通知）→ 报「不是 6」
+  check('r16 自愈重装不摘旧 token', () => selfHealingInvariants(tamper(REAL_APPDELEGATE,
+    '  if (LXRemoteCommandTargetTokens[0] != nil) {\n    [commandCenter.playCommand removeTarget:LXRemoteCommandTargetTokens[0]];\n    LXRemoteCommandTargetTokens[0] = nil;\n  }\n',
+    '')),
+  '不是 6')
 
   // u1 【第 45 轮】「按下即对表」被删（分叉后没有任何纠正路径 —— 用户截图里的灰按钮）
   //     锚点带上前一行 apply 调用与后一行 post 调用：两行紧挨着，全文件唯一。
@@ -1022,7 +1113,8 @@ const checks = [
   ['原生：按下即对表 + 锁屏那一刻对表（第 45 轮，含前置声明）', () => tapResyncInvariants(REAL_APPDELEGATE)],
   ['原生：锁屏 / 灵动岛卡片进度每秒对表（第 46 轮第 1 条）', () => elapsedHeartbeatInvariants(REAL_APPDELEGATE)],
   ['原生：起播元数据先到也能补齐播放态（第 47 轮第 3 条：单向 Stopped → Playing）', () => startupStateInvariants(REAL_APPDELEGATE)],
-  ['JS：pause 只在真的会暂停时落闸（六命令覆盖 + 去重窗口）', () => remoteInvariants(REAL_REMOTE)],
+  ['原生：幂等自愈安装（token 精确摘除 + in-handler 守卫，第 49 轮）', () => selfHealingInvariants(REAL_APPDELEGATE)],
+  ['JS：唯一漏斗 —— pause 只在真的会暂停时落闸（六命令覆盖 + 去重窗口，第 49 轮）', () => remoteInvariants(REAL_FUNNEL)],
 ]
 
 let invOk = true

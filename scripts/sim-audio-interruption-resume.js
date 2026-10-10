@@ -236,7 +236,8 @@ const evaluate = (src, js) => {
     svc_stopClearsIntent: /app_event\.on\('stop', \(\) => \{[\s\S]{0,200}?cancelResumePending\(\)/.test(svc),
 
     // —— 第 22 轮：手动暂停闸门（用户主动暂停后任何条件都不许自动出声）——
-    svc_manualPauseImported: /import \{ clearManualPause, isManualPause \} from '@\/core\/player\/manualPause'/.test(svc),
+    // 【第 49 轮】同一句 import 现在还带着 markManualPause（service.ts 漏斗的 pause 分支落闸用）
+    svc_manualPauseImported: /import \{ clearManualPause, isManualPause(?:, markManualPause)? \} from '@\/core\/player\/manualPause'/.test(svc),
     svc_scheduleHonorsManualPause: /if \(isManualPause\(\)\) return cancelResumePending\(\)/.test(svc),
     // 【第 24 轮】同样按 8 空格缩进锚定独占分支（混音分支同一句是 10 空格缩进）
     svc_interruptBeginHonorsManualPause: /^        if \(!global\.lx\.isPlayedStop && !isManualPause\(\)\) shouldResumeAfterDuck = true/m.test(svc),

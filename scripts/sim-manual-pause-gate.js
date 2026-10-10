@@ -14,7 +14,9 @@
  * 就被自动拉起。只在个别置位点补一次 cancelResumePending 治不了根（标记会被重新置位），
  * 所以引入独立的布尔闸门（core/player/manualPause.ts）：
  *
- *   置位（用户主动暂停）：应用内播放/暂停按钮（togglePlay 暂停分支）、遥控 'pause' 命令、
+ *   置位（用户主动暂停）：应用内播放/暂停按钮（togglePlay 暂停分支）、遥控 'pause' 命令
+ *     （【第 49 轮】落点从 remoteCommand.ts 移进 service.ts 的 dispatchRemoteCommand 漏斗：
+ *      两条原生通路汇进同一个漏斗，命令语义只有一份）、
  *     deeplink 'pause'。系统自动暂停（缓冲 / 打断 / 拔耳机 / 播放结束）**不**置位。
  *   消费（任何自动续播入口，为 true 一律不出声）：service.ts 的
  *     scheduleAutoResume 兜底 / iOS 打断开始 / 退后台预置 / iOS 音量闪避 / Android 恢复。
@@ -40,7 +42,9 @@ const stripComments = (src) => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\
 const F = {
   gate: 'src/core/player/manualPause.ts',
   player: 'src/core/player/player.ts',
-  remote: 'src/core/init/player/remoteCommand.ts',
+  // 【第 49 轮】遥控命令语义（含 pause 落闸）从 remoteCommand.ts 移进 service.ts 的
+  // dispatchRemoteCommand 漏斗：命令有两条原生通路，逻辑只能有一份
+  remote: 'src/plugins/player/service.ts',
   deeplink: 'src/core/init/deeplink/playerAction.ts',
   service: 'src/plugins/player/service.ts',
 }
@@ -109,17 +113,22 @@ const setterInvariants = (player, remote, deeplink) => {
     reasons.push(`player.ts 里 markManualPause 出现 ${markCalls} 处（应恰好 1：只有 togglePlay 暂停分支；core pause() 被系统路径共用，不能落闸）`)
   }
 
-  // ② 遥控 'pause'（车机 / 控制中心 / 锁屏）：pause 分支落闸
+  // ② 遥控 'pause'（车机 / 控制中心 / 锁屏）：【第 49 轮】落闸在 service.ts 的
+  //    dispatchRemoteCommand 漏斗（两条原生通路汇进同一个漏斗，语义只有一份）
   const remoteCode = stripComments(remote)
-  if (!remoteCode.includes("import { markManualPause } from '@/core/player/manualPause'")) {
-    reasons.push('remoteCommand.ts 未引入 markManualPause')
-  }
-  const pauseStart = remoteCode.indexOf("case 'pause':")
-  const pauseEnd = remoteCode.indexOf("case 'toggle':")
-  if (pauseStart < 0 || pauseEnd <= pauseStart) {
-    reasons.push("remoteCommand.ts 的 case 'pause' 抽取失败（锚点漂移）")
-  } else if (!remoteCode.slice(pauseStart, pauseEnd).includes('markManualPause()')) {
-    reasons.push('遥控 pause 分支未落闸（锁屏/车机暂停后仍会被自动续播拉起）')
+  const funnelStart = remoteCode.indexOf('export const dispatchRemoteCommand = (command: string')
+  if (funnelStart < 0) {
+    reasons.push('service.ts 里找不到遥控命令漏斗 dispatchRemoteCommand（锁屏/车机的暂停落点断了）')
+  } else if (!remoteCode.includes('markManualPause')) {
+    reasons.push('service.ts 未引入 markManualPause（遥控暂停落不了手动暂停闸门）')
+  } else {
+    const pauseStart = remoteCode.indexOf("case 'pause':", funnelStart)
+    const pauseEnd = remoteCode.indexOf("case 'toggle':", funnelStart)
+    if (pauseStart < 0 || pauseEnd <= pauseStart) {
+      reasons.push("遥控漏斗的 case 'pause' 抽取失败（锚点漂移）")
+    } else if (!remoteCode.slice(pauseStart, pauseEnd).includes('markManualPause()')) {
+      reasons.push('遥控 pause 分支未落闸（锁屏/车机暂停后仍会被自动续播拉起）')
+    }
   }
 
   // ③ deeplink 'pause'（系统级捷径 / 外部控制）：pause 分支落闸
@@ -146,7 +155,8 @@ const serviceInvariants = (raw) => {
   const reasons = []
   const code = stripComments(raw)
 
-  if (!code.includes("import { clearManualPause, isManualPause } from '@/core/player/manualPause'")) {
+  // 【第 49 轮】同一句 import 现在还带着 markManualPause（漏斗的 pause 分支落闸用）
+  if (!/import \{ clearManualPause, isManualPause(?:, markManualPause)? \} from '@\/core\/player\/manualPause'/.test(code)) {
     reasons.push('service.ts 未引入闸门（isManualPause / clearManualPause）')
   }
   for (const [needle, label] of [
@@ -214,9 +224,10 @@ const runCounterExamples = () => {
   // t3 遥控暂停拆闸
   // 【第 35 轮第 1 条】落闸加了「这次 pause 真的会暂停（playerState.isPlay）」前置判据
   // —— 锚点随之更新；拆闸反例拆的仍是「这条分支到底还落不落闸」，语义不变。
+  // 【第 49 轮】锚点随落点一起移进 service.ts 的漏斗（缩进 8 → 6 空格）
   check('t3 遥控 pause 拆闸', () => setterInvariants(REAL.player, tamper(REAL.remote,
-    '        if (playerState.isPlay) markManualPause()\n        cancelResumePending()',
-    '        cancelResumePending()'), REAL.deeplink),
+    '      if (playerState.isPlay) markManualPause()\n      cancelResumePending()',
+    '      cancelResumePending()'), REAL.deeplink),
   '遥控 pause 分支未落闸')
 
   // t4 deeplink 暂停拆闸

@@ -413,10 +413,18 @@ const chainInvariants = (deps) => {
     reasons.push("controller.ts 的 'playing' / 换曲落点不足三处走 applyVolumeOnPlayStart："
       + '少哪一处，那条路径上的音量兜底（含渐出期间让行、缺陷④的恢复）就全没了')
   }
-  // remoteCommand.ts：锁屏 pause 必须走 core/player 的 pause
+  // 【第 49 轮】命令语义在 service.ts 的唯一漏斗里（两条原生通路汇合处）：
+  // remoteCommand.ts 只负责把命令转手，锁屏 pause 的落点在漏斗的 pause 分支。
   const remote = strip('remote')
-  if (!remote.includes('void pause()')) {
-    reasons.push('remoteCommand.ts 的 pause 分支没有走 core/player 的 pause（锁屏 ⏸ 的 JS 落点断了）')
+  if (!remote.includes('dispatchRemoteCommand(event.command, event.position)')) {
+    reasons.push('remoteCommand.ts 未把遥控命令交给唯一漏斗（锁屏/灵动岛按键的 JS 落点断了）')
+  }
+  const remoteService = strip('service')
+  const funnel = slice(remoteService, 'export const dispatchRemoteCommand = (', '\n}')
+  if (funnel == null) {
+    reasons.push('service.ts 里找不到第 49 轮的遥控命令漏斗 dispatchRemoteCommand（锁屏 ⏸ 的 JS 落点断了）')
+  } else if (!funnel.includes('void pause()')) {
+    reasons.push('漏斗的 pause 分支没有走 core/player 的 pause（锁屏 ⏸ 的 JS 落点断了）')
   }
   return reasons
 }
@@ -502,6 +510,8 @@ const runCounterExamples = () => {
     player: REAL.player, utils: REAL.utils, controller: REAL.controller, remote: REAL.remote,
     // 【第 47 轮】整条链的落点延伸到原生 pause（暂停必须无条件落到引擎）
     appDelegate: REAL.appDelegate,
+    // 【第 49 轮】命令语义移到 service.ts 的唯一漏斗，链上多这一环
+    service: REAL.service,
   }
 
   // v1 斜坡的取消又不放行 Promise（第 39 轮那颗雷原样回归）
@@ -639,6 +649,8 @@ const checks = [
     () => chainInvariants({
       player: REAL.player, utils: REAL.utils, controller: REAL.controller, remote: REAL.remote,
       appDelegate: REAL.appDelegate,
+      // 【第 49 轮】命令语义移至 service.ts 的漏斗
+      service: REAL.service,
     })],
   ['原生不许静默丢弃按键：暂存（有上限）+ startObserving 按序补投',
     () => nativeNoDropInvariants(REAL.appDelegate)],
