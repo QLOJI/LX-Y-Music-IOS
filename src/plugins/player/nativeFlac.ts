@@ -124,19 +124,40 @@ export const startNativeFlacPlayback = async(musicInfo: LX.Player.PlayMusic, url
 }
 
 export const pauseNativeFlacPlayback = async() => {
-  if (!currentTrackId) return
+  const trackId = currentTrackId
+  if (!trackId) return
   if (currentMode == 'stream') {
-    await pauseStreamingFlac().catch(() => {})
+    // 【第 47 轮】暂停必须确认落地。旧实现把桥失败静默吞掉（`.catch(() => {})`）后
+    // **无条件**写 `currentState = 'paused'` —— 界面据此显示暂停、原生引擎却还在出声，
+    // 正是用户这轮的「点暂停后进度条停了、声音继续放」。现在：失败按同一曲目归属补发
+    // 一次；两发都失败就不改状态（宁可状态停在 playing，让 utils.setPause 的有界复核
+    // 再补刀，也不许写一个骗人的 'paused'）。曲目归属变化说明已经换歌，直接放弃。
+    let failed = false
+    await pauseStreamingFlac().catch(() => { failed = true })
+    if (failed && currentTrackId == trackId) {
+      await pauseStreamingFlac().catch(() => { failed = true })
+    }
+    if (failed) return
   }
-  currentState = 'paused'
+  if (currentTrackId == trackId) currentState = 'paused'
 }
 
 export const resumeNativeFlacPlayback = async() => {
-  if (!currentTrackId) return
+  const trackId = currentTrackId
+  if (!trackId) return
   if (currentMode == 'stream') {
-    await resumeStreamingFlac()
+    // 【第 47 轮】恢复播放同样要确认落地（用户原话「再次点击暂停按钮后继续播放歌曲」）：
+    // 旧实现的 `await resumeStreamingFlac()` 没有 catch，一旦桥失败异常就冒到
+    // remoteCommand 的 void play() 里被静默丢弃 —— 没声音、状态也没改，用户再点还是
+    // 同一个死窗口。现在失败补发一次，仍失败也不写 'playing'（不骗 UI）。
+    let failed = false
+    await resumeStreamingFlac().catch(() => { failed = true })
+    if (failed && currentTrackId == trackId) {
+      await resumeStreamingFlac().catch(() => { failed = true })
+    }
+    if (failed) return
   }
-  currentState = 'playing'
+  if (currentTrackId == trackId) currentState = 'playing'
 }
 
 export const stopNativeFlacPlayback = async(reset = false) => {

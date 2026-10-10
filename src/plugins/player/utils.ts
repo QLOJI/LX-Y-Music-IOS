@@ -203,6 +203,9 @@ export const setResource = (musicInfo: LX.Player.PlayMusic, url: string, duratio
 }
 
 export const setPlay = async() => {
+  // 【第 47 轮】用户的播放意图作废在途的暂停复核（PAUSE_VERIFY_MS 窗口内按下的播放
+  // 优先，复核绝不允许把刚起来的播放又按停）。
+  pauseVerifyToken++
   // 【第 39 轮第 4 条】预约「播放开始时渐入」：此刻是暂停态，先把音量压到 0（听不见），
   // 真正出声时由 controller.ts 的 'playing' 分支把音量斜坡升上去（见 volumeFade.ts）。
   armVolumeFadeIn()
@@ -269,14 +272,64 @@ export const setStop = async() => {
 }
 export const setLoop = async(loop: boolean) => TrackPlayer.setRepeatMode(loop ? RepeatMode.Off : RepeatMode.Track)
 
+/**
+ * 【第 47 轮】暂停复核窗口（毫秒）。用户原话：「点击暂停按钮后，进度条暂停了，歌词还正常
+ * 加载，声音也在继续播放」——显示态走了暂停、出声的那台引擎却没停。暂停动作发出后这么久
+ * 如果 JS 仍认为在播（playerState.isPlay），就说明引擎没停 / 状态事件丢了，无条件再发一次。
+ * 有界：每次按下只复核一次，且复核复用 setTimeout 一次性定时器，不新建常驻唤醒源
+ * （第 42 轮省电口径 / 第 43 轮「不许周期性看门狗」）。
+ */
+const PAUSE_VERIFY_MS = 700
+/**
+ * 复核令牌：用户的播放意图（setPlay）与新的暂停（setPause）都让在途复核作废 ——
+ * 复核是给「暂停没落地」兜底的，绝不能反过来把用户刚按下的播放又按停。
+ */
+let pauseVerifyToken = 0
+
+/**
+ * 【第 47 轮】RNTP 那台引擎「可能还在出声」的判据。
+ * nativeFlac 驱动的曲目 id 以 nativeflac:// 开头（nativeFlac.ts 的 startNativeFlacPlayback
+ * 拼出来的），而 global.lx.playerTrackId 记录的是**最后一次**的驱动归属：
+ *   · 值带 nativeflac:// 前缀 = 最后驱动就是 nativeFlac ⇒ 可能出声的只有它自己，RNTP 跳过；
+ *   · 值是别的 id（RNTP 自己的曲目）= 跨引擎切换的中间态，它的音频可能还没被清掉；
+ *   · 值为空 = 连「最后驱动是谁」都不知道（reset / ended / 起播事件还没到的窗口）——
+ *     此时**也按「可能持有」处理**：对空闲的 RNTP 发一次 pause 是幂等空操作，
+ *     漏发一次就是用户听到的「点了暂停，声音还在继续」。
+ * 只有「明确知道最后驱动就是 nativeFlac」这一种情况才跳过 RNTP。
+ */
+const rntpMayHoldTrack = () => {
+  const id = global.lx.playerTrackId
+  return !id || !id.startsWith('nativeflac://')
+}
+
+/**
+ * 真正让声音停下来的动作。**两台引擎都要发**（幂等、各自吞错）：
+ * 旧实现按 isNativeFlacActive() 二选一，只停了「当前驱动」那一台 —— 一旦两台都在出声
+ * （驱动切换的中间态、或错误重试里 setStop 未 await 而新引擎先起），暂停就只落到空闲的
+ * 那台，出声的那台照放：卡片 ▶、进度冻住、声音继续，正是用户这轮两张截图的形态。
+ */
+const pausePlayingEngines = async() => {
+  if (Platform.OS == 'ios' && isNativeFlacActive()) {
+    await pauseNativeFlacPlayback().catch(() => {})
+    if (rntpMayHoldTrack()) await TrackPlayer.pause().catch(() => {})
+    return
+  }
+  await TrackPlayer.pause().catch(() => {})
+}
+
 export const setPause = async() => {
   // 【第 39 轮第 4 条】先渐出（斜坡降到 0）再真暂停 —— 直接掐断正在出声的流就是那声
   // 「嘶哑 / 噪声」（见 volumeFade.ts 的说明）。真正的暂停动作以函数传入，斜坡跑完才执行；
   // 非 iOS 平台在 fadeOutThenPause 内部直通（同步调用真暂停），行为与改动前一致。
-  if (Platform.OS == 'ios' && isNativeFlacActive()) {
-    return fadeOutThenPause(() => pauseNativeFlacPlayback())
-  }
-  return fadeOutThenPause(() => TrackPlayer.pause())
+  // 【第 47 轮】暂停动作改为 pausePlayingEngines（双引擎收口），并在发出后有界复核一次。
+  const token = ++pauseVerifyToken
+  if (Platform.OS != 'ios') return fadeOutThenPause(pausePlayingEngines)
+  await fadeOutThenPause(pausePlayingEngines)
+  setTimeout(() => {
+    if (token != pauseVerifyToken) return
+    if (!playerState.isPlay) return
+    void pausePlayingEngines()
+  }, PAUSE_VERIFY_MS)
 }
 // export const skipToNext = () => TrackPlayer.skipToNext()
 export const setCurrentTime = async(time: number) => {
