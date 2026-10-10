@@ -690,7 +690,23 @@ static id LXNowPlayingApplicationObserver = nil;
 // 【第 23 轮】屏幕亮度观察者（锁屏卡片歌词时钟的「亮度证据」熄屏门，见文件后部时钟区块）
 static id LXScreenBrightnessObserver = nil;
 static NSString * const LXRemoteCommandNotificationName = @"LXRemoteCommand";
-static BOOL LXRemoteCommandHandlersInstalled = NO;
+// 【第 49 轮·幂等自愈安装（2026-10-10）】装到 MPRemoteCommandCenter 上的六个 target 的 token。
+// 第 20~48 轮这里是一个一次性守卫（BOOL，装上就再也不管）；两个事实合起来会让通路永久死亡：
+//   · RNTP 的 SwiftAudioEx 会重配同一批共享命令的 target（社区实现里常见做法是
+//     removeTarget:nil 清空再挂自己的）——它不认识本工程的 token，也没义务保留；
+//   · 一旦被清掉，一次性守卫又让本工程**永不重装** ⇒ 'remote-command' 通知链永久静默。
+// 这正是用户第 43~49 轮反复报的「前几次能点，用一段时间后按键彻底没反应」的形状：
+// 第 49 轮用户环境 iOS 18.4 / iPhone 16 Pro Max。
+// 守卫因此换成「每次同步都幂等地确认自己那一份还在」：先只删**自己上一轮的 token**
+//（token 精确删除；绝不用 removeTarget:nil —— 那会把 RNTP 的 target 一起抹掉，等于亲手
+// 打死另一条通路），再重挂六块。iOS 会把命令投递给**所有** target，重装不会顶掉 RNTP 的
+// 那一份；两条通路同时投递的重复命令由 JS 侧漏斗（src/plugins/player/service.ts 的
+// dispatchRemoteCommand）窗口去重兜住。重装本身很轻（六个空 target 的摘除与重挂），
+// 且 LXSyncRemoteCommandAvailability 只在主线程跑，不会与命令投递交错。
+static id LXRemoteCommandTargetTokens[6] = { nil, nil, nil, nil, nil, nil };
+// 本工程自己的 handler 正在执行时为 YES：此间跳过一次重装（removeTarget 掉此刻正在跑的
+// 那个 target 是未定义行为）。下一次发布（≤1s 内的状态同步）就会补上，不会漏装。
+static BOOL LXInsideRemoteCommandHandler = NO;
 static void LXBeginReceivingRemoteControlEvents(void);
 // 歌词行时钟：锚点刷新 / 清行（定义在文件后部歌词驱动区块，此处前置声明）
 static void LXRefreshNowPlayingLyricAnchor(void);
@@ -774,15 +790,25 @@ static MPRemoteCommandHandlerStatus LXHandleRemoteCommandEvent(NSString *command
   // 会在新状态上再发布一次（后写的仍是动作结果，这一句只纠正显示层，不改变播放）。
   // 放在 LXPostRemoteCommandNotification 之前：先把卡片纠正过来，再让动作发生。
   // 只对「按键」做，不碰 seek（拖动进度条会以极高频连续投递事件，逐条全量重发没有意义）。
+  // 【第 49 轮】执行期间置位 LXInsideRemoteCommandHandler：上面的 LXApplyNowPlayingInfo → ... →
+  // LXSyncRemoteCommandAvailability → LXInstallRemoteCommandHandlers 这条链会走到幂等重装，
+  // 必须跳过 —— 不能把此刻正在跑的这个 target 从命令上摘下来。
+  LXInsideRemoteCommandHandler = YES;
   LXApplyNowPlayingInfo();
   LXPostRemoteCommandNotification(command, nil);
+  LXInsideRemoteCommandHandler = NO;
   return MPRemoteCommandHandlerStatusSuccess;
 }
 
 static MPRemoteCommandHandlerStatus LXHandleRemoteChangePlaybackPositionEvent(MPChangePlaybackPositionCommandEvent *event) {
+  // 【第 49 轮】同 LXHandleRemoteCommandEvent：执行期间不许重装（本函数虽不再调
+  // LXApplyNowPlayingInfo，但下面一行会同步走到 JS，往后再有 native → apply 的调用时
+  // 这个标记同样兜住；置位/复位成对，任何路径都不会把它留在 YES）。
+  LXInsideRemoteCommandHandler = YES;
   LXPostRemoteCommandNotification(@"seek", @{
     @"position": @(event.positionTime),
   });
+  LXInsideRemoteCommandHandler = NO;
   return MPRemoteCommandHandlerStatusSuccess;
 }
 
@@ -792,32 +818,66 @@ static NSMutableDictionary *LXNowPlayingMutableInfo(void) {
 }
 
 static void LXInstallRemoteCommandHandlers(void) {
-  if (LXRemoteCommandHandlersInstalled) return;
+  // 【第 49 轮·幂等自愈安装（2026-10-10）】不再是「装上就走」的一次性安装：每次调用都
+  // 先摘掉自己上一轮装的那六个 target（token 精确删除），再重挂一遍。说明见
+  // LXRemoteCommandTargetTokens 处的长注释 —— 目的只有一个：哪怕 RNTP 的
+  // SwiftAudioEx 在某次重配里把共享命令的 target 清了，本工程的通路也会在下一次同步
+  // （≤1s）自愈回位，而不是像一次性守卫那样永久死亡。
+  // 正在执行本工程 handler 时跳过（不能摘掉此刻正在跑的那个 target）。
+  if (LXInsideRemoteCommandHandler) return;
 
   MPRemoteCommandCenter *commandCenter = [MPRemoteCommandCenter sharedCommandCenter];
-  [commandCenter.playCommand addTargetWithHandler:^MPRemoteCommandHandlerStatus(MPRemoteCommandEvent * _Nonnull event) {
+  // 摘自己上一轮的那六个。绝不能写 removeTarget:nil —— 那会连 RNTP 的 target 一起清掉，
+  // 等于亲手把另一条通路打死（而「另一条通路」正是参考工程锁屏可用的承载者）。
+  if (LXRemoteCommandTargetTokens[0] != nil) {
+    [commandCenter.playCommand removeTarget:LXRemoteCommandTargetTokens[0]];
+    LXRemoteCommandTargetTokens[0] = nil;
+  }
+  if (LXRemoteCommandTargetTokens[1] != nil) {
+    [commandCenter.pauseCommand removeTarget:LXRemoteCommandTargetTokens[1]];
+    LXRemoteCommandTargetTokens[1] = nil;
+  }
+  if (LXRemoteCommandTargetTokens[2] != nil) {
+    [commandCenter.togglePlayPauseCommand removeTarget:LXRemoteCommandTargetTokens[2]];
+    LXRemoteCommandTargetTokens[2] = nil;
+  }
+  if (LXRemoteCommandTargetTokens[3] != nil) {
+    [commandCenter.nextTrackCommand removeTarget:LXRemoteCommandTargetTokens[3]];
+    LXRemoteCommandTargetTokens[3] = nil;
+  }
+  if (LXRemoteCommandTargetTokens[4] != nil) {
+    [commandCenter.previousTrackCommand removeTarget:LXRemoteCommandTargetTokens[4]];
+    LXRemoteCommandTargetTokens[4] = nil;
+  }
+  if (LXRemoteCommandTargetTokens[5] != nil) {
+    [commandCenter.changePlaybackPositionCommand removeTarget:LXRemoteCommandTargetTokens[5]];
+    LXRemoteCommandTargetTokens[5] = nil;
+  }
+
+  LXRemoteCommandTargetTokens[0] = [commandCenter.playCommand addTargetWithHandler:^MPRemoteCommandHandlerStatus(MPRemoteCommandEvent * _Nonnull event) {
     return LXHandleRemoteCommandEvent(@"play");
   }];
-  [commandCenter.pauseCommand addTargetWithHandler:^MPRemoteCommandHandlerStatus(MPRemoteCommandEvent * _Nonnull event) {
+  LXRemoteCommandTargetTokens[1] = [commandCenter.pauseCommand addTargetWithHandler:^MPRemoteCommandHandlerStatus(MPRemoteCommandEvent * _Nonnull event) {
     return LXHandleRemoteCommandEvent(@"pause");
   }];
-  [commandCenter.togglePlayPauseCommand addTargetWithHandler:^MPRemoteCommandHandlerStatus(MPRemoteCommandEvent * _Nonnull event) {
+  LXRemoteCommandTargetTokens[2] = [commandCenter.togglePlayPauseCommand addTargetWithHandler:^MPRemoteCommandHandlerStatus(MPRemoteCommandEvent * _Nonnull event) {
     return LXHandleRemoteCommandEvent(@"toggle");
   }];
-  [commandCenter.nextTrackCommand addTargetWithHandler:^MPRemoteCommandHandlerStatus(MPRemoteCommandEvent * _Nonnull event) {
+  LXRemoteCommandTargetTokens[3] = [commandCenter.nextTrackCommand addTargetWithHandler:^MPRemoteCommandHandlerStatus(MPRemoteCommandEvent * _Nonnull event) {
     return LXHandleRemoteCommandEvent(@"next");
   }];
-  [commandCenter.previousTrackCommand addTargetWithHandler:^MPRemoteCommandHandlerStatus(MPRemoteCommandEvent * _Nonnull event) {
+  LXRemoteCommandTargetTokens[4] = [commandCenter.previousTrackCommand addTargetWithHandler:^MPRemoteCommandHandlerStatus(MPRemoteCommandEvent * _Nonnull event) {
     return LXHandleRemoteCommandEvent(@"previous");
   }];
-  [commandCenter.changePlaybackPositionCommand addTargetWithHandler:^MPRemoteCommandHandlerStatus(MPRemoteCommandEvent * _Nonnull event) {
+  LXRemoteCommandTargetTokens[5] = [commandCenter.changePlaybackPositionCommand addTargetWithHandler:^MPRemoteCommandHandlerStatus(MPRemoteCommandEvent * _Nonnull event) {
     if (![event isKindOfClass:[MPChangePlaybackPositionCommandEvent class]]) return MPRemoteCommandHandlerStatusCommandFailed;
     return LXHandleRemoteChangePlaybackPositionEvent((MPChangePlaybackPositionCommandEvent *)event);
   }];
-  LXRemoteCommandHandlersInstalled = YES;
 }
 
 static void LXSyncRemoteCommandAvailability(void) {
+  // 【第 49 轮】每一拍都幂等重装一次（自愈）：见 LXRemoteCommandTargetTokens 的说明 ——
+  // 只摘自己上一轮的 token 再重挂，不碰 RNTP 的那一份；没有一次性守卫会把通路锁死。
   LXInstallRemoteCommandHandlers();
 
   MPRemoteCommandCenter *commandCenter = [MPRemoteCommandCenter sharedCommandCenter];
