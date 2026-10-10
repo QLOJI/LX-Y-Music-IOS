@@ -82,6 +82,16 @@ export const buildActiveThemeColors = (theme: LX.Theme): LX.ActiveTheme => {
     'c-primary-background': theme.config.themeColors['c-primary-light-400-alpha-700'],
     'c-primary-background-hover': theme.config.themeColors['c-primary-light-300-alpha-800'],
     'c-primary-background-active': theme.config.themeColors['c-primary-light-100-alpha-800'],
+    // 【第 46 轮】歌曲行（单选 / 全选 / 播放中）的背景底纹。原先行底纹直接复用
+    // c-primary-background-hover（= c-primary-light-300-alpha-800，只有 20% alpha），
+    // 用户第 46 轮第 3 条：「这个软件所有单选和全选歌曲或者播放歌曲时歌曲列的背景底纹
+    // 显示有点淡了，可以通过加深一点的方法解决」——深一档到 40%（调色板 alpha-600 档，
+    // 与 c-button-background-hover 同一档，是既有的一档而不是新造的颜色）。
+    // 为什么不直接加深 c-primary-background-hover：那个 token 还兼着**非行面**的底色
+    // （评论输入框 / 发送按钮 / 首页入口行按下态 / 回复条，见 CommentInput、FeatureGrid），
+    // 一起加深会把无关界面一并染色。图片底纹是半透明叠加，20% 的淡色照片底下几乎看不出来，
+    // 40% 才让「选中 / 播放中」这一行真的立起来。
+    'c-list-item-background-selected': theme.config.themeColors['c-primary-light-300-alpha-600'],
     'c-primary-input-background': theme.config.themeColors['c-primary-light-400-alpha-700'],
     'c-button-font': theme.config.themeColors['c-primary-alpha-100'],
     'c-button-font-selected': theme.config.themeColors['c-primary-dark-100-alpha-100'],

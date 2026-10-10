@@ -265,6 +265,11 @@ const state: InitState = {
     'c-primary-background': theme['c-primary-light-400-alpha-700'],
     'c-primary-background-hover': theme['c-primary-light-300-alpha-800'],
     'c-primary-background-active': theme['c-primary-light-100-alpha-800'],
+    // 【第 46 轮】歌曲行（单选 / 全选 / 播放中）的背景底纹：与 buildActiveThemeColors
+    // （theme/themes/index.ts）同源同值 —— 这里是主题加载完成前的初始值，两份必须一致，
+    // 否则首帧与热更新后行底纹深浅会跳一下。取值 40% alpha（比原先复用的
+    // c-primary-background-hover 的 20% 深一档），见该处注释。
+    'c-list-item-background-selected': theme['c-primary-light-300-alpha-600'],
     'c-primary-input-background': theme['c-primary-light-400-alpha-700'],
     'c-button-font': theme['c-primary-alpha-100'],
     'c-button-font-selected': theme['c-primary-dark-100-alpha-100'],

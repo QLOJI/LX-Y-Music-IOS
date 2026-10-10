@@ -270,6 +270,10 @@ declare global {
       'c-primary-background': string
       'c-primary-background-hover': string
       'c-primary-background-active': string
+      // 【第 46 轮】歌曲行（单选 / 全选 / 播放中）的背景底纹：单列一个语义 token，
+      // 只有歌曲行消费——不直接加深 c-primary-background-hover，那一个还兼着评论输入框
+      // 底色、发送按钮、首页入口行按下态等非行面（见 CommentInput / FeatureGrid）。
+      'c-list-item-background-selected': string
       'c-primary-input-background': string
       'c-button-font': string
       'c-button-font-selected': string
