@@ -113,12 +113,16 @@ export default forwardRef<MultipleModeBarType, MultipleModeBarProps>(
         height: MULTI_SELECT_BAR_HEIGHT,
         // 悬浮在迷你播放器胶囊上方：底边 = 播放器**顶边**（紧贴，零缝）
         bottom: aboveMiniPlayerBottom,
-        backgroundColor: theme['c-content-background'],
-        borderColor: theme['c-border-background'],
+        // 【第 46 轮】整条选择栏（长按歌曲后浮出来的那条）此前底色/边框都是不透明色，
+        // 绕过了「主题设置 → 按钮透明度」——用户第 46 轮第 2 条要的正是这条栏能跟着那个设置走。
+        // 只改颜色 alpha，不用容器 style.opacity：容器 opacity 已经被下面的入场动画
+        // （animFade 0→0.92，native driver）占着，再叠一个会互相抢同一个属性。
+        backgroundColor: applyOpacity(theme['c-content-background'], buttonOpacity),
+        borderColor: applyOpacity(theme['c-border-background'], buttonOpacity),
         opacity: animFade, // Bind opacity to animated value
         transform: [{ translateY: animTranslateY }],
       }),
-      [animFade, animTranslateY, theme, aboveMiniPlayerBottom],
+      [animFade, animTranslateY, theme, aboveMiniPlayerBottom, buttonOpacity],
     )
 
     const handleSelectAll = useCallback(() => {
