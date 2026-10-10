@@ -75,6 +75,23 @@
  *   配套：LXApplyNowPlayingInfo 定义在文件后部、调用点在前部，必须有且仅有一处前置声明
  *   （不变量 F ①；缺了就是隐式声明，ARC 下编译不过）。
  *
+ * 【第 46 轮】用户原话（第 1 条）：「锁屏和灵动岛界面的按钮点击后没有任何反应，进度时间没有
+ * 按秒加载，而是按歌词换行才跳转，右上角的音频可视化也没有正常显示，我怀疑是因为之前做优化
+ * 整体代码，去除冗余代码无用代码时，去除过头了，把主要的代码给删掉了，请分析，怎么可以解决
+ * 这个问题，确保锁屏和灵动岛界面的所有功能正常刷新显示，按钮，音频可视化，歌词，进度条等，
+ * 按照每秒刷新」。
+ *   「按歌词换行才跳转」不是「代码被删多了」，而是本文件 LXNowPlayingLyricStep 的既有机制：
+ *   卡片进度读 info 里的 ElapsedPlaybackTime + PlaybackRate，而这一对**只在歌词换行时**才被
+ *   写回并重发（4Hz 位置事件只在前台发；熄屏时时钟还被 LXIsScreenTrustedOff 停掉）；没有歌词
+ *   的歌更是一整首都不动（`LXNowPlayingLyricLines.count == 0` 早退，走不到换行那一段）。
+ *   本轮补 ⑧（不变量 G）：沿用既有 0.12s 时钟、按 ~1Hz 节流（9 拍 ≈1.08s，不新建定时器、
+ *   不新增唤醒源），把外推位置写回缓存 + 走唯一写入口全量重发，位置与快照戳成对更新；
+ *   只在「真在播放」且「没有外推冻结」时跳（ClockHold 期间位置冻结，每秒写回冻结值会让
+ *   进度条每秒往回跳一格）。
+ *   注意与第 43 轮删掉的「1s 可用性看门狗」的区别：那条只重写六个 enabled、不重发
+ *   info / playbackState，会把显示态/启停态的分叉钉死（不变量 C ④ 仍然禁用它）；本心跳写的是
+ *   外推位置、走唯一写入口，显示层与启停层在同一次主线程写入里一起对齐。
+ *
  * 反例专盯「回归 tsc / eslint 都无感」的部分：原生不参与 TS 检查，把判据改回按播放态单算、
  * 漏一句 beginReceivingRemoteControlEvents、把主线程闸门删掉、让看门狗回来、
  * 或又把 playbackState 翻转加回来，静态检查与单测全都看不见。
@@ -520,6 +537,129 @@ const tapResyncInvariants = (raw) => {
 }
 
 // ---------------------------------------------------------------------------
+// 不变量 G：锁屏 / 灵动岛卡片进度「每秒对表」（第 46 轮第 1 条）
+//
+// 用户原话（第 46 轮第 1 条）：「锁屏和灵动岛界面的按钮点击后没有任何反应，进度时间没有按秒
+// 加载，而是按歌词换行才跳转，右上角的音频可视化也没有正常显示……确保锁屏和灵动岛界面的
+// 所有功能正常刷新显示，按钮，音频可视化，歌词，进度条等，按照每秒刷新」。
+//
+// 机制根因（第 46 轮查明）：卡片左侧已播放时间 / 右侧倒计时读的是 info 里的
+// ElapsedPlaybackTime + PlaybackRate。LXNowPlayingLyricStep 此前**只在歌词换行时**才把外推
+// 位置写回缓存并重发；4Hz 位置事件只在前台发；熄屏时歌词时钟还会被 LXIsScreenTrustedOff
+// 停掉。于是锁屏期间进度基线只随歌词换行前进（= 用户看到的「按歌词换行才跳转」），
+// 没有歌词的歌更是一整首都不动（`LXNowPlayingLyricLines.count == 0` 早退，走不到换行那一段）。
+//
+// 修法：沿用既有 0.12s 时钟、按 ~1Hz 节流（9 拍 ≈1.08s），把外推位置写回缓存、走唯一写入口
+// 全量重发（info / playbackState / 六个 enabled 同刻同源），位置与快照戳成对更新；只在
+// 「真在播放」且「没有外推冻结」时跳 —— LXNowPlayingClockHold（缓冲 / 停走）期间位置被冻结，
+// 每秒把冻结值写回去会让进度条每秒往回跳一格。不新建定时器、不新增唤醒源（第 42 轮省电口径）。
+//
+// 与第 43 轮删掉的「1s 可用性看门狗」的区别（别混为一谈）：那条**只重写六个 enabled**、
+// 不重发 info / playbackState，会把「卡片显示 ⏸ 而 pauseCommand 已被关掉」这类显示态/启停态
+// 分叉**钉死**；本心跳写的是外推位置、且走唯一写入口，显示层与启停层在同一次主线程写入里
+// 一起对齐 —— 只会让卡片更接近真相，钉不死任何分叉。
+// ---------------------------------------------------------------------------
+
+// 被断言的节流判据原文（下面多处复用，改一处即全改）
+const HEARTBEAT_THROTTLE = 'elapsedRefreshNowMs - LXNowPlayingElapsedRefreshAtMs >= 1000.0'
+// 心跳块的完整原文：反例按「整块删 / 整块搬家」篡改，这里必须与 AppDelegate.mm 逐字一致
+// （不一致时 tamper 会抛「锚点未命中」= 响亮失败，不会静默假绿）。
+const HEARTBEAT_BLOCK =
+  '    if (!paused && !LXNowPlayingClockHold && ' + HEARTBEAT_THROTTLE + ') {\n' +
+  '      LXNowPlayingElapsedRefreshAtMs = elapsedRefreshNowMs;\n' +
+  '      LXNowPlayingInfoCache[MPNowPlayingInfoPropertyElapsedPlaybackTime] = @(positionMs / 1000.0);\n' +
+  '      LXNowPlayingElapsedSnapshotAtMs = elapsedRefreshNowMs;\n' +
+  '      LXApplyNowPlayingInfo();\n' +
+  '    }\n'
+
+const elapsedHeartbeatInvariants = (raw) => {
+  const reasons = []
+  const code = stripComments(raw)
+  const body = extractBracedBody(raw, 'static void LXNowPlayingLyricStep(void)')
+  if (!body) {
+    reasons.push('LXNowPlayingLyricStep 缺失或抽取失败（锚点漂移）')
+    return reasons
+  }
+  const step = stripComments(body)
+
+  // ① 对表时钟戳只许声明一处（多处 = 有人另起了一条刷新链路）
+  const decls = code.match(/static double LXNowPlayingElapsedRefreshAtMs = 0;/g) || []
+  if (decls.length !== 1) {
+    reasons.push(`LXNowPlayingElapsedRefreshAtMs 声明 ${decls.length} 处（应恰好一处 —— 多出来的每一处都是绕过这条心跳的旁路）`)
+  }
+
+  // ② 节流判据：距上次对表 ≥ 1000ms（用户要的就是「按照每秒刷新」）
+  if (!step.includes(HEARTBEAT_THROTTLE)) {
+    reasons.push(`每秒对表的节流判据丢了（缺 \`${HEARTBEAT_THROTTLE}\` —— 闸门没了这句就会退化成 8.3Hz 每拍全量重发：用户要的「每秒」不成立，第 42 轮的省电口径也当场作废）`)
+  }
+
+  // ③ 守卫：暂停 + 外推冻结都不许跳
+  const guard = 'if (!paused && !LXNowPlayingClockHold && ' + HEARTBEAT_THROTTLE + ') {'
+  if (!step.includes(guard)) {
+    reasons.push(`每秒对表的守卫不完整（必须是 \`${guard}\` —— 少了 !paused：暂停期间每秒重发会让卡片进度继续走；少了 !LXNowPlayingClockHold：缓冲 / 停走期间位置被冻结，每秒把冻结值写回去会让进度条每秒往回跳一格）`)
+  }
+
+  // ④ 写回的值必须是外推的「现在」
+  if (!step.includes('LXNowPlayingInfoCache[MPNowPlayingInfoPropertyElapsedPlaybackTime] = @(positionMs / 1000.0);')) {
+    reasons.push('每秒对表没有把外推位置写回 ElapsedPlaybackTime（卡片进度读的就是这一条 —— 不写回等于没对表）')
+  }
+  // ⑤ 位置与快照戳成对更新（歌词锚点读的是这一对，值推进而戳不动会把歌词时钟推超前）
+  if (!step.includes('LXNowPlayingElapsedSnapshotAtMs = elapsedRefreshNowMs;')) {
+    reasons.push('每秒对表只推了位置、没推快照戳（歌词锚点读的是 (ElapsedPlaybackTime, LXNowPlayingElapsedSnapshotAtMs) 这一对：值推进而戳不动，重锚时会把歌词时钟推超前）')
+  }
+  // ⑥ 必须走唯一写入口：歌词时钟里不许出现任何 info / 命令对象的直写
+  for (const forbidden of [
+    'center.nowPlayingInfo',
+    'center.playbackState',
+    '.enabled',
+    '[MPNowPlayingInfoCenter',
+    '[MPRemoteCommandCenter',
+    'LXSyncRemoteCommandAvailability',
+  ]) {
+    if (step.includes(forbidden)) {
+      reasons.push(`歌词时钟里出现了 ${forbidden}（必须走唯一写入口 LXApplyNowPlayingInfo —— 绕过主线程闸门直写 info / 命令 enabled 正是第 43 轮「用一段时间后就不行」的成因）`)
+    }
+  }
+  // ⑦ 不新建定时器 / 延时（第 46 轮口径：复用既有 0.12s 拍，不新增唤醒源）
+  if (/dispatch_source_create|NSTimer|dispatch_after/.test(step)) {
+    reasons.push('歌词时钟里出现了新的定时器 / 延时（第 46 轮口径是「复用既有 0.12s 拍」——不新建唤醒源，第 42 轮省电口径）')
+  }
+
+  // ⑧ 次序：节流判据 → 写位置 → 推快照戳 → 重发（写必须在闸门里，发必须在戳之后）
+  const iThrottle = step.indexOf(HEARTBEAT_THROTTLE)
+  const iWrite = step.indexOf('LXNowPlayingInfoCache[MPNowPlayingInfoPropertyElapsedPlaybackTime] = @(positionMs / 1000.0);')
+  const iStamp = step.indexOf('LXNowPlayingElapsedSnapshotAtMs = elapsedRefreshNowMs;')
+  const iApply = iStamp >= 0 ? step.indexOf('LXApplyNowPlayingInfo();', iStamp) : -1
+  if (iThrottle >= 0 && iWrite >= 0 && iWrite < iThrottle) {
+    reasons.push('整条写回落在节流判据之外（每次 8.3Hz 拍都会全量重发 —— 省电口径回归）')
+  }
+  if (iStamp >= 0 && (iApply < 0 || iApply < iStamp)) {
+    reasons.push('每秒对表没有在「位置 + 快照戳」成对更新之后走 LXApplyNowPlayingInfo 重发（只写缓存不发出去，系统看到的还是旧进度）')
+  }
+
+  // ⑨ 位置：必须在「无歌词早退」之前，也不能落进「仅前台」的位置事件分支 ——
+  //    否则无歌词的歌整首不刷新 / 锁屏（非前台）时根本跑不到
+  const iEarly = step.indexOf('if (LXNowPlayingLyricLines.count == 0) return;')
+  if (iThrottle < 0 || iEarly < 0 || iThrottle > iEarly) {
+    reasons.push('每秒对表落在「无歌词早退」之后（没有歌词的歌整首都不刷新 —— 用户报的「按歌词换行才跳转」就是这个机制；心跳必须在 `if (LXNowPlayingLyricLines.count == 0) return;` 之前）')
+  }
+  const iAppGate = step.indexOf('if (!paused && [UIApplication sharedApplication].applicationState == UIApplicationStateActive) {')
+  if (iThrottle >= 0 && iAppGate >= 0 && iThrottle > iAppGate) {
+    reasons.push('每秒对表落进了「仅前台」的位置事件分支（锁屏 / 后台时根本跑不到 —— 用户要的正是锁屏上按秒刷新）')
+  }
+
+  // ⑩ 拍长：1000ms 闸门要真的等于「约每秒」，时钟拍必须 ≤0.5s
+  const m = /dispatch_source_set_timer\(timer,\s*\n\s*dispatch_time\(DISPATCH_TIME_NOW, \(int64_t\)\(([0-9.]+) \* NSEC_PER_SEC\)\)/.exec(code)
+  if (m == null) {
+    reasons.push('找不到歌词时钟的周期（锚点漂移：dispatch_source_set_timer 的 dispatch_time 行）')
+  } else if (Number(m[1]) > 0.5) {
+    reasons.push(`歌词时钟周期被拉长到 ${m[1]}s（1s 节流需要拍长 ≤0.5s，否则最坏要等两个整数拍 ⇒ 刷新间隔超过 1s，用户要的「按照每秒刷新」不成立）`)
+  }
+
+  return reasons
+}
+
+// ---------------------------------------------------------------------------
 // 反例（对篡改后的源码跑同一套判断，必须被拦下）
 // ---------------------------------------------------------------------------
 
@@ -681,6 +821,52 @@ const runCounterExamples = () => {
     '')),
   '前置声明')
 
+  // ---- 第 46 轮：每秒对表（g1~g8）----
+  // g1 整块心跳被删（回到「只在歌词换行时更新进度」）→ 报「每秒对表」
+  check('g1 每秒对表被整块删掉', () => elapsedHeartbeatInvariants(tamper(REAL_APPDELEGATE,
+    HEARTBEAT_BLOCK, '')),
+  '每秒对表')
+
+  // g2 守卫漏掉「外推冻结」（缓冲 / 停走期间每秒把冻结值写回去，进度条每秒往回跳一格）→ 报守卫
+  check('g2 守卫漏掉 LXNowPlayingClockHold', () => elapsedHeartbeatInvariants(tamper(REAL_APPDELEGATE,
+    'if (!paused && !LXNowPlayingClockHold && ' + HEARTBEAT_THROTTLE,
+    'if (!paused && ' + HEARTBEAT_THROTTLE)),
+  '守卫不完整')
+
+  // g3 心跳被挪到「无歌词早退」之后（无歌词的歌整首不刷新）→ 报「无歌词早退」
+  check('g3 心跳被挪到无歌词早退之后', () => elapsedHeartbeatInvariants(tamper(REAL_APPDELEGATE,
+    HEARTBEAT_BLOCK,
+    '    if (LXNowPlayingLyricLines.count == 0) return;\n' + HEARTBEAT_BLOCK)),
+  '无歌词早退')
+
+  // g4 节流闸门被删（退化成 8.3Hz 每拍全量重发）→ 报「节流判据」
+  check('g4 节流闸门被删', () => elapsedHeartbeatInvariants(tamper(REAL_APPDELEGATE,
+    '    if (!paused && !LXNowPlayingClockHold && ' + HEARTBEAT_THROTTLE + ') {\n', '')),
+  '节流判据')
+
+  // g5 只推位置不推快照戳（歌词锚点重锚时把时钟推超前）→ 报「快照戳」
+  check('g5 只推位置不推快照戳', () => elapsedHeartbeatInvariants(tamper(REAL_APPDELEGATE,
+    '      LXNowPlayingElapsedSnapshotAtMs = elapsedRefreshNowMs;\n', '')),
+  '快照戳')
+
+  // g6 心跳绕过唯一写入口直接写 info（第 43 轮现象的成因写法）→ 报「唯一写入口」
+  check('g6 心跳绕过唯一写入口直写 info', () => elapsedHeartbeatInvariants(tamper(REAL_APPDELEGATE,
+    '      LXNowPlayingElapsedSnapshotAtMs = elapsedRefreshNowMs;\n      LXApplyNowPlayingInfo();\n',
+    '      LXNowPlayingElapsedSnapshotAtMs = elapsedRefreshNowMs;\n      [MPNowPlayingInfoCenter defaultCenter].nowPlayingInfo = [LXNowPlayingInfoCache copy];\n')),
+  '唯一写入口')
+
+  // g7 心跳被塞进「仅前台」分支（锁屏时跑不到 —— 正是用户报的那个场景）→ 报「仅前台」
+  check('g7 心跳被塞进仅前台分支', () => elapsedHeartbeatInvariants(tamper(
+    tamper(REAL_APPDELEGATE, HEARTBEAT_BLOCK, ''),
+    '    if (!paused && [UIApplication sharedApplication].applicationState == UIApplicationStateActive) {\n',
+    '    if (!paused && [UIApplication sharedApplication].applicationState == UIApplicationStateActive) {\n' + HEARTBEAT_BLOCK)),
+  '仅前台')
+
+  // g8 时钟拍长被拉长到 2s（1s 闸门最坏要等两个整数拍 ⇒ 刷新间隔超过 1s）→ 报「周期被拉长」
+  check('g8 时钟拍长被拉长到 2s', () => elapsedHeartbeatInvariants(tamper(REAL_APPDELEGATE,
+    '(int64_t)(0.12 * NSEC_PER_SEC)', '(int64_t)(2 * NSEC_PER_SEC)')),
+  '周期被拉长')
+
   return results
 }
 
@@ -696,6 +882,7 @@ const checks = [
   ['原生：写入一律主线程 + 无看门狗 + 无会话拆除 + 播放键先抢会话（第 43 轮）', () => mainThreadInvariants(REAL_APPDELEGATE)],
   ['原生：发布前速率与播放态同源（卡片显示 ⟺ 命令启停，第 44 轮）', () => rateStateInvariants(REAL_APPDELEGATE)],
   ['原生：按下即对表 + 锁屏那一刻对表（第 45 轮，含前置声明）', () => tapResyncInvariants(REAL_APPDELEGATE)],
+  ['原生：锁屏 / 灵动岛卡片进度每秒对表（第 46 轮第 1 条）', () => elapsedHeartbeatInvariants(REAL_APPDELEGATE)],
   ['JS：pause 只在真的会暂停时落闸（六命令覆盖 + 去重窗口）', () => remoteInvariants(REAL_REMOTE)],
 ]
 

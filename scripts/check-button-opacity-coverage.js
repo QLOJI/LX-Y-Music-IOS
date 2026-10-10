@@ -134,6 +134,12 @@ const REQUIRED = [
   ['src/components/MusicAddModal/List.tsx', '「新建歌单」虚线按钮'],
   ['src/components/MusicMultiAddModal/List.tsx', '「新建歌单」虚线按钮'],
   ['src/screens/Home/Views/PlayHistory/index.tsx', '播放历史页日期栏与日期选择弹层按钮'],
+  // 【第 46 轮·图二/图三】用户原话：「播放历史界面，长按歌曲后出现的选择栏，可以到主题设置的
+  // 按钮透明度进行设置」——长按浮出的多选选择栏（单选 / 区间 / 下载 / 全选 / 取消）此前只有
+  // 「单选 / 区间」两颗芯片跟设置，整条栏的底色 / 边框是不透明的（歌单版更是把底色注释掉了、
+  // 只剩一条不透明底边框），于是整条栏看起来不受「按钮透明度」影响。
+  ['src/components/OnlineList/MultipleModeBar.tsx', '播放历史 / 在线列表长按浮出的多选选择栏'],
+  ['src/screens/Home/Views/Mylist/MusicList/MultipleModeBar.tsx', '歌单长按浮出的多选选择栏'],
 ]
 
 const checkRequired = (files) => {
@@ -160,6 +166,34 @@ const checkRequired = (files) => {
   return hits
 }
 
+// E. 【第 46 轮】长按歌曲后浮出的「多选选择栏」：整条栏都要跟着按钮透明度走。
+//    C 只检查「文件里存在 applyOpacity(..., buttonOpacity)」——两颗模式芯片早就满足它，
+//    而条容器本体的底色 / 边框仍是不透明色，用户看到的正是「这条栏不受按钮透明度影响」。
+//    这里逐串钉死条容器那几行（整条栏一起淡，才叫「可以到主题设置的按钮透明度进行设置」）。
+const checkMultiSelectBarOpacity = (files) => {
+  const get = (p) => {
+    const hit = files.find((f) => f.path === p)
+    return hit && hit.text
+  }
+  const hits = []
+  const need = (file, what, subs) => {
+    const raw = get(file)
+    if (!raw) { hits.push(`${what}：文件不存在 ${file}`); return }
+    const text = stripComments(raw)
+    for (const s of subs) {
+      if (!text.includes(s)) hits.push(`${what}（${file}）缺 ${s} —— 选择栏这一处又变回不透明 / 不跟设置`)
+    }
+  }
+  need('src/components/OnlineList/MultipleModeBar.tsx', '在线列表多选选择栏条体', [
+    "backgroundColor: applyOpacity(theme['c-content-background'], buttonOpacity),",
+    "borderColor: applyOpacity(theme['c-border-background'], buttonOpacity),",
+  ])
+  need('src/screens/Home/Views/Mylist/MusicList/MultipleModeBar.tsx', '歌单多选选择栏条体', [
+    "borderBottomColor: applyOpacity(theme['c-border-background'], buttonOpacity),",
+  ])
+  return hits
+}
+
 // ---------------------------------------------------------------------------
 // 运行
 // ---------------------------------------------------------------------------
@@ -177,6 +211,10 @@ assertions.push({
 assertions.push({
   name: 'C 用户点名的按钮表面仍在接线状态',
   hits: checkRequired(FILES),
+})
+assertions.push({
+  name: 'E 【第 46 轮】长按浮出的多选选择栏：整条栏体（底色 / 边框）也随按钮透明度',
+  hits: checkMultiSelectBarOpacity(FILES),
 })
 
 // D. 反例自检
@@ -223,6 +261,17 @@ CE('C7 三元分支里的按钮令牌退回裸用（歌单类型切换按钮）'
     "? theme['c-button-background-active'] : theme['c-button-background']")),
 checkRawButtonTokens, 'MusicAddModal.tsx')
 
+// 【第 46 轮】选择栏条体退回不透明（两颗模式芯片仍接着线 ⇒ C 抓不到，必须由 E 拦）
+CE('E1 在线列表选择栏条体退回不透明底色', tamperFiles('src/components/OnlineList/MultipleModeBar.tsx',
+  (t) => t.replace("backgroundColor: applyOpacity(theme['c-content-background'], buttonOpacity),",
+    "backgroundColor: theme['c-content-background'],")),
+checkMultiSelectBarOpacity, '在线列表多选选择栏条体')
+
+CE('E2 歌单选择栏条体边框退回不透明', tamperFiles('src/screens/Home/Views/Mylist/MusicList/MultipleModeBar.tsx',
+  (t) => t.replace("borderBottomColor: applyOpacity(theme['c-border-background'], buttonOpacity),",
+    "borderBottomColor: theme['c-border-background'],")),
+checkMultiSelectBarOpacity, '歌单多选选择栏条体')
+
 // ---------------------------------------------------------------------------
 // 输出
 // ---------------------------------------------------------------------------
@@ -232,6 +281,7 @@ console.log('='.repeat(92))
 console.log('  A 纯按钮令牌必须走 applyOpacity（不能直接当底色/边框色）')
 console.log('  B import / const buttonOpacity 声明完整，且第二参不是写死常量')
 console.log('  C 用户点名的表面（推荐胶囊 / 每日推荐 / 最新最热 / 歌单三键 / 详情栏 / 四个滑条）仍在接线')
+console.log('  E 长按浮出的多选选择栏（第 46 轮）：整条栏体也随按钮透明度')
 console.log()
 
 console.log('='.repeat(92))

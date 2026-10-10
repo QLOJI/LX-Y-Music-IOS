@@ -14,6 +14,9 @@
  *        此前只有 isPlaying 那一支套了 applyOpacity，未播放行写死不透明的
  *        theme['c-content-background'] —— 与第 22 轮「本地与下载」列表同一个 bug
  *        （当时的原话是「点击歌曲后才正常显示」，见 sim-localdownload-row-opacity.js）。
+ *        【第 46 轮】播放中那一支的底色 token 由 c-primary-background-hover 换成歌曲行专用的
+ *        c-list-item-background-selected（底纹加深一档；那只 hover token 仍兼着评论输入框等
+ *        非行面，不能直接加深）。形状口径不变 —— 仍然包在同一个 applyOpacity(…, buttonOpacity) 里。
  *   条二 封面：列表行走**逐行按需**链路（useCoverUrl → core/music/coverUrl.ts 的缓存 + 并发队列），
  *        并删掉原先「进列表 / 扫描完 / 播放后」对整份列表跑 4 worker 的 fetchWebDAVPic 批量下载
  *        （325 首 = 325 次请求）。只有真正渲染出来的行才发请求，并发上限仍在 coverUrl.ts
@@ -286,15 +289,17 @@ const runCounterExamples = () => {
   }
 
   // c1 未播放行底色退回不透明（= 第 25 轮用户截图里那个写法：只有播放中那一支包了 applyOpacity）
+  // 锚点里的播放中 token 第 46 轮换成了歌曲行专用 token（c-list-item-background-selected），
+  // 反例照旧只改「形状」、不改 token 名。
   check('c1 未播放行退回不透明底色', () => rowOpacityInvariants(tamper(REAL.page,
-    "          backgroundColor: applyOpacity(\n            isPlaying ? theme['c-primary-background-hover'] : theme['c-content-background'],\n            buttonOpacity,\n          ),",
-    "          backgroundColor: isPlaying\n            ? applyOpacity(theme['c-primary-background-hover'], buttonOpacity)\n            : theme['c-content-background'],")),
+    "          backgroundColor: applyOpacity(\n            isPlaying ? theme['c-list-item-background-selected'] : theme['c-content-background'],\n            buttonOpacity,\n          ),",
+    "          backgroundColor: isPlaying\n            ? applyOpacity(theme['c-list-item-background-selected'], buttonOpacity)\n            : theme['c-content-background'],")),
   '歌曲行底色未走 applyOpacity')
 
   // c1b 底色还在 wrapper 里，但未播放那一态换成了脱离主题/字面的颜色（半受控）
   check('c1b 未播放底色换成字面色', () => rowOpacityInvariants(tamper(REAL.page,
-    "            isPlaying ? theme['c-primary-background-hover'] : theme['c-content-background'],",
-    "            isPlaying ? theme['c-primary-background-hover'] : '#2b2b2b',")),
+    "            isPlaying ? theme['c-list-item-background-selected'] : theme['c-content-background'],",
+    "            isPlaying ? theme['c-list-item-background-selected'] : '#2b2b2b',")),
   '未播放行的底色没有包在同一个 applyOpacity 里')
 
   // c2 未播放行边框退回不透明
