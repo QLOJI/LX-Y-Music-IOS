@@ -1382,6 +1382,10 @@ static dispatch_queue_t LXNowPlayingLyricQueue = nil;
 static double LXNowPlayingLyricAnchorSystemMs = 0;  // CACurrentMediaTime() 毫秒
 static double LXNowPlayingLyricAnchorElapsedMs = 0; // 锚点对应的播放位置（ms）
 static NSInteger LXNowPlayingLyricIndex = -1;
+// 【第 46 轮】上一次「每秒对表」（把外推位置写回 ElapsedPlaybackTime 并全量重发）的
+// 原生时钟戳（CACurrentMediaTime 毫秒）。0 = 还没对过表（起播后第一拍立即对一次）。
+// 见 LXNowPlayingLyricStep 里的 1Hz 心跳：只把已有 tick 拿来计数，不新建定时器。
+static double LXNowPlayingElapsedRefreshAtMs = 0;
 
 // 临时诊断（定位控制中心歌词冻结，定位后置 0 关闭）：非前台时把时钟内部状态
 // 写进媒体卡片 artist 字段——D+计数前进=时钟运行且卡片可重绘；计数冻结=时钟
@@ -1510,6 +1514,38 @@ static void LXNowPlayingLyricStep(void) {
       : (LXNowPlayingClockHold
         ? LXNowPlayingLyricAnchorElapsedMs
         : LXNowPlayingLyricAnchorElapsedMs + ((CACurrentMediaTime() * 1000.0) - LXNowPlayingLyricAnchorSystemMs) * rate);
+
+    // 【第 46 轮】锁屏 / 灵动岛「每秒对表」（用户第 46 轮第 1 条：「进度时间没有按秒加载，
+    // 而是按歌词换行才跳转……确保锁屏和灵动岛界面的所有功能正常刷新显示，按钮，音频可视化，
+    // 歌词，进度条等，按照每秒刷新」）。
+    //
+    // 卡片左侧的已播放时间与右侧倒计时由 info 里的 ElapsedPlaybackTime + PlaybackRate 决定。
+    // 本函数此前**只在歌词换行时**才把外推位置写回缓存并重发（见下面「重发前刷新系统进度
+    // 基线」那一段），而 4Hz 位置事件只在前台发（下一段）、熄屏时歌词时钟还会被
+    // LXIsScreenTrustedOff 停掉 —— 于是锁屏期间卡片的进度基线只随歌词换行前进，用户看到的
+    // 就是「按歌词换行才跳转」；没有歌词的歌更是一整首都不动（下面 lines.count == 0 会早退，
+    // 根本走不到换行那一段）。
+    //
+    // 这里补一条 ~1Hz 的心跳：把当前外推位置写回缓存、走唯一写入口全量重发一次
+    // （info / playbackState / 六个 enabled 同源同刻），位置与快照戳成对更新 —— 歌词锚点读的
+    // 就是这一对（与换行段同一条约定，值推进而戳不动会把歌词时钟推超前）。
+    //
+    // 与第 43 轮删掉的「1s 可用性看门狗」的区别（关键，别混为一谈）：那条**只重写六个
+    // enabled**、不重发 info / playbackState，显示态一旦落在后面，它就把「卡片显示 ⏸ 而
+    // pauseCommand 已被关掉」这类分叉**钉死**；本心跳写的是**外推位置**、且走的是唯一写入口，
+    // 显示层与启停层在同一次主线程写入里一起对齐 —— 它只会让卡片更接近真相，钉不死任何分叉。
+    //
+    // 只在「真在播放」且「没有外推冻结」时跳：LXNowPlayingClockHold（缓冲 / 暂停停走）时
+    // 位置被冻结，每秒把冻结值写回去会让进度条每秒往回跳一格。周期按现有 tick 计数达成
+    // （时钟 0.12s，9 拍 ≈ 1.08s）：不新建定时器、不新增唤醒源（第 42 轮省电口径）。
+    double elapsedRefreshNowMs = CACurrentMediaTime() * 1000.0;
+    if (!paused && !LXNowPlayingClockHold && elapsedRefreshNowMs - LXNowPlayingElapsedRefreshAtMs >= 1000.0) {
+      LXNowPlayingElapsedRefreshAtMs = elapsedRefreshNowMs;
+      LXNowPlayingInfoCache[MPNowPlayingInfoPropertyElapsedPlaybackTime] = @(positionMs / 1000.0);
+      LXNowPlayingElapsedSnapshotAtMs = elapsedRefreshNowMs;
+      LXApplyNowPlayingInfo();
+    }
+
     // 位置事件枢纽：前台播放时把外推位置广播给 JS（4Hz 单向事件），驱动进度条等
     // UI，替代 JS 侧每 250ms 两次桥接查询（getPosition + 引擎状态）。后台/熄屏
     // 不发（无 UI 需要更新）；暂停也不发（位置不变，JS 自己知道暂停点）。
