@@ -2,6 +2,10 @@ import TrackPlayer from 'react-native-track-player'
 import { defaultUrl } from '@/config'
 import { NativeModules, Platform } from 'react-native'
 import settingState from '@/store/setting/state'
+// 【第 48 轮】Now Playing 发布漏斗的时长兜底：元数据 interval（纯 JS 数据，起播第 0 帧
+// 即知）与当前曲目信息，见 updateCurrentTrackMetadata 里的注释。
+import playerState from '@/store/player/state'
+import { getMusicIntervalDuration } from '@/core/player/timeline'
 import { seekToTime } from './seek'
 // 【第 41 轮】直写音量后要同步渐入渐出模块的「当前音量」账本（斜坡起点取自它，见 volumeFade.ts）
 import { syncVolumeFadeState } from './volumeFade'
@@ -155,6 +159,19 @@ export const updateCurrentTrackMetadata = async(metadata: {
     const nowPlayingMetadata: Parameters<typeof updateNowPlayingInfo>[0] = { ...metadata }
     if (metadata.artwork !== undefined) nowPlayingMetadata.artwork = metadata.artwork
     if (metadata.playbackRate !== undefined) nowPlayingMetadata.playbackRate = metadata.playbackRate
+    // 【第 48 轮】时长兜底（本函数是 iOS Now Playing 的**唯一**发布漏斗）：
+    // 系统进度条必须先知道总时长才画得出来 —— duration 为 0 / undefined 时锁屏与灵动岛
+    // 左右两侧都渲染 -:--、整条进度条不可拖（用户第 48 轮第 1 条的「歌曲进度、歌曲时间
+    // 都不显示」+ 第 2 条的「无法拖动进度条」）。上游任一条通路（起播首发 / 恢复曲 /
+    // 歌词逐行 / 封面迟到 / 别的调用方）漏了时长，都在这里补成元数据 interval ——
+    // 纯 JS 数据、起播第 0 帧即知，不依赖引擎上报。已有正时长时一律不动。
+    const currentDuration = typeof nowPlayingMetadata.duration == 'number' && Number.isFinite(nowPlayingMetadata.duration)
+      ? nowPlayingMetadata.duration
+      : 0
+    if (!(currentDuration > 0)) {
+      const fallbackDuration = getMusicIntervalDuration(playerState.playMusicInfo.musicInfo)
+      if (fallbackDuration > 0) nowPlayingMetadata.duration = fallbackDuration
+    }
     await updateNowPlayingInfo(nowPlayingMetadata).catch(() => {})
     return
   }

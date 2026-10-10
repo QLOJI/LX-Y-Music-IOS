@@ -133,20 +133,34 @@ const updateMetaInfo = async(mInfo: LX.Player.MusicInfo, lyric?: string, isPlayi
   // 直接 return，歌词冻结（暂停/播放一次才恢复）。每次发布都带上当前真实速率
   // （暂停时给 0），缓存与系统进度外推都不会再被写脏；原生侧同时据此把可能残留
   // 的时钟冻结标志解除。
+  // 【第 48 轮】首发即完整（用户原话：「歌曲刚开始播放时，锁屏界面的歌曲进度、歌词、
+  // 歌曲时间显示都不显示，要等到第一句歌词加载时，直接就跳到了 0:14 位置，请修复这个
+  // 问题，确保锁屏界面的歌曲进度、歌词、歌曲时间实时显示没有延迟」）：
+  //   ① duration 不再直接发 `state.prevDuration || 0`。prevDuration 靠桥接往返解析，
+  //      **首次发布**时还是 0 / -1（clearTracks 置 -1）；发出去的 0 被系统当作
+  //      「总时长未知」——锁屏左右两侧都渲染 -:--、进度条整条不可拖（67.jpg 那张），
+  //      一直要等到第一句歌词那次发布（那时 prevDuration 已解析好）才整块跳出来，
+  //      正是用户描述的「到 0:14 才整块出现」。改为走 resolveMetadataDuration：
+  //      引擎时长 → 进度模块 maxPlayTime → 元数据 interval —— 最后一级是**纯元数据**，
+  //      起播第 0 帧就已知（nativeFlac 流式路径的引擎时长恒为 0，必须靠它兜底）。
+  //   ② elapsedTime 不再「快照取不到就整个不带这个字段」（第 47 轮的写法，原意只防
+  //      「把 0 当真实位置、把歌词锚点钉回第 0 行」）：缺字段时系统同样渲染 -:--。
+  //      取不到带戳快照时退回 **JS 侧进度位置**，且不带戳 —— 原生按「就是现在」处理，
+  //      既不外推也不把锚点回放到过去：字段永远在，位置也不说谎。
   const stamped = await getPositionStamped().catch(() => null)
+  const elapsedSeconds = Number.isFinite(playerState.progress.nowPlayTime) && playerState.progress.nowPlayTime > 0
+    ? playerState.progress.nowPlayTime
+    : 0
+  const elapsedFields = stamped
+    ? { elapsedTime: stamped.position, ...elapsedSnapshotFields(stamped) }
+    : { elapsedTime: elapsedSeconds }
   const metadata = {
     title: name,
     artist: singer,
     album,
     artwork,
-    duration: state.prevDuration || 0,
-    // 位置快照取不到时**不带** elapsedTime 字段（而不是发 0）：原生把一次
-    // 「elapsedTime = 0」当作真实位置把歌词锚点钉回第 0 行（锁屏/灵动岛歌词
-    // 先跳回开头、下一拍才跳回来）。缺字段时原生退回按缓存里的 (elapsed, 戳)
-    // 重锚，不会动锚点。
-    ...(stamped
-      ? { elapsedTime: stamped.position, ...elapsedSnapshotFields(stamped) }
-      : {}),
+    duration: resolveMetadataDuration(state.prevDuration),
+    ...elapsedFields,
     ...(Platform.OS == 'ios'
       ? { playbackRate: isPlaying ? settingState.setting['player.playbackRate'] : 0 }
       : {}),

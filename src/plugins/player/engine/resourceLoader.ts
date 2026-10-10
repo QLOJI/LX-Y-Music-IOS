@@ -1,6 +1,9 @@
 import TrackPlayer from 'react-native-track-player'
 import { Platform } from 'react-native'
 import settingState from '@/store/setting/state'
+// 【第 48 轮】起播首发的时长兜底：元数据 interval 是**纯 JS 数据**，起播第 0 帧就已知，
+// 不必等引擎上报（nativeFlac 流式路径的引擎时长恒为 0），见下方两处 duration 注释。
+import { getMusicIntervalDuration } from '@/core/player/timeline'
 import {
   getNativeFlacTrackId,
   resetNativeFlacPlayback,
@@ -55,7 +58,14 @@ export const loadPlaybackResource = async({
           artwork: 'progress' in musicInfo
             ? (typeof musicInfo.metadata.musicInfo.meta.picUrl == 'string' ? musicInfo.metadata.musicInfo.meta.picUrl : undefined)
             : (typeof musicInfo.meta.picUrl == 'string' ? musicInfo.meta.picUrl : undefined),
-          duration: playbackInfo.duration,
+          // 【第 48 轮】起播首发必须带上**真实总时长**（用户原话：「歌曲刚开始播放时，
+          // 锁屏界面的歌曲进度、歌词、歌曲时间显示都不显示，要等到第一句歌词加载时，
+          // 直接就跳到了 0:14 位置……确保锁屏界面的歌曲进度、歌词、歌曲时间实时显示
+          // 没有延迟」）。nativeFlac 流式路径的引擎时长恒为 0，直接发出去系统就按
+          // 「总时长未知」渲染：锁屏左右两侧 -:--、进度条整条不可拖。这里退回元数据
+          // interval（纯 JS 数据，第 0 帧已知）；engine 真报了正时长时仍以 engine 为准
+          //（seek 恢复曲的引擎时长可信）。
+          duration: playbackInfo.duration > 0 ? playbackInfo.duration : getMusicIntervalDuration(musicInfo),
           elapsedTime: playbackInfo.position,
           playbackRate: settingState.setting['player.playbackRate'],
         })
@@ -84,7 +94,10 @@ export const loadPlaybackResource = async({
     artist: track.artist,
     album: track.album,
     artwork: typeof track.artwork == 'string' ? track.artwork : undefined,
-    duration: track.duration,
+    // 【第 48 轮】同 nativeFlac 分支：buildTracks 在 iOS 上不带 duration（引擎时长要等
+    // load/seek 之后才稳定），首发直接发 undefined 同样让锁屏显示 -:--。元数据 interval
+    // 兜底；引擎给出正时长时仍以引擎为准。
+    duration: typeof track.duration == 'number' && track.duration > 0 ? track.duration : getMusicIntervalDuration(musicInfo),
     elapsedTime: startTime,
   })
 }
