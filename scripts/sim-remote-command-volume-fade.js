@@ -331,15 +331,80 @@ const chainInvariants = (deps) => {
     reasons.push('utils.setPlay 没有预约渐入（armVolumeFadeIn）：渐入链的起点没了')
   }
   // 结尾锚点必须用**剔注释之后**还在的代码行（`// export const skipToNext` 那行是注释）
-  const setPause = slice(utils, 'export const setPause = async() => {', 'export const setCurrentTime')
-  if (setPause == null) {
-    reasons.push('utils.ts 里找不到 setPause')
+  // 【第 47 轮】暂停收口从「按引擎二选一的 fadeOutThenPause(...)」升级成
+  // pausePlayingEngines（双引擎）+ 有界复核，整块都在 setPause 之前，所以切片起点
+  // 前移到第 47 轮的复核窗口常量（它一旦消失，说明这份契约要重写，必须显式失败）。
+  const pauseClosure = slice(utils, 'const PAUSE_VERIFY_MS = 700', 'export const setCurrentTime')
+  if (pauseClosure == null) {
+    reasons.push('utils.ts 里找不到第 47 轮的暂停收口区块（缺 `const PAUSE_VERIFY_MS = 700`）')
   } else {
-    if (!setPause.includes('fadeOutThenPause(() => pauseNativeFlacPlayback())')) {
-      reasons.push('setPause 的 nativeFlac 分支没有走 fadeOutThenPause：暂停绕开了「无条件执行」的收口')
+    const setPause = slice(pauseClosure, 'export const setPause = async() => {', '\n}')
+    if (setPause == null) {
+      reasons.push('utils.ts 里找不到 setPause')
+    } else {
+      if (!setPause.includes('await fadeOutThenPause(pausePlayingEngines)')) {
+        reasons.push('setPause 的 iOS 分支没有走 fadeOutThenPause：暂停绕开了「无条件执行」的收口')
+      }
+      if (!setPause.includes('const token = ++pauseVerifyToken')) {
+        reasons.push('setPause 没有给复核上令牌：连点暂停时先发的复核会作废后发的暂停')
+      }
+      if (!setPause.includes('}, PAUSE_VERIFY_MS)') || !setPause.includes('void pausePlayingEngines()')) {
+        reasons.push('setPause 缺「暂停发出后有界复核」：引擎没停 / 状态事件丢了时没人补刀，'
+          + '用户就会看到「进度条停了、歌词还在走、声音还在放」')
+      }
+      if (!setPause.includes('if (!playerState.isPlay) return')) {
+        reasons.push('setPause 的复核不再看 playerState.isPlay：停稳了也照发（或反过来放过真没停的）')
+      }
     }
-    if (!setPause.includes('fadeOutThenPause(() => TrackPlayer.pause())')) {
-      reasons.push('setPause 的 AVPlayer 分支没有走 fadeOutThenPause：暂停绕开了「无条件执行」的收口')
+    // 【第 47 轮】双引擎收口：暂停不许再按 isNativeFlacActive() 二选一 ——
+    // 只停「当前驱动」那一台，跨引擎切换的中间态里出声的那台照放。
+    if (!pauseClosure.includes('const pausePlayingEngines = async() => {')) {
+      reasons.push('第 47 轮的双引擎暂停收口 pausePlayingEngines 不见了：暂停又退回「按 isNativeFlacActive() 二选一」')
+    } else {
+      const engines = slice(pauseClosure, 'const pausePlayingEngines = async() => {', '\n}')
+      if (engines == null || !engines.includes('await pauseNativeFlacPlayback()')) {
+        reasons.push('pausePlayingEngines 没有把暂停发给原生流式引擎：nativeFlac 那台可能照旧出声')
+      }
+      if (engines == null || !engines.includes('await TrackPlayer.pause()')) {
+        reasons.push('pausePlayingEngines 没有把暂停发给 AVPlayer：RNTP 那台可能照旧出声')
+      }
+      if (engines == null || !engines.includes('rntpMayHoldTrack()')) {
+        reasons.push('pausePlayingEngines 不再判断 `rntpMayHoldTrack()`（RNTP 是否还可能持有曲目）：跨引擎切换的中间态会漏掉出声的那台')
+      }
+      // 【第 47 轮】判据本身：空 id（reset / ended 之后「连最后驱动是谁都不知道」的窗口）
+      // 也必须算「可能持有」—— 收窄成「只认上一次驱动是 RNTP」就会让
+      // 「谁的 id 都没了、但 RNTP 那台还在出声」漏网，那正是用户听到的「声音继续播放」。
+      const hold = slice(pauseClosure, 'const rntpMayHoldTrack = () => {', '\n}')
+      if (hold == null || !hold.includes('!id ||')) {
+        reasons.push('rntpMayHoldTrack 的判据被收窄：空 id（连最后驱动都不知道的窗口）不再算「RNTP 可能持有」，残留出声的那台会漏发暂停')
+      }
+    }
+  }
+  // 【第 47 轮】用户的播放意图必须作废在途的暂停复核（否则复核窗口内按下的 ▶ 会被按停）
+  if (setPlay != null && !setPlay.includes('pauseVerifyToken++')) {
+    reasons.push('utils.setPlay 没有作废在途的暂停复核：复核会跟用户抢（刚按下的播放被 700ms 后的复核按停）')
+  }
+  // 【第 47 轮】原生 pause 不许把「停不停引擎」押在 engine.isRunning 前置上：
+  // 引擎恰好处于「已 prepare 未 start / 刚被系统停掉待重建」的窗口时整句被跳过，
+  // 只剩渲染开关生效 —— 声音继续、卡片却是暂停态。
+  if (deps.appDelegate == null) {
+    reasons.push('chainInvariants 缺 appDelegate 依赖（原生 pause 的判据查不了）')
+  } else {
+    // 判据必须跑在**剔掉整行注释**的副本上：第 47 轮的修法注释里逐字引用了旧写法
+    // （`if (self.engine != nil && self.engine.isRunning) [self.engine pause];`），
+    // 不剔注释的话「isRunning 前置回来了」会被自己的注释假命中 —— 断言永久红、
+    // 反例 v16 也会假绿（未真篡改代码却照样「已拦下」）。
+    const pauseBody = slice(stripLineComments(deps.appDelegate),
+      'RCT_REMAP_METHOD(pause, pauseStreamWithResolver:', 'RCT_REMAP_METHOD(stop, stopStreamWithResolver:')
+    if (pauseBody == null) {
+      reasons.push('AppDelegate.mm 里找不到原生 pause 方法体（锚点漂移）')
+    } else {
+      if (!pauseBody.includes('if (self.engine != nil) [self.engine pause];')) {
+        reasons.push('原生 pause 不再无条件停引擎（缺 `if (self.engine != nil) [self.engine pause];`）')
+      }
+      if (pauseBody.includes('self.engine.isRunning) [self.engine pause]')) {
+        reasons.push('原生 pause 又把暂停押在 engine.isRunning 前置上（引擎未运行的窗口里整句被跳过，声音继续）')
+      }
     }
   }
   // controller.ts：三处 'playing' / 换曲落点都走 applyVolumeOnPlayStart
@@ -435,6 +500,8 @@ const runCounterExamples = () => {
   }
   const chainDeps = {
     player: REAL.player, utils: REAL.utils, controller: REAL.controller, remote: REAL.remote,
+    // 【第 47 轮】整条链的落点延伸到原生 pause（暂停必须无条件落到引擎）
+    appDelegate: REAL.appDelegate,
   }
 
   // v1 斜坡的取消又不放行 Promise（第 39 轮那颗雷原样回归）
@@ -494,7 +561,7 @@ const runCounterExamples = () => {
   // v10 锁屏暂停绕开收口（setPause 不走 fadeOutThenPause）
   check('v10 setPause 绕开 fadeOutThenPause', chainInvariants({
     ...chainDeps,
-    utils: tamper(REAL.utils, 'return fadeOutThenPause(() => TrackPlayer.pause())', 'return TrackPlayer.pause()'),
+    utils: tamper(REAL.utils, '  await fadeOutThenPause(pausePlayingEngines)', '  await pausePlayingEngines()'),
   }), 'fadeOutThenPause')
 
   // v11 原生侧回到「监听者没挂上就 return」（用户的按键被静默丢弃）
@@ -510,6 +577,45 @@ const runCounterExamples = () => {
       '  for (NSDictionary *body in pending) {\n    [self sendEventWithName:@"remote-command" body:body];\n  }',
       '  for (NSDictionary *body in pending) {\n    (void)body;\n  }'),
   ), '没有真的把 remote-command')
+
+  // 【第 47 轮】v13 双引擎收口退化成「只停当前驱动」（跨引擎切换的中间态漏掉出声的那台）
+  check('v13 暂停只发当前驱动', chainInvariants({
+    ...chainDeps,
+    utils: tamper(REAL.utils,
+      '    if (rntpMayHoldTrack()) await TrackPlayer.pause().catch(() => {})\n', ''),
+  }), 'rntpMayHoldTrack')
+
+  // 【第 47 轮】v14 拆掉暂停后复核（引擎没停 / 事件丢了也没人补刀）
+  check('v14 拆掉暂停复核', chainInvariants({
+    ...chainDeps,
+    utils: tamper(REAL.utils,
+      '  setTimeout(() => {\n    if (token != pauseVerifyToken) return\n    if (!playerState.isPlay) return\n'
+      + '    void pausePlayingEngines()\n  }, PAUSE_VERIFY_MS)\n', ''),
+  }), '有界复核')
+
+  // 【第 47 轮】v15 用户的播放意图不再作废复核（复核跟用户抢：刚按下的播放被按停）
+  check('v15 播放不作废复核', chainInvariants({
+    ...chainDeps,
+    utils: tamper(REAL.utils,
+      '  pauseVerifyToken++\n  // 【第 39 轮第 4 条】预约', '  // 【第 39 轮第 4 条】预约'),
+  }), '作废在途的暂停复核')
+
+  // 【第 47 轮】v16 原生 pause 退回 isRunning 前置（引擎未运行的窗口整句被跳过，声音继续）
+  check('v16 原生暂停押在 isRunning 上', chainInvariants({
+    ...chainDeps,
+    appDelegate: tamper(REAL.appDelegate,
+      '    if (self.engine != nil) [self.engine pause];',
+      '    if (self.engine != nil && self.engine.isRunning) [self.engine pause];'),
+  }), 'isRunning 前置')
+
+  // 【第 47 轮】v17 「RNTP 可能持有」的判据被收窄成「只认上一次驱动是 RNTP」
+  // （空 id 的窗口 —— reset / ended 之后、起播事件还没到 —— 漏发暂停，残留引擎继续出声）
+  check('v17 判据收窄漏掉空 id 窗口', chainInvariants({
+    ...chainDeps,
+    utils: tamper(REAL.utils,
+      '  return !id || !id.startsWith(\'nativeflac://\')',
+      '  return !!id && !id.startsWith(\'nativeflac://\')'),
+  }), '空 id')
 
   return results
 }
@@ -530,7 +636,10 @@ const checks = [
   ['音量账本：斜坡起点取 currentVolume，三处外部直写都同步（音量条 / 换曲重贴 / 打断恢复）',
     () => volumeLedgerInvariants(REAL.fade, { utils: REAL.utils, core: REAL.core, service: REAL.service })],
   ['整条链不许断：锁屏 ⏸/▶ → player → utils → 渐入渐出（controller 三处落点）',
-    () => chainInvariants({ player: REAL.player, utils: REAL.utils, controller: REAL.controller, remote: REAL.remote })],
+    () => chainInvariants({
+      player: REAL.player, utils: REAL.utils, controller: REAL.controller, remote: REAL.remote,
+      appDelegate: REAL.appDelegate,
+    })],
   ['原生不许静默丢弃按键：暂存（有上限）+ startObserving 按序补投',
     () => nativeNoDropInvariants(REAL.appDelegate)],
 ]

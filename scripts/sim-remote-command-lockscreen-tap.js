@@ -571,6 +571,20 @@ const HEARTBEAT_BLOCK =
   '      LXNowPlayingElapsedSnapshotAtMs = elapsedRefreshNowMs;\n' +
   '      LXApplyNowPlayingInfo();\n' +
   '    }\n'
+// 【第 47 轮】起播空窗的播放态补齐语句原文（反例 g10 按整句删，必须与 AppDelegate.mm
+// 逐字一致；不一致时 tamper 抛「锚点未命中」= 响亮失败，不会静默假绿）。
+const STOPPED_PROMOTION_BLOCK =
+  '      if (LXNowPlayingState == MPNowPlayingPlaybackStateStopped) {\n' +
+  '        LXNowPlayingState = MPNowPlayingPlaybackStatePlaying;\n' +
+  '      }\n'
+// 【第 47 轮】歌词时钟 dispatch_source_set_timer 两个周期实参的**整行原文**（28 空格缩进）：
+// 反例按整行篡改，保证只命中时钟、不会误伤封面重发路径里同值的 0.05s dispatch_after
+// （String.replace 只换第一处 —— 锚点不唯一 = 改错行、反例假绿「未拦下」）。
+// start = 首次开火时刻；interval = 重复间隔（真正决定 tick 频率的那个）。
+const TIMER_START_LINE = (period) =>
+  '                            dispatch_time(DISPATCH_TIME_NOW, (int64_t)(' + period + ' * NSEC_PER_SEC)),'
+const TIMER_INTERVAL_LINE = (period) =>
+  '                            (uint64_t)(' + period + ' * NSEC_PER_SEC),'
 
 const elapsedHeartbeatInvariants = (raw) => {
   const reasons = []
@@ -648,12 +662,93 @@ const elapsedHeartbeatInvariants = (raw) => {
     reasons.push('每秒对表落进了「仅前台」的位置事件分支（锁屏 / 后台时根本跑不到 —— 用户要的正是锁屏上按秒刷新）')
   }
 
-  // ⑩ 拍长：1000ms 闸门要真的等于「约每秒」，时钟拍必须 ≤0.5s
-  const m = /dispatch_source_set_timer\(timer,\s*\n\s*dispatch_time\(DISPATCH_TIME_NOW, \(int64_t\)\(([0-9.]+) \* NSEC_PER_SEC\)\)/.exec(code)
+  // ⑩ 拍长：1000ms 闸门要真的等于「约每秒」，时钟拍必须 ≤0.5s。
+  //    两个实参都抓：m[1] = 首次开火时刻（dispatch_time 那行），m[2] = 重复间隔
+  //    （真正决定 tick 频率的那个 —— start 只影响第一拍，间隔改大照样让换行变慢）。
+  const m = /dispatch_source_set_timer\(timer,\s*\n\s*dispatch_time\(DISPATCH_TIME_NOW, \(int64_t\)\(([0-9.]+) \* NSEC_PER_SEC\)\),\s*\n\s*\(uint64_t\)\(([0-9.]+) \* NSEC_PER_SEC\),/.exec(code)
   if (m == null) {
-    reasons.push('找不到歌词时钟的周期（锚点漂移：dispatch_source_set_timer 的 dispatch_time 行）')
-  } else if (Number(m[1]) > 0.5) {
-    reasons.push(`歌词时钟周期被拉长到 ${m[1]}s（1s 节流需要拍长 ≤0.5s，否则最坏要等两个整数拍 ⇒ 刷新间隔超过 1s，用户要的「按照每秒刷新」不成立）`)
+    reasons.push('找不到歌词时钟的周期（锚点漂移：dispatch_source_set_timer 的 dispatch_time / 间隔行）')
+  } else if (Number(m[1]) > 0.5 || Number(m[2]) > 0.5) {
+    reasons.push(`歌词时钟周期被拉长到 ${m[1]}s / ${m[2]}s（1s 节流需要拍长 ≤0.5s，否则最坏要等两个整数拍 ⇒ 刷新间隔超过 1s，用户要的「按照每秒刷新」不成立）`)
+  }
+
+  // ⑪ 【第 47 轮】拍长契约值 0.05s（20Hz）。⑩ 只管「不许拉长到破坏 1s 节流」，
+  //    这里钉死确切值——用户原话「歌词显示需要更加迅速和提高加载帧率」：
+  //    这一拍直接决定歌词换行的最坏延迟（0.12s ⇒ 最坏 120ms，0.05s ⇒ 最坏 50ms），
+  //    退回 0.12s ＝ 用户这轮的诉求当场作废。
+  if (m != null && Number(m[1]) !== 0.05) {
+    reasons.push(`歌词时钟首次开火时刻是 ${m[1]}s，不是第 47 轮的 0.05s 契约值（用户要求「歌词显示更加迅速、提高加载帧率」——这一拍直接决定换行延迟，改大即诉求回归）`)
+  }
+
+  // ⑫ 【第 47 轮】重复间隔同样钉死 0.05s：对重复定时器来说 interval 才决定 tick 频率
+  //    （start 只管第一拍；只改间隔不改成 start 的「顺手漂移」必须在这里被拦下）。
+  if (m != null && Number(m[2]) !== 0.05) {
+    reasons.push(`歌词时钟重复间隔是 ${m[2]}s，不是第 47 轮的 0.05s 契约值（interval 决定 tick 频率：改大 ⇒ 歌词换行变慢、帧率回归；改小 ⇒ 唤醒变密，第 42 轮省电口径作废）`)
+  }
+
+  return reasons
+}
+
+// ---------------------------------------------------------------------------
+// 不变量 H【第 47 轮 第 3 条】：起播不许留「播放已开始，卡片却空白」的窗口
+//
+// 用户原话（第 47 轮）：「现在存在播放开始了但是歌词和进度条和时间都没有加载出来的
+// 问题，这个问题要修复」。
+//
+// 机制（与用户描述逐条对上）：队列 reset / 引擎切换会走 LXClearNowPlayingInfo → 把
+// LXNowPlayingState 置成 Stopped；而 reset 之后 nativeFlac 驱动不再产生任何 TrackPlayer
+// 生命周期事件。若这次起播是「元数据先到、状态发布后到」（或状态发布被
+// LXSetNowPlayingPlaybackState 里的 `existingTitle.length == 0` 早退吞掉），Stopped
+// 就一直挂着 ⇒
+//   ① LXApplyNowPlayingInfo 按播放态把速率归一成 0 ⇒ 进度条冻在 0、时间不走；
+//   ② LXSyncNowPlayingLyricTimer 的守卫要求 Playing ⇒ 原生歌词时钟压根不启动 ⇒ 歌词停在上一行。
+//
+// 修法：JS 只在确实在播时才带正速率发布（playList.ts 的 updateMetaInfo：
+// `playbackRate: isPlaying ? 用户速率 : 0`），所以「正速率 = 当前在播」这个断言可信 ——
+// LXSetNowPlayingInfo 在正速率分支里把 Stopped **单向**提升成 Playing。
+// 必须单向：Paused 是用户按下 ⏸ 的状态，只能由引擎的 'playing' 事件
+// （LXSetNowPlayingPlaybackState）翻转，绝不能被一次迟到的元数据发布复活 ——
+// 否则「点暂停后卡片自己跳回播放中」这个比空白卡片更坏的 bug 会回来（第 47 轮第 1 条）。
+// ---------------------------------------------------------------------------
+const startupStateInvariants = (raw) => {
+  const reasons = []
+  const setInfo = extractBracedBody(raw, 'static void LXSetNowPlayingInfo(NSDictionary *metadata)')
+  if (!setInfo) {
+    reasons.push('LXSetNowPlayingInfo 缺失或抽取失败（锚点漂移）')
+    return reasons
+  }
+  const body = stripComments(setInfo)
+
+  // ① 正速率分支必须同时解冻时钟 + 补齐播放态（缺一不可：只解冻不补态，歌词时钟的
+  //    守卫仍然不通过；只补态不解冻，时钟仍冻在锚点行）
+  if (!body.includes('if (playbackRate != nil && playbackRate.doubleValue > 0) {')) {
+    reasons.push('找不到「正速率发布」分支（第 47 轮：这一支是起播空窗的补齐点 —— 没了它，元数据先到的起播会把 Stopped 一直挂住）')
+  }
+  if (!body.includes('LXNowPlayingClockHold = NO;')) {
+    reasons.push('正速率发布不再解冻歌词时钟（hold 残留在 YES 时原生时钟永远不跑）')
+  }
+  if (!body.includes('LXNowPlayingState = MPNowPlayingPlaybackStatePlaying;')) {
+    reasons.push('正速率发布的「播放态同源补齐」丢了（Stopped 挂着 ⇒ 速率被归一成 0 + 原生歌词时钟不启动 = 用户报的「播放开始了但歌词/进度条/时间都没加载出来」）')
+  }
+
+  // ② **单向**：守卫必须逐字是 `== MPNowPlayingPlaybackStateStopped`，
+  //    绝不许写成 `!= …Playing` / 也不许顺手补 Paused —— 那会把用户按下的 ⏸ 复活
+  if (!body.includes('if (LXNowPlayingState == MPNowPlayingPlaybackStateStopped) {')) {
+    reasons.push('播放态同源补齐的守卫不是「单向 Stopped → Playing」（必须逐字是 `if (LXNowPlayingState == MPNowPlayingPlaybackStateStopped) {`：写成 != Playing 或顺手补 Paused，会把用户按下的 ⏸ 复活成播放中，比空白卡片更坏）')
+  }
+  if (/LXNowPlayingState\s*!=\s*MPNowPlayingPlaybackStatePlaying/.test(body)) {
+    reasons.push('播放态同源补齐全成了双向 / 反向（`!= Playing` 会把 Paused 也拉回 Playing —— 暂停卡片自己跳回播放中）')
+  }
+  if (body.includes('MPNowPlayingPlaybackStatePaused')) {
+    reasons.push("播放态同源补齐碰了 Paused（只允许提升 Stopped；Paused 必须留给引擎的 'playing' 事件翻转，否则第 47 轮第 1 条「点暂停真的暂停」会被迟到的元数据回滚）")
+  }
+
+  // ③ 次序：补齐必须在同函数内的 LXSyncNowPlayingLyricTimer() 之前 ——
+  //    否则这一拍音钟守卫读到的仍是 Stopped，时钟要到下一次元数据发布才启动（起播仍有空白窗口）
+  const iPromo = body.indexOf('if (LXNowPlayingState == MPNowPlayingPlaybackStateStopped) {')
+  const iClock = body.indexOf('LXSyncNowPlayingLyricTimer();')
+  if (iPromo >= 0 && iClock >= 0 && iPromo > iClock) {
+    reasons.push('播放态同源补齐被挪到 LXSyncNowPlayingLyricTimer() 之后（这一拍音钟守卫读到的仍是 Stopped —— 起播仍有「歌词不加载」的空白窗口）')
   }
 
   return reasons
@@ -862,10 +957,29 @@ const runCounterExamples = () => {
     '    if (!paused && [UIApplication sharedApplication].applicationState == UIApplicationStateActive) {\n' + HEARTBEAT_BLOCK)),
   '仅前台')
 
-  // g8 时钟拍长被拉长到 2s（1s 闸门最坏要等两个整数拍 ⇒ 刷新间隔超过 1s）→ 报「周期被拉长」
+  // g8 时钟**首次开火时刻**被拉长到 2s（1s 闸门最坏要等两个整数拍 ⇒ 刷新间隔超过 1s）→ 报「周期被拉长」
   check('g8 时钟拍长被拉长到 2s', () => elapsedHeartbeatInvariants(tamper(REAL_APPDELEGATE,
-    '(int64_t)(0.12 * NSEC_PER_SEC)', '(int64_t)(2 * NSEC_PER_SEC)')),
+    TIMER_START_LINE('0.05'), TIMER_START_LINE('2'))),
   '周期被拉长')
+
+  // 【第 47 轮】g9 **重复间隔**退回 0.12s（真正决定 tick 频率的实参；用户要的
+  // 「歌词更迅速、帧率更高」当场作废）→ 报「0.05s 契约值」
+  check('g9 重复间隔退回 0.12s', () => elapsedHeartbeatInvariants(tamper(REAL_APPDELEGATE,
+    TIMER_INTERVAL_LINE('0.05'), TIMER_INTERVAL_LINE('0.12'))),
+  '0.05s 契约值')
+
+  // 【第 47 轮】g10 起播空窗的补齐被删（元数据先到、状态后到 ⇒ 进度条冻在 0、
+  // 原生歌词时钟不启动 = 用户报的「播放开始了但歌词/进度条/时间都没加载出来」）→ 报「同源补齐」
+  check('g10 起播时不再补播放态', () => startupStateInvariants(tamper(REAL_APPDELEGATE,
+    STOPPED_PROMOTION_BLOCK, '')),
+  '同源补齐')
+
+  // 【第 47 轮】g11 补齐被写成双向（Paused 也会被一次迟到的元数据发布复活成 Playing）
+  // → 报「单向」
+  check('g11 补齐改成双向（暂停态也被复活）', () => startupStateInvariants(tamper(REAL_APPDELEGATE,
+    'if (LXNowPlayingState == MPNowPlayingPlaybackStateStopped) {',
+    'if (LXNowPlayingState != MPNowPlayingPlaybackStatePlaying) {')),
+  '单向')
 
   return results
 }
@@ -883,6 +997,7 @@ const checks = [
   ['原生：发布前速率与播放态同源（卡片显示 ⟺ 命令启停，第 44 轮）', () => rateStateInvariants(REAL_APPDELEGATE)],
   ['原生：按下即对表 + 锁屏那一刻对表（第 45 轮，含前置声明）', () => tapResyncInvariants(REAL_APPDELEGATE)],
   ['原生：锁屏 / 灵动岛卡片进度每秒对表（第 46 轮第 1 条）', () => elapsedHeartbeatInvariants(REAL_APPDELEGATE)],
+  ['原生：起播元数据先到也能补齐播放态（第 47 轮第 3 条：单向 Stopped → Playing）', () => startupStateInvariants(REAL_APPDELEGATE)],
   ['JS：pause 只在真的会暂停时落闸（六命令覆盖 + 去重窗口）', () => remoteInvariants(REAL_REMOTE)],
 ]
 

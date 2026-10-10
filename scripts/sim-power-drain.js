@@ -161,9 +161,19 @@ const nativeInvariants = (src) => {
     reasons.push('LXSetNowPlayingLyricLines 内含 NSLog（每次设行同步写系统日志）')
   }
 
-  // 4) 时钟周期不得被调高唤醒频率（>8Hz 视为回归）：契约值 0.12s
-  if (!/0\.12\s*\*\s*NSEC_PER_SEC/.test(code)) {
-    reasons.push('歌词时钟周期不再是 0.12s（契约值；改大则控制中心歌词换行延迟变化，需同步评估）')
+  // 4) 时钟周期契约值 0.05s【第 47 轮】：用户原话「歌词显示需要更加迅速和提高加载帧率」，
+  //    周期从 0.12s（8.3Hz）上调到 0.05s（20Hz），把最坏换行延迟从 120ms 压到 50ms。
+  //    仍然钉死确切值：这一拍是「换行延迟」与「唤醒频率」的取舍点，任何改动（改大＝歌词
+  //    变慢、改小＝唤醒变密）都必须显式过一遍本断言，不许顺手漂移。
+  //    必须钉在**时钟那一行**的实参上：光测「全文件存在 0.05」会被封面重发路径里同值的
+  //    0.05s dispatch_after 蒙混过关（锚点漂移而断言照样绿）。两个实参都抓：start 只决定
+  //    第一拍，interval 才是重复频率。
+  //    省电口径不受影响：时钟只在「播放中且屏幕可信为亮」时存在，暂停/熄屏/清空歌词一律停钟。
+  const timerPeriod = /dispatch_source_set_timer\(timer,\s*\n\s*dispatch_time\(DISPATCH_TIME_NOW, \(int64_t\)\(([0-9.]+) \* NSEC_PER_SEC\)\),\s*\n\s*\(uint64_t\)\(([0-9.]+) \* NSEC_PER_SEC\),/.exec(code)
+  if (timerPeriod == null) {
+    reasons.push('找不到歌词时钟的周期（锚点漂移：dispatch_source_set_timer 的 dispatch_time / 间隔行）')
+  } else if (Number(timerPeriod[1]) !== 0.05 || Number(timerPeriod[2]) !== 0.05) {
+    reasons.push(`歌词时钟周期不再是 0.05s（第 47 轮契约值：用户要求歌词更迅速、帧率更高，定为 20Hz；当前 start=${timerPeriod[1]}s interval=${timerPeriod[2]}s）`)
   }
 
   return { ok: reasons.length === 0, reasons }
@@ -283,7 +293,7 @@ const runCounterExamples = () => {
   // ③b 播放态切换处漏掉统一守卫 → 报「播放态切换…未调用」
   check('原生③b 播放态切换漏调守卫', () => {
     const s = tamper(REAL.appdel,
-      '  // 播放/暂停/停止切换时同步时钟生命周期：暂停/停止即停钟（8.3Hz 在非播放态是\n  // 净唤醒，锁屏后台耗电），恢复播放时重建。放在早退（无标题）之前——即使元数据\n  // 尚未到达，暂停已成立，时钟就不该继续跑。\n  LXSyncNowPlayingLyricTimer();\n',
+      '  // 播放/暂停/停止切换时同步时钟生命周期：暂停/停止即停钟（20Hz 在非播放态是\n  // 净唤醒，锁屏后台耗电），恢复播放时重建。放在早退（无标题）之前——即使元数据\n  // 尚未到达，暂停已成立，时钟就不该继续跑。\n  LXSyncNowPlayingLyricTimer();\n',
       '')
     return nativeInvariants(s).reasons
   }, '播放态切换')
@@ -295,11 +305,11 @@ const runCounterExamples = () => {
     return nativeInvariants(s).reasons
   }, 'LXNowPlayingLyricStep 内含 NSLog')
 
-  // ⑤ 时钟周期改成 1s → 报「周期不再是 0.12s」
+  // ⑤ 时钟周期改成 1s → 报「周期不再是 0.05s」
   check('原生⑤ 周期漂移', () => {
-    const s2 = REAL.appdel.replace(/0\.12 \* NSEC_PER_SEC/g, '1.0 * NSEC_PER_SEC')
+    const s2 = REAL.appdel.replace(/0\.05 \* NSEC_PER_SEC/g, '1.0 * NSEC_PER_SEC')
     return nativeInvariants(s2).reasons
-  }, '周期不再是 0.12s')
+  }, '周期不再是 0.05s')
 
   // — JS 反例 —
   // ⑥ 删掉 getCurrentTime 的 AppState 守卫 → 报「无 AppState 前台守卫」
