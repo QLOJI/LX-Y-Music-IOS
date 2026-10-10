@@ -732,35 +732,30 @@ static void LXPostRemoteCommandNotification(NSString *command, NSDictionary *ext
   [[NSNotificationCenter defaultCenter] postNotificationName:LXRemoteCommandNotificationName object:nil userInfo:userInfo];
 }
 
-// 【第 43 轮】遥控「播放 / 合并键」按下的那一刻，先把音频会话抢回来。
+// 【第 48 轮】遥控命令处理器回到「只发通知」，与参考工程
+// lx-music-mobile-ios-adaptation 1:1（它的处理器只有 LXPostRemoteCommandNotification
+// 一句 + return Success，全文件没有任何会话操作的辅助函数）。
 //
-// 背景：本工程的 nativeFlac 在**手动暂停时主动让出音频会话**（LXStreamingFlacPlayer
-// 的 pause，用户第 16 轮第 9 条：「应该是没有卸载占用音频」——暂停后别的 App 要能出声），
-// 而参考工程 lx-music-mobile-ios-adaptation 的会话是**常驻**的（它的 pause 里调的是
-// prepareAudioSession）。让出会话是本工程的用户需求，不能撤；但让出去之后，
-// 「点击 ▶」就变成了「先夺回会话、再起播」两步，而夺回会话过去只发生在这条链路的末端
-// （resume → prepareAudioSession，要等 JS 起播、失败时还静默）：
-// 一旦此时会话已被别的 App 占用，resume 的 setActive 失败 → JS 侧播放从未成立 →
-// 卡片永远停在 ▶ → 用户看到的就是「点一次还行，再点就没反应」。参考工程因为会话
-// 常驻，压根没有这个窗口。
+// 第 43 轮曾在这里加过「播放 / 合并键按下即抢回音频会话」
+// （static void LXActivateAudioSessionForRemotePlay，本轮删除）：那是因为本工程的
+// pause 会主动 setActive:NO 让出会话（第 16 轮第 9 条），让出之后必须有人把会话夺回来，
+// 否则卡片永远停在 ▶（第 43/44/45 轮的「点一次就不能再点」「用一会儿就点不动」）。
 //
-// 修法：用户按下 ▶ / 合并键的瞬间（主线程、任何桥接往返之前）就把会话激活回来，
-// 与参考工程的「按下即能播」等价；随后的 resume 幂等重复激活，不再是唯一的成败点。
-// 只对 play / toggle 两键做 —— 暂停 / 切歌 / 拖动进度都不该主动抢会话。
-static void LXActivateAudioSessionForRemotePlay(void) {
-  if (![NSThread isMainThread]) {
-    dispatch_async(dispatch_get_main_queue(), ^{
-      LXActivateAudioSessionForRemotePlay();
-    });
-    return;
-  }
-  [[AVAudioSession sharedInstance] setActive:YES error:nil];
-}
-
+// 本轮用户原话：「锁屏界面和灵动岛界面还是不行，无法点击控制，无法拖动进度条调节播放
+// 时间，需要修复，请参考 lx-music-mobile-ios-adaptation 项目，这个项目的锁屏界面和
+// 灵动岛界面都可以控制，如果还是不行就一比一复制它的」。
+//
+// 病根按这条授权从源头拔掉了（见 LXStreamingFlacPlayer 的 pause：不再让出会话），
+// 这个补丁于是失去意义：会话常驻时 setActive:YES 是空操作，白搭一次主线程往返；
+// 更关键的是它只覆盖 play / toggle 两个键 —— 用户这一轮点名的「拖动进度条」
+// 以及上一首 / 下一首压根不在它的保护范围里。删掉它，处理器与参考工程对齐：
+// 发通知 → JS 执行动作 → JS 按真实结果重新发布状态。
+//
+// 第 45 轮的「按下即对表」(LXApplyNowPlayingInfo) 保留：它只把缓存按**当前**播放态
+// 重写一遍显示层（不改播放态、不写速率、不碰会话），按下任何一键都把卡片拉回与
+// 播放态同源，代价是一次字典拷贝；与「抢会话」无关，不违背 1:1 的对齐目标
+//（参考工程没有「点不动」的症状，是因为它压根没有过会话让出）。
 static MPRemoteCommandHandlerStatus LXHandleRemoteCommandEvent(NSString *command) {
-  if ([command isEqualToString:@"play"] || [command isEqualToString:@"toggle"]) {
-    LXActivateAudioSessionForRemotePlay();
-  }
   // 【第 45 轮】按下即对表。用户原话（第 45 轮第 1 条）：「还是一样，锁屏和灵动岛界面
   // 上一首、下一首、播放/暂停按钮点击无反应」。第 43/44 轮已把「显示态 = 启停态」收口到
   // 唯一写入口（LXApplyNowPlayingInfo）的主线程闸门；但外界仍有两个本工程控制之外的写入者
@@ -1304,7 +1299,23 @@ static void LXSetNowPlayingInfo(NSDictionary *metadata) {
     if (title != nil) info[MPMediaItemPropertyTitle] = title;
     if (artist != nil) info[MPMediaItemPropertyArtist] = artist;
     if (album != nil) info[MPMediaItemPropertyAlbumTitle] = album;
-    if (duration != nil) info[MPMediaItemPropertyPlaybackDuration] = duration;
+    // 【第 48 轮】时长只进不退：已知的正时长不得被一次 duration = 0 的发布抹掉。
+    // 用户原话：「歌曲刚开始播放时，锁屏界面的歌曲进度、歌词、歌曲时间显示都不显示，
+    // 要等到第一句歌词加载时，直接就跳到了 0:14 位置，请修复这个问题，确保锁屏界面的
+    // 歌曲进度、歌词、歌曲时间实时显示没有延迟」。
+    // 病根：系统进度条必须先知道**总时长**才画得出来 ——
+    // MPMediaItemPropertyPlaybackDuration 缺省或为 0 时，锁屏/控制中心左右两侧都渲染成
+    // -:--（67.jpg 的 -:-- / -:--），而且整条进度条不可拖动（第 48 轮第 2 条的
+    // 「无法拖动进度条调节播放时间」有它一半）。起播瞬间 JS 侧的时长还没解析出来
+    //（nativeFlac 流式路径的引擎时长恒为 0），先到的几次发布带的就是 duration = 0；
+    // 等第一句歌词（这首歌是 0:14）随行发布时真实时长才到 —— 于是「到 0:14 才整块跳出来」。
+    // 本轮 JS 侧已在源头改用元数据时长兜底（playList.ts 的 updateMetaInfo /
+    // engine/resourceLoader.ts 的首发），这里再加一道同源守卫：**换歌**（标题变化，
+    // 新歌时长必须重新学）与缓存里还没有这个键（nil）时照写，其余情况只接受正时长，
+    // 0 / 负值一律丢弃，已画出来的进度条不会被一次迟到的 0 打回 -:--。
+    BOOL durationIsUsable = duration != nil &&
+      (duration.doubleValue > 0 || isNewSong || info[MPMediaItemPropertyPlaybackDuration] == nil);
+    if (durationIsUsable) info[MPMediaItemPropertyPlaybackDuration] = duration;
     double nowMs = CACurrentMediaTime() * 1000.0;
     if (elapsedTime != nil) {
       double snapshotAtMs = LXResolveElapsedSnapshotAtMs(metadata, nowMs);
@@ -4924,7 +4935,6 @@ RCT_REMAP_METHOD(resume, resumeStreamWithResolver:(RCTPromiseResolveBlock)resolv
 }
 
 RCT_REMAP_METHOD(pause, pauseStreamWithResolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
-  __block BOOL canReleaseSession = NO;
   dispatch_sync(self.renderQueue, ^{
     self.lastKnownPosition = [self currentPlaybackPositionLocked];
     self.manualPause = YES;
@@ -4942,17 +4952,32 @@ RCT_REMAP_METHOD(pause, pauseStreamWithResolver:(RCTPromiseResolveBlock)resolve 
     if (self.engine != nil) [self.engine pause];
     _sourceRenderingEnabled.store(false, std::memory_order_release);
     self.playbackStarted = NO;
-    // 与打断 Began / openStream 同一套口径：引擎已停（本行上面刚 pause）才允许让出会话。
-    canReleaseSession = self.sourceNode != nil && (self.engine == nil || !self.engine.isRunning);
   });
-  // 【用户第 16 轮第 9 条】手动暂停 = 用户把 LX 让出来：立刻卸载音频会话
-  //（NotifyOthersOnDeactivation 把它交还系统 / 其他音频），其他音频才能正常出声。
-  // 旧实现在这里 prepareAudioSession，等于**保持**会话激活 —— 用户暂停 LX 去听别的
-  // 音频时，别的音频被我们压着没声音，正是本条反馈的根因。恢复播放走 resume，
-  // 那里会重新 prepareAudioSession 抢回会话。
-  if (canReleaseSession) {
-    [[AVAudioSession sharedInstance] setActive:NO withOptions:AVAudioSessionSetActiveOptionNotifyOthersOnDeactivation error:nil];
-  }
+  // 【第 48 轮】暂停**不再让出音频会话**（删掉第 16 轮那一对
+  // canReleaseSession + setActive:NO + NotifyOthersOnDeactivation）。用户原话：
+  // 「锁屏界面和灵动岛界面还是不行，无法点击控制，无法拖动进度条调节播放时间，需要修复，
+  //   请参考 lx-music-mobile-ios-adaptation 项目，这个项目的锁屏界面和灵动岛界面都可以
+  //   控制，如果还是不行就一比一复制它的」。
+  //
+  // 病根（第 43/44/45 轮那串「点一次就不能再点」「用一会儿就点不动」的最终答案）：
+  // 暂停即 setActive:NO 会把 Now Playing 会话交还系统 —— 卡片还在屏幕上（我们的
+  // nowPlayingInfo 还在），但它已经不是当前音频会话的持有者，于是
+  //   ① 系统把卡片画成失效态（68.jpg 那张灰掉的 ▶、两侧 -:--）；
+  //   ② MPRemoteCommandCenter 的按键与**进度条拖动**不再投递给本 App（点击无反应、
+  //      进度条拖不动）；
+  //   ③ 恢复播放要等 resume → prepareAudioSession 把会话抢回来，抢的过程还依赖
+  //      别的 App 不占着 —— 一旦抢不到，卡片永远停在 ▶（第 43 轮在遥控处理器里
+  //      「按下即抢回会话」就是给这个窗口打的补丁，本轮已随根因删除）。
+  //
+  // 参考工程的做法就是**会话常驻**：它的 pause 只 prepareAudioSession（保持激活），
+  // 全文件没有任何 setActive:NO；它的遥控处理器也只有发通知一句。本轮一比一对齐，
+  // 这是用户明确授权的「如果还是不行就一比一复制它的」。
+  //
+  // 【第 16 轮第 9 条】「暂停后其他音频要能出声」由打断通路继续保证：其他音频激活自己的
+  // 会话时系统发 AVAudioSessionInterruptionTypeBegan，Began 分支照样
+  // setActive:NO + NotifyOthersOnDeactivation 把会话交还（见本文件打断处理器）——
+  // 差别只是不再由「用户按下暂停」这一下**提前**交还，而是等真有别的音频来要
+  //（与本工程 DidBecomeActive 观察者「只有真的在播放才 setActive:YES」同一口径）。
   LXBeginReceivingRemoteControlEvents();
   [self emitState:@"paused" position:@(self.lastKnownPosition) duration:@(self.duration)];
   resolve(nil);
