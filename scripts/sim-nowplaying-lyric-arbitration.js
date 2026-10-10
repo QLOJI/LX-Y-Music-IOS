@@ -21,6 +21,15 @@
  *   C. JS 装载窗口：窗口内丢弃逐行回调，装载完成时把位置随行一起提交；
  *   D. 位置快照缺失时不得发布 elapsedTime=0（会把原生锚点钉回第 0 行）。
  *
+ * 【第 48 轮】用户原话（第 1 条）：「歌曲刚开始播放时，锁屏界面的歌曲进度、歌词、歌曲
+ * 时间显示都不显示，要等到第一句歌词加载时，直接就跳到了 0:14 位置，请修复这个问题，
+ * 确保锁屏界面的歌曲进度、歌词、歌曲时间实时显示没有延迟」。
+ * C4 因此补一条：elapsedTime **字段任何时刻都要在**。第 47 轮「取不到带戳快照就整个不带
+ * 这个字段」防的是「把 0 当真实位置、把锚点钉回第 0 行」，但系统对**缺字段**同样渲染
+ * -:--（起播第 0 帧快照本来就没解析好），卡到第一句歌词发布才整块跳出。现在改成
+ * 「带戳快照在 → 位置 + 戳；不在 → 退 JS 侧 nowPlayTime，不带戳（原生按『就是现在』
+ * 处理，不外推、不回放）」——字段永远在，位置也不说谎。
+ *
  * 并带反例自检（每条不变量都能拦下对应篡改——tsc/eslint 对这类「语义退化成旧行为」
  * 完全无感）。运行：node scripts/sim-nowplaying-lyric-arbitration.js
  * 退出码：不变量全过、且全部反例被拦下时为 0，否则 1。
@@ -235,12 +244,22 @@ const jsInvariants = (files, reasons) => {
   }
 
   const playList = stripComments(files.playList)
-  // C4 快照缺失不得发 elapsedTime=0
+  // C4 快照缺失不得发 elapsedTime=0，且 elapsedTime 字段**任何时刻都要在**（第 48 轮）
+  // 用户原话（第 48 轮第 1 条）：「歌曲刚开始播放时，锁屏界面的歌曲进度、歌词、歌曲时间
+  // 显示都不显示，要等到第一句歌词加载时，直接就跳到了 0:14 位置……确保锁屏界面的歌曲
+  // 进度、歌词、歌曲时间实时显示没有延迟」。
+  // 第 47 轮那条「取不到带戳快照就整个不带 elapsedTime 字段」防的是「把 0 当真实位置、
+  // 钉回第 0 行」，但系统对**缺字段**同样渲染 -:--：起播第 0 帧快照本来就没解析好，
+  // 卡在 -:-- 一直等到第一句歌词发布为止 —— 正是用户那张图。本轮改成带回退位置
+  // （JS 侧 nowPlayTime，不带快照戳，原生按「就是现在」处理）：字段永远在，位置不说谎。
   if (/elapsedTime:\s*stamped\?\.position \?\? 0/.test(playList)) {
     reasons.push('playList 在位置快照缺失时仍发布 elapsedTime: 0（原生锚点被钉回第 0 行 = 歌词跳回开头）')
   }
   if (!/stamped[\s\S]{0,80}?\{\s*elapsedTime: stamped\.position/.test(playList)) {
     reasons.push('playList 未在快照存在时随带 elapsedTime 与快照戳发布')
+  }
+  if (!/:\s*\{\s*elapsedTime: elapsedSeconds\s*\}/.test(playList)) {
+    reasons.push('playList 快照缺失时的 elapsedTime 回退分支没了（该分支保证 elapsedTime 字段永远在；缺字段 ⇒ 锁屏/灵动岛渲染 -:--：起播第 0 帧快照还没解析好，正是用户第 48 轮第 1 条那张图）')
   }
 }
 
@@ -406,12 +425,19 @@ const runCounterExamples = () => {
     'if (fallbackRate.doubleValue <= 0) paused = YES;',
     'if (fallbackRate.doubleValue <= 0) return;')), '暂停时直接返回')
 
-  // J5 playList 快照缺失又发 0（旧行为回归）
+  // J5 playList 快照缺失又发 0（旧行为回归；第 48 轮新形状：elapsedFields 三元式）
   check('J5 快照缺失发 0', () => jsReasons({
     playList: tamper(REAL.playList,
-      '...(stamped\n      ? { elapsedTime: stamped.position, ...elapsedSnapshotFields(stamped) }\n      : {}),',
-      'elapsedTime: stamped?.position ?? 0,\n    ...(stamped ? elapsedSnapshotFields(stamped) : {}),'),
+      'const elapsedFields = stamped\n    ? { elapsedTime: stamped.position, ...elapsedSnapshotFields(stamped) }\n    : { elapsedTime: elapsedSeconds }',
+      'const elapsedFields = { elapsedTime: stamped?.position ?? 0, ...(stamped ? elapsedSnapshotFields(stamped) : {}) }'),
   }), 'elapsedTime: 0')
+
+  // J5b 第 48 轮：回退分支被删（快照缺失时整个不发 elapsedTime）→ 报「回退分支没了」
+  check('J5b 快照缺失回退分支被删', () => jsReasons({
+    playList: tamper(REAL.playList,
+      ': { elapsedTime: elapsedSeconds }',
+      ': {}'),
+  }), '回退分支没了')
 
   return results
 }

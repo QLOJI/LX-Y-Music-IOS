@@ -36,8 +36,9 @@
  * nowPlayingInfo / playbackState，显示态一旦落在后面，它就把「卡片显示 ⏸ 而
  * pauseCommand 已被关掉」这类显示态/启停态分叉**钉死**，用户的点击随即被
  * enabled = NO 静默吞掉（= 「点击一次后不能点击第二次」）。
- * 参考工程 lx-music-mobile-ios-adaptation 没有看门狗、没有歌词时钟、也不把
- * nowPlayingInfo 置空，它的模型是「主线程 + 状态变化时写一次」—— 本轮 1:1 回到该模型：
+ * 参考工程 lx-music-mobile-ios-adaptation 没有看门狗、没有歌词时钟、也不在换封面这类
+ * 常规链路上清空整条 nowPlayingInfo（只在 reset/destroy 那种「整条会话结束」的路径上清），
+ * 它的模型是「主线程 + 状态变化时写一次」—— 本轮 1:1 回到该模型：
  *   ① `LXApplyNowPlayingInfo`（唯一写 MPNowPlayingInfoCenter / 命令 enabled 的地方）带
  *      **主线程闸门**：非主线程一律 marshal 回主队列再写。用户报的「用一段时间后就不行」
  *      正是它的反面——8.3Hz 歌词时钟跑在专用串行队列上，换行时跨线程改写
@@ -46,9 +47,7 @@
  *   ② 看门狗整条不许回来（声明 / 安装时的调用 / 定义三处都不能有）；
  *   ③ 会话拆除窗口不许回来：`nowPlayingInfo = nil` 只允许出现在 apply 的
  *      「缓存为空 → 写 nil」这一处形状里（参考工程同款），封面链路不许再置空整条信息；
- *   ④ 遥控「播放 / 合并键」按下时先抢回音频会话：本工程按用户第 16 轮第 9 条
- *      「手动暂停要卸载占用音频」会在 pause 让出会话，而参考工程的会话常驻 ——
- *      让出之后必须在这一按的瞬间夺回（不然起播链路一旦晚一步/失败，卡片就永远停在 ▶）。
+ *   ④ 遥控「播放 / 合并键」按下时先抢回音频会话（**第 48 轮已删除**，见下）。
  *
  * 【第 44 轮】用户原话＋现场截图：「这是锁屏卡片按钮失灵的样子，然后无论点击什么都没有用」
  * （截图里卡片显示 ▶、那个 ▶ 是**灰的**、进度冻结在 0:10、右侧 -3:16 不再走）。
@@ -91,6 +90,26 @@
  *   注意与第 43 轮删掉的「1s 可用性看门狗」的区别：那条只重写六个 enabled、不重发
  *   info / playbackState，会把显示态/启停态的分叉钉死（不变量 C ④ 仍然禁用它）；本心跳写的是
  *   外推位置、走唯一写入口，显示层与启停层在同一次主线程写入里一起对齐。
+ *
+ * 【第 48 轮】用户原话：「锁屏界面和灵动岛界面还是不行，如图二，无法点击控制，无法拖动
+ * 进度条调节播放时间，需要修复，请参考 lx-music-mobile-ios-adaptation 项目，这个项目的
+ * 锁屏界面和灵动岛界面都可以控制，如果还是不行就一比一复制它的。」
+ * 这一条把第 43/44/45 轮同族症状（用一会儿点不动 / 点一次之后没反应 / 灰按钮）的**最后一根
+ * 腿**钉死了：本工程 `pause` 主动 `setActive:NO + NotifyOthersOnDeactivation` 放弃音频会话。
+ * 会话一让出，本 App 就不再是 now-playing 持有者：卡片被系统画成失效态（68.jpg 那张灰 ▶、
+ * 两侧 -:--）、**遥控命令与进度条拖动都不再投递**给本 App —— 用户点名的「无法拖动进度条调节
+ * 播放时间」正是它。参考工程全文件**零** `setActive:NO`（只有 `prepareAudioSession` 里一处
+ * `setActive:YES`）、遥控处理器**只有一句** `LXPostRemoteCommandNotification` + return
+ * Success，**不碰会话**。第 48 轮 1:1 对齐：
+ *   ⑨ `pause` 不再让出会话（不变量见 sim-audio-interruption-resume.js 的
+ *      pause_keepsSessionResident；第 16 轮第 9 条「暂停要卸载占用音频」改由
+ *      **打断 Began 通路**继续保证：别的 App 激活会话时系统发 Began，那里已有
+ *      `setActive:NO + NotifyOthersOnDeactivation` 交还，见 sim-short-interruption-ignore.js）；
+ *   ⑩ 第 43 轮为「pause 让出会话」打的补丁 `LXActivateAudioSessionForRemotePlay`
+ *      **整条删除**，遥控处理器里不许再出现任何会话操作（setActive / prepareAudioSession /
+ *      抢会话）—— 它只覆盖 play/toggle 两个键，且把按键处理推迟一次主线程往返；
+ *   ⑪ 「按下即对表」（第 45 轮 ⑥）与 `LXPostRemoteCommandNotification` 都保留：
+ *      会话常驻之后它们才是处理器里仅剩的正确动作。
  *
  * 反例专盯「回归 tsc / eslint 都无感」的部分：原生不参与 TS 检查，把判据改回按播放态单算、
  * 漏一句 beginReceivingRemoteControlEvents、把主线程闸门删掉、让看门狗回来、
@@ -288,8 +307,8 @@ const singleSourceInvariants = (raw) => {
 }
 
 // ---------------------------------------------------------------------------
-// 不变量 C：写入一律主线程 + 无看门狗 + 无会话拆除 + 播放键先抢会话
-//（第 43 轮重写；本来的「1s 可用性看门狗」条款已作废，见文件头说明）
+// 不变量 C：写入一律主线程 + 无看门狗 + 无会话拆除 + 遥控处理器里不许碰会话
+//（第 43 轮重写、第 48 轮改 ⑥；本来的「1s 可用性看门狗」条款已作废，见文件头说明）
 // ---------------------------------------------------------------------------
 
 const mainThreadInvariants = (raw) => {
@@ -334,7 +353,7 @@ const mainThreadInvariants = (raw) => {
 
   // ⑤ 会话拆除窗口不许回来
   if (/nowPlayingInfo\s*=\s*nil;/.test(code)) {
-    reasons.push('出现 `nowPlayingInfo = nil;`（把整条媒体会话拆掉一瞬间：卡片消失/重现会重走 now-playing 归属仲裁，这段时间投递到本 App 的遥控命令可能丢失；而换封面发生在每次切歌 ⇒ 用一会儿按钮就全失灵。参考工程从不置空，只有 apply 里「缓存为空 → 写 nil」那一种形状）')
+    reasons.push('出现 `nowPlayingInfo = nil;`（把整条媒体会话拆掉一瞬间：卡片消失/重现会重走 now-playing 归属仲裁，这段时间投递到本 App 的遥控命令可能丢失；而换封面发生在每次切歌 ⇒ 用一会儿按钮就全失灵。参考工程只在 reset/destroy 这类「整条会话结束」的路径上清空，换封面链路上不碰；本工程只允许 apply 里「缓存为空 → 写 nil」那一种形状）')
   }
   const infoWrites = code.match(/center\.nowPlayingInfo\s*=/g) || []
   if (infoWrites.length !== 1 || !(apply && stripComments(apply).includes('center.nowPlayingInfo ='))) {
@@ -345,28 +364,27 @@ const mainThreadInvariants = (raw) => {
     reasons.push('LXApplyNowPlayingArtwork 里又直接取用了 MPNowPlayingInfoCenter（封面链路只许走 LXApplyNowPlayingInfo 重发）')
   }
 
-  // ⑥ 遥控「播放 / 合并键」按下时先抢回音频会话
+  // ⑥ 遥控处理器里不许有任何音频会话操作（第 48 轮）
+  // 用户原话：「无法点击控制，无法拖动进度条调节播放时间……请参考 lx-music-mobile-ios-adaptation
+  // 项目，这个项目的锁屏界面和灵动岛界面都可以控制，如果还是不行就一比一复制它的」。
+  // 参考工程的处理器只有一句 LXPostRemoteCommandNotification + return Success，全文件没有
+  // 任何会话操作；第 43 轮那套「按下即抢回会话」(LXActivateAudioSessionForRemotePlay) 是给
+  // 「pause 主动让出会话」打的补丁 —— 第 48 轮把让出从源头删掉（见
+  // sim-audio-interruption-resume.js 的 pause_keepsSessionResident），补丁一并删除。
   const handler = extractBracedBody(raw, 'static MPRemoteCommandHandlerStatus LXHandleRemoteCommandEvent(NSString *command)')
   if (!handler) {
     reasons.push('LXHandleRemoteCommandEvent 缺失或抽取失败（锚点漂移）')
   } else {
     const body = stripComments(handler)
-    const gate = /isEqualToString:@"play"[\s\S]{0,120}?isEqualToString:@"toggle"/.test(body)
-    if (!gate || !body.includes('LXActivateAudioSessionForRemotePlay();')) {
-      reasons.push('遥控播放键按下时没有先抢回音频会话（缺 LXActivateAudioSessionForRemotePlay 调用，或 play/toggle 门控被删 —— 本工程 pause 会让出会话（用户第 16 轮第 9 条「应该是没有卸载占用音频」），参考工程会话常驻；不在这里夺回，起播晚一步/失败时卡片会永远停在 ▶，点第二次没反应）')
+    if (!body.includes('LXPostRemoteCommandNotification(command, nil);')) {
+      reasons.push('LXHandleRemoteCommandEvent 不再发遥控通知（LXPostRemoteCommandNotification 缺失 —— 它是六个遥控命令通往 JS 的唯一落点，缺了就是「按什么都没反应」）')
+    }
+    if (/setActive:|prepareAudioSession|LXActivateAudioSessionForRemotePlay/.test(body)) {
+      reasons.push('遥控处理器里又出现音频会话操作（setActive / prepareAudioSession / 抢会话）：第 48 轮起会话常驻（pause 不再让出，与参考工程 1:1），处理器只该「发通知 + 按下即对表」；在这里抢会话会把按键处理推迟一次主线程往返，且只覆盖 play/toggle 两个键 —— 用户点名的拖动进度条与上一首/下一首照旧失灵')
     }
   }
-  const activate = extractBracedBody(raw, 'static void LXActivateAudioSessionForRemotePlay(void)')
-  if (!activate) {
-    reasons.push('LXActivateAudioSessionForRemotePlay 缺失或抽取失败（锚点漂移）')
-  } else {
-    const body = stripComments(activate)
-    if (!body.includes('setActive:YES error:nil')) {
-      reasons.push('LXActivateAudioSessionForRemotePlay 不再激活音频会话（setActive:YES 缺失）')
-    }
-    if (!body.includes('dispatch_get_main_queue()')) {
-      reasons.push('LXActivateAudioSessionForRemotePlay 没有落到主队列（AVAudioSession 的 setActive 必须在主线程调用）')
-    }
+  if (/LXActivateAudioSessionForRemotePlay/.test(code)) {
+    reasons.push('LXActivateAudioSessionForRemotePlay 又回来了（第 43 轮为「pause 让出会话」打的补丁：第 48 轮 pause 已不再让出会话，它已整条删除，处理器与参考工程 1:1）')
   }
 
   return reasons
@@ -855,11 +873,17 @@ const runCounterExamples = () => {
     '    LXNowPlayingInfoCache[MPMediaItemPropertyArtist] = text;\n    [MPNowPlayingInfoCenter defaultCenter].nowPlayingInfo = [LXNowPlayingInfoCache copy];\n')),
   '出现 2 处')
 
-  // s6 遥控播放键不再抢回音频会话（本工程 pause 会让出会话）→ 报「没有先抢回音频会话」
-  check('s6 遥控播放键不再抢回音频会话', () => mainThreadInvariants(tamper(REAL_APPDELEGATE,
-    '  if ([command isEqualToString:@"play"] || [command isEqualToString:@"toggle"]) {\n    LXActivateAudioSessionForRemotePlay();\n  }\n',
-    '')),
-  '没有先抢回音频会话')
+  // s6 遥控处理器里又去碰音频会话（第 43 轮补丁回魂）→ 报「又出现音频会话操作」
+  check('s6 遥控处理器里又去碰音频会话', () => mainThreadInvariants(tamper(REAL_APPDELEGATE,
+    '  LXApplyNowPlayingInfo();\n  LXPostRemoteCommandNotification(command, nil);',
+    '  if ([command isEqualToString:@"play"] || [command isEqualToString:@"toggle"]) {\n    [[AVAudioSession sharedInstance] setActive:YES error:nil];\n  }\n  LXApplyNowPlayingInfo();\n  LXPostRemoteCommandNotification(command, nil);')),
+  '又出现音频会话操作')
+
+  // s6b 第 43 轮抢会话补丁（LXActivateAudioSessionForRemotePlay）回魂 → 报「又回来了」
+  check('s6b 第 43 轮抢会话补丁回魂', () => mainThreadInvariants(tamper(REAL_APPDELEGATE,
+    '  LXApplyNowPlayingInfo();\n',
+    '  LXActivateAudioSessionForRemotePlay();\n  LXApplyNowPlayingInfo();\n')),
+  '又回来了')
 
   // s7 发布前的速率归一被废（回到「三个写者谁最后写谁说了算」）→ 报「不再读播放态」
   check('s7 发布前速率归一被废（不再读播放态）', () => rateStateInvariants(tamper(REAL_APPDELEGATE,
@@ -993,7 +1017,7 @@ console.log('=== sim-remote-command-lockscreen-tap ===')
 const checks = [
   ['原生：命令启停与参考工程 1:1（显示态 / 启停态同源）', () => availabilityInvariants(REAL_APPDELEGATE)],
   ['原生：全文件只允许一处 playbackState 赋值且赋真实态（两处说谎翻转已删）', () => singleSourceInvariants(REAL_APPDELEGATE)],
-  ['原生：写入一律主线程 + 无看门狗 + 无会话拆除 + 播放键先抢会话（第 43 轮）', () => mainThreadInvariants(REAL_APPDELEGATE)],
+  ['原生：写入一律主线程 + 无看门狗 + 无会话拆除 + 遥控处理器里不碰会话（第 48 轮）', () => mainThreadInvariants(REAL_APPDELEGATE)],
   ['原生：发布前速率与播放态同源（卡片显示 ⟺ 命令启停，第 44 轮）', () => rateStateInvariants(REAL_APPDELEGATE)],
   ['原生：按下即对表 + 锁屏那一刻对表（第 45 轮，含前置声明）', () => tapResyncInvariants(REAL_APPDELEGATE)],
   ['原生：锁屏 / 灵动岛卡片进度每秒对表（第 46 轮第 1 条）', () => elapsedHeartbeatInvariants(REAL_APPDELEGATE)],

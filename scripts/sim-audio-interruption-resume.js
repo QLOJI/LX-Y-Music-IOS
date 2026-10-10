@@ -25,8 +25,21 @@
  *     非手动暂停：抢回会话（prepareAudioSession）→ 起引擎 → maybeStartPlaybackLocked 续播；
  *     手动暂停：只清标记就返回，不抢会话、不续播（音频会话留给其他音频）。
  *     另一个不抢会话的出口：没有可播的流（sourceNode == nil / stopped / idle）。
- *   pause：置 manualPause + 立刻让出会话（setActive:NO + NotifyOthersOnDeactivation），
- *     不再 prepareAudioSession；interruptedBySystem 仍然不清（取消续播由 manualPause 门槛完成）。
+ *   pause：置 manualPause + **保持会话常驻**（第 48 轮起不再 setActive:NO，见下），
+ *     也不 prepareAudioSession（不主动抢）；interruptedBySystem 仍然不清
+ *     （取消续播由 manualPause 门槛完成）。
+ *
+ * 第 48 轮（2026-10-10）：pause **不再主动让出音频会话**（删掉第 16 轮那一对
+ * canReleaseSession + setActive:NO + NotifyOthersOnDeactivation）。用户原话：「锁屏界面和
+ * 灵动岛界面还是不行，无法点击控制，无法拖动进度条调节播放时间，需要修复，请参考
+ * lx-music-mobile-ios-adaptation 项目，这个项目的锁屏界面和灵动岛界面都可以控制，如果还是
+ * 不行就一比一复制它的」。病根：暂停即让出会话 —— 卡片还在屏幕上，但本 App 不再是当前
+ * 音频会话的持有者，系统把卡片画成失效态（灰 ▶ / 两侧 -:--）、MPRemoteCommandCenter 的
+ * 按键与进度条拖动不再投递给本 App（第 43/44/45 轮「点一次就不能再点」的同一个根）。
+ * 参考工程的会话是常驻的（它的 pause 只 prepareAudioSession，全文件没有任何 setActive:NO），
+ * 本轮一比一对齐。第 16 轮第 9 条「暂停后其他音频要能出声」改由打断通路保证：其他音频
+ * 激活自己的会话 → 系统发 Began → Began 执行体照旧 setActive:NO + NotifyOthersOnDeactivation
+ * 交还会话（那条断言一个都没动）。
  *   DidBecomeActive：只有 now playing 状态是 Playing 时才 setActive:YES。
  *
  * 第 21 轮·优化 1（2026-10-03）：「关掉『与其他应用同时播放』后，车机蓝牙下高德播报即停、
@@ -172,9 +185,13 @@ const evaluate = (src, js) => {
     ended_skipsWhenNothingToPlay: !!endedCode && /if \(self\.sourceNode == nil \|\| \[self\.currentState isEqualToString:@"stopped"\] \|\| \[self\.currentState isEqualToString:@"idle"\]\) return;/.test(endedCode),
     ended_reacquiresAndPlays: !!endedCode && endedCode.includes('[self prepareAudioSession:&sessionError]') && endedCode.includes('[self maybeStartPlaybackLocked]'),
 
-    // —— pause：让出会话（不保持激活） + 不清待续播标记 ——
-    pause_releasesSession: !!pauseCode && pauseCode.includes('setActive:NO withOptions:AVAudioSessionSetActiveOptionNotifyOthersOnDeactivation'),
-    pause_releaseGuarded: !!pauseCode && /if \(canReleaseSession\) \{/.test(pauseCode) && /canReleaseSession = self\.sourceNode != nil && \(self\.engine == nil \|\| !self\.engine\.isRunning\);/.test(pauseCode),
+    // —— pause：会话常驻（第 48 轮，对齐参考工程） + 不清待续播标记 ——
+    // 用户第 48 轮原话：「无法点击控制，无法拖动进度条调节播放时间……如果还是不行就一比一
+    // 复制它的」。暂停即让出会话 = 卡片被系统画成失效态（灰 ▶ / 两侧 -:--）、遥控命令与
+    // 进度条拖动不再投递给本 App。参考工程的会话常驻，本轮一比一对齐：pause 里不许再出现
+    // 任何 setActive:NO，也不许再留 canReleaseSession 那套让出账本（让出只发生在打断 Began）。
+    pause_keepsSessionResident: !!pauseCode && !pauseCode.includes('setActive:NO'),
+    pause_noReleaseBookkeeping: !!pauseCode && !pauseCode.includes('canReleaseSession'),
     pause_noSessionActivation: !!pauseCode && !pauseCode.includes('prepareAudioSession'),
     pause_setsManualPause: !!pauseCode && pauseCode.includes('self.manualPause = YES;'),
     pause_keepsInterruptionMarker: !!pauseCode && !/self\.interruptedBySystem = NO;/.test(pauseCode),
@@ -250,8 +267,8 @@ const LABELS = {
   ended_manualPauseGate: 'Ended 手动暂停时直接返回（不抢会话、不续播，第 16 轮口径）',
   ended_skipsWhenNothingToPlay: 'Ended 对「无流 / stopped / idle」不抢会话（避免误播）',
   ended_reacquiresAndPlays: 'Ended 非手动暂停时抢回会话并起播（prepareAudioSession + maybeStartPlaybackLocked）',
-  pause_releasesSession: 'pause 立刻让出音频会话 setActive:NO + NotifyOthersOnDeactivation（其他音频才有声音）',
-  pause_releaseGuarded: 'pause 的让出由 canReleaseSession 守着，且要求引擎已停下',
+  pause_keepsSessionResident: 'pause 会话常驻、不让出（第 48 轮对齐参考工程：让出 = 卡片被系统判失效，点不动 / 拖不动）',
+  pause_noReleaseBookkeeping: 'pause 里不再有 canReleaseSession 那套让出账本（让出只发生在打断 Began）',
   pause_noSessionActivation: 'pause 不再 prepareAudioSession（旧写法保持激活 = 其他音频没声音的根因）',
   pause_setsManualPause: 'pause 置 manualPause（Ended 据此不续播）',
   pause_keepsInterruptionMarker: 'pause 不清 interruptedBySystem（取消续播改由 manualPause 门槛完成，标记留给 stop 清）',
@@ -353,10 +370,12 @@ const m4r = evaluate(m4, JS)
 neg('反例 m4：pause 清掉待续播标记（打断期间暂停即失效）被拦下',
   m4 !== src && !m4r.pause_keepsInterruptionMarker)
 
-// m5 旧 pause：回到 prepareAudioSession（保持会话激活 = 其他音频没声音）
+// m5 旧 pause：回到 prepareAudioSession（主动抢会话 = 暂停态压住其他音频）
+// 【第 48 轮】锚点跟着 pause 首行更新：`__block BOOL canReleaseSession = NO;` 已随让出
+// 逻辑删除，旧锚点整段失配 ⇒ replace 落空 ⇒ 反例会「假通过」（m5 必须被拦下才算数）。
 const m5 = src.replace(
-  'RCT_REMAP_METHOD(pause, pauseStreamWithResolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {\n  __block BOOL canReleaseSession = NO;',
-  'RCT_REMAP_METHOD(pause, pauseStreamWithResolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {\n  NSError *sessionError = nil;\n  [self prepareAudioSession:&sessionError];\n  __block BOOL canReleaseSession = NO;',
+  'RCT_REMAP_METHOD(pause, pauseStreamWithResolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {\n  dispatch_sync(self.renderQueue, ^{',
+  'RCT_REMAP_METHOD(pause, pauseStreamWithResolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {\n  NSError *sessionError = nil;\n  [self prepareAudioSession:&sessionError];\n  dispatch_sync(self.renderQueue, ^{',
 )
 const m5r = evaluate(m5, JS)
 neg('反例 m5：pause 重新保持会话激活（其他音频没声音的根因）被拦下',
@@ -453,6 +472,16 @@ const m15 = src.replace(
 const m15r = evaluate(m15, JS)
 neg('反例 m15：Began 的标记挪到推迟调度之后（不再立即置位）被拦下',
   m15 !== src && !m15r.began_immediateDeferral)
+
+// m16 第 48 轮：pause 恢复「让出会话」（用户报的现场：暂停后锁屏卡片灰掉、点不动、
+// 进度条拖不动 —— 系统判定 Now Playing 会话已失效）
+const m16 = src.replace(
+  '  });\n  // 【第 48 轮】暂停**不再让出音频会话**',
+  '  });\n  [[AVAudioSession sharedInstance] setActive:NO withOptions:AVAudioSessionSetActiveOptionNotifyOthersOnDeactivation error:nil];\n  // 【第 48 轮】暂停**不再让出音频会话**',
+)
+const m16r = evaluate(m16, JS)
+neg('反例 m16：pause 恢复让出音频会话（卡片被判失效 → 点不动 / 拖不动）被拦下',
+  m16 !== src && !m16r.pause_keepsSessionResident)
 
 const negFailed = negResults.filter(ok => !ok).length
 
