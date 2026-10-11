@@ -24,6 +24,11 @@
 //     didMoveToSuperview); a root pointing at the host alone leaks the foreground
 //     into the capture (ghosted/double content in the screenshot).
 //     RN hosts can still redirect it via setCaptureExclusionView:.
+//  4. Freeze-time settle hook（第 66 轮第 1 条）: `setPaused(true)` first runs the
+//     app-registered will-freeze handler (LXGlassFreezeHook.h — the app lands a still
+//     decelerating list on its predicted rest offset) and then `handlePauseForFreeze()`
+//     re-captures + redraws once, so the frozen frame equals the frame shown after the
+//     return transition (no stale-frame flash). Handler absent ⇒ upstream behaviour.
 //  Upstream: Copyright © 2025 DnV1eX, https://github.com/DnV1eX/LiquidGlassKit
 //
 
@@ -122,7 +127,8 @@ public class LiquidGlassEffectView: UIView, AnyVisualEffectView {
     /// 【第 61 轮第 3 条】这条 prop 现在是暂停态的**唯一**来源（原来的覆盖期 ∨ 转场按住期，
     /// 见 navigation/transitionWindow.ts）：第 58～60 轮 LiquidGlassView 还会在重新入窗口时
     /// 无视本值自行恢复渲染（pauseRequested 那条通道），已整体删除——它正是「返回时透过的
-    /// 画面反向流」的成因。本方法只负责两件事：恢复时做一次性复位，然后把 isPaused 落下去。
+    /// 画面反向流」的成因。本方法负责三件事：冻结前定格一帧（【第 66 轮第 1 条】）、恢复时
+    /// 做一次性复位，然后把 isPaused 落下去。
     @objc public func setPaused(_ paused: Bool) {
         // 恢复（true → false）时先做一次性复位再解除暂停（2026-10-02 用户第 2 条）：
         // 暂停只是停 draw，CAMetalLayer 上仍留着暂停前那帧（折射的是上一次可见时刻的
@@ -132,6 +138,21 @@ public class LiquidGlassEffectView: UIView, AnyVisualEffectView {
         // false，此时不需要也没有旧画面可丢（否则会白白多做一次同步采景）。
         if !paused, liquidGlassView?.isPaused == true {
             liquidGlassView?.handleResumeFromPause()
+        }
+        // 冻结（false → true）前【第 66 轮第 1 条】用户原话：「迷你播放器栏和底部 tab 栏透过
+        // 的画面，例如正在向下滑动当前列表，然后突然点击进入播放详情页……返回时，向下滑动的
+        // 列表还会向下移动一点距离……造成短暂的显示错误并闪一下。」
+        // 顺序不能反，两步都在 isPaused = true **之前**：
+        //   ① LXGlassNotifyWillFreeze：让 App 把「冻结之后还会自己动一下」的内容落到它将要
+        //      停的位置（本工程 = 惯性滑行的 Home 列表贴到预测落点，见 AppDelegate.mm 的
+        //      LXGlassSettleDeceleratingScrollView）。没人注册时它什么都不做。
+        //   ② handlePauseForFreeze：重采「贴完之后」的画面并立刻 present —— 冻结帧于是
+        //      等于返回后第一帧的画面，用户看不到新旧两帧的差（闪一下消失）。
+        // 幂等：重复置 true（RN 重放缓存 prop / 液态开关导致背衬重建）不再触发；
+        // 漏掉 ② 的话 App 侧那一贴会把冻结帧与新画面拉得更开，画面只会更花。
+        if paused, liquidGlassView?.isPaused == false {
+            _ = LXGlassNotifyWillFreeze()
+            liquidGlassView?.handlePauseForFreeze()
         }
         liquidGlassView?.isPaused = paused
     }

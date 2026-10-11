@@ -903,6 +903,48 @@ final class LiquidGlassView: MTKView {
         draw(bounds)
     }
 
+    /// 【第 66 轮第 1 条】冻结前的一次性「定格」采景 —— 与 handleResumeFromPause 对称，
+    /// 但只做它的一半（理由见下方「为什么不照恢复路径把沉降窗口也开上」）。
+    ///
+    /// 现象（用户原话）：「迷你播放器栏和底部 tab 栏透过的画面，例如正在向下滑动当前列表，
+    /// 然后突然点击进入播放详情页，迷你播放器栏和底部 tab 栏透过的画面是停留在进入播放详情页
+    /// 前的画面，而返回时，向下滑动的列表还会向下移动一点距离，这样……就会和进入详情页前的
+    /// 画面不一致，造成短暂的显示错误并闪一下。」
+    ///
+    /// 成因两段，本函数管第二段：
+    ///   ① **列表还在滑**：App 侧在冻结前把正在惯性滑行的列表按预测落点贴住
+    ///      （AppDelegate.mm 的 LXGlassSettleDeceleratingScrollView，由 LXGlassNotifyWillFreeze
+    ///      触发，见 LiquidGlassEffectView.setPaused）—— 列表的落点与「返回后」一致了。
+    ///   ② **冻结帧还是旧的**：采景走 30fps 节拍（captureMinInterval 33.3ms），这一拍根本
+    ///      来不及把「贴完落点之后」的画面采进纹理；暂停发生在同一拍之内，CAMetalLayer 上
+    ///      留着的仍是贴着落点**之前**那一帧 —— 于是返回时恢复路径采到的新画面与冻结帧差
+    ///      一段距离，用户看到的就是那一下闪。
+    ///
+    /// 本函数把这一帧补上，三件事：
+    ///   · `lastCaptureAt = 0` + `Self.resetGlobalCaptureGate()`：复位本实例节流与全局闸门，
+    ///     让**这一帧必须真采**（否则它落在 33ms 节流窗里，captureBackground 直接 return，
+    ///     定格就白做了）；
+    ///   · `captureBackground()`：采一帧当下画面（此刻列表已经贴完落点）；
+    ///   · `draw(bounds)`：立刻同步画一帧 —— 与恢复路径同口径，captureBackground 只换背景
+    ///     **纹理**，屏幕上显示的仍是 CAMetalLayer 里上一次 present 的那一帧，真正改写它的
+    ///     只有 draw + present（与 handleResumeFromPause 末尾那一脚同理）。
+    /// 调用方（LiquidGlassEffectView.setPaused）随后才把 isPaused 落下去 —— 顺序不能反：
+    /// 先定格、后采景、再暂停。
+    ///
+    /// 为什么不照 handleResumeFromPause 把沉降窗口 / 静默窗也开上：
+    /// 那条路径开窗的前提是「合成源**刚建立**」（backdrop 刚插入 / 刚从暂停恢复），窗内
+    /// 未就绪的采景一律沿用旧纹理 —— 在这里沿用等于把「贴着落点之前」的旧帧挂回来，恰好
+    /// 抵消本函数。而冻结发生在正常浏览中途：刚恢复 120ms 内的二次 push 不可能发生
+    /// （返回转场本身就有 350ms），采到半成品帧的前提（合成源刚建立 / 采景矩形刚变大）
+    /// 都不成立，所以这里只做「复位节流 + 采一帧 + 画一帧」。
+    /// 渲染档（syncRenderFrameRate）同样不动：暂停态与采景档无关，多调一次只是白算。
+    func handlePauseForFreeze() {
+        lastCaptureAt = 0
+        Self.resetGlobalCaptureGate()
+        captureBackground()
+        draw(bounds)
+    }
+
     /// Captures the background content via root View using layer render.
     ///
     /// iOS 26.2+ 无 CABackdropLayer 可用（系统重构 backdrop 私有机制），退化为公开 API
