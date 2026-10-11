@@ -64,12 +64,22 @@
  *      B7 采景节流（2026-10-02，用户第 5 条）：每实例最小采景间隔（常驻 30fps /
  *      实时会话 60fps），captureBackdrop 实际接入、首帧放行、按会话分档、回写时刻；
  *      B8 实时采景会话 + 暂停恢复复位（2026-10-02，用户第 2 条 / 第 9 条与中途追加）：
- *      两路会话标志分开记（liveCaptureRequested / realtimeCaptureRequested，会同时为真）、
- *      isLiveCaptureActive = 两者 OR（降档门控与采景分档的唯一判据）、
+ *      会话标志分开记（liveCaptureRequested / realtimeCaptureRequested，会同时为真）、
+ *      isLiveCaptureActive = OR（降档门控与采景分档的唯一判据；2026-10-11 第 58 轮第 2 条
+ *      起是三路 —— 再 OR 上 isReentryLiveActive，见 B9）、
  *      setRealtimeCapture 幂等 + 会话起止都放行下一次采景 + 退会话避让透镜会话、
  *      handleResumeFromPause（**保留纹理** / 清沿用痕迹 / 立刻采一次；2026-10-11 第 56 轮
  *      第 2 条把「丢旧纹理」反转为「保留纹理」，失败形态随之反转为「又丢弃旧纹理」）
  *      与 setPaused 恢复路径；
+ *      B9 重新入窗口自恢复 + 实时采景窗口（2026-10-11 第 58 轮第 2 条，用户「返回时底栏/
+ *      迷你条透过的画面不是底部实时画面、有错位、动画延迟很高」）：被压栈页覆盖期间 JS 的
+ *      省电门把玻璃按停（账本门只认 screenPopped，pop 之前不翻），返回动画里玻璃是冻的
+ *      ⇒ didMoveToWindow（UIKit 保证，点返回与右滑两条路径都成立）里 resumeFromReentryIfPaused
+ *      当场自恢复 + 重采；同时开一段固定时长的实时采景窗口（reentryLiveDuration = 0.9s，
+ *      到期由定时器落回静止档），盖住一次标准 pop 转场。三个新状态：pauseRequested（JS
+ *      意图）/ resumedFromReentry（这次恢复是本类自己做的，供 suspendWhileDetached 按停）
+ *      / reentryLiveStartedAt（窗口起点）；clearReentryResume 在 JS 明确下发 unpause 时
+ *      把控制权交回去。
  *   C  反例自检：任一条修复被拆掉一点，本脚本必须判不合格；替换未命中 = 失败
  *      （防止用例指向的代码被改名后脚本退化成永真）。
  *
@@ -614,12 +624,14 @@ const existingStructureInvariants = (f) => {
   if (!endLiveForRate || !/liveCaptureRequested = false/.test(endLiveForRate)) {
     reasons.push('endLiveCapture 未落回透镜会话标志（liveCaptureRequested = false 缺失）')
   }
-  // 五个会话切换点一个都不能漏同步（漏一处 = 帧率挂在旧档：透镜落下了玻璃还在
+  // 会话切换点一个都不能漏同步（漏一处 = 帧率挂在旧档：透镜落下了玻璃还在
   // 60fps 白烧、或横滑开始了玻璃还压在 30fps 跟不上手）。计数 = 定义行之外的调用数。
+  // 第 58 轮第 2 条把两处新会话切换点纳入：didMoveToWindow（重新入窗口 = 转场开始）
+  // 与 reentry 实时窗口到期（scheduleReentryLiveExpiry 的定时器回档）。
   const rateDefs = countOf(glass, 'func syncRenderFrameRate()')
   const rateCalls = countOf(glass, 'syncRenderFrameRate()') - rateDefs
-  if (rateDefs !== 1 || rateCalls !== 5) {
-    reasons.push('syncRenderFrameRate 定义/调用数不对（定义 ' + rateDefs + ' 处、调用 ' + rateCalls + ' 处，应为 1/5：init + beginLiveCapture + endLiveCapture + setRealtimeCapture + handleResumeFromPause）')
+  if (rateDefs !== 1 || rateCalls !== 7) {
+    reasons.push('syncRenderFrameRate 定义/调用数不对（定义 ' + rateDefs + ' 处、调用 ' + rateCalls + ' 处，应为 1/7：init + beginLiveCapture + endLiveCapture + setRealtimeCapture + handleResumeFromPause + didMoveToWindow + reentry 窗口到期）')
   }
 
   // B2 采样基准锁定语义（captureReferenceSize / captureBaseSize）
@@ -744,8 +756,8 @@ const existingStructureInvariants = (f) => {
   if (!/private var realtimeCaptureRequested = false/.test(glass)) {
     reasons.push('缺 realtime 会话的独立开关（与透镜会话合并成一个标志会互相覆盖）')
   }
-  if (!/private var isLiveCaptureActive: Bool \{ liveCaptureRequested \|\| realtimeCaptureRequested \}/.test(glass)) {
-    reasons.push('isLiveCaptureActive 不再是两路会话的 OR（降档门控/采景分档会漏掉一路会话）')
+  if (!/private var isLiveCaptureActive: Bool \{ liveCaptureRequested \|\| realtimeCaptureRequested \|\| isReentryLiveActive \}/.test(glass)) {
+    reasons.push('isLiveCaptureActive 不再是三路会话的 OR（透镜抬起 / RN live / 重新入窗口实时窗口；降档门控与采景分档都只读它，漏一路就会在该场景掉回静止档）')
   }
   const realtimeBody = fnBody(glass, /func setRealtimeCapture\(_ realtime: Bool\)\s*\{/)
   if (!realtimeBody) {
@@ -795,6 +807,84 @@ const existingStructureInvariants = (f) => {
   if (!/if !paused, liquidGlassView\?\.isPaused == true \{/.test(effect) ||
       !/liquidGlassView\?\.handleResumeFromPause\(\)/.test(effect)) {
     reasons.push('setPaused 恢复路径未接复位（暂停恢复时不会清沿用痕迹/立刻采一次）')
+  }
+
+  // B9 第 58 轮第 2 条：重新入窗口自恢复 + 实时采景窗口（返回转场期间的实时画面）
+  //
+  // 用户报的是「返回时底栏/迷你条透过的画面不是底部实时画面、有错位、动画延迟很高」。
+  // 机制上的两道门：① 被压栈页覆盖期间 JS 的省电门 paused=true（账本门只认 RNN 的
+  // screenPopped，pop 之前不翻），返回动画里玻璃是**冻结**的（CAMetalLayer 上还是暂停前
+  // 那一帧）——所以要在「重新入窗口」这一刻（UIKit 保证发生，点返回与右滑两条路径都成立）
+  // 当场自恢复并重采；② 恢复之后采景档还压在静止档（30fps）追不上一段整幅在动的转场
+  // ——所以再开一段固定时长的实时窗口，到期自动落回。
+  // 三个新状态各司其职，缺一个都会被拦：pauseRequested（JS 意图）/ resumedFromReentry
+  // （这次恢复是本类自己做的，供被覆盖时按停）/ reentryLiveStartedAt（实时窗口起点）。
+  if (!/var pauseRequested = false/.test(glass)) {
+    reasons.push('缺 pauseRequested（分不清「JS 要它停」与「本类自行恢复过」）')
+  }
+  if (!/var resumedFromReentry = false/.test(glass)) {
+    reasons.push('缺 resumedFromReentry（自行恢复的痕迹没记 → 手势取消 / 再次被覆盖时不会按停，玻璃白烧）')
+  }
+  if (!/private static let reentryLiveDuration: TimeInterval = 0\.9/.test(glass)) {
+    reasons.push('reentryLiveDuration 不是 0.9s（要覆盖一次标准 pop 转场约 0.35s 加收尾余量）')
+  }
+  if (!/reentryLiveStartedAt > 0 && CACurrentMediaTime\(\) - reentryLiveStartedAt < Self\.reentryLiveDuration/.test(glass)) {
+    reasons.push('isReentryLiveActive 判据被改坏（实时窗口不再按墙钟起点 + 固定时长判定）')
+  }
+  const reentryBody = fnBody(glass, /private func resumeFromReentryIfPaused\(\)\s*\{/)
+  if (!reentryBody) {
+    reasons.push('缺 resumeFromReentryIfPaused（重新入窗口不会自恢复 —— 右滑返回那条路径没有 JS 事件，整段转场里玻璃都是冻的）')
+  } else {
+    if (!/guard pauseRequested, isPaused else \{ return \}/.test(reentryBody)) {
+      reasons.push('自恢复的闸门被改坏（必须只在「JS 要它停」且「当前确实停着」时自恢复）')
+    }
+    if (!/handleResumeFromPause\(\)/.test(reentryBody)) {
+      reasons.push('自恢复未走复位（重采 + 清沿用痕迹 + 同步渲染档全缺 → 先把暂停前那帧旧画面画出去）')
+    }
+    if (!/isPaused = false/.test(reentryBody)) {
+      reasons.push('自恢复没有真的解除暂停')
+    }
+    if (!/resumedFromReentry = true/.test(reentryBody)) {
+      reasons.push('自恢复未记痕迹（手势取消后没人按停）')
+    }
+  }
+  const detachBody = fnBody(glass, /private func suspendWhileDetached\(\)\s*\{/)
+  if (!detachBody) {
+    reasons.push('缺 suspendWhileDetached（被移出窗口时不会按停）')
+  } else {
+    if (!/guard resumedFromReentry else \{ return \}/.test(detachBody)) {
+      reasons.push('移出窗口的按停没有区分来源（会把 JS 省电门按停的那些也接管，JS 与原生互相打架）')
+    }
+    if (!/isPaused = true/.test(detachBody)) {
+      reasons.push('移出窗口没真的按停（被覆盖的玻璃仍在 60fps 白烧）')
+    }
+  }
+  const clearBody = fnBody(glass, /func clearReentryResume\(\)\s*\{/)
+  if (!clearBody || !/resumedFromReentry = false/.test(clearBody)) {
+    reasons.push('缺 clearReentryResume（JS 明确下发 unpause 后痕迹不清，下一次被覆盖时按旧意图按停）')
+  }
+  const didMoveReentry = fnBody(glass, /override func didMoveToWindow\(\)\s*\{/)
+  if (!didMoveReentry) {
+    reasons.push('缺 didMoveToWindow')
+  } else {
+    if (!/guard window != nil else \{\n\s+suspendWhileDetached\(\)/.test(didMoveReentry)) {
+      reasons.push('didMoveToWindow 的移出窗口分支未接 suspendWhileDetached（被覆盖的玻璃不会按停）')
+    }
+    if (!/resumeFromReentryIfPaused\(\)/.test(didMoveReentry)) {
+      reasons.push('didMoveToWindow 未接自恢复（重新入窗口时玻璃仍是冻的 —— 返回转场透过的还是暂停前那一帧）')
+    }
+    if (!/reentryLiveStartedAt = CACurrentMediaTime\(\)/.test(didMoveReentry) || !/scheduleReentryLiveExpiry\(\)/.test(didMoveReentry)) {
+      reasons.push('didMoveToWindow 未开实时采景窗口（恢复后仍压在静止档 30fps，追不上整幅在动的转场 —— 用户第 2 条的「延迟很高」）')
+    }
+    if (!/syncRenderFrameRate\(\)/.test(didMoveReentry)) {
+      reasons.push('didMoveToWindow 未同步渲染档（档位与刚开的实时窗口脱节）')
+    }
+  }
+  if (!/liquidGlassView\?\.pauseRequested = paused/.test(effect)) {
+    reasons.push('setPaused 未把 JS 意图记到视图上（自恢复分不清「该不该恢复」）')
+  }
+  if (!/if !paused \{ liquidGlassView\?\.clearReentryResume\(\) \}/.test(effect)) {
+    reasons.push('setPaused 恢复路径未清「自行恢复」的痕迹（JS 明确下发 unpause 后控制权没交回 JS）')
   }
   return reasons
 }
@@ -931,8 +1021,8 @@ CE('C8 均匀沿用又加回 previous 非空条件（旧实现）', existingStru
 ), 'previous 非空条件')
 
 CE('C9 didMoveToWindow 锚点被拆掉（26.2+ 首帧没有保护）', anchorInvariants, tamperGlass(
-  'super.didMoveToWindow()\n        if window != nil {\n            beginCaptureSettleWindow()\n        }',
-  'super.didMoveToWindow()'
+  'super.didMoveToWindow()\n        guard window != nil else {\n            suspendWhileDetached()\n            return\n        }\n        beginCaptureSettleWindow()',
+  'super.didMoveToWindow()\n        guard window != nil else {\n            suspendWhileDetached()\n            return\n        }'
 ), 'didMoveToWindow')
 
 CE('C10 透镜抬起链路不再接 beginLiveCapture', existingStructureInvariants, tamperLens(
@@ -1050,10 +1140,10 @@ CE('C18c 采景节流不再回写时刻（首帧之后永远拦，玻璃画面�
 
 // —— 2026-10-02 契约加固：RN 实时采景会话 + 暂停恢复复位（C19~C23）——
 
-CE('C19 两路会话被合并成一个标志（isLiveCaptureActive 只看透镜会话，横滑不再进实时档）', existingStructureInvariants, tamperGlass(
-  'private var isLiveCaptureActive: Bool { liveCaptureRequested || realtimeCaptureRequested }',
+CE('C19 三路会话被合并成一个标志（isLiveCaptureActive 只看透镜会话，横滑/返回转场不再进实时档）', existingStructureInvariants, tamperGlass(
+  'private var isLiveCaptureActive: Bool { liveCaptureRequested || realtimeCaptureRequested || isReentryLiveActive }',
   'private var isLiveCaptureActive: Bool { liveCaptureRequested }'
-), '两路会话的 OR')
+), '不再是三路会话的 OR')
 
 CE('C20 会话开始不放行下一次采景（滑动开头玻璃里仍是旧位置的画面）', existingStructureInvariants, tamperGlass(
   '        lastCaptureAt = 0\n        consecutiveUniformFrames = 0',
@@ -1141,6 +1231,32 @@ CE('C30 14~26.1 路径的锚点被挪到改 frame 之后（本帧采样已带黑
   '        // Position backdrop view and layer\n        backdropView.frame = CGRect(origin: captureOrigin, size: captureSize)\n\n        noteCaptureGeometry(captureSize)'
 ), '落在改 frame 之后')
 
+// —— 2026-10-11 第 58 轮第 2 条：重新入窗口自恢复 + 实时采景窗口（C31~C35）——
+CE('C31 didMoveToWindow 不再自恢复（返回转场里玻璃仍是冻的 —— 右滑那条路径没有 JS 事件）', existingStructureInvariants, tamperGlass(
+  '        beginCaptureSettleWindow()\n        resumeFromReentryIfPaused()\n',
+  '        beginCaptureSettleWindow()\n'
+), '未接自恢复')
+
+CE('C32 didMoveToWindow 不再开实时采景窗口（恢复后压在静止档 30fps，追不上整幅在动的转场）', existingStructureInvariants, tamperGlass(
+  '        reentryLiveStartedAt = CACurrentMediaTime()\n        scheduleReentryLiveExpiry()\n',
+  ''
+), '未开实时采景窗口')
+
+CE('C33 自恢复的闸门被拆（JS 说要停也照恢复 → 被覆盖的玻璃白烧）', existingStructureInvariants, tamperGlass(
+  '        guard pauseRequested, isPaused else { return }\n',
+  ''
+), '闸门被改坏')
+
+CE('C34 移出窗口照旧按停不区分来源（与 JS 省电门互相打架）', existingStructureInvariants, tamperGlass(
+  '        guard resumedFromReentry else { return }\n',
+  ''
+), '没有区分来源')
+
+CE('C35 实时窗口时长改成 0（等于没有窗口：开完立刻落回静止档）', existingStructureInvariants, tamperGlass(
+  'private static let reentryLiveDuration: TimeInterval = 0.9',
+  'private static let reentryLiveDuration: TimeInterval = 0'
+), '不是 0.9s')
+
 // ---------------------------------------------------------------------------
 // 输出
 // ---------------------------------------------------------------------------
@@ -1156,7 +1272,7 @@ console.log('  A3 三条窗口锚点（backdrop 插入 / didMoveToWindow / begin
 console.log('  A4 放行出口唯一：非 hold 分支恰一处 backgroundTexture = texture（缺 = 玻璃永久透明）')
 console.log('  A5 开窗点恰 5 处（三条锚点 + 暂停恢复复位 + 采景几何变化）+ 起点写入唯一（每帧路径不得开窗/重置）')
 console.log('  A6 第五锚点 noteCaptureGeometry：只比尺寸不比原点、变化才开窗、两条采景路径各恰一处（2026-10-11 第 52 轮）')
-console.log('  B  既有事实未改坏（渲染帧率 = 采景档 30/60、唯一赋值点、采样基准锁定、均匀沿用修复、采景几何、透镜链路、实时会话、暂停复位）')
+console.log('  B  既有事实未改坏（渲染帧率 = 采景档 30/60、唯一赋值点、采样基准锁定、均匀沿用修复、采景几何、透镜链路、实时会话、暂停复位、重新入窗口自恢复 + 实时采景窗口）')
 console.log('  B7 采景节流：每实例最小采景间隔（常驻 30fps / 实时 60fps），首帧放行、按会话分档（2026-10-02）')
 console.log('  B8 实时采景会话（两路标志分开 + OR 判据 + 会话起止放行采景 + 退会话按 OR 统一算档）+ 暂停恢复复位（2026-10-02）')
 console.log('  C  反例自检：任一条修复拆掉一点都必须拦下（替换未命中 = 失败）')

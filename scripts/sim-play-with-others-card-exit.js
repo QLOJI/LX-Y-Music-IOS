@@ -39,6 +39,25 @@
  *   scripts/sim-play-with-others-toggle.js 把住；本脚本只补「默认值必须是 NO（未勾选 /
  *   冷启动不许走混音会话）」与「声明在方法之前」两条。
  *
+ * 【第 58 轮第 4 条（2026-10-11）：口径第二次反转 —— 卡片抑制落在原生、且只拦「发布」】
+ *   用户原话：「当我勾选上『与其他应用同时播放』选项，应该暂停音乐，立即取消锁屏和灵动岛
+ *   界面，取消勾选后再次播放音乐，继续占用锁屏和灵动岛界面，目前存在不会立即取消锁屏和
+ *   灵动岛界面的问题，需要修复。」
+ *   ⇒ 又要撤卡了。但**第 34 轮那版撤卡（JS nowPlaying.ts 里做元数据抑制）的做法不许复活**：
+ *     它把「发布」这一层整个关掉，勾选期间锁屏播放器的进度 / 歌词 / 按钮全部停更；而且那颗
+ *     开关一旦被谁把初值一翻就永久失效，没人会记得为什么。
+ *   第 58 轮的实现口径：抑制落在**原生**（AppDelegate.mm 的 LXSuppressNowPlayingCard），
+ *     且只折进 LXApplyNowPlayingInfo 现有的那一个三元式 ——
+ *       center.nowPlayingInfo = (!LXSuppressNowPlayingCard && LXNowPlayingInfoCache.count)
+ *                                 ? [LXNowPlayingInfoCache copy] : nil;
+ *     即「按缓存为空处理」：卡片当场撤下（第 33 轮实测过置空这条路有效 —— 锁屏与灵动岛一起
+ *     消失），但**缓存照常维护、歌词时钟照常跑、命令 enabled 照常同步、playbackState 有意
+ *     不动** —— 所以进度不冻、恢复时也不用补；取消勾选时闸门放开，下一次 LXApplyNowPlayingInfo
+ *     就把卡片原样装回去（两处下发桥都会当场补一次，JS 侧即使没走到补发布那一步也立即生效）。
+ *   JS 侧口径**没有变**：nowPlaying.ts 里仍不许出现任何抑制开关 / 闸门，index.ts 仍不许在
+ *     切换时 clearNowPlayingInfo。抑制只存在于原生发布出口这一处，且只有 4 个标识符出现点
+ *     （声明 + 三元 + 两处下发），多一处就说明有人把它扩成了独立的早退块。
+ *
  * 为什么必须靠契约脚本：以上全是「开关极性 + 调用顺序 + 有界性 + 不许复活的旧设计」，
  * tsc/eslint 一律无感；写反了、忘了撤销、把阶梯写成无界，都只在真机上表现为
  * 「锁屏播放器没了 / 手机发烫 / 声音回不来」。
@@ -83,6 +102,9 @@ const nowPlayingInvariants = (raw) => {
 
   // ⓐ-1 抑制开关必须不存在（第 34 轮的定案是「撤掉」，不是「保留着但默认关」——
   //      留着一颗开关，下次谁把初值一翻，锁屏播放器又没了，而这次没人会记得为什么）
+  //      第 58 轮第 4 条又要求撤卡，但那条的落点在**原生**（LXSuppressNowPlayingCard，
+  //      只折进 LXApplyNowPlayingInfo 的三元式，见不变量 D2）：JS 层这条禁令照旧有效 ——
+  //      在 nowPlaying.ts 里做闸门会把缓存 / 歌词时钟一起停掉（勾选期间进度冻结）。
   if (/suppress/i.test(code)) {
     reasons.push('nowPlaying.ts 里又出现了抑制开关（Suppress）：锁屏播放器与灵动岛播放器是同一个'
       + ' Now Playing 会话，抑制元数据发布会把锁屏播放器一起关掉（第 33 轮实锤，用户第 34 轮'
@@ -289,6 +311,34 @@ const nativeInvariants = (raw) => {
       reasons.push('LXPlayWithOthersEnabled 的声明落在 prepareAudioSession 之后（文件作用域静态变量必须先声明后使用，否则编译不过）')
     }
   }
+
+  // D2 第 58 轮第 4 条：勾选态撤卡（原生闸门只拦「发布」这一层）
+  //     形态被钉死为「折进 LXApplyNowPlayingInfo 的那一个三元式」+「两处下发桥各写一次
+  //     标记并当场补发布」；标识符总数 = 4（声明 + 三元 + 两处下发），多一处即有人把它
+  //     扩成了独立早退块（那形状会顺手清缓存 / 停歌词时钟 —— 勾选期间进度冻结的老毛病）。
+  const decl = 'static BOOL LXSuppressNowPlayingCard = NO;'
+  const cardDeclAt = code.indexOf(decl)
+  if (cardDeclAt < 0) {
+    reasons.push('原生缺 LXSuppressNowPlayingCard 声明，或默认值不是 NO（勾选态撤卡是「按需抑制」，默认必须是放行）')
+  }
+  if (!/center\.nowPlayingInfo = \(!LXSuppressNowPlayingCard && LXNowPlayingInfoCache\.count\) \? \[LXNowPlayingInfoCache copy\] : nil;/.test(code)) {
+    reasons.push('撤卡闸门未折进 LXApplyNowPlayingInfo 的信息三元式（必须是 (!LXSuppressNowPlayingCard && LXNowPlayingInfoCache.count) ? copy : nil —— '
+      + '另起早退块会把缓存 / 歌词时钟一起停掉：勾选期间进度冻结、取消勾选要等下一首歌才回来）')
+  }
+  const gatePair = 'LXSuppressNowPlayingCard = enabled;\n  LXApplyNowPlayingInfo();'
+  if (countOf(code, gatePair) !== 2) {
+    reasons.push(`「写标记 + 当场补发布」的连写在 ${countOf(code, gatePair)} 处出现（应为 2：setPlayWithOthers 与 applyPlayWithOthersNow 各一处）—— `
+      + '少一处就会出现用户报的「不会立即取消锁屏和灵动岛界面」')
+  }
+  const idCount = countOf(code, 'LXSuppressNowPlayingCard')
+  if (idCount !== 4) {
+    reasons.push(`LXSuppressNowPlayingCard 出现 ${idCount} 处（应为 4：声明 + 信息三元 + 两处下发桥）—— 多出来的那一处是被扩成了独立早退块 / 又被别处复位，`
+      + '撤卡口径会漂（勾选期间清缓存 = 进度冻结；别处复位 = 取消勾选后卡片装不回来）')
+  }
+  const firstUse = code.search(/center\.nowPlayingInfo = \(!LXSuppressNowPlayingCard/)
+  if (cardDeclAt >= 0 && firstUse >= 0 && cardDeclAt > firstUse) {
+    reasons.push('LXSuppressNowPlayingCard 的声明落在首个使用点之后（文件作用域静态变量必须先声明后使用，.mm 按 C++ 规则编译，否则编译不过）')
+  }
   return reasons
 }
 
@@ -413,6 +463,30 @@ const runCounterExamples = () => {
     'static BOOL LXPlayWithOthersEnabled = YES;')),
   '默认值不是 NO')
 
+  // k2 撤卡闸门被拆（勾选后卡片纹丝不动 = 用户第 58 轮第 4 条原样复发）
+  check('k2 撤卡闸门被拆', () => nativeInvariants(tamper(REAL.native,
+    'center.nowPlayingInfo = (!LXSuppressNowPlayingCard && LXNowPlayingInfoCache.count) ? [LXNowPlayingInfoCache copy] : nil;',
+    'center.nowPlayingInfo = LXNowPlayingInfoCache.count ? [LXNowPlayingInfoCache copy] : nil;')),
+  '未折进')
+
+  // k3 某处下发桥忘了「当场补发布」（标记落了但卡片要等下一行歌词 / 下一首歌才消失）
+  check('k3 下发桥忘了当场补发布', () => nativeInvariants(tamper(REAL.native,
+    '  LXSuppressNowPlayingCard = enabled;\n  LXApplyNowPlayingInfo();\n  LXPlayWithOthersEnabled = enabled;',
+    '  LXSuppressNowPlayingCard = enabled;\n  LXPlayWithOthersEnabled = enabled;')),
+  '连写')
+
+  // k4 闸门被扩成独立早退块（顺手清缓存 → 勾选期间进度 / 歌词冻结）
+  check('k4 闸门被扩成独立早退块', () => nativeInvariants(tamper(REAL.native,
+    '    center.nowPlayingInfo = (!LXSuppressNowPlayingCard',
+    '    if (LXSuppressNowPlayingCard) {\n      [LXNowPlayingInfoCache removeAllObjects];\n      return;\n    }\n    center.nowPlayingInfo = (!LXSuppressNowPlayingCard')),
+  '出现 5 处')
+
+  // k5 取消勾选后被别处复位（卡片再也装不回来）
+  check('k5 别处复位撤卡标记', () => nativeInvariants(tamper(REAL.native,
+    '    center.nowPlayingInfo = (!LXSuppressNowPlayingCard && LXNowPlayingInfoCache.count) ? [LXNowPlayingInfoCache copy] : nil;',
+    '    LXSuppressNowPlayingCard = NO;\n    center.nowPlayingInfo = (!LXSuppressNowPlayingCard && LXNowPlayingInfoCache.count) ? [LXNowPlayingInfoCache copy] : nil;')),
+  'LXSuppressNowPlayingCard 出现 5 处')
+
   return results
 }
 
@@ -428,7 +502,7 @@ const checks = [
   ['元数据照常发布（抑制整体撤除、唯一出口无闸门、六个桥都在、撤销理由留痕）', () => nowPlayingInvariants(REAL.np)],
   ['切换编排 + 冷启动（下发原生策略 → 有歌才按当前曲目重发布 → 按播放状态重对齐；禁止抑制 / 清卡）', () => orchestrationInvariants(REAL.plugin)],
   ['有界重取阶梯（延时表有界合理 + 开关/停止/手动暂停闸门 + 混音分支两次布防 + 可撤销 + 回前台末次机会）', () => reclaimInvariants(REAL.service)],
-  ['原生（默认 NO + 守卫在 prepareAudioSession 内 + 声明在方法之前）', () => nativeInvariants(REAL.native)],
+  ['原生（默认 NO + 守卫在 prepareAudioSession 内 + 声明在方法之前 + 勾选态撤卡只拦发布 / 两处下发桥当场生效）', () => nativeInvariants(REAL.native)],
 ]
 
 let invOk = true

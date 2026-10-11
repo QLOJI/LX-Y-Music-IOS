@@ -40,6 +40,12 @@
  *      glassHomeCovered / glassCovered —— 账本门的反应晚于用户按下返回，
  *      返回动画期间透出的还是暂停前那一帧。完整链路见
  *      scripts/sim-glass-reveal-window.js，门本体见 scripts/sim-power-drain.js）
+ *   · 实时采景档（live prop）三路齐全：pagerDragging（横滑跟手，第 20 轮）+
+ *     navRevealing + navTransitioning（第 58 轮第 2 条 —— 返回转场期间底部栏/迷你条
+ *     正被露出来，只按横滑开档时它们透过的仍是 30fps 档的旧背景：用户看到的
+ *     「返回时透过的画面不是底部实时画面、有错位、动画延迟高」）。
+ *     paused 与 live 是两个独立维度：paused 管「看不见就别画」，live 管「看得见时画多快」；
+ *     两者共用 navTransitioning —— 被盖住的一侧照旧停渲染，露出来的一侧走 60fps 档。
  *   · ③ 的前台门本体由 scripts/sim-progress-poll-foreground-gate.js 深查，
  *     本脚本只做交叉回归守卫（门与起表点还在）。
  *
@@ -221,9 +227,16 @@ const tabBarInvariants = (src) => {
   if (!src.includes(expandedPaused) || !src.includes(pillPaused)) {
     reasons.push('不可见侧未停渲染（Tab 栏两块玻璃的 paused 门缺失：展开态须含 collapsed、收起态须含 !collapsed，并带 glassHomeCovered / navTransitioning / !appActive）')
   }
-  const liveCount = (src.match(/live=\{pagerDragging\}/g) ?? []).length
+  // 实时采景档（live prop → 原生 setRealtimeCapture：采景 60fps + 渲染 60fps）。
+  // 第 58 轮第 2 条把横滑一路扩成三路：pagerDragging（横滑跟手，第 20 轮）之外再接上
+  // navRevealing / navTransitioning —— 返回转场期间底部栏与迷你条正被露出来，透过的却是
+  // 30fps 档采的旧背景（用户第 2 条「透过的画面不是底部实时的画面，有错位，动画延迟也很高」）。
+  // 三路全在表达式里才算接上：少任何一项都会让对应场景掉回静止档。
+  // 与 paused 门是**两个独立维度**：paused 管「看不见就别画」，live 管「看得见时画多快」；
+  // 转场期间 navTransitioning 同时进两边的三/四项（玻璃被盖住的那一侧照旧停渲染）。
+  const liveCount = (src.match(/live=\{pagerDragging \|\| navRevealing \|\| navTransitioning\}/g) ?? []).length
   if (liveCount !== 2) {
-    reasons.push(`横滑实时档未接（live={pagerDragging} 出现 ${liveCount} 处，两块玻璃都应接）`)
+    reasons.push(`实时采景档未接（live={pagerDragging || navRevealing || navTransitioning} 出现 ${liveCount} 处，两块玻璃都应接）`)
   }
   return reasons
 }
@@ -233,8 +246,9 @@ const playerBarInvariants = (src) => {
   if (!src.includes('paused={glassCovered || navTransitioning || !appActive}')) {
     reasons.push('迷你播放条玻璃未接省电门（paused 须含 glassCovered / navTransitioning / !appActive）')
   }
-  if (!src.includes('live={pagerDragging}')) {
-    reasons.push('迷你播放条玻璃未接横滑实时档（live={pagerDragging}）')
+  const liveCount = (src.match(/live=\{pagerDragging \|\| navRevealing \|\| navTransitioning\}/g) ?? []).length
+  if (liveCount !== 1) {
+    reasons.push(`迷你播放条玻璃未接实时采景档（live={pagerDragging || navRevealing || navTransitioning} 出现 ${liveCount} 处，应为 1）`)
   }
   return reasons
 }
@@ -324,6 +338,21 @@ const runCounterExamples = () => {
   check('t3 迷你播放条玻璃摘掉省电门', () => playerBarInvariants(tamper(REAL_PLAYER,
     'paused={glassCovered || navTransitioning || !appActive}',
     'paused={false}')), '迷你播放条玻璃未接省电门')
+
+  // t4 Tab 栏一块玻璃摘掉实时采景档 → 报「实时采景档未接」
+  check('t4 Tab 栏一块玻璃摘掉实时采景档', () => tabBarInvariants(tamper(REAL_TAB,
+    'live={pagerDragging || navRevealing || navTransitioning}',
+    'live={pagerDragging}')), '实时采景档未接')
+
+  // t5 实时档丢掉横滑那一路（只剩返回转场两路）→ 报「实时采景档未接」
+  check('t5 实时采景档丢掉横滑一路', () => tabBarInvariants(tamper(REAL_TAB,
+    'live={pagerDragging || navRevealing || navTransitioning}',
+    'live={navRevealing || navTransitioning}')), '实时采景档未接')
+
+  // t6 迷你播放条玻璃摘掉实时采景档 → 报「未接实时采景档」
+  check('t6 迷你播放条玻璃摘掉实时采景档', () => playerBarInvariants(tamper(REAL_PLAYER,
+    'live={pagerDragging || navRevealing || navTransitioning}',
+    'live={pagerDragging}')), '迷你播放条玻璃未接实时采景档')
 
   // h1 进度轮询前台门被摘（交叉回归）→ 报「进度轮询前台门缺失」
   check('h1 进度轮询前台门被摘', () => hookInvariants(tamper(REAL_HOOK,

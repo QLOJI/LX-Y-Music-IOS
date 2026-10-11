@@ -20,9 +20,20 @@
  *     取消勾选 → 原独占分支一字未改（暂停 + 短暂中断自动续播 = 第 21/22 轮口径）。
  *   原生（AppDelegate.mm，handleAudioSessionInterruption:）：
  *     JS 经 setPlayWithOthers 下发 LXPlayWithOthersEnabled；Began 分支据此
- *     shouldEmitPause = !LXPlayWithOthersEnabled —— 勾选时引擎照旧停摆（音频已被系统压住），
- *     但不 emit paused、不改 currentState：UI / 锁屏 / 灵动岛保持「在播」；Ended 分支
- *     仍照 interruptedBySystem 重启引擎 + schedulePlaybackOutputRestoreWithDelays 恢复输出。
+ *     shouldEmitPause = !LXPlayWithOthersEnabled —— 勾选时不 emit paused、不改 currentState：
+ *     UI / 锁屏 / 灵动岛保持「在播」；Ended 分支仍照 interruptedBySystem 重启引擎 +
+ *     schedulePlaybackOutputRestoreWithDelays 恢复输出。
+ *
+ * 【第 58 轮第 3 条：混音态 Began 分支改「原地不动」（本脚本第 24 轮口径的反转）】
+ *   第 24 轮写的「勾选时引擎照旧停摆（音频已被系统压住），只把 paused 事件吞掉不发」
+ *   在真机上表现为**声音不定时中断又自己恢复**：混音口径下 iOS 打断期间本来就已把我们
+ *   的输出压住，我们再去 [engine pause] + _sourceRenderingEnabled = NO + setActive:NO
+ *   等于自己把引擎拆了；而打断结束/JS 重取阶梯的 play() 进来时 playerState.isPlay 一直是
+ *   true（JS 只吞了事件没改状态），引擎已在播不会再发 'playing'，音量渐入的兜底期限
+ *   （1.5s）成了唯一的恢复时刻 —— 用户听到的正是这六拍阶梯。
+ *   现在的口径：混音态 Began 分支**整段让行** —— 不停引擎、不掐渲染、不交还会话，只记一下
+ *   播放位置；打断结束 iOS 自己把会话还回来，全程连续，不经历「拆掉 → 装回来」。
+ *   JS 侧配对修正见 src/plugins/player/utils.ts 的 setPlay（已在播时不再预约渐入）。
  *
  * 带反例自检（这类回归 tsc/eslint 无感：多一句 pause()、少一句续播、标记写死，全都合法，
  * 只在真机上表现为「勾选了还是被暂停」或「勾选后又没声了」）。
@@ -45,6 +56,7 @@ const stripComments = (src) => src
 
 const F = {
   service: 'src/plugins/player/service.ts',
+  utils: 'src/plugins/player/utils.ts',
   native: 'ios/LxMusicMobile/AppDelegate.mm',
 }
 
@@ -105,8 +117,53 @@ const serviceInvariants = (raw) => {
 }
 
 // ---------------------------------------------------------------------------
-// 不变量 C：原生（AppDelegate.mm）—— 策略标记 + 对外不呈现暂停 + 打断结束仍恢复输出
+// 不变量 C：JS 渐入侧（utils.ts）—— 已在播时不预约渐入（第 58 轮第 3 条的自伤路径之一）
 // ---------------------------------------------------------------------------
+
+// 为什么这条属于本脚本：混音口径下 play() 有**两类**调用者 —— 真·恢复播放，以及
+// service.ts 重取输出阶梯（scheduleMixReclaim / 打断结束分支）。后者进来时
+// playerState.isPlay 一直是 true、引擎早已跨过出声门槛，而 armFadeIn 的旧写法
+// （fadeTimer == null 就 stopRamp + silenceBothEngines）会把音量当场压 0；重取不会再触发
+// 'playing' 去放行渐入，音量只能干等 1.5s 兜底期限跳回 —— 就是用户听到的
+// 「声音自动不定时中断，然后又自动播放」。这里钉住闸门形态。
+const utilsInvariants = (raw) => {
+  const reasons = []
+  const code = stripComments(raw)
+  const at = code.indexOf('export const setPlay = async() => {')
+  if (at < 0) {
+    reasons.push('找不到 utils.setPlay（渐入链的起点没了）')
+    return reasons
+  }
+  const end = code.indexOf('\nexport const ', at + 1)
+  const body = end < 0 ? code.slice(at) : code.slice(at, end)
+  if (!body.includes('if (!playerState.isPlay) armVolumeFadeIn()')) {
+    reasons.push('setPlay 未按播放态预约渐入（必须是 if (!playerState.isPlay) armVolumeFadeIn()：无条件预约会在「重取输出」这条调用路径上把音量当场压 0，等 1.5s 兜底才跳回 —— 第 58 轮第 3 条「声音不定时中断又恢复」）')
+  }
+  if (/\n\s+armVolumeFadeIn\(\)\n/.test(body)) {
+    reasons.push('setPlay 里又出现无条件的 armVolumeFadeIn()（绕过播放态闸门）')
+  }
+  return reasons
+}
+
+// ---------------------------------------------------------------------------
+// 不变量 D：原生（AppDelegate.mm）—— 策略标记 + 对外不呈现暂停 + 打断结束仍恢复输出
+//          + 第 58 轮第 3 条：混音态 Began 分支整段让行
+// ---------------------------------------------------------------------------
+
+// 从 performInterruptionBeganHandling 的 renderQueue 块里切出「混音态让行」早退块。
+// 返回 null 表示让行块不存在（回归形态：勾选后仍走完拆引擎那两步）。
+const mixBeganLetThrough = (raw) => {
+  const fn = raw.indexOf('- (void)performInterruptionBeganHandling {')
+  if (fn < 0) return null
+  const sync = raw.indexOf('dispatch_sync(self.renderQueue, ^{', fn)
+  if (sync < 0) return null
+  const end = raw.indexOf('\n  });', sync)
+  const block = end < 0 ? raw.slice(sync) : raw.slice(sync, end)
+  const at = block.indexOf('if (LXPlayWithOthersEnabled) {')
+  if (at < 0) return null
+  const next = block.indexOf('if (shouldHandle && !self.manualPause) {', at)
+  return { block, guard: next < 0 ? block.slice(at) : block.slice(at, next), at, next }
+}
 
 const nativeInvariants = (raw) => {
   const reasons = []
@@ -151,6 +208,26 @@ const nativeInvariants = (raw) => {
   if (!raw.includes('didResumePlaying = self.playbackStarted;')) {
     reasons.push('Ended 分支未真正重启播放（引擎起来但不出声，输出不会回来）')
   }
+  // 【第 58 轮第 3 条】混音态 Began 分支整段让行：不停引擎、不掐渲染、不交还会话。
+  // 第 24 轮那种「照旧拆掉、只把 paused 事件吞掉不发」在混音口径下是自伤：其它应用每次
+  // 出声都要经历一轮「拆掉自己 → JS 重取阶梯再装回来」，用户听到的正是声音不定时中断又恢复。
+  const lt = mixBeganLetThrough(raw)
+  if (!lt) {
+    reasons.push('混音态 Began 分支未整段让行（勾选「与其他应用同时播放」时仍会 [engine pause] + 掐渲染 + 交还会话 ⇒ 其它应用每次出声都要把引擎拆一遍再装回来 —— 第 58 轮第 3 条）')
+  } else {
+    if (!lt.guard.includes('return;')) {
+      reasons.push('混音态让行分支没有早退（仍会走完拆引擎 / 交还会话那两步）')
+    }
+    if (!lt.guard.includes('self.lastKnownPosition = [self currentPlaybackPositionLocked];')) {
+      reasons.push('混音态让行分支未记录播放位置（打断结束续播会从旧位置跳）')
+    }
+    if (/\[self\.engine pause\]|_sourceRenderingEnabled|setActive:NO/.test(lt.guard)) {
+      reasons.push('混音态让行分支里仍在拆引擎 / 掐渲染 / 交还会话（让行不彻底，等于没让）')
+    }
+    if (lt.at > lt.next && lt.next >= 0) {
+      reasons.push('混音态让行判定排在执行段之后（先拆了引擎再判让行，白让）')
+    }
+  }
   return reasons
 }
 
@@ -162,9 +239,10 @@ const tamper = (src, find, replace) => {
   if (!src.includes(find)) throw new Error(`tamper 锚点未命中: ${find.slice(0, 60)}`)
   return src.replace(find, replace)
 }
-// service.ts 的判断跑在剥离注释后的代码上（断言里不应该被注释正文干扰），
-// 反例也要在同口径的文本上做手脚
-const tamperService = (find, replace) => tamper(stripComments(REAL.service), find, replace)
+// service.ts / utils.ts 的判断跑在剥离注释后的代码上（断言里不应该被注释正文干扰），
+// 反例也要在同口径的文本上做手脚。第三个参数指目标文件（默认 service）。
+const tamperService = (find, replace, which = 'service') =>
+  tamper(stripComments(REAL[which]), find, replace)
 
 const runCounterExamples = () => {
   const results = []
@@ -220,9 +298,12 @@ const runCounterExamples = () => {
   '策略标记未下发')
 
   // m6b 立即生效桥（第 56 轮第 3 条 b）不再写标记（闸门不满足时标记不落地）
+  // 锚点必须覆盖到闸门那一行：标记写入前面还压着第 58 轮第 4 条的两行抑制（标记行不再
+  // 紧跟桥签名），锚在「签名 + 标记行」上会失配。这段四行连写是全文唯一的形态，
+  // 且正是 applyPlayWithOthersNow 的函数头序列。
   check('m6b 立即生效桥未下发标记', () => nativeInvariants(tamper(REAL.native,
-    'applyPlayWithOthersNow:(BOOL)enabled resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {\n  LXPlayWithOthersEnabled = enabled;',
-    'applyPlayWithOthersNow:(BOOL)enabled resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {\n  LXPlayWithOthersEnabled = YES;')),
+    '  LXSuppressNowPlayingCard = enabled;\n  LXApplyNowPlayingInfo();\n  LXPlayWithOthersEnabled = enabled;\n  if (self.sourceNode == nil || self.engine == nil || self.engine.isRunning) {',
+    '  LXSuppressNowPlayingCard = enabled;\n  LXApplyNowPlayingInfo();\n  LXPlayWithOthersEnabled = YES;\n  if (self.sourceNode == nil || self.engine == nil || self.engine.isRunning) {')),
   '立即生效桥未下发策略标记')
 
   // m7 打断结束不再真正重启播放（引擎在起、但不出声）
@@ -230,6 +311,24 @@ const runCounterExamples = () => {
     '[self maybeStartPlaybackLocked];\n        didResumePlaying = self.playbackStarted;',
     '[self maybeStartPlaybackLocked];\n        didResumePlaying = NO;')),
   '未真正重启播放')
+
+  // m8 混音态让行块被整段删掉（退回第 24 轮「照旧拆引擎、只吞事件」的老口径）
+  check('m8 混音态让行块被删', () => nativeInvariants(tamper(REAL.native,
+    '    if (LXPlayWithOthersEnabled) {\n      if (shouldHandle && !self.manualPause) self.lastKnownPosition = [self currentPlaybackPositionLocked];\n      return;\n    }\n',
+    '')),
+  '未整段让行')
+
+  // m9 让行块里又塞回 [engine pause]（半让行 = 引擎被拆掉，输出还是要等重取）
+  check('m9 让行块里塞回 engine pause', () => nativeInvariants(tamper(REAL.native,
+    '      if (shouldHandle && !self.manualPause) self.lastKnownPosition = [self currentPlaybackPositionLocked];\n      return;\n',
+    '      if (shouldHandle && !self.manualPause) self.lastKnownPosition = [self currentPlaybackPositionLocked];\n      if (self.engine != nil && self.engine.isRunning) [self.engine pause];\n      return;\n')),
+  '让行不彻底')
+
+  // m10 setPlay 的预约渐入又退回无条件（重取输出那条路径把音量当场压 0 → 1.5s 后才跳回）
+  check('m10 setPlay 无条件预约渐入', () => utilsInvariants(tamperService(
+    'if (!playerState.isPlay) armVolumeFadeIn()',
+    'armVolumeFadeIn()', 'utils')),
+  '未按播放态预约渐入')
 
   return results
 }
@@ -244,7 +343,8 @@ console.log()
 
 const checks = [
   ['JS 策略层（service.ts：isPlayWithOthers 判定 / iOS 分支内 / 混音分支无 pause + 手动暂停闸门 + 恢复音量 + 续播 / 独占分支原样）', () => serviceInvariants(REAL.service)],
-  ['原生（AppDelegate.mm：LXPlayWithOthersEnabled + setPlayWithOthers + shouldEmitPause 接线 + interruptedBySystem + Ended 恢复输出）', () => nativeInvariants(REAL.native)],
+  ['JS 渐入侧（utils.ts：setPlay 按播放态预约渐入 —— 重取输出不再把音量压 0）', () => utilsInvariants(REAL.utils)],
+  ['原生（AppDelegate.mm：LXPlayWithOthersEnabled + setPlayWithOthers + shouldEmitPause 接线 + interruptedBySystem + Ended 恢复输出 + 混音态 Began 整段让行）', () => nativeInvariants(REAL.native)],
 ]
 
 let invOk = true
