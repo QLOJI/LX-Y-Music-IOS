@@ -626,8 +626,10 @@ const runCounterExamples = () => {
   '卸载上报次序不对')
 
   // c7 某个动作不再写状态行（点了下面那行字纹丝不动）
+  // 【第 54 轮第 1 条】成功那句改成按结果写（webdavOutcomeText），锚点随之更新；
+  // 反例拆的仍是「这个动作到底还写不写状态行」，语义不变。
   check('c7 某个动作不再写状态行', () => syncPageInvariants(tamper(REAL.page,
-    "      setWebdavStatus('歌单同步完成')\n",
+    "      setWebdavStatus(webdavOutcomeText(outcome, '歌单', '同步'))\n",
     '')),
   '状态行写入次数')
 

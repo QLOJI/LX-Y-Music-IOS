@@ -429,11 +429,12 @@ const runCounterExamples = () => {
 
   // m4 上传按钮退回「三行直筒」写法（无 try/finally）
   // 【第 35 轮第 2 条】六个处理函数各加了起止/失败三条状态行；【第 36 轮第 2 条】这三行
-  // 从 setSyncMessage 改成 setWebdavStatus（本区块自己的状态行），锚点随之更新；
-  // 反例拆的仍是「这段到底还有没有 try/finally」，语义不变。
+  // 从 setSyncMessage 改成 setWebdavStatus（本区块自己的状态行）；【第 54 轮第 1 条】
+  // 成功那句从写死的 '设置与音源上传完成' 改成 webdavOutcomeText(outcome, …)（按结果写）——
+  // 锚点随之更新，反例拆的仍是「这段到底还有没有 try/finally」，语义不变。
   check('m4 「上传设置与音源」去掉 try/finally', handlerInvariants(tamper(REAL.sync,
-    "    setIsUploading(true)\n    setWebdavStatus('正在上传设置与音源...')\n    try {\n      await manualUploadSettingsAndApis()\n      setWebdavStatus('设置与音源上传完成')\n    } catch (error: any) {\n      toast(`上传失败: ${error?.message ?? error}`, 'long')\n      setWebdavStatus('设置与音源上传失败，详情见下方提示')\n    } finally {\n      setIsUploading(false)\n    }",
-    "    setIsUploading(true)\n    setWebdavStatus('正在上传设置与音源...')\n    await manualUploadSettingsAndApis()\n    setWebdavStatus('设置与音源上传完成')\n    setIsUploading(false)")),
+    "    setIsUploading(true)\n    setWebdavStatus('正在上传设置与音源...')\n    try {\n      const outcome = await manualUploadSettingsAndApis()\n      setWebdavStatus(webdavOutcomeText(outcome, '设置与音源', '上传'))\n    } catch (error: any) {\n      toast(`上传失败: ${error?.message ?? error}`, 'long')\n      setWebdavStatus('设置与音源上传失败，详情见下方提示')\n    } finally {\n      setIsUploading(false)\n    }",
+    "    setIsUploading(true)\n    setWebdavStatus('正在上传设置与音源...')\n    await manualUploadSettingsAndApis()\n    setWebdavStatus(webdavOutcomeText(outcome, '设置与音源', '上传'))\n    setIsUploading(false)")),
   '没有 try')
 
   // m5 testConnection 退回无超时的裸调用
