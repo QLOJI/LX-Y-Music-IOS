@@ -7294,14 +7294,30 @@ RCT_REMAP_METHOD(getSafeAreaInsets,
 // tabBarCollapseChanged 事件发给 JS——滚动事件本身不过桥，性能无损。
 // 状态变化经 NSNotification 通知 UtilsModule 转发（避免跨模块拿 bridge 实例）。
 //
-// 第 63 轮收窄（原来是「全 App 通吃」）：播放详情页的歌词列表挂载即自动滚到当前行
-// （程序化 scrollToOffset，offset 普遍 > 48），旧实现里「进入播放详情页」这一个动作
-// 就把 Home 的 tab 栏收起了。而那一刻 Home 的两块玻璃正被第 61 轮的转场按住门冻着、
-// 不会重采：收起态的 220ms 布局动画把冻结纹理和已经移动的图层错开半条栏（用户看到的
-// 「透过的画面没有更新」），返回松开按住门那一瞬重采对齐 =「最后一瞬间闪一下」。
-// 现在只有「主界面自己 + 主界面正露着 + 不在转场里」的滚动才驱动状态机。
+// 【第 63 轮】曾把驱动范围收窄成「属于主界面 + 主界面正露着 + 不在转场里」三门
+//（LXScrollViewDrivesTabBar），为的是挡住「进入播放详情页时，歌词列表挂载即自动滚到
+// 当前行」这一个动作把 Home 的 tab 栏一起收起。但那条门靠「沿响应链上溯到的 VC 是不是
+// 导航栈的 firstObject」判断——RNN 的屏幕 VC 是嵌在它自己的容器 VC 里的，这个条件在全
+// App 恒为假：于是**任何**滚动都不再驱动状态机，也就是用户第 64 轮第 1 条报的
+//「迷你播放器栏和底部 tab 栏不会合并了」。
+//
+// 【第 64 轮第 1 条】用户原话：「迷你播放器栏和底部 tab 栏不会合并了，需要恢复，但是要
+// 避免闪的问题」。恢复 = 驱动范围回到「挂在窗口上即可」（与第 63 轮之前逐字一致）；「避免
+// 闪」改由两条**不依赖视图层级**的规则承担，它们拦住的正是第 63 轮想拦的那件事：
+//   ① **只有用户主动的滚动才改变状态**（手指按着拖 / 松手后的惯性）。程序化滚动
+//      （歌词列表挂载时的 scrollToOffset、列表数据变化后的自动归位……）一律不算。
+//      判据取 panGestureRecognizer.state：手指参与的全程（Began/Changed/Ended）都算主动，
+//      而惯性滑行期间 pan 一直停在 Ended —— isDecelerating 分不开「setContentOffset:animated:」
+//      和惯性，pan 状态分得开。
+//   ② **谁收起的谁负责展开**：把栏收起的那个列表被记住（弱引用，销毁即归零），别的列表
+//      在 Home 被盖住期间程序化滚到顶部不许把栏展开 —— 否则「主界面滚到深处 → 进详情页
+//      → 返回」会莫名其妙看到栏又展开了。
+// 剩下的「布局在玻璃冻着的时候变化」由 JS 侧兜底：utils/tabBarCollapse.ts 在 Home 被盖住 /
+// 转场窗口期间只记账不下发，等玻璃真的醒来（转场按住门松开）再一次性落地。
 static BOOL LXTabBarCollapsedState = NO;
 static IMP LXOrigRCTScrollViewDidScroll = NULL;
+// 驱动者（谁收起的谁负责展开）：弱引用，列表被销毁/重建后自动归零 = 谁都可以重新接管
+static __weak UIScrollView *LXTabBarCollapseDriver = nil;
 
 static void LXSetTabBarCollapsed(BOOL collapsed) {
   if (LXTabBarCollapsedState == collapsed) return;
@@ -7311,52 +7327,31 @@ static void LXSetTabBarCollapsed(BOOL collapsed) {
                                                     userInfo:@{ @"collapsed": @(collapsed) }];
 }
 
-// 沿响应链上溯最近的 UIViewController（RN 视图不覆写 nextResponder，一路能走到屏幕 VC）
-static UIViewController *LXNearestViewController(UIView *view) {
-  UIResponder *responder = view;
-  while (responder != nil) {
-    if ([responder isKindOfClass:[UIViewController class]]) return (UIViewController *)responder;
-    responder = responder.nextResponder;
-  }
-  return nil;
-}
-
-// 第 63 轮的门：这个滚动视图有没有资格驱动 Home 的 tab 栏收起状态。
-//   ① 属于主界面：主界面是 Navigation.setRoot 的根屏（src/navigation/navigation.ts
-//      的 HOME_SCREEN），也就是导航栈里最底下那一页——压栈页（播放详情、歌单、设置、
-//      下载管理……）的列表一律不算。presentingViewController != nil 排除 RNN 模态栈。
-//   ② 主界面正露着：被压栈页盖住期间不驱动。那一刻 Home 的玻璃被按住门冻着不重采，
-//      任何布局变化都会让冻结纹理跟图层错开（就是本轮用户报的「画面没更新」）。
-//   ③ 不在转场里：push/pop 动画期间 VC 与列表都在动，状态机让位。
-static BOOL LXScrollViewDrivesTabBar(UIView *view) {
-  UIViewController *vc = LXNearestViewController(view);
-  if (vc == nil) return NO;
-  UINavigationController *nav = vc.navigationController;
-  if (nav == nil) return NO;
-  if (nav.presentingViewController != nil) return NO;    // RNN 模态栈：另起的导航栈
-  if (nav.viewControllers.firstObject != vc) return NO;  // 不是根屏（不是主界面）
-  if (nav.viewControllers.lastObject != vc) return NO;   // 主界面被压栈页盖住
-  if (vc.transitionCoordinator != nil) return NO;
-  if (nav.transitionCoordinator != nil) return NO;
-  return YES;
-}
-
 static void LX_RCTScrollView_scrollViewDidScroll(id self, SEL _cmd, UIScrollView *scrollView) {
   if (LXOrigRCTScrollViewDidScroll != NULL) {
     ((void (*)(id, SEL, UIScrollView *))LXOrigRCTScrollViewDidScroll)(self, _cmd, scrollView);
   }
-  // 第 63 轮三个门（顺序即口径）：挂着窗口 / 有资格驱动（属于主界面且正露着且不在转场里）
+  // 挂在窗口上才算数（被移出层级的列表滚动事件不算）。这是第 63 轮之前唯一的门，
+  // 也是现在唯一的门——它只是一次指针比较，不像原来的门要在每个滚动事件里沿响应链
+  // 上溯找 VC（60~120 次/秒的热路径，第 64 轮的省电口径顺手把这段省掉了）。
   UIView *host = [self isKindOfClass:[UIView class]] ? (UIView *)self : (UIView *)scrollView;
   if (host.window == nil) return;
-  if (!LXScrollViewDrivesTabBar(host)) return;
   CGPoint offset = scrollView.contentOffset;
+  // 用户主动的滚动（含松手后的惯性）：pan 只要离开 Possible 就说明这一串滚动有手指参与。
+  BOOL userDriven = scrollView.panGestureRecognizer.state != UIGestureRecognizerStatePossible;
   if (offset.y > 48) {
-    // 仅「主动拖动」的滚动才收起：惯性滑行（decelerating）与被动偏移不收起——
-    // 否则手动展开会被原列表残留的惯性滚动瞬间收回（点击展开失效的根因之一）；
-    // 新的主动拖动会清除手动展开标记（再次滚动重新收起）
-    if (scrollView.isTracking) LXTabBarManualExpanded = NO;
-    if (!LXTabBarManualExpanded) LXSetTabBarCollapsed(YES);
+    // 程序化滚动不许收起（歌词列表挂载自动滚到当前行 = 用户第 63 轮第 1 条报的
+    //「突然进入播放详情页就变成合并状态」）
+    if (!userDriven) return;
+    // 点过收起按钮手动展开的（第 31 轮口径：保持到列表重新离开顶部）：不被一次拖动收回去
+    if (LXTabBarManualExpanded) return;
+    LXTabBarCollapseDriver = scrollView;
+    LXSetTabBarCollapsed(YES);
   } else if (offset.y <= 2) {
+    // 展开：驱动者自己（同一列表滚回顶部，含程序化的归位）或用户主动拖的滚动都可以；
+    // 别的列表在 Home 被盖住期间程序化滚到顶部不算（见 ②）
+    if (!userDriven && LXTabBarCollapseDriver != nil && LXTabBarCollapseDriver != scrollView) return;
+    if (userDriven) LXTabBarCollapseDriver = scrollView;
     LXTabBarManualExpanded = NO;
     LXSetTabBarCollapsed(NO);
   }
