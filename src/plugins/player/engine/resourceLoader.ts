@@ -15,6 +15,10 @@ import {
   ensureCurrentTrackMetadata,
   loadTrackPlayerResource,
 } from '../trackPlayerCore'
+// 【第 51 轮】起播 / 换歌的渐入预约（见 volumeFade.ts 头部第 51 轮说明）：
+// 用户原话「播放和暂停时增加渐入渐出的效果」—— 点歌 / 换歌也是「播放开始」，
+// 而且旧实现里恰恰是这条路声音最冲（新曲目一上来就是设定音量）。
+import { armVolumeStartFadeIn } from '../volumeFade'
 
 const resolveShouldAutoStart = (currentTrackIndex: number | null) => {
   if (currentTrackIndex != null) return true
@@ -49,7 +53,12 @@ export const loadPlaybackResource = async({
           await TrackPlayer.stop().catch(() => {})
         })
         clearTracks()
-        const playbackInfo = await startNativeFlacPlayback(musicInfo, url, startTime, shouldAutoStart, quality ?? null)
+        // 【第 51 轮】起播渐入预约：只在**真的要自动起播**时预约（恢复曲起播位置而保持
+        // 暂停的那种不预约，否则会白白压 0 六秒）。预约成功就把引擎的起始增益一起传 0 ——
+        // `openStreamingFlac` 那次调用会把传进去的音量直接交给原生引擎，不传 0 的话预约
+        // 当场被覆盖（音量本来就在设定值上，斜波第一拍等于重复写同一个值）。
+        const startFadeArmed = shouldAutoStart && armVolumeStartFadeIn()
+        const playbackInfo = await startNativeFlacPlayback(musicInfo, url, startTime, shouldAutoStart, quality ?? null, startFadeArmed ? 0 : undefined)
         global.lx.playerTrackId = getNativeFlacTrackId()
         ensureCurrentTrackMetadata({
           title: ('progress' in musicInfo ? musicInfo.metadata.musicInfo.name : musicInfo.name) ?? 'Unknow',
@@ -88,6 +97,11 @@ export const loadPlaybackResource = async({
     await resetNativeFlacPlayback().catch(() => {})
   }
 
+  // 【第 51 轮】AVPlayer(RNTP) 起播同样预约渐入：预约把两台引擎压到 0 之后，
+  // `loadTrackPlayerResource` 里紧跟着的 `applyCurrentVolume()`（起播重贴音量）
+  // 会因 isVolumeFadeActive() 让行，音量留在 0，'playing' 一到再由斜坡升上去。
+  // 上面 nativeFlac 分支失败回落到这里时这次预约也仍然成立（等于把期限刷新一次）。
+  if (shouldAutoStart) armVolumeStartFadeIn()
   const track = await loadTrackPlayerResource(musicInfo, url, startTime, shouldAutoStart)
   ensureCurrentTrackMetadata({
     title: track.title,

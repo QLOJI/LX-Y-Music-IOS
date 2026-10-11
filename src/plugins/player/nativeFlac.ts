@@ -85,7 +85,15 @@ export const prefetchNativeFlacPlayback = async(musicInfo: LX.Player.PlayMusic, 
   return isRemoteUrl(url)
 }
 
-export const startNativeFlacPlayback = async(musicInfo: LX.Player.PlayMusic, url: string, position: number, autoplay = true, quality: LX.Quality | null = null) => {
+/**
+ * 【第 51 轮】`startVolume`：引擎的**起始增益**（缺省 = 用户设定音量，与改动前一致）。
+ * 起播渐入（resourceLoader 预约）时传 0 —— 新曲目从静音起、再由卷帘升到设定值，
+ * 否则原生在 openStream 那次调用里就把设定音量交给引擎，预约的渐入第一拍就变成直写
+ * （音量本来就在设定值上），用户听到的还是硬起播。
+ * 这里**必须由调用方传参**而不是本模块内读 volumeFade：volumeFade 反向 import 本模块
+ * （isNativeFlacActive / setNativeFlacVolume），这里再 import 回去就是循环依赖。
+ */
+export const startNativeFlacPlayback = async(musicInfo: LX.Player.PlayMusic, url: string, position: number, autoplay = true, quality: LX.Quality | null = null, startVolume?: number) => {
   await resetNativeFlacPlayback().catch(() => {})
   const nextTrackId = `nativeflac://${getMusicInfo(musicInfo).id}`
   const playbackContext: NativeFlacPlaybackContext = {
@@ -99,7 +107,7 @@ export const startNativeFlacPlayback = async(musicInfo: LX.Player.PlayMusic, url
     currentMode = 'stream'
     currentState = 'loading'
     try {
-      await openStreamingFlac(url, { 'User-Agent': defaultUserAgent }, settingState.setting['player.volume'], settingState.setting['player.playbackRate'], autoplay)
+      await openStreamingFlac(url, { 'User-Agent': defaultUserAgent }, startVolume ?? settingState.setting['player.volume'], settingState.setting['player.playbackRate'], autoplay)
       const seekPosition = position > 0
         ? await seekStreamingFlac(position).catch(() => position)
         : 0

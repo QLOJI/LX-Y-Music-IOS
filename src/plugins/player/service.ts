@@ -18,7 +18,7 @@ import { exitApp } from '@/core/common'
 import playerState from '@/store/player/state'
 import settingState from '@/store/setting/state'
 // 【第 41 轮】打断恢复后的音量重贴也是一次「外部直写」：同步渐入渐出模块的当前音量账本
-import { syncVolumeFadeState } from './volumeFade'
+import { isVolumeFadeActive, syncVolumeFadeState } from './volumeFade'
 
 let isInitialized = false
 let shouldResumeAfterDuck = false
@@ -269,7 +269,16 @@ const scheduleAutoResume = () => {
 //（nativeFlac 路径 = 原生 resume：prepareAudioSession 抢回会话 + 重启引擎；引擎已在播时
 // 该调用幂等，不会重复发声）。用户任何明确动作（手动暂停 / 停止 / 切歌 / 开始播放）都会经
 // cancelResumePending 撤销整条阶梯。延时表集中在这里，真机可按需调。
-const MIX_RECLAIM_DELAYS = [1200, 3000, 7000, 15000]
+//
+// 【第 50 轮】阶梯前压（用户原话：「勾选上『与其他应用同时播放』选项，在播放其他应用
+// 例如抖音时，会出现进度条在加载但是短暂几秒没有声音的情况，请保证软件能持续播放音乐，
+// 声音不会中断」）。旧表 [1200, 3000, 7000, 15000] 的绝对落点是 1.2 / 4.2 / 11.2 / 26.2s
+// ——「结束」通知一旦缺失 / 迟到，输出要等很久才被拉回来，用户听到的就是「短暂几秒没
+// 声音」；新表的绝对落点是 1.0 / 3.5 / 7.5 / 13.0 / 20.0 / 29.0s（间隔 1/2.5/4/5.5/7/9s），
+// 前三次明显前压；后段仍然退避（不会对系统反复重排）。首档必须 ≥1000（契约
+// sim-play-with-others-card-exit 的 r5 反例：更密的阶梯会在打断窗口里反复抢会话）。
+// 「结束」分支另有一条**即时**重取（见下面的 Ended 分支注释），阶梯管的是通知丢失那一支。
+const MIX_RECLAIM_DELAYS = [1000, 2500, 4000, 5500, 7000, 9000]
 let mixReclaimTimer: ReturnType<typeof setTimeout> | null = null
 let mixReclaimCount = 0
 
@@ -304,6 +313,11 @@ const restoreConfiguredVolume = () => {
   const applyVolume = () => {
     // 【第 41 轮】打断恢复（duck 回填）的直写同样要同步账本：账本脱节会让下一次
     // 渐入/渐出的第一拍变成跳变（那一声爆音）。斜坡在跑时以斜坡写入为准，不覆盖。
+    //
+    // 【第 51 轮】渐入（预约 / 斜坡 / 渐出）在途时让行：预约已经把音量压到 0（起播渐入
+    // 的准备），这里再写一次设定音量会把渐入顶掉。音量不会留在低处 —— 渐入斜坡 / 渐出后
+    // 的真暂停 / 预约的兜底期限各自都会收尾到设定音量（volumeFade 里）。
+    if (isVolumeFadeActive()) return
     syncVolumeFadeState(settingState.setting['player.volume'])
     void TrackPlayer.setVolume(settingState.setting['player.volume']).catch(() => {})
   }
@@ -403,6 +417,15 @@ const registerPlaybackService = async() => {
         scheduleAutoResume()
         // 【第 33 轮第 4 条】结束分支也布防一次：通知顺序异常（先结束后又有残留打断）时兜底
         scheduleMixReclaim()
+        // 【第 50 轮】打断方刚松手（Ended 是本机唯一「对方已释放」信号）：立刻重取一次输出，
+        // 不再等阶梯首拍。用户原话：「勾选上『与其他应用同时播放』选项，在播放其他应用
+        // 例如抖音时，会出现进度条在加载但是短暂几秒没有声音的情况，请保证软件能持续播放
+        // 音乐，声音不会中断」。上一条 scheduleAutoResume 在勾选态下会因 isPlay 仍为真
+        // 直接早退（我们从不对外呈现暂停），所以「状态在播、没有声音」必须由这里的
+        // play()（与阶梯同一原语：nativeFlac 路径落到原生 resume，引擎已在播时幂等）
+        // 现场拉回；四道闸门与阶梯逐条对齐：停止 / 已不在播 / 手动暂停一律不抢，
+        // 取消勾选（isPlayWithOthers 变假）时本分支压根不会走到。
+        if (!global.lx.isPlayedStop && playerState.isPlay && !isManualPause()) play()
         return
       }
       if (ducking) {

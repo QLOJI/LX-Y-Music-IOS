@@ -8,7 +8,7 @@ import playerState from '@/store/player/state'
 import { getMusicIntervalDuration } from '@/core/player/timeline'
 import { seekToTime } from './seek'
 // 【第 41 轮】直写音量后要同步渐入渐出模块的「当前音量」账本（斜坡起点取自它，见 volumeFade.ts）
-import { syncVolumeFadeState } from './volumeFade'
+import { isVolumeFadeActive, syncVolumeFadeState } from './volumeFade'
 import { clearNowPlayingInfo, updateNowPlayingInfo } from '@/utils/nativeModules/nowPlaying'
 
 const list: LX.Player.Track[] = []
@@ -117,6 +117,13 @@ export const applyCurrentVolume = async() => {
   // 【第 41 轮】起播 / 恢复曲路径是「先 TrackPlayer.play() 再走到这里重贴音量」：
   // 这是外部直写，账本必须跟着走 —— 否则紧接着的渐入斜坡会从 0 起步（先瘪下去再升上来，
   // 反而多一次音量抖动）。渐入渐出模块的斜坡在跑时不覆盖（以斜坡的写入为准）。
+  //
+  // 【第 51 轮】渐入（预约 / 斜坡 / 渐出）在途时**整个让行**：起播渐入的预约已经把两台
+  // 引擎压到 0、账本也记着 0，这里若照旧写一次用户设定音量，渐入当场作废 —— 音量已经
+  // 落在设定值上，之后那次「渐入」的斜坡第一拍就只是把同一个值再写一遍（听感上等于
+  // 没有淡入），用户听到的还是新歌硬起播。让行不会把音量留在低处：渐入斜坡、渐出后的
+  // 真暂停、以及预约的兜底期限各自都会把音量收尾到设定值（volumeFade 里）。
+  if (Platform.OS == 'ios' && isVolumeFadeActive()) return
   syncVolumeFadeState(settingState.setting['player.volume'])
   await TrackPlayer.setVolume(settingState.setting['player.volume'])
 }
