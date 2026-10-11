@@ -1034,11 +1034,14 @@ static void LXApplyNowPlayingInfo(void) {
     // 只挡「发布」这一步：缓存、LXNowPlayingState、歌词时钟、命令的 enabled 全部照旧维护
     //（下面的可用性同步仍按缓存判断），所以播放中的进度不冻、取消勾选后下一次元数据发布就把
     // 卡片原样装回来 —— 这正是用户要的「取消勾选后继续占用锁屏和灵动岛界面」。
-    // 有意不动下一行的 playbackState：显示态与启停态「同源同刻」是第 36/43 轮钉下的铁律，
-    // 卡片有没有只由这条信息字典决定。
+    // 【第 59 轮第 2 条】抑制期间连「启停态」一起收（判据同一个 LXSuppressNowPlayingCard、
+    // 同一处赋值点、同一刻写出，「显示态与启停态同源同刻」不变）：第 58 轮只把信息置空、
+    // 下一行照旧写 Playing，结果系统留下了一张**空壳卡** —— 灰色封面块、无标题、无进度条，
+    // 只剩上一首/暂停/下一首/发送四个按钮（用户第 59 轮的锁屏截图正是这个形态，即「锁屏
+    // 界面未完全取消」）。信息字典与启停态必须一起收，卡片才真正撤下。
     center.nowPlayingInfo = (!LXSuppressNowPlayingCard && LXNowPlayingInfoCache.count) ? [LXNowPlayingInfoCache copy] : nil;
     if (@available(iOS 13.0, *)) {
-      center.playbackState = LXNowPlayingState;
+      center.playbackState = LXSuppressNowPlayingCard ? MPNowPlayingPlaybackStateStopped : LXNowPlayingState;
     }
     LXSyncRemoteCommandAvailability();
   }
@@ -3652,6 +3655,14 @@ RCT_REMAP_METHOD(updateEqualizerConfig, updateEqualizerConfig:(NSDictionary *)co
 @property (nonatomic, assign) double pendingSeekPosition;
 @property (nonatomic, assign) int64_t pendingSeekGeneration; // 登记 seek 时的流代际（切歌复位后失配即作废）
 @property (nonatomic, assign) float currentVolume;
+// 【第 59 轮第 3 条】自动续播的原生渐入斜坡（见 beginResumeFadeInLocked）：
+// 引擎**重新启动**那一拍必须从静音起步，否则自动续播是一记满音量（用户第 59 轮第 3 条：
+// 「自动暂停和自动播放也要沿用渐入渐出的效果，和手动暂停和播放一样」）。
+@property (nonatomic, assign) BOOL outputVolumeRampActive;
+@property (nonatomic, assign) int outputVolumeRampStep;
+// 取消令牌：任何一次取消 / 新斜坡都 ++，在途那一拍醒来发现代数变了就静静退出
+// （斜坡用 dispatch_after 自链，没有源对象，见 scheduleResumeFadeInStepLocked）。
+@property (nonatomic, assign) int64_t outputVolumeRampGeneration;
 @property (nonatomic, assign) float currentRate;
 @property (nonatomic, assign) int64_t queuedFrames;
 @property (nonatomic, assign) int64_t completedFrames;
@@ -4012,6 +4023,9 @@ RCT_EXPORT_MODULE();
   std::atomic_store_explicit(&_realtimePannerProcessor, std::shared_ptr<LXRealtimeSpatialPannerProcessor>(), std::memory_order_release);
   _lastRealtimeEqualizerEnabled = NO;
   _lastRealtimeEqualizerGains.clear();
+  // 【第 59 轮第 3 条】换歌 / 复位：作废在途的续播渐入（图马上就拆，斜坡没有意义了；
+  // 新流起播的渐入由 JS 侧 armVolumeStartFadeIn + 起始音量 0 负责）
+  [self cancelOutputVolumeRampLocked];
 }
 
 - (void)handleSoundEffectConfigChanged:(NSNotification *)notification {
@@ -4029,7 +4043,8 @@ RCT_EXPORT_MODULE();
 
 - (void)restorePlaybackOutputLocked {
   if (![self shouldRestorePlaybackOutputLocked]) return;
-  self.soundEffectMixerNode.outputVolume = self.currentVolume;
+  // 【第 59 轮第 3 条】非显式写入（让行在途渐入，见 applyOutputVolumeLocked）
+  [self applyOutputVolumeLocked:self.currentVolume explicitWrite:NO];
   if (self.timePitchNode != nil) self.timePitchNode.rate = self.currentRate;
   [self applySoundEffectConfigLocked];
 }
@@ -4241,7 +4256,9 @@ RCT_EXPORT_MODULE();
   }
   if (self.dryMixerNode != nil) self.dryMixerNode.outputVolume = usesTrueConvolution ? 1.0f : (hasConvolution ? (convolutionMainGain / 10.0f) : 1.0f);
   if (self.wetMixerNode != nil) self.wetMixerNode.outputVolume = usesTrueConvolution ? 0.0f : (hasConvolution ? (convolutionSendGain / 10.0f) : 0.0f);
-  if (self.soundEffectMixerNode != nil) self.soundEffectMixerNode.outputVolume = self.currentVolume;
+  // 【第 59 轮第 3 条】音效刷新也是「非显式写入」：引擎重启的同一拍里 applySoundEffectConfigLocked
+  // 会跟着 ensureAudioEngineRunningLocked 跑，这里的输出音量若直写就把渐入的第一拍顶回满音量
+  [self applyOutputVolumeLocked:self.currentVolume explicitWrite:NO];
 
 }
 
@@ -4736,7 +4753,9 @@ static const int64_t LXShortInterruptionIgnoreMs = 1500;
     self.dryMixerNode.outputVolume = 1.0f;
     self.wetMixerNode.outputVolume = 0.0f;
     self.soundEffectMixerNode.pan = 0.0f;
-    self.soundEffectMixerNode.outputVolume = self.currentVolume;
+    // 【第 59 轮第 3 条】建图 = 全新节点：显式写入（顺带作废可能还挂着的旧斜坡，
+    // 新图不该继承上一段会话的渐入状态）
+    [self applyOutputVolumeLocked:self.currentVolume explicitWrite:YES];
     [self applySoundEffectConfigLocked];
     [self.engine prepare];
 
@@ -4757,11 +4776,86 @@ static const int64_t LXShortInterruptionIgnoreMs = 1500;
   }
 }
 
+// 【第 59 轮第 3 条】自动续播的原生渐入：总时长与 JS 侧 FADE_IN_MS 同值（600ms），
+// 步长 40ms（15 步）—— 同一段 smoothstep 曲线，两层叠在一起时听感一致。
+static const int64_t LXResumeFadeInMs = 600;
+static const int64_t LXResumeFadeStepMs = 40;
+
+// 【第 59 轮第 3 条】写输出音量（soundEffectMixerNode.outputVolume）的唯一出口。
+// 斜坡在跑时**非显式**写入一律让行：引擎重启 / 输出自愈那几句（ensureAudioEngineRunningLocked、
+// restorePlaybackOutputLocked、applySoundEffectConfigLocked）若直写，会把斜坡刚压下去的音量
+// 一步顶回设定值 —— 渐入当场作废，听感回到「自动播放一记满音量」（用户第 59 轮第 3 条）。
+// 显式写入（JS 的 setVolume 桥：音量条、用户播放意图、JS 自己的渐入渐出）取消斜坡：
+// 用户 / JS 的意图永远优先，两层斜坡也因此不会互顶。调用方必须已持有 renderQueue。
+- (void)applyOutputVolumeLocked:(float)volume explicitWrite:(BOOL)explicitWrite {
+  if (explicitWrite) {
+    [self cancelOutputVolumeRampLocked];
+  } else if (self.outputVolumeRampActive) {
+    return;
+  }
+  if (self.soundEffectMixerNode != nil) self.soundEffectMixerNode.outputVolume = volume;
+}
+
+// 【第 59 轮第 3 条】取消在途斜坡：只置标记 + 翻代数（在途那一拍自己退出），**不写音量** ——
+// 调用方紧接着要写自己的值（显式写入）或根本没有节点可写（拆图），这里再写一拍只会多一次跳变。
+- (void)cancelOutputVolumeRampLocked {
+  self.outputVolumeRampActive = NO;
+  self.outputVolumeRampStep = 0;
+  self.outputVolumeRampGeneration += 1;
+}
+
+// 【第 59 轮第 3 条】引擎**重新启动**时的渐入：先把输出压到 0，再在 LXResumeFadeInMs 内按
+// smoothstep 升到 currentVolume。
+// 为什么必须由原生开这一枪：这一拍（引擎重启 → 首帧出声）完全由原生决定，JS 的渐入要等它
+// 自己的 'playing' 才起步，两次事件谁先谁后没有保证 —— 原生先出声的那些次序里，首拍就是
+// 满音量，用户听到的正是「自动播放很快、声音突然很大」。JS 随后每一拍写音量都会取消本斜坡
+//（setVolume 桥 = 显式写入），所以两层叠加不互顶，终点都收敛到用户设定音量。
+// currentVolume 已经是 0（JS 已经压过）时不开：那说明 JS 自己会渐入，原生保持静音即可。
+- (void)beginResumeFadeInLocked {
+  [self cancelOutputVolumeRampLocked];
+  if (self.soundEffectMixerNode == nil) return;
+  if (self.currentVolume <= 0.001f) return;
+  self.outputVolumeRampActive = YES;
+  self.outputVolumeRampStep = 0;
+  // 先压 0 再让调用方启动引擎：首拍就是静音（顺序反过来的话首拍会带着上一次的输出音量出去）
+  self.soundEffectMixerNode.outputVolume = 0.0f;
+  [self scheduleResumeFadeInStepLocked:self.outputVolumeRampGeneration];
+}
+
+// 斜坡的一拍：dispatch_after 自链（不用 dispatch_source —— 源对象会被自己的 handler 持有成环，
+// 模块释放后仍会持续唤醒 CPU，与第 57 轮的省电口径冲突）。代数即取消令牌。
+- (void)scheduleResumeFadeInStepLocked:(int64_t)generation {
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, LXResumeFadeStepMs * NSEC_PER_MSEC), self.renderQueue, ^{
+    [self stepResumeFadeInLocked:generation];
+  });
+}
+
+- (void)stepResumeFadeInLocked:(int64_t)generation {
+  if (generation != self.outputVolumeRampGeneration || !self.outputVolumeRampActive) return;
+  if (self.soundEffectMixerNode == nil) { [self cancelOutputVolumeRampLocked]; return; }
+  self.outputVolumeRampStep += 1;
+  float steps = (float)MAX((int64_t)1, LXResumeFadeInMs / LXResumeFadeStepMs);
+  float progress = MIN(1.0f, (float)self.outputVolumeRampStep / steps);
+  float eased = progress * progress * (3.0f - 2.0f * progress);
+  self.soundEffectMixerNode.outputVolume = self.currentVolume * eased;
+  if (progress >= 1.0f) {
+    // 终点写满：斜坡结束时节点上一定是用户设定音量，绝不留在半途
+    [self cancelOutputVolumeRampLocked];
+    return;
+  }
+  [self scheduleResumeFadeInStepLocked:generation];
+}
+
 - (BOOL)ensureAudioEngineRunningLocked:(NSError **)error {
   if (self.engine != nil && !self.engine.isRunning) {
+    // 【第 59 轮第 3 条】引擎是**被重新启动**的（打断让位 / 自动续播 / 路由自愈），不是一直在跑：
+    // 从静音渐入。反例：引擎本来就在跑（混音态打断期间引擎不停，见 performInterruptionBeganHandling）
+    // → 不动音量，不凭空多出一次音量塌陷。
+    [self beginResumeFadeInLocked];
     if (![self.engine startAndReturnError:error]) return NO;
   }
-  if (self.soundEffectMixerNode != nil) self.soundEffectMixerNode.outputVolume = self.currentVolume;
+  // 【第 59 轮第 3 条】非显式写入：斜坡在跑时让行（否则渐入的第一拍就被这一句顶回满音量）
+  [self applyOutputVolumeLocked:self.currentVolume explicitWrite:NO];
   if (self.timePitchNode != nil) self.timePitchNode.rate = self.currentRate;
   [self applySoundEffectConfigLocked];
   return YES;
@@ -5303,7 +5397,9 @@ RCT_REMAP_METHOD(seekTo, seekToStream:(nonnull NSNumber *)position resolver:(RCT
 RCT_REMAP_METHOD(setVolume, setStreamVolume:(nonnull NSNumber *)volume resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
   self.currentVolume = [volume floatValue];
   dispatch_sync(self.renderQueue, ^{
-    if (self.soundEffectMixerNode != nil) self.soundEffectMixerNode.outputVolume = self.currentVolume;
+    // 【第 59 轮第 3 条】**显式写入**：这是 JS（用户意图 / JS 自己的渐入渐出）唯一写音量的桥，
+    // 到达即作废在途的原生渐入 —— 用户的按键永远赢；也让两层斜坡不会互顶（见 beginResumeFadeInLocked）
+    [self applyOutputVolumeLocked:self.currentVolume explicitWrite:YES];
   });
   resolve(nil);
 }
