@@ -9,6 +9,7 @@ import { getPositionStamped, elapsedSnapshotFields, isEmpty, setStop } from './u
 import { applyVolumeOnPlayStart } from './volumeFade'
 import { exitApp } from '@/core/common'
 import { playNext, setMusicUrl } from '@/core/player/player'
+import { isManualPause } from '@/core/player/manualPause'
 import { getNextTryQuality, getLastTryQuality, removeMusicUrl, clearAllLastTryQuality } from '@/core/music/utils'
 import { setStatusText } from '@/core/player/playStatus'
 import playerState from '@/store/player/state'
@@ -18,6 +19,44 @@ import { startPreload, stopPreload } from '@/core/player/preload'
 import { savePlayInfo } from '@/utils/data'
 
 let isInitialized = false
+
+/**
+ * 【第 59 轮第 2 条】勾选「与其他应用同时播放」的判定。
+ * 与 service.ts 的同名判定同口径（勾选 = player.isHandleAudioFocus 为 false）。
+ * 这里单独写一份而不是从 service.ts import：service.ts 顶部就 import 本文件（既有方向），
+ * 反向引用会成环 —— 同 core/player/manualPause.ts 头部记录的那条理由。
+ */
+const isPlayWithOthers = () => settingState.setting['player.isHandleAudioFocus'] === false
+
+/**
+ * 【第 59 轮第 2 条】混音态下的**系统打断暂停抑制**（引擎自己报的暂停不算数）。
+ *
+ * 用户原话：「勾选后，播放其他应用音频，他会自动暂停，这个与其他应用同时播放相违背，
+ * 保证勾选后无论播放什么视频音乐，都不会暂停，除非手动点击暂停播放」。
+ *
+ * 现场（RNTP / AVPlayer 路径）：勾选状态下另一个应用出声 → 系统打断压住会话 →
+ * AVPlayer 自己暂停 → RNTP 发 'playback-state: paused' → 落到下面的 'paused' 分支 →
+ * `global.app_event.pause()` → `setIsPlay(false)`：UI 当场变暂停；更糟的是 service.ts
+ * 混音分支的抢回判据**全都以 `playerState.isPlay` 为前提**
+ *（`if (!global.lx.isPlayedStop && playerState.isPlay && !isManualPause()) play()`，
+ * 以及 scheduleMixReclaim 的 reclaim 闸门）—— 这一翻就让「别的音频结束后自动把声音抢回来」
+ * 整条链失效，音乐就一直停在那里。
+ *
+ * 修法：勾选期间把「引擎自报的暂停」当噪声吞掉，播放态只由用户意图决定：
+ *   · 用户手动暂停（isManualPause，含锁屏 / 遥控暂停）→ 照旧落地，绝不吞；
+ *   · 停止 / 播放结束（'stopped' / 'idle'）→ 不吞（那是会话真的结束了，见调用点）；
+ *   · 只吞 'paused'，且只在 UI 此刻认为在播（playerState.isPlay）时吞。
+ * 真正让声音回来的是 service.ts 混音分支的 play() 与 scheduleMixReclaim 阶梯 ——
+ * 本函数只负责不让它们在跑到之前就被翻掉前提。
+ * 取消勾选（独占口径）时恒为 false：打断暂停照旧原样落地。
+ */
+const shouldSuppressSystemPause = () => {
+  if (Platform.OS != 'ios') return false
+  if (!isPlayWithOthers()) return false
+  if (isManualPause()) return false
+  if (global.lx.isPlayedStop) return false
+  return playerState.isPlay
+}
 
 const handleExitApp = async(reason: string) => {
   global.lx.isPlayedStop = false
@@ -186,6 +225,9 @@ export const initUnifiedPlayerController = () => {
             startPreload()
             break
           case 'paused':
+            // 【第 59 轮第 2 条】混音态吞掉引擎自报的暂停（见 shouldSuppressSystemPause）；
+            // 只吞这一种状态 —— 'stopped' / 'idle'（会话真的结束）不在此列，照旧落地。
+            if (shouldSuppressSystemPause()) break
           case 'stopped':
           case 'idle':
             clearLoadingTimeout()
