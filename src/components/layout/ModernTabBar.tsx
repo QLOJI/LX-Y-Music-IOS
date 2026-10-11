@@ -2,7 +2,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Animated, Easing, PanResponder, Pressable, StyleSheet, View, type LayoutChangeEvent } from 'react-native'
 import { useTheme } from '@/store/theme/hook'
 import { useI18n } from '@/lang'
-import { useNavActiveId, useGlassHomeCovered, useSafeAreaReady, useNavTransitioning, useAppActive, usePagerDragging } from '@/store/common/hook'
+import { useNavActiveId, useGlassHomeCovered, useSafeAreaReady, useNavTransitioning, useNavRevealing, useAppActive, usePagerDragging } from '@/store/common/hook'
 // 【第 35 轮第 3 条】静止槽心的「新鲜」取值源：直读 store 的 navActiveId（同步写、
 // 同步发事件），比 React state 早一整个提交周期。见 resolveRestingSlotX
 import commonState from '@/store/common/state'
@@ -268,6 +268,10 @@ export default memo(() => {
   // 画面系统性落后 1~3 拍，快速滑动时还会因欠采样看起来「反向切入」。会话期间置
   // live=true，原生按实时档（60fps 采景，渲染档同速，与抬起的透镜同档）跟手。
   const pagerDragging = usePagerDragging()
+  // 返回露出窗口（2026-10-11，第 58 轮第 2 条）：pop 发起时打开（navigation/revealWindow），
+  // 「本屏正被露出来」。同样接进实时采景档 —— 返回动画期间背景整幅在滑，30fps 采景档下
+  // 透过的画面系统性落后 1~3 拍，就是用户说的「不是底部实时的画面、有错位、动画延迟也很高」。
+  const navRevealing = useNavRevealing()
   // 安全区就绪门：底部安全区（bottom 的唯一来源）拿到真实值之前不下发，
   // 否则先用 0 画、再跳到 34pt = 「启动时底部抽动」。见 useSafeAreaReady。
   const safeAreaReady = useSafeAreaReady()
@@ -799,7 +803,7 @@ export default memo(() => {
           {/* 省电门扩展（C9 发热）：本栏在收起态是**完全不可见**的（opacity 0 + 下移 28），
               却仍在跑 Metal 逐帧渲染 —— 收起态是长时间驻留状态（只要列表不停在顶部），
               这是纯白烧的电。可见性一并纳入门控。 */}
-          <LiquidGlass glassOpacity={glassOpacity} dark={theme.isDark} liquid={liquidGlassOn} paused={glassHomeCovered || collapsed || navTransitioning || !appActive} live={pagerDragging} style={{ borderRadius: designRadius.glass }} />
+          <LiquidGlass glassOpacity={glassOpacity} dark={theme.isDark} liquid={liquidGlassOn} paused={glassHomeCovered || collapsed || navTransitioning || !appActive} live={pagerDragging || navRevealing || navTransitioning} style={{ borderRadius: designRadius.glass }} />
           {/* 液态透镜药丸（tab 切换动画）：玻璃之上、tab 内容之下；快速点击走
               Pressable 切页（x prop 弹簧），横滑跟手 / 长按拖动走 ref 命令式
               followX（同一套通道，见组件上部注释） */}
@@ -879,7 +883,7 @@ export default memo(() => {
           pointerEvents={collapsed ? 'auto' : 'none'}
         >
           {/* 同上：圆钮在展开态完全不可见（opacity 0 + scale 0.5），可见性纳入省电门 */}
-          <LiquidGlass glassOpacity={glassOpacity} dark={theme.isDark} liquid={liquidGlassOn} paused={glassHomeCovered || !collapsed || navTransitioning || !appActive} live={pagerDragging} style={{ borderRadius: designRadius.pill }} />
+          <LiquidGlass glassOpacity={glassOpacity} dark={theme.isDark} liquid={liquidGlassOn} paused={glassHomeCovered || !collapsed || navTransitioning || !appActive} live={pagerDragging || navRevealing || navTransitioning} style={{ borderRadius: designRadius.pill }} />
           <Pressable style={styles.pillInner} onPress={handlePillPress}>
             <View style={styles.pillIcon} pointerEvents="none">
               <Icon name="menu" size={20} color={theme['c-primary']} />

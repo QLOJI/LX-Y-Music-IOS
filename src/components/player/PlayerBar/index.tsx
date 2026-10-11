@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Animated, Easing, View, TouchableOpacity } from 'react-native'
 import { useHorizontalMode } from '@/utils/hooks'
 import { scaleSizeH } from '@/utils/pixelRatio'
@@ -16,7 +16,7 @@ import commonState from '@/store/common/state'
 import playerState from '@/store/player/state'
 import { getJumpListId } from '@/core/player/player'
 import { LIST_IDS } from '@/config/constant'
-import { useSafeAreaBottom, useGlassCovered, useSafeAreaReady, useNavTransitioning, useAppActive, usePagerDragging } from '@/store/common/hook'
+import { useSafeAreaBottom, useGlassCovered, useSafeAreaReady, useNavTransitioning, useNavRevealing, useAppActive, usePagerDragging } from '@/store/common/hook'
 import { usePlayerMusicInfo } from '@/store/player/hook'
 import {
   designRadius,
@@ -52,6 +52,13 @@ export default memo(({ componentId, isHome = false }: { componentId?: string, is
   // LiquidGlassView.syncRenderFrameRate）跟手，否则
   // 它就是「滑动时透过的画面延迟高、掉帧」的另一半（两块玻璃在同一个背景上）。
   const pagerDragging = usePagerDragging()
+  // 返回露出窗口（2026-10-11，第 58 轮第 2 条）：pop 发起时打开的窗口，见
+  // navigation/revealWindow.ts。与 useGlassCovered 内部用的是同一个信号，这里单独取一次
+  // 是为了**驱动实时采景档**（live）——只在「本屏正被露出」时为真。
+  const navRevealing = useNavRevealing()
+  // 【第 58 轮第 1 条】本屏行宽（wrapper 的宽度）。只由 wrapper 的 onLayout 上报，见
+  // 下方 glassWidth 的说明。
+  const [rowWidth, setRowWidth] = useState(0)
   // 安全区就绪门（仅首页实例用得上，见下方 return）：首页播放器的底边 =
   // 安全区 + 底缝 + Tab 栏高 + 滑块距离，安全区没回来之前不下发，
   // 否则先用 0 画出来、再跳到 34pt = 「启动时抽动」。
@@ -159,6 +166,23 @@ export default memo(({ componentId, isHome = false }: { componentId?: string, is
       // 收起态左让位 = 圆钮左缘 + 圆钮尺寸 + 间距，三项都来自同一个几何对象
       // （collapsedRow.playerLeft），与圆钮右缘的间距恒等于 collapsedPillGap。
       const paddingLeftCollapsed = collapsedRow.playerLeft
+      // 【第 58 轮第 1 条】玻璃宿主的**固定宽度** = 展开态容器宽 = 行宽 − 展开态左让位 −
+      // 右内边距（wrapper 的 paddingHorizontal）。收起/展开动画期间变的只有 wrapper 的
+      // paddingLeft（= 容器左缘往右推、容器变窄），右缘恒定不动（paddingRight 是静态的
+      // designSpacing.lg）—— 所以「展开态宽度 + 右对齐」的宿主在整段动画里尺寸恒定。
+      //
+      // 为什么必须恒定（第 56/58 轮反复出现的黑弧）：迷你播放器胶囊的收/展是 220ms 的
+      // **逐帧变形动画**（bottom + paddingLeft 同帧插值）。玻璃原生视图此前是「铺满容器」
+      // 的——容器一帧比一帧宽，玻璃的 bounds 就一帧一变，captureSize / backdropView.frame
+      // 跟着一帧一变，CABackdropLayer 每帧都要整幅重合成：展开时新长出来的那一块（右端）
+      // 在重合成完成前是**黑的**，shader 的 clamp_to_edge 边缘折射再把它弯进胶囊右端圆头
+      // —— 就是用户看到的「下一首按钮旁那道粗黑弧」。宿主定尺后原生视图在动画期间一动不动，
+      // 变化只剩容器这一层的裁剪，重合成不再发生。
+      // 首帧（还没量到行宽）退回「铺满容器」的旧口径，行为与改动前逐字一致。
+      const glassWidth = rowWidth > 0 ? rowWidth - collapsedRow.roundLeft - designSpacing.lg : 0
+      const glassHostStyle = glassWidth > 0
+        ? [styles.glassHost, { width: glassWidth, height: pillSize }]
+        : styles.glassHostFill
       return (
         <Animated.View
           style={[
@@ -180,6 +204,14 @@ export default memo(({ componentId, isHome = false }: { componentId?: string, is
             // 拦截触摸，导致点击收起按钮无效
             { pointerEvents: 'box-none' },
           ]}
+          onLayout={(e) => {
+            // 【第 58 轮第 1 条】只认 wrapper 自己的宽度（= 行宽）。它不随收展动画变化
+            //（动画动的是 paddingLeft，改的是内容盒，不是本视图的 frame），因此这里**只**
+            // 会因为窗口尺寸/旋转变化重测一次。绝不能用容器的 onLayout 来量：容器的宽度
+            // 正是动画量，逐帧上报会把玻璃宿主的「固定宽度」当场毁掉（黑弧复发）。
+            const width = e.nativeEvent.layout.width
+            setRowWidth(prev => (Math.abs(prev - width) < 0.5 ? prev : width))
+          }}
         >
           {/* 收起态**把高度钉死成 pillSize**（= 圆钮边长，同一个数）。
               这是「同排/共线」的最后一环，也是前几轮没修好的真正原因：
@@ -204,7 +236,13 @@ export default memo(({ componentId, isHome = false }: { componentId?: string, is
               setMiniPlayerHeight(e.nativeEvent.layout.height)
             }}
           >
-            <LiquidGlass glassOpacity={glassOpacity} dark={theme.isDark} liquid={liquidGlassOn} paused={glassCovered || navTransitioning || !appActive} live={pagerDragging} style={{ borderRadius: designRadius.glass }} />
+            {/* 【第 58 轮第 1 条】玻璃宿主：定尺 + 右对齐的绝对定位层（尺寸见上方 glassWidth）。
+                宿主不是布局节点（absolute），迷你播放器其余子元素的位置一个数都没动；
+                胶囊形状照旧由容器的 borderRadius + overflow:hidden 裁出（LiquidGlass 自身
+                也带同一个圆角），收起态被裁掉的左端由容器的圆角补上，右端与宿主右缘重合。 */}
+            <View pointerEvents="none" style={glassHostStyle}>
+              <LiquidGlass glassOpacity={glassOpacity} dark={theme.isDark} liquid={liquidGlassOn} paused={glassCovered || navTransitioning || !appActive} live={pagerDragging || navRevealing || navTransitioning} style={{ borderRadius: designRadius.glass }} />
+            </View>
             <TouchableOpacity style={styles.left} onPress={handleNavigate} onLongPress={handleLongPress} activeOpacity={0.8}>
               <Pic />
               <View style={styles.center}>
@@ -224,7 +262,9 @@ export default memo(({ componentId, isHome = false }: { componentId?: string, is
     // （等价于前台门失效，锁屏后玻璃照样整夜渲染）。
     // pagerDragging 同理（用户第 9 条）：它是 live 门，漏掉就永远停在 false，
     // 横滑期间玻璃仍是 30fps 采景档 —— 表现就是这一个门完全没接上。
-    [glassOpacity, liquidGlassOn, glassCovered, navTransitioning, appActive, pagerDragging, theme.isDark, isHome, handleNavigate, handleLongPress, safeAreaBottom, isHorizontalMode, collapseAnim, pillSize, collapsedRow, tabBarDistance, tabBarCollapsed],
+    // 【第 58 轮第 2 条】navRevealing 也是 live 门（返回转场期间走 60fps 采景档），
+    // rowWidth 是玻璃宿主的定尺来源：两者都必须在依赖里，否则节点不重建、门与尺都失效。
+    [glassOpacity, liquidGlassOn, glassCovered, navTransitioning, navRevealing, appActive, pagerDragging, rowWidth, theme.isDark, isHome, handleNavigate, handleLongPress, safeAreaBottom, isHorizontalMode, collapseAnim, pillSize, collapsedRow, tabBarDistance, tabBarCollapsed],
   )
 
   // 首页实例在安全区就绪前不下发（见 useSafeAreaReady）：它的 bottom 含 safeAreaBottom，
@@ -266,6 +306,22 @@ const styles = createStyle({
     // 迷你播放器限宽后比 tab 栏短一大截（iPad 横屏两侧各空 ~200pt），两个
     // 底部悬浮条左右端不对齐、观感「长度不够」。去掉限宽后与 tab 栏同宽
     // 同位（left/right 24 边距对齐），竖屏行为不变（本就 100%）。
+  },
+  // 【第 58 轮第 1 条】玻璃宿主：右对齐 + 定尺（宽 = 展开态容器宽、高 = pillSize，
+  // 由内联 style 给）。两个方向都钉死是**必须**的：容器高度在动画中间也可能差一两 pt，
+  // 只钉宽度的话高度仍会逐帧变，黑弧照样回来。首帧未量到行宽时用 glassHostFill 退回
+  // 「铺满容器」的旧口径（逐帧变形，但只有一帧）。
+  glassHost: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
+  },
+  glassHostFill: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    left: 0,
+    bottom: 0,
   },
   left: {
     flexGrow: 1,
