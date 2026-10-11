@@ -3778,6 +3778,14 @@ RCT_EXPORT_MODULE();
                                              selector:@selector(handleAudioEngineConfigurationChangeWhileStreaming:)
                                                  name:AVAudioEngineConfigurationChangeNotification
                                                object:nil];
+    // 【第 62 轮第 2 条】媒体服务被系统重置（mediaserverd 崩溃 / 重启，iOS 上不罕见）：
+    // 会话、引擎、音频单元全部作废，且**不会有**打断 / 路由通知来提示 —— 旧实现完全没有
+    // 监听，表现是「音乐再也没声音，重启 App 才好」。用户第 62 轮第 2 条要「所有情况下都
+    // 可以持续播放音乐」，补上这一条。
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(handleMediaServicesWereReset:)
+                                                 name:AVAudioSessionMediaServicesWereResetNotification
+                                               object:[AVAudioSession sharedInstance]];
     [[NSNotificationCenter defaultCenter] addObserver:self
                                              selector:@selector(handleApplicationWillResignActive:)
                                                  name:UIApplicationWillResignActiveNotification
@@ -3853,6 +3861,18 @@ RCT_EXPORT_MODULE();
 }
 
 - (BOOL)prepareAudioSession:(NSError **)error {
+  return [self prepareAudioSessionAllowingExclusiveFallback:YES error:error];
+}
+
+// 【第 62 轮第 2 条】allowExclusiveFallback = NO：混音态**只**试混音组合，失败就原样返回 NO。
+//
+// 混音分支下面那截「非混音口径」的兜底，语义上是一次**抢占**：把分类换成独占（options:0）
+// 再 setActive:YES，等于从正在出声的应用手里抢会话（或把它打断）。起播 / 用户主动恢复
+// （openStream / resume 的独占口径）抢一下是应该的 —— 用户刚点了歌。但自愈路径
+//（路由变化、引擎配置变化、媒体服务重置、混音态打断的重取阶梯）绝不能带这一手：
+// 它们只是「把输出悄悄挂回来」，一旦有抢占能力，就会和正在出声的应用来回拉锯 ——
+// 正是第 58 轮记过的「一停一响」。这些路径统一用本函数的 NO 口径（失败即放弃、下拍再来）。
+- (BOOL)prepareAudioSessionAllowingExclusiveFallback:(BOOL)allowExclusiveFallback error:(NSError **)error {
   AVAudioSession *session = [AVAudioSession sharedInstance];
   if (@available(iOS 13.0, *)) {
     // 【第 33 轮第 4 条】勾选「与其他应用同时播放」= 真·同时出声：改用混音（mixable）会话，
@@ -3869,6 +3889,10 @@ RCT_EXPORT_MODULE();
                        error:error]) return [session setActive:YES error:error];
       // 系统拒绝（例如会话正被别家独占）/ 分类不支持：静默退回下面的非混音口径，
       // 至少保住「能出声」，再由 JS 侧的有界重取阶梯去抢会话。
+      // 【第 62 轮第 2 条】自愈路径（allowExclusiveFallback = NO）不退回：混音态下
+      //「退回独占」= 抢会话，见上面函数头注释。此时分类多半已经落在混音组合上
+      //（成败取决于 setActive），保持原样、什么都不改最安全。
+      if (!allowExclusiveFallback) return NO;
     }
     if (![session setCategory:AVAudioSessionCategoryPlayback
                       mode:AVAudioSessionModeDefault
@@ -4378,6 +4402,7 @@ static const int64_t LXShortInterruptionIgnoreMs = 1500;
 - (void)performInterruptionBeganHandling {
   __block BOOL shouldEmitPause = NO;
   __block BOOL canReleaseSession = NO;
+  __block BOOL shouldArmMixRecovery = NO;
   dispatch_sync(self.renderQueue, ^{
     BOOL shouldHandle = self.sourceNode != nil && (self.playbackStarted || [self.currentState isEqualToString:@"buffering"]);
     // 【第 58 轮第 3 条】勾选「与其他应用同时播放」时**整段让行**：不停引擎、不掐渲染、
@@ -4392,6 +4417,14 @@ static const int64_t LXShortInterruptionIgnoreMs = 1500;
     // 混音态本来就不发 paused（shouldEmitPause 恒为 NO），所以也不存在「不呈现暂停」的落差。
     if (LXPlayWithOthersEnabled) {
       if (shouldHandle && !self.manualPause) self.lastKnownPosition = [self currentPlaybackPositionLocked];
+      // 【第 62 轮第 2 条】原地不动之外，再补一条**原生侧**的重取阶梯（与路由自愈同一套顺序：
+      // 重设混音会话 → 引擎在跑吗 → 重贴输出 / 接回播放 → 0.35s 的 IO 死检）。
+      // 为什么原生也要有：JS 侧那条 scheduleMixReclaim 阶梯首拍在 1s、每次都要走一轮桥；
+      // 而对方开麦 / 关麦真正伤害我们的方式是「把输出 IO 悄悄掐断」（引擎 isRunning 仍为真），
+      // 只有这里的死检能发现它。两条阶梯互不干扰：全是幂等操作，谁先成功谁把声音挂回来。
+      // 混音口径下只激活混音组合，不会把对方的会话抢走（见 prepareAudioSession）。
+      // 触发点挪到 dispatch_sync 之外（会话操作会阻塞几十毫秒，不该压在 renderQueue 上）。
+      shouldArmMixRecovery = YES;
       return;
     }
     if (shouldHandle && !self.manualPause) {
@@ -4427,6 +4460,9 @@ static const int64_t LXShortInterruptionIgnoreMs = 1500;
   // 【第 16 轮第 9 条】其中「暂停态占着会话」的来源已从根上拔掉：pause 命令改成
   // 立刻 setActive:NO 让出会话（见 pauseStreamWithResolver），这里的兜底释放
   // 对暂停态只是幂等的重复让出。
+  if (shouldArmMixRecovery) {
+    [self scheduleStreamingOutputRecoveryWithDelays:@[ @0.4, @1.2, @3.0 ] treatAsDisconnect:NO];
+  }
   self.interruptedBySystem = YES;
   if (canReleaseSession) {
     // 与 openStream 接管会话时的对手写法：NotifyOthersOnDeactivation 把会话
@@ -4501,6 +4537,23 @@ static const int64_t LXShortInterruptionIgnoreMs = 1500;
   [self scheduleStreamingOutputRecoveryWithDelays:@[ @0, @0.3, @1.0 ] treatAsDisconnect:NO];
 }
 
+// 【第 62 轮第 2 条】媒体服务被系统重置（mediaserverd 崩溃 / 重启）后的自愈：会话、引擎、
+// 音频单元全部作废，而且**不会有**打断 / 路由通知来提示 —— 以往这条路径完全没人管，表现是
+// 「音乐再也没声音，重启 App 才好」。做法是把作废的引擎停掉，再走既有的路由自愈链重新挂
+// 会话与输出：顺序不能反，引擎带着失效的音频单元时 isRunning 可能仍为真，恢复链里的
+// `if (!self.engine.isRunning)` 就会整段跳过、永远不重建（同第 13 轮那个坑）。
+// 混音态走无独占回退口径（见 prepareAudioSession），绝不趁重置去抢别的应用的会话。
+// 如实说明：这是 stop + start 的**轻量重建**，不是官方建议的整图重建；媒体服务重置后若引擎
+// 仍然 start 不起来，恢复链发的是 warning 而不是 error（不会把播放态翻成暂停），
+// JS 侧的有界重取阶梯会继续补试。
+- (void)handleMediaServicesWereReset:(NSNotification *)notification {
+  if (self.currentURL.length == 0 || self.manualPause) return;
+  dispatch_async(self.renderQueue, ^{
+    if (self.engine != nil) [self.engine stop];
+  });
+  [self scheduleStreamingOutputRecoveryWithDelays:@[ @0.1, @0.6, @2.0 ] treatAsDisconnect:NO];
+}
+
 - (void)scheduleStreamingOutputRecoveryWithDelays:(NSArray<NSNumber *> *)delays treatAsDisconnect:(BOOL)treatAsDisconnect {
   [self recoverStreamingOutputForRouteChange:treatAsDisconnect];
   for (NSNumber *delay in delays) {
@@ -4513,12 +4566,22 @@ static const int64_t LXShortInterruptionIgnoreMs = 1500;
 
 - (void)recoverStreamingOutputForRouteChange:(BOOL)treatAsDisconnect {
   if (self.currentURL.length == 0) return;
-  if (self.manualPause || self.interruptedBySystem) return;
+  // 【第 62 轮第 2 条】勾选「与其他应用同时播放」时放行 interruptedBySystem。用户现场：
+  // 直播类应用开麦 / 关麦（打开、退出）会把我们的输出 IO 悄悄掐断 —— 引擎 isRunning 仍为真、
+  // 但一帧都取不走，表现就是「短暂没有声音」，而**这条自愈链是唯一会把 IO 重新挂回去的地方**
+  //（下面的 0.35s liveness 探针负责发现死 IO 并重建引擎）。旧闸门把混音态在打断标记还立着时
+  // 整条链挡死（混音态的 Began 分支虽然不动引擎，但照置 interruptedBySystem，见
+  // performInterruptionBeganHandling），于是路由变化 / 引擎配置变化通知全被忽略，
+  // 声音只能等 JS 重取阶梯里那次「恰好赶上会话空闲」的 resume —— 用户听到的就是不定时断一下。
+  // 独占态口径不变：系统打断期间绝不抢会话（第 16 轮）。
+  if (self.manualPause) return;
+  if (self.interruptedBySystem && !LXPlayWithOthersEnabled) return;
   if (self.sourceNode == nil || [self.currentState isEqualToString:@"idle"] || [self.currentState isEqualToString:@"stopped"]) return;
   if (treatAsDisconnect && ![self currentRouteHasHeadphoneOutput]) return;
 
   NSError *sessionError = nil;
-  if (![self prepareAudioSession:&sessionError]) return;
+  // 自愈口径：混音态只试混音组合，绝不退回独占（不抢会话），见 prepareAudioSession 的注释
+  if (![self prepareAudioSessionAllowingExclusiveFallback:NO error:&sessionError]) return;
 
   // 全部落在 renderQueue 上做（引擎 / 环 / 音量都归它管）；异步派发，避免在
   // 「配置变化通知可能就来自渲染线程」的路径上同队列 dispatch_sync 死锁
@@ -5213,11 +5276,23 @@ RCT_REMAP_METHOD(openStream, openStream:(NSString *)urlString headers:(NSDiction
 
 RCT_REMAP_METHOD(resume, resumeStreamWithResolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
   dispatch_async(dispatch_get_main_queue(), ^{
+    // 【第 62 轮第 2 条】勾选「与其他应用同时播放」时，会话被别家占着是**常态而非故障**：
+    // 混音态下 iOS 允许对方压住 / 独占我们的输出（对方开麦时尤其如此），此刻 resume 拿不到
+    // 会话完全正常，等对方放手就会好。旧写法把这一条也发成 error 并 reject —— 而 JS 侧
+    // `global.app_event.error()` 会把播放态翻成暂停（UI / 锁屏 / 迷你播放器栏当场变「暂停」），
+    // 更致命的是 service.ts 的混音重取阶梯以 `playerState.isPlay` 为闸门：那一翻就把整条
+    // 重取阶梯一起掐死，音乐再也回不来（用户第 62 轮现场：「迷你播放器栏还显示播放图标」+
+    // 「声音消失」）。所以混音态一律降级为 warning + 继续往下走：不发 error、不 reject，
+    // 播放态只由用户意图决定；真正的重取交给下面的 liveness 死检与 JS 的有界阶梯。
     NSError *sessionError = nil;
-    if (![self prepareAudioSession:&sessionError]) {
+    BOOL sessionReady = [self prepareAudioSession:&sessionError];
+    if (!sessionReady && !LXPlayWithOthersEnabled) {
       [self emitErrorMessage:sessionError.localizedDescription ?: @"Failed to activate audio session"];
       reject(@"streaming_flac_resume", sessionError.localizedDescription ?: @"Failed to activate audio session", sessionError);
       return;
+    }
+    if (!sessionReady) {
+      [self emitWarningMessage:sessionError.localizedDescription ?: @"Audio session busy, will retry" code:nil statusName:nil];
     }
 
     __block NSError *engineError = nil;
@@ -5237,10 +5312,27 @@ RCT_REMAP_METHOD(resume, resumeStreamWithResolver:(RCTPromiseResolveBlock)resolv
       if (shouldEmitBuffering) self.currentState = @"buffering";
     });
 
-    if (engineError != nil) {
+    // 混音态：引擎起不来同样只给 warning（会话不在我们手里时这是预期结果，下拍再来）
+    if (engineError != nil && !LXPlayWithOthersEnabled) {
       [self emitErrorMessage:engineError.localizedDescription ?: @"Failed to restart audio engine before resuming playback"];
       reject(@"streaming_flac_resume", engineError.localizedDescription ?: @"Failed to restart audio engine before resuming playback", engineError);
       return;
+    }
+    if (engineError != nil) {
+      [self emitWarningMessage:engineError.localizedDescription ?: @"Failed to restart audio engine before resuming playback" code:nil statusName:nil];
+    }
+
+    // 【第 62 轮第 2 条】混音态：每次重取都挂一次 IO 死检（与路由自愈同款，0.35s 后比对渲染帧数）。
+    // 对方开麦 / 关麦会把我们的输出 IO 悄悄掐断，引擎 isRunning 却仍为真 ——
+    // ensureAudioEngineRunningLocked 不会重启它，光靠通知（可能一条都不来）永远发现不了。
+    // JS 重取阶梯的每一拍 resume 都落到这里，于是混音态有了一条与通知无关的兜底。
+    if (LXPlayWithOthersEnabled && self.engine != nil) {
+      dispatch_async(self.renderQueue, ^{
+        self.renderFramesAtLivenessProbe = _renderedFrames.load(std::memory_order_acquire);
+      });
+      dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)), self.renderQueue, ^{
+        [self checkStreamingOutputLivenessLocked];
+      });
     }
 
     if (shouldEmitBuffering) {
