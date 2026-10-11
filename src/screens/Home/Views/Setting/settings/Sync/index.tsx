@@ -22,6 +22,7 @@ import {
   manualDownloadSettingsAndApis,
   manualUploadLists,
   manualDownloadLists,
+  type WebdavManualOutcome,
 } from '@/core/sync/webdavSync'
 import IsEnable from '@/screens/Home/Views/Setting/settings/Sync/IsEnable.tsx'
 
@@ -29,6 +30,34 @@ import IsEnable from '@/screens/Home/Views/Setting/settings/Sync/IsEnable.tsx'
 // 1:1 复刻参考工程 lx-music-mobile-ios-adaptation 的 Sync/IsEnable.tsx `addressRxp`，
 // 非法串不落盘并给同一条提示（本工程此前只有 WebDAV 这行地址框没有校验）。
 const webdavAddressRxp = /^https?:\/\/\S+/i
+
+// 【第 54 轮第 1 条】把 webdavSync 回传的**动作结果**翻成状态行文案。
+//
+// 用户原话：「当我点击上传设置与音源、下载设置与音源、上传歌单、下载歌单，然后再弹窗选择
+// 我不时，WebDAV状态应该显示已取消上传或者下载，目前无论点击弹窗中的按钮，都会显示上传完成，
+// 这是有问题的」。
+// 根因：每个处理函数都是「`await manualXxx()` 没抛错 ⇒ 写『…完成』」，而 manualXxx 在
+// 用户取消（弹窗上的「我不」）/ 正忙 / 未配置 / 歌单让行 / 出错这五种出口上都是静默 return
+// 或把错误吞在 catch 里，调用方根本分不出来 —— 于是每种情况都被写成「完成」。
+// 现在 lib 侧把每一种出口都回传出来（WebdavManualOutcome），这里按结果如实显示。
+//
+// 参数：what = 动作对象（『设置与音源』/『歌单』），verb = 动作（『上传』/『下载』/『同步』）。
+// 成功句『${what}${verb}完成』与失败句『${what}${verb}失败，详情见下方提示』与第 35/36 轮
+// 定下的文案一字不差（既有契约脚本钉着它们）。新增的取消句就是用户原话里的「已取消上传 /
+// 已取消下载」；其余未执行的分支一律以「未…：原因」开头，一眼能看出没真的做。
+// 文案里仍然不含地址 / 账号 / 路径（第 25 轮凭据口径），失败详情只留在 toast 里。
+const webdavOutcomeText = (outcome: WebdavManualOutcome, what: string, verb: string) => {
+  switch (outcome) {
+    case 'success': return `${what}${verb}完成`
+    case 'canceled': return `已取消${verb}`
+    case 'failed': return `${what}${verb}失败，详情见下方提示`
+    case 'busy': return `未${verb}：另一个同步任务正在进行，请稍后重试`
+    case 'disabled': return `未${verb}：请先启用并配置 WebDAV 同步`
+    case 'negotiating': return `未${verb}：「同步服务地址」正在协商歌单，请稍后再试`
+    case 'empty': return `云端没有${what}文件，未${verb}`
+    default: return `${what}${verb}失败，详情见下方提示`
+  }
+}
 
 export default memo(() => {
   const theme = useTheme()
@@ -131,8 +160,11 @@ export default memo(() => {
     // 两边互不覆盖 —— 这正是用户要的「互不干扰」。
     setWebdavStatus('正在同步歌单...')
     try {
-      await triggerWebDAVSync(true)
-      setWebdavStatus('歌单同步完成')
+      // 【第 54 轮第 1 条】按结果写状态行（见 webdavOutcomeText 的说明）：
+      // 「首次同步确认」「同步冲突」两个弹窗里选取消时，以前也照写「歌单同步完成」——
+      // 与用户报的四个按钮是同一处病。
+      const outcome = await triggerWebDAVSync(true)
+      setWebdavStatus(webdavOutcomeText(outcome, '歌单', '同步'))
     } catch (error: any) {
       toast(`同步失败: ${error?.message ?? error}`, 'long')
       setWebdavStatus('歌单同步失败，详情见下方提示')
@@ -146,13 +178,16 @@ export default memo(() => {
   // 按钮就永远停在「上传中...」并保持禁用；再叠加下面那个「未启用就整块 disabled」的门，
   // 表现就是用户原话「再点击所有按钮全部锁死，点击后没有任何反应」。
   // 与 WebDAV 下载菜单（第 28 轮）同口径：失败既给具体原因，loading 也一定复位。
+  // 【第 54 轮第 1 条】成功那一句不再写死：await 拿到的是 WebdavManualOutcome（成功 / 用户取消 /
+  // 正忙 / 未配置 / 让行 / 云端没文件 / 失败），交给 webdavOutcomeText 翻译成对应的状态行文案。
+  // 三个分支仍然各写一句 setWebdavStatus（开始 / 结果 / 异常兜底），总数与第 36 轮一致。
   const handleUpload = useCallback(async() => {
     if (isUploading) return
     setIsUploading(true)
     setWebdavStatus('正在上传设置与音源...')
     try {
-      await manualUploadSettingsAndApis()
-      setWebdavStatus('设置与音源上传完成')
+      const outcome = await manualUploadSettingsAndApis()
+      setWebdavStatus(webdavOutcomeText(outcome, '设置与音源', '上传'))
     } catch (error: any) {
       toast(`上传失败: ${error?.message ?? error}`, 'long')
       setWebdavStatus('设置与音源上传失败，详情见下方提示')
@@ -166,8 +201,8 @@ export default memo(() => {
     setIsDownloading(true)
     setWebdavStatus('正在下载设置与音源...')
     try {
-      await manualDownloadSettingsAndApis()
-      setWebdavStatus('设置与音源下载完成')
+      const outcome = await manualDownloadSettingsAndApis()
+      setWebdavStatus(webdavOutcomeText(outcome, '设置与音源', '下载'))
     } catch (error: any) {
       toast(`下载失败: ${error?.message ?? error}`, 'long')
       setWebdavStatus('设置与音源下载失败，详情见下方提示')
@@ -181,8 +216,8 @@ export default memo(() => {
     setIsUploadingLists(true)
     setWebdavStatus('正在上传歌单...')
     try {
-      await manualUploadLists()
-      setWebdavStatus('歌单上传完成')
+      const outcome = await manualUploadLists()
+      setWebdavStatus(webdavOutcomeText(outcome, '歌单', '上传'))
     } catch (error: any) {
       toast(`上传失败: ${error?.message ?? error}`, 'long')
       setWebdavStatus('歌单上传失败，详情见下方提示')
@@ -196,8 +231,8 @@ export default memo(() => {
     setIsDownloadingLists(true)
     setWebdavStatus('正在下载歌单...')
     try {
-      await manualDownloadLists()
-      setWebdavStatus('歌单下载完成')
+      const outcome = await manualDownloadLists()
+      setWebdavStatus(webdavOutcomeText(outcome, '歌单', '下载'))
     } catch (error: any) {
       toast(`下载失败: ${error?.message ?? error}`, 'long')
       setWebdavStatus('歌单下载失败，详情见下方提示')
