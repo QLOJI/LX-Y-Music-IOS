@@ -6,6 +6,7 @@ import initPlayProgress from './playProgress'
 import initPreloadNextMusic from './preloadNextMusic'
 import initPlayHistory from './playHistory'
 import initLyric from './lyric'
+import initNowPlayingStatus from './nowPlayingStatus'
 import initRemoteCommand from './remoteCommand'
 import { bootLog } from '@/utils/bootLog'
 
@@ -16,6 +17,10 @@ export default async(setting: LX.AppSetting) => {
   bootLog('Lyric init...')
   await initLyric(setting)
   bootLog('Lyric done.')
+  // 【第 50 轮】卡片歌词区状态文案（歌曲链接获取中 / 歌曲加载中 / 缓存中…）：
+  // 与详情页状态条同源的转发器，锁屏 / 灵动岛歌词区不再在起播阶段空着。
+  initNowPlayingStatus()
+  bootLog('Now playing status init...')
   bootLog('Play info init...')
   void initPlayInfo(setting)
     .then(() => { bootLog('Play info done.') })

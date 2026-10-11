@@ -3,7 +3,9 @@ import playerState from '@/store/player/state'
 import { updateMetaData } from '@/plugins/player'
 import { setLastLyric } from '@/core/player/playInfo'
 import { getCurrentLyricLines, getLyricLineTextByTime } from '@/plugins/lyric'
-import { setNowPlayingLyrics } from '@/utils/nativeModules/nowPlaying'
+import { setNowPlayingCurrentLine, setNowPlayingLyrics } from '@/utils/nativeModules/nowPlaying'
+// 【第 50 轮】开关切换时同时对齐第三条通路：卡片歌词区的状态文案（见 nowPlayingStatus.ts）
+import { syncNowPlayingStatusText } from './nowPlayingStatus'
 import settingState from '@/store/setting/state'
 import { Platform } from 'react-native'
 
@@ -55,6 +57,10 @@ export const applyBluetoothLyricSetting = () => {
       void updateMetaData(playerState.musicInfo, playerState.isPlay, undefined, true)
     }
   }
+  // 【第 50 轮】第三条通路（状态文案）同门控：上面的重发会把「真实行 / 空」写进卡片
+  // 歌词区，若此刻正有状态文案（如「缓存中…」），关掉歌词开关后它就成了孤儿。
+  // 末位再对齐一次 —— 开着且有状态 = 状态覆盖歌词区；关着 = 状态与歌词一起清掉。
+  syncNowPlayingStatusText()
 }
 
 
@@ -80,6 +86,14 @@ export default async(setting: LX.AppSetting) => {
       if (lyric === prevLyric) return
       prevLyric = lyric
       setLastLyric(lyric)
+      // 【第 50 轮】逐行快速通路（取消换行延迟）：详情页大歌词与这里用的是同一个
+      // onLyricPlay 事件，先把这一行一次轻量桥调用直接落到卡片歌词区 —— 之前要经
+      // updateMetaData（发布前先取一次引擎位置快照 = 一次桥往返）→ 500ms 发布冷却
+      // → updateNowPlayingInfo → 发布前仲裁，卡片换行比详情页慢一截（用户第 50 轮
+      // 第 1 条：「锁屏和灵动岛界面的歌词换行延迟太高了，取消延迟换行」）。
+      // 原生时钟仍是行权威（0.05s 内按「绝不回退」仲裁纠偏）；状态文案覆盖期间
+      // 原生会忽略这条（状态优先）；文本未变时原生直接跳过（幂等）。
+      void setNowPlayingCurrentLine(lyric ?? '')
       if (playerState.playMusicInfo.musicInfo) {
         void updateMetaData(playerState.musicInfo, playerState.isPlay, lyric, true)
       }
