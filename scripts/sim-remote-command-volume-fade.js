@@ -670,8 +670,23 @@ const chainInvariants = (deps) => {
         reasons.push('setPause 缺「暂停发出后有界复核」：引擎没停 / 状态事件丢了时没人补刀，'
           + '用户就会看到「进度条停了、歌词还在走、声音还在放」')
       }
-      if (!setPause.includes('if (!playerState.isPlay) return')) {
-        reasons.push('setPause 的复核不再看 playerState.isPlay：停稳了也照发（或反过来放过真没停的）')
+      // 【第 62 轮第 3 条】复核的门控从「还要看 isPlay」换成「只看令牌」：UI 按下即翻之后
+      // isPlay 恒为 false，旧写法会让第 47 轮这条兜底永远早退（「点了暂停声音还在放」没了防线）；
+      // 而「复核窗口内又按了播放」这条竞态由令牌挡住（setPlay 的 pauseVerifyToken++）。
+      if (!setPause.includes('if (token != pauseVerifyToken) return')) {
+        reasons.push('setPause 的复核没有令牌门控（复核窗口内又按下的播放会被 700ms 后的复核按停）')
+      }
+      if (setPause.includes('!playerState.isPlay) return') && setPause.includes('token != pauseVerifyToken')) {
+        reasons.push('setPause 的复核又读回 playerState.isPlay：UI 按下即翻后它恒为 false，兜底永远早退')
+      }
+      // 【第 62 轮第 3 条】「按下即翻」：锁屏 / 灵动岛 / 迷你播放器三处的暂停图标不许挂在
+      // 300ms 渐出之后（旧链路要等斜坡跑完、引擎发出 'paused' 才由 app_event 翻面）。
+      if (!/if \(playerState\.isPlay\) \{\n    setIsPlay\(false\)\n    void pauseNowPlaying/.test(setPause)) {
+        reasons.push('setPause 没有按下即翻（pauseNowPlaying）：锁屏 / 灵动岛 / 迷你播放器的暂停图标要等渐出跑完 + 一次事件往返才变')
+      } else if (setPause.indexOf('setIsPlay(false)') > setPause.indexOf('fadeOutThenPause(pausePlayingEngines)')) {
+        // 比较的是**第一处** fadeOutThenPause（非 iOS 那条早退，第 303 行）：翻转块一旦被挪到
+        // 它后面，就说明翻面又排到了渐出之后。
+        reasons.push('setPause 的按下即翻落在渐出之后：图标仍要等渐出跑完')
       }
     }
     // 【第 47 轮】双引擎收口：暂停不许再按 isNativeFlacActive() 二选一 ——
@@ -917,11 +932,13 @@ const runCounterExamples = () => {
   }), 'rntpMayHoldTrack')
 
   // 【第 47 轮】v14 拆掉暂停后复核（引擎没停 / 事件丢了也没人补刀）
+  // 锚点只用**两行连续代码**：第 62 轮在复核体里插了注释，把注释一起写进锚点会一改就漂。
+  // 摘掉 `void pausePlayingEngines()` = 复核还在、但不再补刀。
   check('v14 拆掉暂停复核', chainInvariants({
     ...chainDeps,
     utils: tamper(REAL.utils,
-      '  setTimeout(() => {\n    if (token != pauseVerifyToken) return\n    if (!playerState.isPlay) return\n'
-      + '    void pausePlayingEngines()\n  }, PAUSE_VERIFY_MS)\n', ''),
+      '    if (token != pauseVerifyToken) return\n    void pausePlayingEngines()\n',
+      '    if (token != pauseVerifyToken) return\n'),
   }), '有界复核')
 
   // 【第 47 轮】v15 用户的播放意图不再作废复核（复核跟用户抢：刚按下的播放被按停）
@@ -1060,6 +1077,30 @@ const runCounterExamples = () => {
   check('v36 续期上限被拿掉', fadeInGuardInvariants(
     tamper(fade, 'const ARM_RENEW_LIMIT = 3', 'const ARM_RENEW_LIMIT = 99'),
   ), 'ARM_RENEW_LIMIT')
+
+  // 【第 62 轮第 3 条】v37 复核又读回 isPlay（UI 按下即翻后它恒为 false ⇒ 兜底永远早退）
+  check('v37 复核又读回 isPlay', chainInvariants({
+    ...chainDeps,
+    utils: tamper(REAL.utils,
+      '    if (token != pauseVerifyToken) return\n',
+      '    if (token != pauseVerifyToken || !playerState.isPlay) return\n'),
+  }), '又读回 playerState.isPlay')
+
+  // 【第 62 轮第 3 条】v38 暂停的「按下即翻」被摘掉（图标又回去等 300ms 渐出 + 事件往返）
+  check('v38 摘掉暂停按下即翻', chainInvariants({
+    ...chainDeps,
+    utils: tamper(REAL.utils,
+      '  if (playerState.isPlay) {\n    setIsPlay(false)\n    void pauseNowPlaying({ playbackRate: 0 }).catch(() => {})\n  }\n',
+      ''),
+  }), '按下即翻')
+
+  // 【第 62 轮第 3 条】v39 按下即翻挪到渐出之后（翻面仍在，但排在 300ms 斜坡后面 —— 用户投诉原样）
+  check('v39 按下即翻挪到渐出之后', chainInvariants({
+    ...chainDeps,
+    utils: tamper(REAL.utils,
+      '  if (playerState.isPlay) {\n    setIsPlay(false)\n    void pauseNowPlaying({ playbackRate: 0 }).catch(() => {})\n  }\n  if (Platform.OS != \'ios\') return fadeOutThenPause(pausePlayingEngines)',
+      '  if (Platform.OS != \'ios\') return fadeOutThenPause(pausePlayingEngines)\n  if (playerState.isPlay) {\n    setIsPlay(false)\n    void pauseNowPlaying({ playbackRate: 0 }).catch(() => {})\n  }'),
+  }), '落在渐出之后')
 
   return results
 }

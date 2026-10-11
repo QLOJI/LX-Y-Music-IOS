@@ -136,8 +136,16 @@ const utilsInvariants = (raw) => {
   }
   const end = code.indexOf('\nexport const ', at + 1)
   const body = end < 0 ? code.slice(at) : code.slice(at, end)
-  if (!body.includes('if (!playerState.isPlay) armVolumeFadeIn()')) {
-    reasons.push('setPlay 未按播放态预约渐入（必须是 if (!playerState.isPlay) armVolumeFadeIn()：无条件预约会在「重取输出」这条调用路径上把音量当场压 0，等 1.5s 兜底才跳回 —— 第 58 轮第 3 条「声音不定时中断又恢复」）')
+  // 【第 62 轮第 3 条】闸门形态由 `if (!playerState.isPlay) armVolumeFadeIn()` 改为
+  // 「先取一次快照 `const resuming = !playerState.isPlay`，再 `if (resuming) armVolumeFadeIn()`」——
+  // 同一份快照还要喂「按下即翻 UI」的翻转块，所以它必须取**一次**、且是第一读。
+  // 判据没变：预约必须挂在「本次真是从暂停转为播放」这个条件上（重取输出阶梯进来时
+  // isPlay 恒为 true ⇒ 不预约 ⇒ 不会把音量当场压 0）。
+  if (!body.includes('const resuming = !playerState.isPlay')) {
+    reasons.push('setPlay 未按播放态取「本次是否真·恢复播放」的快照（const resuming = !playerState.isPlay：无条件预约会在「重取输出」这条调用路径上把音量当场压 0，等 1.5s 兜底才跳回 —— 第 58 轮第 3 条「声音不定时中断又恢复」）')
+  }
+  if (!body.includes('if (resuming) armVolumeFadeIn()')) {
+    reasons.push('setPlay 未按播放态预约渐入（必须是 if (resuming) armVolumeFadeIn()：无条件预约会在「重取输出」这条调用路径上把音量当场压 0，等 1.5s 兜底才跳回 —— 第 58 轮第 3 条「声音不定时中断又恢复」）')
   }
   if (/\n\s+armVolumeFadeIn\(\)\n/.test(body)) {
     reasons.push('setPlay 里又出现无条件的 armVolumeFadeIn()（绕过播放态闸门）')
@@ -227,6 +235,27 @@ const nativeInvariants = (raw) => {
     if (lt.at > lt.next && lt.next >= 0) {
       reasons.push('混音态让行判定排在执行段之后（先拆了引擎再判让行，白让）')
     }
+    // 【第 62 轮第 2 条】让行之外还要**布防一条原生重取阶梯**：对方开麦 / 关麦真正伤害我们的
+    // 方式是「把输出 IO 悄悄掐断」（引擎 isRunning 仍为真），系统那一侧不会有第二次通知，
+    // 只让行不布防 ⇒ 声音就再也回不来（用户第 62 轮报的「直播软件打开和关闭时短暂的声音消失」）。
+    if (!lt.guard.includes('shouldArmMixRecovery = YES;')) {
+      reasons.push('混音态让行分支未布防原生重取阶梯（其它应用开麦 / 关麦把输出 IO 掐断后没人重挂 ⇒ 短暂的声音消失）')
+    }
+  }
+  // 布防的**消费点**必须在 `self.interruptedBySystem = YES;` 之前：一旦打断落账，
+  // 混音态那条分流门槛（`interruptedBySystem && !LXPlayWithOthersEnabled`）会把自愈挡掉
+  // —— 布防等于没布。取「布防之后的第一处落账」做比较（文件里 `interruptedBySystem = YES;`
+  // 另有一处、在别的方法里，不能拿全文第一处来比）。
+  const armAt = raw.indexOf('if (shouldArmMixRecovery) {')
+  if (armAt < 0) {
+    reasons.push('找不到混音态重取阶梯的触发点（if (shouldArmMixRecovery) {）—— 布防没有消费点')
+  } else {
+    const markAt = raw.indexOf('self.interruptedBySystem = YES;', armAt)
+    if (markAt < 0) {
+      reasons.push('打断落账（self.interruptedBySystem = YES;）在布防之后找不到 —— 触发点后面的收尾链路断了')
+    } else if (!raw.slice(armAt, markAt).includes('scheduleStreamingOutputRecoveryWithDelays:@[ @0.4, @1.2, @3.0 ]')) {
+      reasons.push('混音态重取阶梯的触发点里没有三拍阶梯（触发点必须真去调度重取）')
+    }
   }
   return reasons
 }
@@ -313,22 +342,47 @@ const runCounterExamples = () => {
   '未真正重启播放')
 
   // m8 混音态让行块被整段删掉（退回第 24 轮「照旧拆引擎、只吞事件」的老口径）
-  check('m8 混音态让行块被删', () => nativeInvariants(tamper(REAL.native,
-    '    if (LXPlayWithOthersEnabled) {\n      if (shouldHandle && !self.manualPause) self.lastKnownPosition = [self currentPlaybackPositionLocked];\n      return;\n    }\n',
-    '')),
-  '未整段让行')
+  // 用下标切片而不是逐字长锚点：让行块里压着第 62 轮那段注释，逐字锚点会随注释一起漂
+  // （漂掉的锚点只证明用例坏了，证明不了回归形态被拦下）。切掉的范围 =
+  // `if (LXPlayWithOthersEnabled) {` 到它自己的收尾 `return;\n    }`（含）。
+  const cutMixLetThrough = (src) => {
+    const at = src.indexOf('    if (LXPlayWithOthersEnabled) {')
+    if (at < 0) return null
+    const tail = '      return;\n    }\n'
+    const ret = src.indexOf(tail, at)
+    if (ret < 0) return null
+    return src.slice(0, at) + src.slice(ret + tail.length)
+  }
+  check('m8 混音态让行块被删', () => {
+    const t = cutMixLetThrough(REAL.native)
+    if (t == null) throw new Error('tamper 锚点未命中: 混音态让行块')
+    return nativeInvariants(t)
+  }, '未整段让行')
+
+  // m8b 让行块保留但不布防重取阶梯（第 62 轮第 2 条：IO 被掐断后没人重挂）
+  check('m8b 让行块不布防重取阶梯', () => nativeInvariants(tamper(REAL.native,
+    '      shouldArmMixRecovery = YES;\n      return;\n',
+    '      shouldArmMixRecovery = NO;\n      return;\n')),
+  '未布防原生重取阶梯')
 
   // m9 让行块里又塞回 [engine pause]（半让行 = 引擎被拆掉，输出还是要等重取）
   check('m9 让行块里塞回 engine pause', () => nativeInvariants(tamper(REAL.native,
-    '      if (shouldHandle && !self.manualPause) self.lastKnownPosition = [self currentPlaybackPositionLocked];\n      return;\n',
-    '      if (shouldHandle && !self.manualPause) self.lastKnownPosition = [self currentPlaybackPositionLocked];\n      if (self.engine != nil && self.engine.isRunning) [self.engine pause];\n      return;\n')),
+    '      shouldArmMixRecovery = YES;\n      return;\n',
+    '      if (self.engine != nil && self.engine.isRunning) [self.engine pause];\n      shouldArmMixRecovery = YES;\n      return;\n')),
   '让行不彻底')
 
   // m10 setPlay 的预约渐入又退回无条件（重取输出那条路径把音量当场压 0 → 1.5s 后才跳回）
   check('m10 setPlay 无条件预约渐入', () => utilsInvariants(tamperService(
-    'if (!playerState.isPlay) armVolumeFadeIn()',
+    'if (resuming) armVolumeFadeIn()',
     'armVolumeFadeIn()', 'utils')),
   '未按播放态预约渐入')
+
+  // m11 闸门被写死成「永远预约」（第 62 轮把闸门从直读 isPlay 换成一次快照之后，
+  //     快照这一行就是闸门的唯一出处；写死它 = 重取阶梯也走进预约，音量被压 0）
+  check('m11 闸门写死永远预约', () => utilsInvariants(tamperService(
+    '  const resuming = !playerState.isPlay',
+    '  const resuming = true', 'utils')),
+  '未按播放态取')
 
   return results
 }

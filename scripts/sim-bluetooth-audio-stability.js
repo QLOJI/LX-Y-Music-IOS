@@ -21,9 +21,14 @@
  *      换设备（新路由仍是耳机类）与未知原因照常恢复。
  *   ③ 恢复节奏：路由变化立刻一次 + 0.15/0.6/1.5s 重试（通知会成串来）；引擎配置变化
  *      立刻一次 + 0/0.3/1.0s（系统通常已把引擎停了，要快）。
- *   ④ 恢复门槛（一条不满足就撤）：有流、非手动暂停、非系统打断、有 sourceNode、
+ *   ④ 恢复门槛（一条不满足就撤）：有流、非手动暂停、**系统打断中仅独占态拦**、有 sourceNode、
  *      不在 idle/stopped、非「真断连回扬声器」。
- *   ⑤ 恢复动作全部落在 renderQueue：重设会话（playback + LongFormAudio + setActive:YES）
+ *      【第 62 轮第 2 条】门槛从「manualPause || interruptedBySystem」拆成两条：混音态
+ *      （勾选「与其他应用同时播放」）放行 interruptedBySystem —— 直播类应用开麦 / 关麦会
+ *      悄悄掐断输出 IO（引擎 isRunning 仍为真），这条自愈链是唯一会重挂 IO 的地方，
+ *      旧门槛把混音态整条挡死 ⇒ 用户听到「打开和关闭直播软件时短暂的声音消失」。
+ *   ⑤ 恢复动作全部落在 renderQueue：重设会话（playback + LongFormAudio + setActive:YES；
+ *      第 62 轮起走 prepareAudioSessionAllowingExclusiveFallback:NO —— 自愈绝不退回独占组合）
  *      → 硬件格式变了才 stop 引擎（不重建整张图：重建会清 PCM 环、与解码线程抢缓冲，
  *      位置靠 playbackAnchorFrame 守恒）→ ensureAudioEngineRunningLocked →
  *      重贴音量/音效 → maybeStartPlaybackLocked → 记下渲染帧数快照。
@@ -185,8 +190,18 @@ const bluetoothStabilityInvariants = (files) => {
     if (!recover.includes('if (self.currentURL.length == 0) return;')) {
       reasons.push('恢复主体没有「没流就撤」的门槛（会把别的状态搅乱）')
     }
-    if (!recover.includes('if (self.manualPause || self.interruptedBySystem) return;')) {
-      reasons.push('恢复主体缺「手动暂停 / 系统打断中不抢会话」门槛（暂停会被顶开、打断期间抢不回会话）')
+    // 【第 62 轮第 2 条】门槛拆成两条：手动暂停永远不恢复；系统打断只在**独占态**拦。
+    // 混音态必须放行 —— 直播类应用开麦 / 关麦会悄悄掐断输出 IO（引擎 isRunning 仍为真），
+    // 而这条自愈链是唯一会重挂 IO 的地方；旧的一条式门槛把混音态整条链挡死，
+    // 表现就是用户第 62 轮报的「打开和关闭直播软件时短暂的声音消失」。
+    if (!recover.includes('if (self.manualPause) return;')) {
+      reasons.push('恢复主体缺「手动暂停不抢会话」门槛（暂停会被顶开）')
+    }
+    if (!recover.includes('if (self.interruptedBySystem && !LXPlayWithOthersEnabled) return;')) {
+      reasons.push('恢复主体的系统打断门槛没按混音态分流（混音态被挡死 → 直播类应用掐断 IO 后没人重挂，声音消失）')
+    }
+    if (recover.includes('if (self.manualPause || self.interruptedBySystem) return;')) {
+      reasons.push('恢复主体又用回「暂停或打断一律不恢复」的一条式门槛（混音态自愈被整条挡死）')
     }
     if (!recover.includes('[self.currentState isEqualToString:@"idle"]') || !recover.includes('[self.currentState isEqualToString:@"stopped"]')) {
       reasons.push('恢复主体没排除 idle / stopped（已结束的流被重新拉起）')
@@ -194,8 +209,10 @@ const bluetoothStabilityInvariants = (files) => {
     if (!recover.includes('if (treatAsDisconnect && ![self currentRouteHasHeadphoneOutput]) return;')) {
       reasons.push('恢复主体没挡「真断连回扬声器」（耳机拔了还在扬声器上出声，用户报的就是这个方向的失败）')
     }
-    if (!recover.includes('[self prepareAudioSession:&sessionError]')) {
-      reasons.push('恢复主体没有重设音频会话 prepareAudioSession（路由变化后会话要重新 setActive，否则引擎起了也没声）')
+    // 【第 62 轮第 2 条】自愈路径走**无独占回退**口径：混音态只试混音组合，
+    // 绝不趁自愈把别的应用的会话抢回来（那正是「和对方一停一响地拉锯」的来源）。
+    if (!recover.includes('[self prepareAudioSessionAllowingExclusiveFallback:NO error:&sessionError]')) {
+      reasons.push('恢复主体没有以「不退回独占」的口径重设音频会话 prepareAudioSession（路由变化后会话要重新 setActive，否则引擎起了也没声；退回独占则会抢走其他应用的会话）')
     }
     if (!recover.includes('dispatch_async(self.renderQueue, ^{')) {
       reasons.push('恢复动作没落在 renderQueue（引擎 / PCM 环 / 音量都归它管，跨队列改会打架）')
@@ -455,15 +472,20 @@ const runCounterExamples = () => {
   ce('n2 删掉真断连判定', '拔耳机也在扬声器上抢放',
     n2 !== src && bluetoothStabilityInvariants(withNative(n2)).some((r) => r.includes('OldDeviceUnavailable')))
 
-  // n3 摘掉手动暂停 / 打断门槛
-  const n3 = src.replace('  if (self.manualPause || self.interruptedBySystem) return;\n  if (self.sourceNode == nil', '  if (self.sourceNode == nil')
+  // n3 摘掉手动暂停 / 打断门槛（第 62 轮起是两条并列的行）
+  const n3 = src.replace('  if (self.manualPause) return;\n  if (self.interruptedBySystem && !LXPlayWithOthersEnabled) return;\n  if (self.sourceNode == nil', '  if (self.sourceNode == nil')
   ce('n3 摘掉手动暂停/打断门槛', '暂停被顶开、打断期间抢会话',
     n3 !== src && bluetoothStabilityInvariants(withNative(n3)).some((r) => r.includes('手动暂停')))
 
+  // n3b 门槛退回一条式（第 62 轮前的写法）：混音态被挡死，直播类应用掐断 IO 后没人重挂
+  const n3b = src.replace('  if (self.interruptedBySystem && !LXPlayWithOthersEnabled) return;', '  if (self.interruptedBySystem) return;')
+  ce('n3b 打断门槛退回一条式', '混音态自愈被整条挡死 → 短暂没声音',
+    n3b !== src && bluetoothStabilityInvariants(withNative(n3b)).some((r) => r.includes('没按混音态分流')))
+
   // n4 不重设会话
   const n4 = src.replace(
-    '  if (treatAsDisconnect && ![self currentRouteHasHeadphoneOutput]) return;\n\n  NSError *sessionError = nil;\n  if (![self prepareAudioSession:&sessionError]) return;',
-    '  if (treatAsDisconnect && ![self currentRouteHasHeadphoneOutput]) return;\n\n  NSError *sessionError = nil;',
+    '  if (![self prepareAudioSessionAllowingExclusiveFallback:NO error:&sessionError]) return;',
+    '',
   )
   ce('n4 恢复时不重设会话', '引擎起了也没声',
     n4 !== src && bluetoothStabilityInvariants(withNative(n4)).some((r) => r.includes('prepareAudioSession')))
