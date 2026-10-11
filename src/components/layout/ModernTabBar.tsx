@@ -2,7 +2,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Animated, Easing, PanResponder, Pressable, StyleSheet, View, type LayoutChangeEvent } from 'react-native'
 import { useTheme } from '@/store/theme/hook'
 import { useI18n } from '@/lang'
-import { useNavActiveId, useGlassHomeCovered, useSafeAreaReady, useNavTransitioning, useNavRevealing, useAppActive, usePagerDragging } from '@/store/common/hook'
+import { useNavActiveId, useGlassHomeCovered, useSafeAreaReady, useAppActive, usePagerDragging } from '@/store/common/hook'
 // 【第 35 轮第 3 条】静止槽心的「新鲜」取值源：直读 store 的 navActiveId（同步写、
 // 同步发事件），比 React state 早一整个提交周期。见 resolveRestingSlotX
 import commonState from '@/store/common/state'
@@ -244,18 +244,12 @@ export default memo(() => {
   const liquidGlassOn = useSettingValue('theme.liquidGlass') && !isIOS26_2OrAbove
   // 省电门：Home 被压栈页（播放详情等）完全覆盖时暂停玻璃的 Metal 渲染循环
   // （不可见期间零逐帧 draw；返回 Home 即恢复，原生重捕获背景无残帧）。
-  // 2026-10-11（第 52 轮第 2 条）：两块玻璃改用**玻璃专用**门（= 本门 ∧ 不在返回露出
-  // 窗口内）。返回发起时账本还没翻，必须提前恢复渲染并重采背景，否则整段返回动画
-  // 透过的都是暂停前那一帧，动画结束才跳一下。useHomeCovered 本身的语义不动
-  // ——它还有非玻璃消费点（PlayingIcon 动画门、tabBarCollapse 的布局）。
+  // 玻璃专用门 = 本门 ∨ 转场按住门（第 61 轮第 3 条起两个方向都按住，见
+  // useGlassNavHold）：转场里采到的背景是「旧页正在滑走 + 新页正在盖上来」的中间态，
+  // 返回时更是正在滑走的那一页本身——采进胶囊就是「透过的画面反向流」。
+  // useHomeCovered 本身的语义不动——它还有非玻璃消费点（PlayingIcon 动画门、
+  // tabBarCollapse 的布局），不能跟着转场门一起翻。
   const glassHomeCovered = useGlassHomeCovered()
-  // 转场门（2026-10-01 开窗；2026-10-02 只保留 push 侧）：整段 **push** 转场期间
-  // 同样暂停——账本驱动的省电门盖不住转场本身（push 时新页 setComponentId 晚于
-  // 转场开始），转场中间态被采进玻璃就是「每次切换画面闪一下」。
-  // 返回（pop）不再置位：玻璃正在被露出来，按住只会让用户多看一截陈旧画面
-  // （用户第 5 条），pop 事件到达即释放。见 navigation.beginNavTransitionWindow /
-  // endNavTransitionWindow。
-  const navTransitioning = useNavTransitioning()
   // 前台门（2026-10-02 用户第 8 条）：本 App 有音频后台播放能力，锁屏后进程仍常驻，
   // 但 Tab 栏的液态玻璃是 MTKView **连续渲染**（isPaused=false 时每帧 draw），
   // 不会随锁屏/退后台自动停 —— 于是整夜白烧电。账本驱动的省电门只看「被不被压栈页
@@ -267,11 +261,10 @@ export default memo(() => {
   // 玻璃透过的画面此前被采景节流压在 30fps 档，而前景以 60~120fps 在动 —— 透过的
   // 画面系统性落后 1~3 拍，快速滑动时还会因欠采样看起来「反向切入」。会话期间置
   // live=true，原生按实时档（60fps 采景，渲染档同速，与抬起的透镜同档）跟手。
+  // 【第 61 轮第 3 条】live 现在**只有**这一个来源：转场期间玻璃一律被按住（上面那道
+  // 门），拖页时按住门让位（useGlassNavHold 的 !dragging）—— 剩下唯一在渲染又需要
+  // 实时采景的场景就是它。
   const pagerDragging = usePagerDragging()
-  // 返回露出窗口（2026-10-11，第 58 轮第 2 条）：pop 发起时打开（navigation/revealWindow），
-  // 「本屏正被露出来」。同样接进实时采景档 —— 返回动画期间背景整幅在滑，30fps 采景档下
-  // 透过的画面系统性落后 1~3 拍，就是用户说的「不是底部实时的画面、有错位、动画延迟也很高」。
-  const navRevealing = useNavRevealing()
   // 安全区就绪门：底部安全区（bottom 的唯一来源）拿到真实值之前不下发，
   // 否则先用 0 画、再跳到 34pt = 「启动时底部抽动」。见 useSafeAreaReady。
   const safeAreaReady = useSafeAreaReady()
@@ -803,7 +796,7 @@ export default memo(() => {
           {/* 省电门扩展（C9 发热）：本栏在收起态是**完全不可见**的（opacity 0 + 下移 28），
               却仍在跑 Metal 逐帧渲染 —— 收起态是长时间驻留状态（只要列表不停在顶部），
               这是纯白烧的电。可见性一并纳入门控。 */}
-          <LiquidGlass glassOpacity={glassOpacity} dark={theme.isDark} liquid={liquidGlassOn} paused={glassHomeCovered || collapsed || navTransitioning || !appActive} live={pagerDragging || navRevealing || navTransitioning} style={{ borderRadius: designRadius.glass }} />
+          <LiquidGlass glassOpacity={glassOpacity} dark={theme.isDark} liquid={liquidGlassOn} paused={glassHomeCovered || collapsed || !appActive} live={pagerDragging} style={{ borderRadius: designRadius.glass }} />
           {/* 液态透镜药丸（tab 切换动画）：玻璃之上、tab 内容之下；快速点击走
               Pressable 切页（x prop 弹簧），横滑跟手 / 长按拖动走 ref 命令式
               followX（同一套通道，见组件上部注释） */}
@@ -883,7 +876,7 @@ export default memo(() => {
           pointerEvents={collapsed ? 'auto' : 'none'}
         >
           {/* 同上：圆钮在展开态完全不可见（opacity 0 + scale 0.5），可见性纳入省电门 */}
-          <LiquidGlass glassOpacity={glassOpacity} dark={theme.isDark} liquid={liquidGlassOn} paused={glassHomeCovered || !collapsed || navTransitioning || !appActive} live={pagerDragging || navRevealing || navTransitioning} style={{ borderRadius: designRadius.pill }} />
+          <LiquidGlass glassOpacity={glassOpacity} dark={theme.isDark} liquid={liquidGlassOn} paused={glassHomeCovered || !collapsed || !appActive} live={pagerDragging} style={{ borderRadius: designRadius.pill }} />
           <Pressable style={styles.pillInner} onPress={handlePillPress}>
             <View style={styles.pillIcon} pointerEvents="none">
               <Icon name="menu" size={20} color={theme['c-primary']} />

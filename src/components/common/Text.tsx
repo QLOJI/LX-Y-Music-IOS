@@ -18,16 +18,6 @@ export interface TextProps extends _TextProps {
   color?: ColorValue
 }
 
-// const warpText = <P extends TextProps>(Component: ComponentType<TextProps>) => {
-//   return ({ style, size = 15, color, children, ...props }: P) => {
-//     const theme = useTheme()
-//     return (
-//       <Component
-//         style={StyleSheet.compose({ fontFamily: 'System', fontSize: setSpText(size), color: color ?? theme['c-font'] }, style)}
-//         {...props}
-//       >{children}</Component>
-//     )
-//   }
 // }
 
 export default memo(({ style, size = 15, color, children, ...props }: TextProps) => {

@@ -81,19 +81,6 @@ export default forwardRef<InputType, InputProps>(
       },
     }))
 
-    // const showClearBtn = useCallback(() => {
-    //   Animated.timing(scaleClearBtn, {
-    //     toValue: 1,
-    //     duration: 200,
-    //     useNativeDriver: true,
-    //   }).start()
-    // }, [scaleClearBtn])
-    // const hideClearBtn = useCallback(() => {
-    //   Animated.timing(scaleClearBtn, {
-    //     toValue: 0,
-    //     duration: 200,
-    //     useNativeDriver: true,
-    //   }).start()
     // }, [scaleClearBtn])
 
     const clearText = useCallback(() => {
@@ -105,11 +92,6 @@ export default forwardRef<InputType, InputProps>(
 
     const changeText = useCallback(
       (text: string) => {
-        // if (text.length) {
-        //   showClearBtn()
-        // } else {
-        //   hideClearBtn()
-        // }
         onChangeText?.(text)
       },
       [onChangeText],

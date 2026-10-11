@@ -28,14 +28,6 @@ export default memo(
   }) => {
     const theme = useTheme()
 
-    // const moreButtonRef = useRef()
-    // const handleShowMenu = useCallback(() => {
-    //   if (moreButtonRef.current && moreButtonRef.current.measure) {
-    //     moreButtonRef.current.measure((fx, fy, width, height, px, py) => {
-    //       // console.log(fx, fy, width, height, px, py)
-    //       showMenu(item, index, { x: Math.ceil(px), y: Math.ceil(py), w: Math.ceil(width), h: Math.ceil(height) })
-    //     })
-    //   }
     // }, [item, index, showMenu])
 
     return (

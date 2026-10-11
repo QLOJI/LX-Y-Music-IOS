@@ -16,7 +16,7 @@ import commonState from '@/store/common/state'
 import playerState from '@/store/player/state'
 import { getJumpListId } from '@/core/player/player'
 import { LIST_IDS } from '@/config/constant'
-import { useSafeAreaBottom, useGlassCovered, useSafeAreaReady, useNavTransitioning, useNavRevealing, useAppActive, usePagerDragging } from '@/store/common/hook'
+import { useSafeAreaBottom, useGlassCovered, useSafeAreaReady, useAppActive, usePagerDragging } from '@/store/common/hook'
 import { usePlayerMusicInfo } from '@/store/player/hook'
 import {
   designRadius,
@@ -31,17 +31,11 @@ export default memo(({ componentId, isHome = false }: { componentId?: string, is
   // 省电门：本屏被压栈页覆盖（栈顶不是本屏）时暂停玻璃 Metal 渲染循环。
   // PlayerBar 多屏复用（Home / 专辑页 / 歌手页…），按各自 componentId 判定；
   // 调用方未传 componentId 时恒不门控（行为同旧版）。
-  // 2026-10-11（第 52 轮第 2 条）：改用**玻璃专用**门（= 本门 ∧ 不在返回露出窗口内）。
-  // 返回发起时账本（componentIds）还没翻，必须提前恢复渲染并重采背景，否则整段返回
-  // 动画透过的都是暂停前那一帧，动画结束才跳一下（用户原话「透过的画面要在返回动画
-  // 之前就实时显示」）。账面 hook 本身（useScreenCovered）语义不动——它还有布局类消费点。
+  // 【第 61 轮第 3 条】玻璃专用门 = 账面覆盖门 ∨ 转场按住门：转场期间（push / pop 都算）
+  // 一律按住，不在转场中途采景 —— 返回时玻璃背后正在滑走的那一页会被采进胶囊，透过的
+  // 画面就是「由右向左滑入」的反向流。账面 hook 本身（useScreenCovered）语义不动：
+  // 它还有布局类消费点。
   const glassCovered = useGlassCovered(componentId)
-  // 转场门（2026-10-01 开窗；2026-10-02 只保留 push 侧）：整段 **push** 转场期间
-  // 也暂停玻璃——省电门只看账本，盖不住转场本身（转场中间态被采进胶囊 =
-  // 每次切换画面闪一下）。返回（pop）不再置位：玻璃正在被露出来，按住等于让用户
-  // 多看一截陈旧画面（用户第 5 条），pop 事件到达即释放。见
-  // navigation.beginNavTransitionWindow / endNavTransitionWindow。
-  const navTransitioning = useNavTransitioning()
   // 前台门（2026-10-02 用户第 8 条）：迷你播放器的液态玻璃同样是 MTKView 连续渲染，
   // 锁屏/退后台后音频还在放、进程还常驻，它会跟着跑一整夜（省电门只看「被不被压栈页
   // 覆盖」，前台栈顶时恒为 false，盖不住这条）。接进前台门后 App 退后台即停渲染，
@@ -51,11 +45,10 @@ export default memo(({ componentId, isHome = false }: { componentId?: string, is
   // 手势会话期间，迷你播放器的玻璃也按实时档（60fps 采景，渲染档同速，见
   // LiquidGlassView.syncRenderFrameRate）跟手，否则
   // 它就是「滑动时透过的画面延迟高、掉帧」的另一半（两块玻璃在同一个背景上）。
+  // 【第 61 轮第 3 条】live 现在只有这一个来源：转场期间玻璃一律被按住（上一行那道门），
+  // 拖页时按住门让位（useGlassNavHold 的 !dragging）—— 唯一「在渲染又要实时采景」的
+  // 场景就剩它。
   const pagerDragging = usePagerDragging()
-  // 返回露出窗口（2026-10-11，第 58 轮第 2 条）：pop 发起时打开的窗口，见
-  // navigation/revealWindow.ts。与 useGlassCovered 内部用的是同一个信号，这里单独取一次
-  // 是为了**驱动实时采景档**（live）——只在「本屏正被露出」时为真。
-  const navRevealing = useNavRevealing()
   // 【第 58 轮第 1 条】本屏行宽（wrapper 的宽度）。只由 wrapper 的 onLayout 上报，见
   // 下方 glassWidth 的说明。
   const [rowWidth, setRowWidth] = useState(0)
@@ -241,7 +234,7 @@ export default memo(({ componentId, isHome = false }: { componentId?: string, is
                 胶囊形状照旧由容器的 borderRadius + overflow:hidden 裁出（LiquidGlass 自身
                 也带同一个圆角），收起态被裁掉的左端由容器的圆角补上，右端与宿主右缘重合。 */}
             <View pointerEvents="none" style={glassHostStyle}>
-              <LiquidGlass glassOpacity={glassOpacity} dark={theme.isDark} liquid={liquidGlassOn} paused={glassCovered || navTransitioning || !appActive} live={pagerDragging || navRevealing || navTransitioning} style={{ borderRadius: designRadius.glass }} />
+              <LiquidGlass glassOpacity={glassOpacity} dark={theme.isDark} liquid={liquidGlassOn} paused={glassCovered || !appActive} live={pagerDragging} style={{ borderRadius: designRadius.glass }} />
             </View>
             <TouchableOpacity style={styles.left} onPress={handleNavigate} onLongPress={handleLongPress} activeOpacity={0.8}>
               <Pic />
@@ -262,9 +255,10 @@ export default memo(({ componentId, isHome = false }: { componentId?: string, is
     // （等价于前台门失效，锁屏后玻璃照样整夜渲染）。
     // pagerDragging 同理（用户第 9 条）：它是 live 门，漏掉就永远停在 false，
     // 横滑期间玻璃仍是 30fps 采景档 —— 表现就是这一个门完全没接上。
-    // 【第 58 轮第 2 条】navRevealing 也是 live 门（返回转场期间走 60fps 采景档），
-    // rowWidth 是玻璃宿主的定尺来源：两者都必须在依赖里，否则节点不重建、门与尺都失效。
-    [glassOpacity, liquidGlassOn, glassCovered, navTransitioning, navRevealing, appActive, pagerDragging, rowWidth, theme.isDark, isHome, handleNavigate, handleLongPress, safeAreaBottom, isHorizontalMode, collapseAnim, pillSize, collapsedRow, tabBarDistance, tabBarCollapsed],
+    // rowWidth 是玻璃宿主的定尺来源，同样必须在依赖里，否则节点不重建、尺失效。
+    // （第 61 轮第 3 条：转场按住门已经不在这份依赖里 —— 它由 useGlassCovered 内部消费，
+    //   翻的只是 glassCovered 这个值本身。）
+    [glassOpacity, liquidGlassOn, glassCovered, appActive, pagerDragging, rowWidth, theme.isDark, isHome, handleNavigate, handleLongPress, safeAreaBottom, isHorizontalMode, collapseAnim, pillSize, collapsedRow, tabBarDistance, tabBarCollapsed],
   )
 
   // 首页实例在安全区就绪前不下发（见 useSafeAreaReady）：它的 bottom 含 safeAreaBottom，

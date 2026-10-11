@@ -38,16 +38,21 @@ type LiquidGlassProps = ViewProps & {
    */
   liquid?: boolean
   /**
-   * 省电门（2026-09-30）：玻璃组件所在屏幕被压栈页**完全覆盖**时传 true，
-   * 原生暂停 Metal 逐帧渲染（MTKView.isPaused）——不可见期间的纯功耗，返回该屏
-   * 即恢复、下一帧重捕获背景无残帧。磨砂档（26.2+ / 开关关）原生 no-op。
+   * 省电门（2026-09-30）：玻璃组件所在屏幕被压栈页**完全覆盖**、或正处在**导航转场**
+   * 期间传 true，原生暂停 Metal 逐帧渲染（MTKView.isPaused）——不可见/不该采景期间
+   * 的纯功耗，恢复时先做一次性复位再继续渲染。磨砂档（26.2+ / 开关关）原生 no-op。
    *
    * 判定用**玻璃专用**门 useGlassCovered / useGlassHomeCovered（store/common/hook），
-   * 不要手写，也不要用账面 hook（useScreenCovered / useHomeCovered）直接喂进来：
+   * 两者 = 账面覆盖门 ∨ useGlassNavHold（转场按住门）——别手写，也不要用账面 hook
+   * （useScreenCovered / useHomeCovered）直接喂进来：
    * 那两个读的是账本（componentIds），只在 RNN screenPopped 到达时才翻——晚于用户
-   * 按下返回。少了「露出窗口」这一层，返回动画期间玻璃还在暂停态、透过的始终是暂停
-   * 前那一帧，动画结束才跳一下（用户第 52 轮第 2 条）。玻璃门 = 账面门 ∧ 不在露出
-   * 窗口内，见 navigation/revealWindow.ts。
+   * 按下返回，且还有非玻璃消费点（布局、图标动画）。
+   *
+   * 玻璃门 = 账面覆盖门 ∨ 转场按住门（第 61 轮第 3 条）：**整段转场都要按住**
+   * （push 与 pop 两侧共用同一个窗口，见 navigation/transitionWindow.ts）。返回时
+   * 玻璃背后其实还是正在向右滑走的那一页，采进胶囊就是用户第 60/61 轮报的「透过的
+   * 画面是由右向左滑入的，这个方向是反的」。第 58～60 轮曾反过来做（转场中让玻璃
+   * 恢复实时采景 + 原生重新入窗口自恢复），那条路径与露出门一起删除 —— 别改回去。
    */
   paused?: boolean
   /**
