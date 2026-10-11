@@ -605,11 +605,20 @@ final class LiquidGlassView: MTKView {
     private var useLayerRender = true
     private var layerRenderFailures = 0
 
-    /// 跨实例共享的捕获节流（全局 33ms）：捕获已在主线程执行（见 captureRootView），
+    /// 跨实例共享的捕获闸门（公平轮转）：捕获已在主线程执行（见 captureRootView），
     /// 必须限制主线程占用；玻璃实例（迷你播放条/Tab 栏/透镜）各自独立渲染线程，
-    /// 用锁保护检查-设置。
+    /// 用锁保护检查-放行。
     private static let globalCaptureLock = NSLock()
+    /// 最近一次**被放行**的全局采景时刻（墙钟秒）；0 = 闸门刚复位（下一帧必放行）。
     private static var globalLastCaptureAt: TimeInterval = 0
+    /// 全局闸门的等待队列（FIFO：实例身份 + 入队时刻）。见 requestGlobalCaptureSlot。
+    private static var globalCaptureQueue: [(id: ObjectIdentifier, at: TimeInterval)] = []
+    /// 闸门抖动余量（秒）【第 59 轮第 1 条】：显示链路的 60Hz 节拍是 16.667ms，与
+    /// liveCaptureMinInterval(16.7ms) 只差 0.3ms —— 逐帧比较时那一拍会被判成「还没到」
+    /// 而整帧丢弃，实时档实际掉到 30Hz（「滑动中透过的画面延迟很高」的隐身来源之一）。
+    /// 留 2ms 余量让「恰好 16.67ms 的一拍」稳定通过；静止档 33.3ms 从 31.3ms 起放行，
+    /// 频率不变（渲染档本身就是 30fps 的 33.3ms 一拍）。
+    private static let captureGateJitterGuard: TimeInterval = 0.002
 
     /// 采景节流（**每实例**，2026-10-02，用户第 5 条）：两次采景之间的最小墙钟间隔。
     /// 完整说明见 shouldThrottleCapture。取 30fps（= idleFramesPerSecond 的静止态基线）。
@@ -673,6 +682,10 @@ final class LiquidGlassView: MTKView {
         // 到期自动落回静止档（见 scheduleReentryLiveExpiry），不依赖 JS 事件（右滑那条
         // 路径没有 JS 事件）。
         reentryLiveStartedAt = CACurrentMediaTime()
+        // 【第 59 轮第 1 条】转场第一拍就要采到当前画面：全局闸门若正卡在上一段会话的
+        // 格子里，本实例的首帧要等到下一格（最多 16.7ms + 本帧），转场开头露出的那一下
+        // 就已经是旧画面了。复位闸门 = 首帧放行（见 resetGlobalCaptureGate）。
+        Self.resetGlobalCaptureGate()
         scheduleReentryLiveExpiry()
         syncRenderFrameRate()
     }
@@ -770,6 +783,9 @@ final class LiquidGlassView: MTKView {
         liveCaptureRequested = true
         consecutiveUniformFrames = 0
         backgroundTexture = nil
+        // 新会话第一帧必须立刻采到（全局闸门也要复位，别卡在上一段的格子里）
+        lastCaptureAt = 0
+        Self.resetGlobalCaptureGate()
         // 2026-10-01：抬起 = 新的采景会话（纹理已丢，重新开始）。重开沉降窗口：
         // 透镜/收起圆钮的上一帧（previous）此时恒为 nil，窗口内沿用 = 继续透明，
         // 等的是本次会话的第一帧可信背景，不会把上一次抬起/上一页的内容带进来
@@ -806,6 +822,7 @@ final class LiquidGlassView: MTKView {
         // 第一帧真实内容要再等最多 33ms 才采到 —— 那正是「滑动刚开始时玻璃里还是旧位置
         // 的画面、然后猛地跳一下」的相位滞后来源（用户第 9 条「延迟很高」的起点）。
         lastCaptureAt = 0
+        Self.resetGlobalCaptureGate()
         consecutiveUniformFrames = 0
         // 渲染档只跟采景档走（第 20 轮：两个档位各自与对应采景间隔同速，
         // 见 syncRenderFrameRate）——开始会话提到 live 档、结束落回静止档，
@@ -855,6 +872,7 @@ final class LiquidGlassView: MTKView {
         consecutiveUniformFrames = 0
         lastCaptureHadPartialBlack = false
         lastCaptureAt = 0
+        Self.resetGlobalCaptureGate()
         syncRenderFrameRate()
         // 2026-10-02（用户第 16 轮第 1 条：「底部 tab 栏和迷你播放器栏边缘又出现瞬间闪烁的
         // 黑边，分别在进入软件时、从其他页面切回到有底部栏界面时」）：暂停恢复也是一次
@@ -932,21 +950,15 @@ final class LiquidGlassView: MTKView {
                                        width: captureSize.width,
                                        height: captureSize.height)
 
-        // 【全局 33ms 节流 + 主线程捕获】26.2+/27 的 renderInContext 不可靠读取渲染线程
+        // 【全局闸门 + 主线程捕获】26.2+/27 的 renderInContext 不可靠读取渲染线程
         // 上的未提交模型变更（排除失效 → 前景/玻璃本体漏进捕获：图标黑帽、按钮黑块、
         // 玻璃惨白，26.2+/27 真机实锤）；而提交隐藏态（commit/flush）又会闪屏。唯一跨
         // 版本确定的做法：捕获整体搬到主线程执行——hide → render → restore → commit，
         // restore 先于 commit，render server 永远看不到隐藏态（不闪）；主线程的
         // renderInContext 读模型必然含排除（不漏）。全局节流（跨实例共享）限制主线程
-        // 占用；首帧（无纹理）不节流。
-        if backgroundTexture != nil {
-            var throttled = false
-            Self.globalCaptureLock.lock()
-            let now = CACurrentMediaTime()
-            if now - Self.globalLastCaptureAt < 0.033 { throttled = true } else { Self.globalLastCaptureAt = now }
-            Self.globalCaptureLock.unlock()
-            if throttled { return }
-        }
+        // 占用【第 59 轮第 1 条：闸门改为按实时档定节拍 + FIFO 轮转，见 requestGlobalCaptureSlot】；
+        // 首帧（无纹理）必放行（不排队也不看间隔，见该方法）。
+        if !requestGlobalCaptureSlot(CACurrentMediaTime()) { return }
 
         // 第五个沉降窗口锚点（2026-10-11，第 52 轮第 1 条）：本帧的采景几何与上一帧
         // 不同（逐帧变形动画 / 尺寸变化）⇒ 合成源要整幅重做，本帧与随后几帧可能带着
@@ -1028,6 +1040,63 @@ final class LiquidGlassView: MTKView {
     ///
     /// 首帧（backgroundTexture == nil）不节流：挂载后 / 抬起会话开始的第一帧必须立刻
     /// 拿到纹理，否则 draw() 的「无纹理则跳过本帧」会让玻璃一直透明（见 beginLiveCapture）。
+    /// 全局闸门：本帧是否拿到跨实例的采景名额（true = 允许采，false = 本帧让行）。
+    ///
+    /// 旧口径（2026-10-01 ~ 第 58 轮）是「距上一次**全局**采景不足固定 0.033s 就丢弃」，
+    /// 两个毛病在返回/滑动转场里同时发作（第 59 轮第 1 条：拉伸 / 错位 / 撕裂 / 延迟高）：
+    ///  ① 固定 0.033s、**不看实时档**：转场里三块玻璃都进了实时档（一个 60fps 采景名额），
+    ///     却全被这道闸门压回合计 30 次/秒 —— 与实时档的承诺（见 isLiveCaptureActive）
+    ///     直接矛盾，谁申请都没用；
+    ///  ② 先到先得 = 可独占：每 16.7ms 提交一帧的实例每次都满足 33ms，块块都抢到名额，
+    ///     另外两块玻璃却总被判「刚采过」——三块均分（约 10 次/秒/块）退化成一个饱死、
+    ///     两个饿死。转场里整幅背景在移动，饿死那一块拿的还是几十毫秒前的位置所对应的
+    ///     矩形内容，被 shader 当背景折射出来就是「拉伸 / 错位 / 撕裂」。
+    ///
+    /// 现在两道都改：**节拍按实时档选**（实时 16.7ms / 静止 33.3ms），**名额按 FIFO 轮转**
+    /// （这一格没轮到的实例入队等下一格）。全员公平 → 每块玻璃在最需要的时候拿到
+    /// 总名额里属于它的那一份（实时档三块各约 20 次/秒，且**没有饿死的**），
+    /// 而全局主线程占用仍有界（每格至多一次整树渲染，这是本闸门存在的全部理由）。
+    /// 首帧（挂载 / 抬起会话 / 刚丢纹理）不排队也不看间隔：那一刻玻璃还没有任何可画的
+    /// 背景，放行它是 draw() 不整帧跳过的前提；但它照样**记账**（占用本格名额），
+    /// 免得同一拍里两块玻璃一起上主线程。
+    private func requestGlobalCaptureSlot(_ now: TimeInterval) -> Bool {
+        let me = ObjectIdentifier(self)
+        let firstFrame = backgroundTexture == nil
+        let interval = isLiveCaptureActive ? Self.liveCaptureMinInterval : Self.captureMinInterval
+        Self.globalCaptureLock.lock()
+        defer { Self.globalCaptureLock.unlock() }
+        // 排队超过一整格还没回来的实例（被暂停 / 实时档已结束 / 已被移除）不再占位：
+        // 队首永远等不到人的话，后面的实例会被一个死名字无辜拖住。
+        Self.globalCaptureQueue.removeAll { now - $0.at >= interval }
+        if firstFrame {
+            Self.globalCaptureQueue.removeAll { $0.id == me }
+            Self.globalLastCaptureAt = now
+            return true
+        }
+        if now - Self.globalLastCaptureAt < interval - Self.captureGateJitterGuard {
+            if !Self.globalCaptureQueue.contains(where: { $0.id == me }) {
+                Self.globalCaptureQueue.append((me, now))
+            }
+            return false
+        }
+        // 本格已到：只有队首（或根本不在队列里的实例）能拿 —— 排队顺序 = 谁先来等。
+        if let head = Self.globalCaptureQueue.first, head.id != me { return false }
+        if !Self.globalCaptureQueue.isEmpty { Self.globalCaptureQueue.removeFirst() }
+        Self.globalLastCaptureAt = now
+        return true
+    }
+
+    /// 进入实时档 / 重新入窗口 / 暂停恢复时复位全局闸门：让本实例的**第一帧**立刻能采
+    ///（返回转场的第一拍采到的就是当前画面），并把等待队列一并清空 —— 上一段会话留下的
+    /// 排队次序对新会话没有意义（那些实例这一格本来就该重新竞争）。
+    /// 复位是幂等的：多个实例几乎同时入窗口时，最坏只是多放行一帧（可接受）。
+    private static func resetGlobalCaptureGate() {
+        globalCaptureLock.lock()
+        globalLastCaptureAt = 0
+        globalCaptureQueue.removeAll()
+        globalCaptureLock.unlock()
+    }
+
     private func shouldThrottleCapture(_ now: TimeInterval) -> Bool {
         guard backgroundTexture != nil else { return false }
         // 实时档 = 透镜抬起（liveCaptureRequested）**或** RN `live` prop（横滑会话，
