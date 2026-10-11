@@ -523,7 +523,7 @@
   "setting_play_fade_out_duration": "渐出时长（秒）",
   "setting_play_fade_out_duration_desc": "暂停或停止前，音量从当前值平滑降到 0 所用的时长；0 为关闭渐出。仅 iOS 生效。",
   "setting_play_fade_linear_curve": "使用线性音量曲线",
-  "setting_play_fade_linear_curve_desc": "不勾选 = 等功率曲线（默认）：过渡期间功率恒定，听感最平滑，避免音量突变。勾选 = 线性曲线：音量等幅度变化，中段听起来掉得更快。",
+  "setting_play_fade_linear_curve_desc": "不勾选 = 缓入缓出曲线（默认）：两头慢、中段快，声音由小变大 / 由大变小都更自然，不会有突然出现或突然消失的感觉。勾选 = 线性曲线：音量等幅度变化，中段听起来掉得更快。",
   "setting_play_handle_audio_focus": "与其他应用同时播放",
   "setting_play_handle_audio_focus_tip": "立即生效，无需重启",
   "setting_play_lyric_transition": "显示歌词翻译",

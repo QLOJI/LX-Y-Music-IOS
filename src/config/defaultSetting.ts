@@ -138,8 +138,8 @@ const defaultSetting: LX.AppSetting = {
   // （见 plugins/player/volumeFade.ts 的文件头）。
   'player.fadeInDuration': 2,
   'player.fadeOutDuration': 3,
-  // 缓动曲线：false = 等功率（默认，需求原话「默认使用等功率曲线（Equal-Power），避免音量
-  // 突变」），true = 线性（需求原话「可选线性（Linear）」）。
+  // 缓动曲线：false = **缓入缓出**（默认，两端导数为 0，两头慢、中段快；第 65 轮第 1 条按
+  // 用户听感从「等功率」换过来的），true = 线性（需求原话「可选线性（Linear）」）。
   'player.fadeLinearCurve': false,
   // 返回软件时自动播放：默认开（用户明确要求「其它音频结束播放后不用回前台也会自动续播」）。
   // 仅当暂停由系统音频中断/其它音频抢占造成时才会恢复，用户主动按的暂停不会被恢复（见 service.ts）。

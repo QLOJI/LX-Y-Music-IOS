@@ -77,8 +77,10 @@ declare global {
       'player.fadeOutDuration': number
 
       /**
-       * 渐入渐出的缓动曲线：false = 等功率（Equal-Power，默认），true = 线性（Linear）。
-       * 等功率在听感上功率恒定（升 `sin`/ 降 `cos`，两者平方和为 1），避免音量突变。
+       * 渐入渐出的缓动曲线：false = **缓入缓出**（默认），true = 线性（Linear）。
+       * 缓入缓出 = `0.5 - 0.5·cos(π·p)`：两端导数为 0（两头慢）、中段最陡，升 / 降共用同一条
+       * 单调曲线。第 65 轮第 1 条按用户听感从「等功率」换过来 —— 等功率是「一头平一头陡」，
+       * 渐入的头 / 渐出的尾各有一记最猛的斜率，正是用户报的「突然出现 / 突然消失」。
        */
       'player.fadeLinearCurve': boolean
 
