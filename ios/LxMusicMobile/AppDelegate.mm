@@ -9,6 +9,9 @@
 #import <React/RCTScrollView.h>
 #import <objc/runtime.h>
 #import <ReactNativeNavigation/ReactNativeNavigation.h>
+// 【第 66 轮第 1 条】玻璃「冻结前」的回调口：vendored LiquidGlassKit 在把渲染循环暂停
+// 之前同步回调进来（注册在文件下方的 LXGlassFreezeSettleSetup，+load 早于 main）。
+#import <LiquidGlassKit/LXGlassFreezeHook.h>
 
 @class SceneDelegate;
 #import <Security/Security.h>
@@ -7339,10 +7342,19 @@ static void LXSetTabBarCollapsed(BOOL collapsed) {
                                                     userInfo:@{ @"collapsed": @(collapsed) }];
 }
 
+// 【第 66 轮第 1 条】滚动速度采样：定义在下面「玻璃冻结前贴落点」区块里，本回调每个滚动
+// 事件顺手喂一拍（喂在 tab 栏那几道门之前 —— 那几道门管的是「谁有权改变收起状态」，
+// 与「列表滑多快」无关）。声明前置，因为定义在下面的区块。
+static void LXGlassSampleScrollVelocity(UIScrollView *scrollView);
+
 static void LX_RCTScrollView_scrollViewDidScroll(id self, SEL _cmd, UIScrollView *scrollView) {
   if (LXOrigRCTScrollViewDidScroll != NULL) {
     ((void (*)(id, SEL, UIScrollView *))LXOrigRCTScrollViewDidScroll)(self, _cmd, scrollView);
   }
+  // 【第 66 轮第 1 条】滚动速度采样（给「玻璃冻结前贴落点」用，见下方同名区块）。
+  // 放在 tab 栏那几道门**之前**：它是独立的一件事，不受「程序化滚动不算」「手动展开门」
+  // 等状态机规则影响 —— 那些规则管的是「谁有权改变收起状态」，这里只关心「列表滑多快」。
+  LXGlassSampleScrollVelocity(scrollView);
   // 挂在窗口上才算数（被移出层级的列表滚动事件不算）。这是第 63 轮之前唯一的门，
   // 也是现在唯一的门——它只是一次指针比较，不像原来的门要在每个滚动事件里沿响应链
   // 上溯找 VC（60~120 次/秒的热路径，第 64 轮的省电口径顺手把这段省掉了）。
@@ -7379,6 +7391,134 @@ static void LX_RCTScrollView_scrollViewDidScroll(id self, SEL _cmd, UIScrollView
   if (method == nil) return;
   LXOrigRCTScrollViewDidScroll = method_getImplementation(method);
   method_setImplementation(method, (IMP)LX_RCTScrollView_scrollViewDidScroll);
+}
+
+@end
+
+// ============================================================================
+// 玻璃冻结前贴落点：把正在惯性滑行的列表直接放到它「本来会滑到」的位置
+// ============================================================================
+// 【第 66 轮第 1 条】用户原话：「迷你播放器栏和底部 tab 栏透过的画面，例如正在向下滑动当前
+// 列表，然后突然点击进入播放详情页，迷你播放器栏和底部 tab 栏透过的画面是停留在进入播放详情
+// 页前的画面，而返回时，向下滑动的列表还会向下移动一点距离，这样迷你播放器栏和底部 tab 栏
+// 透过的画面就会和进入详情页前的画面不一致，造成短暂的显示错误并闪一下，这样解决办法是，
+// 计算进入页面前列表的滑动速度并计算出将要滑到的位置，然后返回时直接显示这个位置就行，如果
+// 进入页面前列表的滑动速度为0，这为静止显示即可，如果速度不为0，则将用此方法显示透过的
+// 实时画面。」
+//
+// 机制：底部两块玻璃（迷你播放器栏 / tab 栏）逐帧把背后的画面采进纹理再折射（vendored
+// LiquidGlassKit 的液态档），被压栈页盖住 / 转场期间渲染循环被暂停省电，CAMetalLayer 上
+// 留着「暂停前最后一次画的」那一帧。只要列表在冻结**之后**还动过，冻结帧与返回后的实时
+// 画面就不一致 —— 用户看到的就是那一下闪。
+//
+// 本段做用户要的那件事，且**只在冻结前那一刻**做：
+//   ① 在既有滚动回调里采样速度（每帧一次差分；只记用户主动的滚动，含松手后的惯性）；
+//   ② 玻璃冻结前（Kit 经 LXGlassNotifyWillFreeze 同步回调进来）把正在惯性滑行的列表直接
+//      贴到按当前速度算出的预测落点，并**停掉惯性**；
+//   ③ 玻璃随后采一帧「定格」（LiquidGlassView.handlePauseForFreeze）—— 于是冻结帧 =
+//      落点画面 = 返回后第一帧的画面，两边一致，闪消失。
+// 速度为 0 / 已经停下来时什么都不做：静止显示即可（用户口径原话：「如果进入页面前列表的
+// 滑动速度为0，这为静止显示即可」）。
+//
+// 为什么必须在冻结前贴、而不是返回时再贴：「返回时贴」只能改返回**之后**的画面，冻结帧还是
+// 旧的 —— 闪照旧，而且新旧差值更大（老画面 vs 新落点）。只有把落点提前到冻结之前，两帧才会
+// 一样。反过来说，本段不贴也没关系：贴的落点就是这条惯性本来会停的地方（指数减速求和），
+// 所以用户看到的是「列表提前到了它本来就要到的位置」，不是「列表被挪走了」。
+static __weak UIScrollView *LXGlassSettleScrollView = nil;   // 最近一次主动滚动的列表
+static CGFloat LXGlassSettleLastOffsetY = 0;                  // 采样基准（上一次回调的 offset.y）
+static CFTimeInterval LXGlassSettleLastSampleAt = 0;          // 采样时刻（CACurrentMediaTime）
+static CGFloat LXGlassSettleVelocity = 0;                     // 速度（pt/s，正 = 向下滚 = offset 增大）
+// 采样过期上限：超过它就不再相信手上的速度（惯性早停了，或者列表已被移出层级）。
+// 取 0.5s 是因为点击 → 过桥 → 下发 props 这段通常只有几十毫秒，而 0.5s 之后按下面的
+// 衰减折算出来的速度已经小到走不出 0.5pt（见 LXGlassSettleMinDistance），本来就该静止。
+static const CFTimeInterval LXGlassSettleSampleMaxAge = 0.5;
+// 落点与当前位置差不到这个距离就不动（「速度为 0 = 静止显示」的判据落在这里）。
+static const CGFloat LXGlassSettleMinDistance = 0.5;
+
+static void LXGlassSampleScrollVelocity(UIScrollView *scrollView) {
+  // 只记**用户主动的滚动**：pan 停在 Possible 说明是程序化滚动（歌词列表挂载时自动滚到当前
+  // 行、列表数据变化后的自动归位……），那些的终点是代码定的、不是惯性滑出来的，不参与预测。
+  // 判据与 tab 栏状态机的「主动滚动门」同源（panGestureRecognizer.state）；惯性滑行期间 pan
+  // 一直停在 Ended，照样算主动 —— 用户报的场景正是「正在向下滑动时点进去」。
+  if (scrollView.panGestureRecognizer.state == UIGestureRecognizerStatePossible) return;
+  CGPoint offset = scrollView.contentOffset;
+  CFTimeInterval now = CACurrentMediaTime();
+  if (LXGlassSettleScrollView == scrollView) {
+    CFTimeInterval dt = now - LXGlassSettleLastSampleAt;
+    // dt 太小的重复回调（同一毫秒内两次 scrollViewDidScroll）差分噪声极大（除以接近 0 的
+    // dt 会算出荒谬速度）：这一拍不算，沿用上一次的速度。
+    if (dt >= 0.004) {
+      LXGlassSettleVelocity = (CGFloat)((offset.y - LXGlassSettleLastOffsetY) / dt);
+    }
+  } else {
+    // 换了列表（或上一次贴完落点把账本清了）：上一次的速度属于别人，不能拿来用，
+    // 只建立一个基准，下一次回调才算出速度。
+    LXGlassSettleScrollView = scrollView;
+    LXGlassSettleVelocity = 0;
+  }
+  LXGlassSettleLastOffsetY = offset.y;
+  LXGlassSettleLastSampleAt = now;
+}
+
+// 玻璃冻结前调用（Kit：LXGlassNotifyWillFreeze → 本函数）。
+// 返回 YES = 确实改动了屏幕内容（玻璃据此知道冻结帧必须重采），NO = 没动。
+static BOOL LXGlassSettleDeceleratingScrollView(void) {
+  UIScrollView *scrollView = LXGlassSettleScrollView;
+  // 没有可用的列表（App 刚起来、或采样已被清）就别动
+  if (scrollView == nil || scrollView.window == nil) return NO;
+  // 只在**惯性滑行中**才贴：isDecelerating = 手指已离开、还在减速。
+  // 速度为 0 / 手指正按着拖 / 已经停下来，一律不动（用户口径：「如果进入页面前列表的滑动
+  // 速度为0，这为静止显示即可」）。手指按着拖的那种，松手前不会自己动，本来就该静止。
+  if (!scrollView.isDecelerating) return NO;
+  CFTimeInterval now = CACurrentMediaTime();
+  if (LXGlassSettleLastSampleAt <= 0) return NO;
+  CFTimeInterval age = now - LXGlassSettleLastSampleAt;
+  if (age > LXGlassSettleSampleMaxAge) return NO;
+  // UIScrollView 的减速是指数衰减：decelerationRate = 每毫秒保留的比例
+  //（normal 0.998 / fast 0.99，RN 的 decelerationRate prop 可以改，所以运行时读）。
+  CGFloat rate = scrollView.decelerationRate;
+  if (!(rate > 0 && rate < 1)) rate = UIScrollViewDecelerationRateNormal;
+  CGFloat velocity = LXGlassSettleVelocity;
+  // 采样点到冻结之间隔了几十毫秒（点击 → 过桥 → 下发 props → 玻璃暂停），这段时间速度自己
+  // 也在按同一个比例衰减：先折算到「此刻」再算距离，否则落点会算远一截。
+  if (age > 0.001) {
+    velocity *= (CGFloat)pow((double)rate, (double)(age * 1000.0));
+  }
+  // 剩余距离 = v × 1ms / (1 - rate)：v[pt/s] × 0.001s 是这一毫秒走的路，之后每毫秒乘 rate，
+  // 等比数列求和 ⇒ v × 0.001 / (1 - rate)。（normal 档下 ≈ v/2000 秒的位移，即速度的一半）
+  CGFloat distance = velocity * 0.001 / (1 - rate);
+  CGPoint offset = scrollView.contentOffset;
+  // 夹到合法滚动范围内：越界会让列表弹回去（那一下同样是「返回后画面不一致」）
+  CGFloat minY = -scrollView.adjustedContentInset.top;
+  CGFloat maxY = scrollView.contentSize.height - scrollView.bounds.size.height
+               + scrollView.adjustedContentInset.bottom;
+  if (maxY < minY) maxY = minY;
+  CGFloat targetY = offset.y + distance;
+  if (targetY < minY) targetY = minY;
+  if (targetY > maxY) targetY = maxY;
+  if (fabs(targetY - offset.y) < LXGlassSettleMinDistance) return NO;
+  // 两步 setContentOffset:animated:NO：第一下按当前位置写一次，把在途的减速动画打断
+  //（UIKit 停性的惯用写法），第二下落到预测位置。两次都在主线程同步完成 —— 玻璃紧接着
+  // 采景（handlePauseForFreeze）拿到的一定是贴完之后的位置。
+  [scrollView setContentOffset:offset animated:NO];
+  [scrollView setContentOffset:CGPointMake(offset.x, targetY) animated:NO];
+  // 贴完就把账本清干净：多块玻璃各自被暂停时各回调一次（迷你播放器栏 / tab 栏 / 透镜），
+  // 第二次进来必须什么都不做 —— 否则每块玻璃都会把列表再往前贴一段，彼此采到的冻结帧
+  // 还不一致，等于换个方式重现「画面不一致」。
+  LXGlassSettleScrollView = nil;
+  LXGlassSettleVelocity = 0;
+  LXGlassSettleLastSampleAt = 0;
+  return YES;
+}
+
+// 把「冻结前贴落点」注册给 LiquidGlassKit（Kit 在把渲染循环暂停之前同步回调进来）。
+// +load 早于 main、早于任何 UI：第一次暂停之前一定已经装好。
+@interface LXGlassFreezeSettleSetup : NSObject
+@end
+@implementation LXGlassFreezeSettleSetup
+
++ (void)load {
+  LXGlassSetWillFreezeFn(LXGlassSettleDeceleratingScrollView);
 }
 
 @end
