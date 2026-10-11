@@ -41,7 +41,13 @@ type LiquidGlassProps = ViewProps & {
    * 省电门（2026-09-30）：玻璃组件所在屏幕被压栈页**完全覆盖**时传 true，
    * 原生暂停 Metal 逐帧渲染（MTKView.isPaused）——不可见期间的纯功耗，返回该屏
    * 即恢复、下一帧重捕获背景无残帧。磨砂档（26.2+ / 开关关）原生 no-op。
-   * 判定用 useHomeCovered / useScreenCovered（store/common/hook），不要手写。
+   *
+   * 判定用**玻璃专用**门 useGlassCovered / useGlassHomeCovered（store/common/hook），
+   * 不要手写，也不要用账面 hook（useScreenCovered / useHomeCovered）直接喂进来：
+   * 那两个读的是账本（componentIds），只在 RNN screenPopped 到达时才翻——晚于用户
+   * 按下返回。少了「露出窗口」这一层，返回动画期间玻璃还在暂停态、透过的始终是暂停
+   * 前那一帧，动画结束才跳一下（用户第 52 轮第 2 条）。玻璃门 = 账面门 ∧ 不在露出
+   * 窗口内，见 navigation/revealWindow.ts。
    */
   paused?: boolean
   /**

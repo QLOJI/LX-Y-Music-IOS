@@ -16,7 +16,7 @@ import commonState from '@/store/common/state'
 import playerState from '@/store/player/state'
 import { getJumpListId } from '@/core/player/player'
 import { LIST_IDS } from '@/config/constant'
-import { useSafeAreaBottom, useScreenCovered, useSafeAreaReady, useNavTransitioning, useAppActive, usePagerDragging } from '@/store/common/hook'
+import { useSafeAreaBottom, useGlassCovered, useSafeAreaReady, useNavTransitioning, useAppActive, usePagerDragging } from '@/store/common/hook'
 import { usePlayerMusicInfo } from '@/store/player/hook'
 import {
   designRadius,
@@ -31,7 +31,11 @@ export default memo(({ componentId, isHome = false }: { componentId?: string, is
   // 省电门：本屏被压栈页覆盖（栈顶不是本屏）时暂停玻璃 Metal 渲染循环。
   // PlayerBar 多屏复用（Home / 专辑页 / 歌手页…），按各自 componentId 判定；
   // 调用方未传 componentId 时恒不门控（行为同旧版）。
-  const screenCovered = useScreenCovered(componentId)
+  // 2026-10-11（第 52 轮第 2 条）：改用**玻璃专用**门（= 本门 ∧ 不在返回露出窗口内）。
+  // 返回发起时账本（componentIds）还没翻，必须提前恢复渲染并重采背景，否则整段返回
+  // 动画透过的都是暂停前那一帧，动画结束才跳一下（用户原话「透过的画面要在返回动画
+  // 之前就实时显示」）。账面 hook 本身（useScreenCovered）语义不动——它还有布局类消费点。
+  const glassCovered = useGlassCovered(componentId)
   // 转场门（2026-10-01 开窗；2026-10-02 只保留 push 侧）：整段 **push** 转场期间
   // 也暂停玻璃——省电门只看账本，盖不住转场本身（转场中间态被采进胶囊 =
   // 每次切换画面闪一下）。返回（pop）不再置位：玻璃正在被露出来，按住等于让用户
@@ -200,7 +204,7 @@ export default memo(({ componentId, isHome = false }: { componentId?: string, is
               setMiniPlayerHeight(e.nativeEvent.layout.height)
             }}
           >
-            <LiquidGlass glassOpacity={glassOpacity} dark={theme.isDark} liquid={liquidGlassOn} paused={screenCovered || navTransitioning || !appActive} live={pagerDragging} style={{ borderRadius: designRadius.glass }} />
+            <LiquidGlass glassOpacity={glassOpacity} dark={theme.isDark} liquid={liquidGlassOn} paused={glassCovered || navTransitioning || !appActive} live={pagerDragging} style={{ borderRadius: designRadius.glass }} />
             <TouchableOpacity style={styles.left} onPress={handleNavigate} onLongPress={handleLongPress} activeOpacity={0.8}>
               <Pic />
               <View style={styles.center}>
@@ -220,7 +224,7 @@ export default memo(({ componentId, isHome = false }: { componentId?: string, is
     // （等价于前台门失效，锁屏后玻璃照样整夜渲染）。
     // pagerDragging 同理（用户第 9 条）：它是 live 门，漏掉就永远停在 false，
     // 横滑期间玻璃仍是 30fps 采景档 —— 表现就是这一个门完全没接上。
-    [glassOpacity, liquidGlassOn, screenCovered, navTransitioning, appActive, pagerDragging, theme.isDark, isHome, handleNavigate, handleLongPress, safeAreaBottom, isHorizontalMode, collapseAnim, pillSize, collapsedRow, tabBarDistance, tabBarCollapsed],
+    [glassOpacity, liquidGlassOn, glassCovered, navTransitioning, appActive, pagerDragging, theme.isDark, isHome, handleNavigate, handleLongPress, safeAreaBottom, isHorizontalMode, collapseAnim, pillSize, collapsedRow, tabBarDistance, tabBarCollapsed],
   )
 
   // 首页实例在安全区就绪前不下发（见 useSafeAreaReady）：它的 bottom 含 safeAreaBottom，
