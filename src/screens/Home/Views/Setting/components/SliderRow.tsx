@@ -35,6 +35,10 @@ interface SliderRowProps {
     | 'theme.tabBarDistance'
     | 'theme.buttonOpacity'
     | 'theme.buttonRadius'
+    // 【第 63 轮第 2 条】播放渐入 / 渐出时长（单位是秒，取值 0~3、步进 0.5 —— 由调用方
+    // 传 maximumValue / step；本行默认的 0~100 / 步进 1 是主题那几项的口径）
+    | 'player.fadeInDuration'
+    | 'player.fadeOutDuration'
   title: string
   value: number
   /**
