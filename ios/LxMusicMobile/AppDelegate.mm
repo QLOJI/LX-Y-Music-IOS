@@ -719,6 +719,13 @@ static void LXSyncNowPlayingLyricTimer(void);
 static void LXRememberScreenBrightness(void);
 static void LXQueueNowPlayingLyricRedraw(void);
 static void LXForceNowPlayingCardRepaint(void);
+// 【第 50 轮】卡片歌词区「状态文案覆盖」与「逐行快速通路」（定义在文件后部歌词驱动区块）。
+// 状态文案：非空 = 歌词区显示「歌曲链接获取中 / 歌曲加载中 / 缓存中…」（优先于时间轴行），
+// 空 = 撤销覆盖并立即把当前行仲裁回来；逐行快速通路：JS 逐行钩子（与详情页大歌词同一个
+// onLyricPlay 事件）把当前行直接写进歌词区，取消换行延迟。
+static NSString *LXNowPlayingStatusText = nil;
+static void LXSetNowPlayingStatusText(NSString *text);
+static void LXSetNowPlayingCurrentLine(NSString *text);
 // 【第 45 轮】前置声明：遥控命令处理器（LXHandleRemoteCommandEvent，定义在本文件前面）
 // 的「按下即对表」要调用它，而它的定义在更下面（唯一写入口，见 LXApplyNowPlayingInfo）。
 static void LXApplyNowPlayingInfo(void);
@@ -1240,6 +1247,9 @@ static void LXClearNowPlayingInfo(void) {
     LXNowPlayingInfoCache = nil;
     LXNowPlayingState = MPNowPlayingPlaybackStateStopped;
     LXNowPlayingElapsedSnapshotAtMs = 0;
+    // 【第 50 轮】整卡片清空时一并撤销状态文案覆盖：停止 / 退出后残留的「缓存中…」
+    // 不能在下一次发布时凭空复活（JS 侧 statusText 清空也会推一次空串，这里是双保险）。
+    LXNowPlayingStatusText = nil;
     LXClearNowPlayingLyricLines();
     LXApplyNowPlayingInfo();
   }
@@ -1536,6 +1546,74 @@ static void LXClearNowPlayingLyricLines(void) {
   }
 }
 
+// 【第 50 轮】卡片歌词区「状态文案覆盖」。用户原话（第 50 轮第 1 条）：「锁屏和灵动岛
+// 界面在歌词区域增加歌曲链接获取中、歌曲加载中、缓存中等状态显示，因为我发现刚开始播放
+// 歌曲时，歌词区域是空白显示的，实际播放详情页的大歌词已经有歌词显示了或者歌曲还在加载，
+// 这个需要实时反馈到歌词区域」。
+// 病根：详情页底部的状态条（player__getting_url / player__loading / player__caching）只画
+// 在应用内，从不进 artist（卡片歌词区唯一字段）——起播放曲目时卡片歌词区就是一片空白，
+// 而详情页已经有歌词 / 状态在动。这里把状态文案接到同一条字段上：
+//   非空 → 立即覆盖 artist（并重发 + 重绘），此后 0.05s 时钟与 JS 逐行通路都让位
+//        （见 LXNowPlayingLyricStep 的状态分支与 LXSetNowPlayingCurrentLine 的守卫）；
+//   空   → 撤销覆盖，并立即把当前行仲裁回来：有时间轴与锚点走 LXNowPlayingLyricStep
+//        （与行改写同一条路径），否则只在「卡片上还留着这条状态文案」时才清掉自己写的那份
+//        （避免误伤歌名 / 歌手这类非歌词文本）。
+// 与行仲裁同一把锁：写入 / 撤销与 20Hz 时钟、JS 逐行通路互斥，不会交错出中间帧。
+static void LXSetNowPlayingStatusText(NSString *text) {
+  @synchronized (LXLyricLock()) {
+    NSString *incoming = [text isKindOfClass:[NSString class]] ? text : @"";
+    NSString *trimmed = [incoming stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    NSString *previous = LXNowPlayingStatusText;
+    LXNowPlayingStatusText = trimmed.length > 0 ? [trimmed copy] : nil;
+    if (LXNowPlayingStatusText != nil) {
+      NSString *statusArtist = [LXNowPlayingInfoCache[MPMediaItemPropertyArtist] isKindOfClass:[NSString class]]
+        ? LXNowPlayingInfoCache[MPMediaItemPropertyArtist]
+        : nil;
+      if ([statusArtist isEqualToString:LXNowPlayingStatusText]) return;
+      LXNowPlayingInfoCache[MPMediaItemPropertyArtist] = LXNowPlayingStatusText;
+      LXApplyNowPlayingInfo();
+      LXForceNowPlayingCardRepaint();
+      return;
+    }
+    if (LXNowPlayingLyricLines.count > 0 && LXNowPlayingLyricAnchorSystemMs > 0) {
+      LXNowPlayingLyricStep();
+      return;
+    }
+    NSString *statusArtist = [LXNowPlayingInfoCache[MPMediaItemPropertyArtist] isKindOfClass:[NSString class]]
+      ? LXNowPlayingInfoCache[MPMediaItemPropertyArtist]
+      : nil;
+    if (previous.length > 0 && [statusArtist isEqualToString:previous]) {
+      LXNowPlayingInfoCache[MPMediaItemPropertyArtist] = @"";
+      LXApplyNowPlayingInfo();
+      LXForceNowPlayingCardRepaint();
+    }
+  }
+}
+
+// 【第 50 轮】逐行「快速通路」：把 JS 逐行钩子的当前行直接写进卡片歌词区。
+// 用户原话（第 50 轮第 1 条）：「我发现歌曲在播放过程中，锁屏和灵动岛界面的歌词换行
+// 延迟太高了，取消延迟换行」。
+// 之前逐行文本要经 updateMetaData（发布前先取一次引擎位置快照 = 一次桥往返）→ 500ms
+// 发布冷却合并 → updateNowPlayingInfo → 发布前仲裁，卡片换行比详情页大歌词（同一个
+// onLyricPlay 事件）慢一截；这条通路把同一事件的文本一次轻量桥调用直接落到 artist 上，
+// 详情页换行的那一刻卡片就换行，也不再依赖原生时钟的锚点健康度（冻结 / 停钟期间逐行
+// 通路照样准时）。原生时钟仍是行权威：0.05s 内按「绝不回退」的仲裁把游标对齐，锚点
+// 漂移 / seek 后的纠偏口径一字未改。
+// 状态文案覆盖期间一律忽略（状态优先）；文本与当前一致不重发（幂等）。
+static void LXSetNowPlayingCurrentLine(NSString *text) {
+  @synchronized (LXLyricLock()) {
+    if (LXNowPlayingStatusText.length > 0) return;
+    NSString *line = [text isKindOfClass:[NSString class]] ? text : @"";
+    NSString *currentArtist = [LXNowPlayingInfoCache[MPMediaItemPropertyArtist] isKindOfClass:[NSString class]]
+      ? LXNowPlayingInfoCache[MPMediaItemPropertyArtist]
+      : nil;
+    if ([currentArtist isEqualToString:line]) return;
+    LXNowPlayingInfoCache[MPMediaItemPropertyArtist] = line;
+    LXApplyNowPlayingInfo();
+    LXForceNowPlayingCardRepaint();
+  }
+}
+
 static void LXNowPlayingLyricStep(void) {
   @synchronized (LXLyricLock()) {
     NSNumber *cachedRate = [LXNowPlayingInfoCache[MPNowPlayingInfoPropertyPlaybackRate] isKindOfClass:[NSNumber class]]
@@ -1646,6 +1724,21 @@ static void LXNowPlayingLyricStep(void) {
       [[NSNotificationCenter defaultCenter] postNotificationName:LXPlayerPositionNotificationName
                                                           object:nil
                                                           userInfo:@{ @"position": @(positionMs / 1000.0), @"rate": @(rate) }];
+    }
+    // 【第 50 轮】状态文案覆盖：非空时歌词区显示状态（歌曲链接获取中 / 歌曲加载中 /
+    // 缓存中…），整段行仲裁让位（状态优先于时间轴行与 JS 逐行通路）。放在这一拍的理由：
+    // 上面 ~1Hz 心跳（每秒对表）与前台位置事件照常跑 —— 状态期间进度不失联；暂停 /
+    // 冻结（LXNowPlayingClockHold）的计时口径不变。文本未变的重复拍不重发（幂等）。
+    if (LXNowPlayingStatusText.length > 0) {
+      NSString *statusArtist = [LXNowPlayingInfoCache[MPMediaItemPropertyArtist] isKindOfClass:[NSString class]]
+        ? LXNowPlayingInfoCache[MPMediaItemPropertyArtist]
+        : nil;
+      if (![statusArtist isEqualToString:LXNowPlayingStatusText]) {
+        LXNowPlayingInfoCache[MPMediaItemPropertyArtist] = LXNowPlayingStatusText;
+        LXApplyNowPlayingInfo();
+        LXForceNowPlayingCardRepaint();
+      }
+      return;
     }
     if (LXNowPlayingLyricLines.count == 0) return;
     // 二分查找当前行（lines 按 time 升序）
@@ -6279,6 +6372,25 @@ RCT_REMAP_METHOD(reanchorNowPlayingLyric, reanchorNowPlayingLyric:(double)positi
                   resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
   dispatch_async(dispatch_get_main_queue(), ^{
     LXReanchorNowPlayingLyric(positionMs, snapshotAtMs.doubleValue, ageMs.doubleValue);
+    resolve(nil);
+  });
+}
+
+// 【第 50 轮】卡片歌词区状态文案（「歌曲链接获取中 / 歌曲加载中 / 缓存中…」）。
+// JS 侧与详情页状态条同源（playStateTextChanged → core/init/player/nowPlayingStatus.ts）。
+// 传空串 = 撤销覆盖、把当前歌词行立即仲裁回来。
+RCT_REMAP_METHOD(setNowPlayingStatusText, setNowPlayingStatusText:(NSString *)text resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
+  dispatch_async(dispatch_get_main_queue(), ^{
+    LXSetNowPlayingStatusText(text);
+    resolve(nil);
+  });
+}
+
+// 【第 50 轮】逐行快速通路（取消换行延迟）：JS 逐行钩子（与详情页大歌词同一个
+// onLyricPlay 事件）把当前行直接写进卡片歌词区，不等元数据发布管线的桥往返。
+RCT_REMAP_METHOD(setNowPlayingCurrentLine, setNowPlayingCurrentLine:(NSString *)text resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
+  dispatch_async(dispatch_get_main_queue(), ^{
+    LXSetNowPlayingCurrentLine(text);
     resolve(nil);
   });
 }
