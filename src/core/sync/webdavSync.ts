@@ -291,14 +291,42 @@ async function uploadSettings(path: string): Promise<number> {
   return timestamp
 }
 
-export async function manualUploadSettingsAndApis() {
+// ---------------------------------------------------------------------------
+// 【第 54 轮第 1 条】手动动作的「结果」联合类型。
+//
+// 用户原话：「在数据同步的WebDAV功能中，当我点击上传设置与音源、下载设置与音源、上传歌单、
+// 下载歌单，然后再弹窗选择我不时，WebDAV状态应该显示已取消上传或者下载，目前无论点击弹窗
+// 中的按钮，都会显示上传完成，这是有问题的」。
+//
+// 根因（读源码）：下面这几个手动函数在**五种「没真的做」的出口**上都是**静默 return**
+// （或者在 catch 里把错误吞掉后正常结束），调用方（Sync 页）只看得到「Promise 正常 resolve」，
+// 于是把这五种情况统统写成「…完成」：
+//   ① 用户点弹窗里的「我不」—— `if (!confirm) return`（就是用户报的这一幕）；
+//   ② 另一个 WebDAV 任务在跑 —— 模块级 `isSyncing` 门；
+//   ③ 没启用 / 没配服务器地址 —— 配置门；
+//   ④ 「同步服务地址」正在协商歌单 —— 让行门（waitForListNegotiation）；
+//   ⑤ 执行中抛错 —— 内层 catch 只弹 toast + 记日志，不往外抛。
+// 现在每个出口都必须回传**自己的结果**，Sync 页按结果如实写状态行
+// （见 src/screens/Home/Views/Setting/settings/Sync/index.tsx 的 webdavOutcomeText）。
+// 已有的 toast / 日志一个字不动：结果类型是**附加**信息，不替代用户可见提示。
+// ---------------------------------------------------------------------------
+export type WebdavManualOutcome =
+  | 'success'      // 真的做完了
+  | 'canceled'     // 用户在确认弹窗里选了取消（弹窗上的「我不」）
+  | 'busy'         // 另一个 WebDAV 同步任务正在进行
+  | 'disabled'     // 没启用同步 / 没配置服务器地址
+  | 'negotiating'  // 「同步服务地址」正在协商歌单，本次让行
+  | 'empty'        // 下载动作：云端没有对应文件，什么都没落地
+  | 'failed'       // 执行中出错（具体原因在 toast 与 WebDAV 日志里）
+
+export async function manualUploadSettingsAndApis(): Promise<WebdavManualOutcome> {
   if (isSyncing) {
     toast('正在同步中，请稍后...')
-    return
+    return 'busy'
   }
   if (!settingState.setting['sync.webdav.enable'] || !settingState.setting['sync.webdav.url']) {
     toast('请先启用并配置 WebDAV 同步')
-    return
+    return 'disabled'
   }
 
   const confirm = await confirmDialog({
@@ -306,7 +334,7 @@ export async function manualUploadSettingsAndApis() {
     message: '这将使用本地的“设置”和“自定义音源”完全覆盖云端的数据，此操作不可逆，确定要继续吗？',
     confirmButtonText: '上传',
   })
-  if (!confirm) return
+  if (!confirm) return 'canceled'
 
   // 【第 33 轮第 3 条】isSyncing = true 挪进 try：以前它写在 try 外面、紧接着一句 toast，
   // 这一小段一旦出岔子（同步抛错等）标记就永久停在 true —— 之后四个手动按钮 + 自动同步
@@ -321,22 +349,24 @@ export async function manualUploadSettingsAndApis() {
     await uploadUserApis(remoteUserApisPath)
 
     toast('上传成功！')
+    return 'success'
   } catch (error: any) {
     webDAVLog.error(`[Manual Upload] Failed: ${error.stack ?? error.message}`)
     toast(`上传失败: ${error.message}`, 'long')
+    return 'failed'
   } finally {
     isSyncing = false
   }
 }
 
-export async function manualDownloadSettingsAndApis() {
+export async function manualDownloadSettingsAndApis(): Promise<WebdavManualOutcome> {
   if (isSyncing) {
     toast('正在同步中，请稍后...')
-    return
+    return 'busy'
   }
   if (!settingState.setting['sync.webdav.enable'] || !settingState.setting['sync.webdav.url']) {
     toast('请先启用并配置 WebDAV 同步')
-    return
+    return 'disabled'
   }
 
   const confirm = await confirmDialog({
@@ -344,7 +374,7 @@ export async function manualDownloadSettingsAndApis() {
     message: '这将使用云端的“设置”和“自定义音源”完全覆盖本地的数据，此操作不可逆，确定要继续吗？',
     confirmButtonText: '下载',
   })
-  if (!confirm) return
+  if (!confirm) return 'canceled'
 
   // 【第 33 轮第 3 条】同手动上传：标记进 try，杜绝永久卡在「正在同步中」
   try {
@@ -352,6 +382,9 @@ export async function manualDownloadSettingsAndApis() {
     toast('开始下载...')
     const remoteSettingsPath = getRemoteSettingsFilePath()
     const remoteUserApisPath = getRemoteUserApisFilePath()
+
+    // 【第 54 轮第 1 条】数一数这次到底落地了几份文件：两个都没有，就不算「下载完成」。
+    let applied = 0
 
     const remoteSettingsContent = await webdav.downloadFile(remoteSettingsPath)
     if (remoteSettingsContent) {
@@ -368,6 +401,7 @@ export async function manualDownloadSettingsAndApis() {
         // 用户在那边切换地址时能看到刚同步过来的这一条。
         void addSyncHostHistory(remoteSettingsData.syncHost).catch(() => {})
       }
+      applied++
     } else {
       toast('云端未找到设置文件，跳过设置同步')
     }
@@ -376,37 +410,47 @@ export async function manualDownloadSettingsAndApis() {
     if (remoteUserApisContent) {
       const remoteApisData = JSON.parse(remoteUserApisContent)
       await overwriteUserApis(remoteApisData.data)
+      applied++
     } else {
       toast('云端未找到自定义音源文件，跳过音源同步')
     }
 
+    if (applied === 0) {
+      // 【第 54 轮第 1 条】两个文件云端都没有 = 这次点击什么都没落地。以前照样往下走
+      // 报「下载同步完成！」，调用方也照着写「设置与音源下载完成」—— 与「取消却报完成」
+      // 是同一类谎报（用户本轮报的就是状态行不写实）。这里如实回传 'empty'。
+      toast('云端没有可下载的设置与音源文件')
+      return 'empty'
+    }
     toast('下载同步完成！')
+    return 'success'
   } catch (error: any) {
     webDAVLog.error(`[Manual Download] Failed: ${error.stack ?? error.message}`)
     toast(`下载失败: ${error.message}`, 'long')
+    return 'failed'
   } finally {
     isSyncing = false
   }
 }
 
-export async function manualUploadLists() {
+export async function manualUploadLists(): Promise<WebdavManualOutcome> {
   if (isSyncing) {
     toast('正在同步中，请稍后...')
-    return
+    return 'busy'
   }
   if (!settingState.setting['sync.webdav.enable'] || !settingState.setting['sync.webdav.url']) {
     toast('请先启用并配置 WebDAV 同步')
-    return
+    return 'disabled'
   }
   // 【第 34 轮第 1 条】「同步服务地址」正在协商歌单时让行（说明见 waitForListNegotiation）
-  if (!await waitForListNegotiation(true)) return
+  if (!await waitForListNegotiation(true)) return 'negotiating'
 
   const confirm = await confirmDialog({
     title: '确认上传歌单',
     message: '这将使用本地的“所有歌单”完全覆盖云端的数据，此操作不可逆，确定要继续吗？',
     confirmButtonText: '上传',
   })
-  if (!confirm) return
+  if (!confirm) return 'canceled'
 
   // 【第 33 轮第 3 条】同手动上传：标记进 try，杜绝永久卡在「正在同步中」
   try {
@@ -417,32 +461,34 @@ export async function manualUploadLists() {
     await uploadLists(remoteListsPath, lists)
     await clearOperationQueue()
     toast('歌单上传成功！')
+    return 'success'
   } catch (error: any) {
     webDAVLog.error(`[Manual Upload Lists] Failed: ${error.stack ?? error.message}`)
     toast(`上传失败: ${error.message}`, 'long')
+    return 'failed'
   } finally {
     isSyncing = false
   }
 }
 
-export async function manualDownloadLists() {
+export async function manualDownloadLists(): Promise<WebdavManualOutcome> {
   if (isSyncing) {
     toast('正在同步中，请稍后...')
-    return
+    return 'busy'
   }
   if (!settingState.setting['sync.webdav.enable'] || !settingState.setting['sync.webdav.url']) {
     toast('请先启用并配置 WebDAV 同步')
-    return
+    return 'disabled'
   }
   // 【第 34 轮第 1 条】「同步服务地址」正在协商歌单时让行（说明见 waitForListNegotiation）
-  if (!await waitForListNegotiation(true)) return
+  if (!await waitForListNegotiation(true)) return 'negotiating'
 
   const confirm = await confirmDialog({
     title: '确认下载歌单',
     message: '这将使用云端的“所有歌单”完全覆盖本地的数据，此操作不可逆，确定要继续吗？',
     confirmButtonText: '下载',
   })
-  if (!confirm) return
+  if (!confirm) return 'canceled'
 
   // 【第 33 轮第 3 条】同手动上传：标记进 try，杜绝永久卡在「正在同步中」
   try {
@@ -457,29 +503,32 @@ export async function manualDownloadLists() {
       await clearOperationQueue()
       updateSetting({ 'sync.webdav.lastSyncTimeLists': remoteData.lastModified })
       toast('歌单下载同步完成！')
+      return 'success'
     } else {
       toast('云端未找到歌单文件')
+      return 'empty'
     }
   } catch (error: any) {
     webDAVLog.error(`[Manual Download Lists] Failed: ${error.stack ?? error.message}`)
     toast(`下载失败: ${error.message}`, 'long')
+    return 'failed'
   } finally {
     isSyncing = false
   }
 }
 
-export async function triggerWebDAVSync(isManual = false) {
+export async function triggerWebDAVSync(isManual = false): Promise<WebdavManualOutcome> {
   if (isSyncing) {
     if (isManual) toast('正在同步中，请稍后...')
-    return
+    return 'busy'
   }
   if (!settingState.setting['sync.webdav.enable'] || !settingState.setting['sync.webdav.url']) {
     if (isManual) toast('请先启用并配置 WebDAV 同步')
-    return
+    return 'disabled'
   }
 
   // 【第 34 轮第 1 条】让行闸门放在确认对话框之前：不能先让用户确认「覆盖」再告诉他等一等
-  if (!await waitForListNegotiation(isManual)) return
+  if (!await waitForListNegotiation(isManual)) return 'negotiating'
 
   const remoteListsPath = getRemoteListsFilePath()
 
@@ -516,7 +565,7 @@ export async function triggerWebDAVSync(isManual = false) {
           await uploadLists(remoteListsPath, currentLocalLists)
           await clearOperationQueue()
           toast('本地歌单已上传覆盖云端！')
-          return
+          return 'success'
         } else if (userChoice === false) {
           webDAVLog.info('[Sync] User chose to download remote state during first sync.')
           await overwriteListFull(remoteData.data)
@@ -524,11 +573,11 @@ export async function triggerWebDAVSync(isManual = false) {
           await clearOperationQueue()
           updateSetting({ 'sync.webdav.lastSyncTimeLists': remoteTimestamp })
           toast('已从云端同步歌单数据到本地！')
-          return
+          return 'success'
         } else {
           webDAVLog.info('[Sync] First sync resolution cancelled.')
           if (isManual) toast('同步已取消')
-          return
+          return 'canceled'
         }
       }
 
@@ -578,6 +627,7 @@ export async function triggerWebDAVSync(isManual = false) {
           } else {
             webDAVLog.info('[Sync] Conflict resolution cancelled by user.')
             toast('操作已取消')
+            return 'canceled'
           }
         } else {
           webDAVLog.info('[Sync] Merge successful or only remote changes detected.')
@@ -604,9 +654,11 @@ export async function triggerWebDAVSync(isManual = false) {
         toast('歌单已是最新，无需同步')
       }
     }
+    return 'success'
   } catch (error: any) {
     webDAVLog.error(`[Sync] Sync failed: ${error.stack ?? error.message}`)
     toast(`同步失败: ${error.message}`, 'long')
+    return 'failed'
   } finally {
     isSyncing = false
   }
