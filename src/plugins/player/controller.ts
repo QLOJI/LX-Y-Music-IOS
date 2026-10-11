@@ -191,7 +191,15 @@ export const initUnifiedPlayerController = () => {
             break
           case 'buffering':
             if (!global.lx.isPlayedStop && playerState.musicInfo.id) startLoadingTimeout()
-            global.app_event.pause()
+            // 【第 60 轮第 2 条】混音态不许这一支翻 UI 的播放态：勾选「与其他应用同时播放」
+            // 后别的应用一出声，系统把我们的输出压住 / 抽走 IO，引擎的排队帧排空就会自报
+            // buffering（AppDelegate.mm 的 scheduleBufferingStateForGeneration）—— 旧写法
+            // 无条件 `global.app_event.pause()` ⇒ UI 当场变暂停、进度条冻住。这是用户第 60 轮
+            // 「勾选后，播放其他应用音频，目前会自动暂停」的残余路径（第 59 轮只拦下了
+            // 'paused' 这一种状态，见 shouldSuppressSystemPause）。
+            // 只吞这一句：状态文案「缓存中...」（第 33 轮第 5 条）与 playerWaiting 照旧 ——
+            // 真·缓冲耗尽的提示不受影响，缺的只是「把播放态翻成暂停」这一个副作用。
+            if (!shouldSuppressSystemPause()) global.app_event.pause()
             global.app_event.playerWaiting()
             // 【第 33 轮第 5 条】用户原话「立即显示为缓存中，缓存下一个 10 秒」：原生引擎的
             // buffering 事件同时覆盖「起播前累积缓存」与「播放中缓冲耗尽、重填下一个 10 秒」
