@@ -17,7 +17,7 @@ import commonState from '@/store/common/state'
 import commonActions from '@/store/common/action'
 import { COMPONENT_IDS } from '@/config/constant'
 import { getStatusBarStyle } from './utils'
-import { clearNavRevealWindow, endNavRevealWindow } from './revealWindow'
+import { beginNavRevealWindow, clearNavRevealWindow, endNavRevealWindow } from './revealWindow'
 import { type ListInfoItem } from '@/store/songlist/state'
 import { getCachedBgPicColor } from '@/utils/nativeModules/utils'
 
@@ -121,6 +121,38 @@ export const handleScreenPopped = (componentId: string) => {
   endNavRevealWindow()
   if (target) endPush(target.name)
 }
+/**
+ * 返回方向的**提前锚点**（2026-10-11，第 56 轮第 2 条）。
+ *
+ * 现象（用户原话）：「当我返回主界面或者从某个界面返回到有底部tab栏和迷你播放器栏的
+ * 界面时，返回有点击左上角返回按钮、右滑返回等情况，底部tab栏和迷你播放器栏会在返回
+ * 动画结束时出现闪烁一次」。
+ *
+ * 为什么按钮那条路径已经好了、右滑还是闪：露出窗口只在 JS 派发的 pop 三入口里开
+ *（navigation/utils 的 revealBeforePop），而**右滑返回不经过 JS**（revealWindow 的文件头
+ * 逐字承认这一点）——整段转场里露出门都没开过 ⇒ 玻璃全程被覆盖门按着（冻结）⇒ 只有
+ * screenPopped（动画结束）才复位。于是「冻结 → 复位」这一个边沿正好落在动画收尾处，
+ * 用户看到的就是那一下闪烁。
+ *
+ * 本函数由 index.ts 注册的 componentWillAppear 监听器调用 —— 该事件在**转场动画开始之前**
+ * 触发（官方口径），比 screenPopped 早一整段动画，正好把同一个边沿挪到动画开始处：
+ * 玻璃的复位与首帧采景都发生在页面还盖着它的时候，等动画把玻璃露出来时画面已经是实时的。
+ *
+ * 判据 = 「即将出现的这一屏在账本里、且不是栈顶」：
+ *   · pop：被露出的那一屏早就在账本里（它的 setComponentId 发生在它 push 时），而账本
+ *     要等 screenPopped 才会摘掉被关掉的那一屏 —— 于是它此刻必然「在账本里且不是栈顶」；
+ *   · push：新页正被 append 到账本末尾，它自己出现时正是栈顶 ⇒ 本条不成立，不会误开
+ *     （push 方向要的是**按住**玻璃，见 beginNavTransitionWindow）。
+ * 判据不成立（新屏首次挂载、账本里没有它）时什么都不做，行为与改动前一致。
+ * 误开的代价有界：露出门自带 NAV_REVEAL_TIMEOUT_MS 兜底，到点自动关门。
+ */
+export const handleScreenWillAppear = (componentId: string) => {
+  const ids = commonState.componentIds
+  const index = ids.findIndex(item => item.id === componentId)
+  if (index < 0 || index === ids.length - 1) return
+  beginNavRevealWindow()
+}
+
 const guardPush = async(promise: Promise<string> | undefined, id: COMPONENT_IDS): Promise<void> => {
   try {
     await promise

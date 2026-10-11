@@ -99,6 +99,29 @@ import settingState from '@/store/setting/state'
  *     的窗口里，只压当前激活的那台，另一台会带着旧音量起播 —— 渐入的第一拍之前先来一声
  *     满音量。`silenceBothEngines()` 一起压。
  *
+ * ---------------------------------------------------------------------------
+ * 【第 56 轮·追加】用户原话：「取消勾选"与其他应用同时播放"选项，自动暂停和自动播放增加
+ * 渐入渐出效果，目前自动播放很快，声音突然很大，建议加上声音由小变大的渐入效果」。
+ *
+ * 自动暂停（独占口径）本来就走渐出：service.ts 的延迟暂停落到 player.pause → utils.setPause
+ * → fadeOutThenPause，斜坡先降到 0 再真停。听感上之所以还是「像被切一刀」，是因为系统打断
+ * 一开始就把我们的会话压住了 —— 那 300ms 渐出是在静音里跑完的，扬声器上听不出「淡出」。
+ *
+ * 「自动播放很快、声音突然很大」是另外一回事，两处硬切换：
+ *  ① 【未预约的 'playing' 直写目标音量】打断结束由**原生先重启引擎并重发 'playing'**，
+ *     JS 侧的预约（setPlay → armVolumeFadeIn）跟它是两条互不等待的路径。'playing' 抢先
+ *     的那些次序里 applyVolumeOnPlayStart 走的是「未预约」分支，旧实现直写目标音量 —— 而
+ *     自动暂停已经把音量压到 0，听感就是「从静音一记跳到满音量」。现在这一支也走
+ *     FADE_IN_MS 的斜坡（账本本来就在目标值附近时，斜坡内部按 MIN_RAMP_DELTA 短路成直写，
+ *     行为与改动前一致：不会给「根本没停过的播放」凭空加一次淡入）。
+ *  ② 【预约反手把在途渐入掐掉】armVolumeFadeIn 旧实现无条件 stopRamp() + silenceBothEngines()：
+ *     打断恢复若已经自己渐入到一半，这两句把音量拍回 0，而下一声 'playing' 未必再来 ——
+ *     音量要等预约的兜底期限（1.5s）才一记跳回设定值，比不预约还糟。现在只在没有斜坡
+ *     在跑时才压 0。
+ * 另外在打断结束的分支里先立预约（service.ts 的独占 Ended 分支）：它同时让
+ * restoreConfiguredVolume 的 isVolumeFadeActive() 守卫让行，账本 / 引擎不会被一步顶回
+ * 设定值 —— 否则斜坡的起点已经不是 0，渐入无从谈起。
+ * ---------------------------------------------------------------------------
  * 与现有调用点的关系（本文件不引用 plugins/player/utils.ts，避免循环依赖；
  * 因此这里的 writeVolume 自己按同一口径分发两个引擎）：
  *   · natives/流式引擎 → setNativeFlacVolume（非激活态自动 no-op，与 utils.setVolume 一致）；
@@ -302,8 +325,15 @@ const armFadeIn = (timeoutMs: number): boolean => {
     return true
   }
   beginFadeInArm(timeoutMs)
-  stopRamp()
-  silenceBothEngines()
+  // 【第 56 轮·追加】渐入斜坡已经在跑（系统打断结束的自动续播先一步把它拉起来了）：
+  // 不掐、也不压 0。旧实现无条件 stopRamp() + silenceBothEngines()，会把在途的渐入
+  // 拍回静音；这一支的下一声 'playing' 若不来（引擎早已跨过出声门槛，不会为一次音量
+  // 写入重发），音量就要等预约的兜底期限（1.5s）才一记跳回设定值 —— 比不预约还糟。
+  // 没有斜坡在跑时才做「压 0 等 'playing'」这一套（暂停态预约的常规现场）。
+  if (fadeTimer == null) {
+    stopRamp()
+    silenceBothEngines()
+  }
   return true
 }
 
@@ -347,6 +377,20 @@ export const applyVolumeOnPlayStart = async() => {
   if (Platform.OS != 'ios' || !fadeInArmed) {
     if (Platform.OS == 'ios' && fadingOut) return
     if (Platform.OS == 'ios' && fadeTimer != null) return
+    // 【第 56 轮·追加】未预约这一支也要走斜坡 —— 系统打断结束的「自动续播」就落在这里。
+    // 原生侧重启引擎 / 重发 'playing' 与 JS 侧的预约（setPlay → armVolumeFadeIn）是两条
+    // 互不等待的异步路径，谁先到没有保证：'playing' 抢先的那些次序里 fadeInArmed 还是 false。
+    // 旧实现这一支是**直写**目标音量 —— 而自动暂停已经把音量压到 0（账本 currentVolume = 0），
+    // 于是自动续播听上去就是「从静音一记跳到满音量」：用户这轮报的「自动播放很快，声音突然
+    // 很大」。现在这一支同样走 FADE_IN_MS 的斜坡：
+    //   · 账本在低处（真被自动暂停压过）→ 由小变大的 600ms 渐入；
+    //   · 账本已经 ≈ 目标值（音量根本没被压过，例如短暂系统音、播放中的重缓冲）→
+    //     rampVolume 内部按 MIN_RAMP_DELTA 短路成直写，与改动前逐字节一致。
+    // Android 仍然直通（那边没有 controller 的 'playing' 兜底，见文件头末段）。
+    if (Platform.OS == 'ios') {
+      await rampVolume(target, FADE_IN_MS)
+      return
+    }
     await writeVolume(target)
     return
   }

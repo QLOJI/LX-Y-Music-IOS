@@ -7,6 +7,7 @@ import {
   getStreamingFlacPositionStamped,
   getStreamingFlacState,
   isStreamingFlacSupported,
+  applyStreamingFlacPlayWithOthersNow,
   onStreamingFlacEvent,
   openStreamingFlac,
   pauseStreamingFlac,
@@ -67,6 +68,16 @@ export const isNativeFlacPlayerAvailable = () => Platform.OS == 'ios' && isStrea
 export const setNativePlayWithOthersPolicy = async(enabled: boolean) => {
   if (!isNativeFlacPlayerAvailable()) return
   await setStreamingFlacPlayWithOthers(enabled).catch(() => {})
+}
+
+// 【第 56 轮第 3 条 (b)(c)】同一策略的**立即生效**版：写标记之外，安全闸门满足时当场重配
+// 音频会话（原生 applyPlayWithOthersNow，闸门与理由写在 AppDelegate.mm 那一段）。
+// 返回 true = 会话这次真的换了口径；false = 只写了标记，口径落到下一次 prepareAudioSession
+//（引擎还在跑 / 非无损档 / 桥缺失）——调用方不必也不该据此重试，重试等于在激活态会话上
+// 反复重设分类，正是第 24 轮实锤的失声路径。
+export const applyNativePlayWithOthersNow = async(enabled: boolean): Promise<boolean> => {
+  if (!isNativeFlacPlayerAvailable()) return false
+  return await applyStreamingFlacPlayWithOthersNow(enabled).catch(() => false)
 }
 
 const FLAC_QUALITIES = new Set<LX.Quality>(['flac', 'flac24bit', 'hires', 'master', 'atmos', 'atmos_plus'])

@@ -18,7 +18,8 @@ import { exitApp } from '@/core/common'
 import playerState from '@/store/player/state'
 import settingState from '@/store/setting/state'
 // 【第 41 轮】打断恢复后的音量重贴也是一次「外部直写」：同步渐入渐出模块的当前音量账本
-import { isVolumeFadeActive, syncVolumeFadeState } from './volumeFade'
+// 【第 56 轮·追加】自动续播前先立渐入预约（独占 Ended 分支，见那里的说明）
+import { armVolumeFadeIn, isVolumeFadeActive, syncVolumeFadeState } from './volumeFade'
 
 let isInitialized = false
 let shouldResumeAfterDuck = false
@@ -471,6 +472,17 @@ const registerPlaybackService = async() => {
       const wasLongInterruption = interruptedAt > 0 && Date.now() - interruptedAt > SHORT_INTERRUPTION_MAX_MS
       interruptedAt = 0
       if (permanent && wasLongInterruption) return cancelResumePending()
+      // 【第 56 轮·追加】自动续播要「由小变大」（用户原话「自动播放很快，声音突然很大，
+      // 建议加上声音由小变大的渐入效果」）。走到这里说明这一单打断**真停过**播放（没停过的
+      // 那种在上一支早退里就返回了），自动暂停的渐出已经把音量压到 0；而自动续播的对面是
+      // **原生先重启引擎并重发 'playing'**，JS 侧的预约（setPlay → armVolumeFadeIn）跟它是
+      // 两条互不等待的路径，谁先到没有保证。在恢复音量之前先把预约立起来，两件事同时成立：
+      //   · 预约在 ⇒ 紧接着的 restoreConfiguredVolume() 按 isVolumeFadeActive() 让行，
+      //     不会把账本 / 引擎一步顶回设定值（否则渐入的起点已经不是 0，斜坡等于重复写同一个值）；
+      //   · 预约在 ⇒ 随后的 'playing'（无论哪个次序先到）都走渐入斜坡，由小变大。
+      // 只在「此刻确实不在播」时预约：还在播说明这一单打断没真的停过音频（状态事件次序
+      // 异常等），压 0 会白白留一个要到兜底期限才跳回去的静音洞。
+      if (!playerState.isPlay) armVolumeFadeIn()
       restoreConfiguredVolume()
       scheduleAutoResume()
       return

@@ -1,8 +1,8 @@
 import TrackPlayer, { State } from 'react-native-track-player'
 import { Platform } from 'react-native'
-import { updateOptions, setVolume, setPlaybackRate, migratePlayerCache, destroy as destroyPlayer, getPosition } from './utils'
+import { updateOptions, setVolume, setPlaybackRate, migratePlayerCache, destroy as destroyPlayer, getPosition, setPause } from './utils'
 import { getCurrentTrack, restoreTrack, updateMetaData } from './playList'
-import { isNativeFlacActive, restoreNativeFlacPlayback, setNativePlayWithOthersPolicy, snapshotNativeFlacPlayback } from './nativeFlac'
+import { applyNativePlayWithOthersNow, isNativeFlacActive, restoreNativeFlacPlayback, setNativePlayWithOthersPolicy, snapshotNativeFlacPlayback } from './nativeFlac'
 import { pauseNowPlaying, playNowPlaying } from '@/utils/nativeModules/nowPlaying'
 import { soundEffectController } from './soundEffect'
 import settingState from '@/store/setting/state'
@@ -38,12 +38,38 @@ import playerState from '@/store/player/state'
  * （见 @/utils/nativeModules/nowPlaying 的说明）。现在无论勾选与否都按当前曲目
  * **重新发布一次元数据**：锁屏播放器与当前播放状态保持一致；「前台不显示灵动岛播放器、
  * 切到后台锁屏 + 灵动岛一起显示」是系统的前后台行为，代码不介入。
+ *
+ * 【第 56 轮第 3 条】(b)(c)(d) 三件收口（用户原话「勾选上就立即执行设置……取消勾选就立即
+ * 占用灵动岛，取消和勾选会自动暂停播放歌曲」）：
+ *   (b) 立即执行：改走 applyNativePlayWithOthersNow——除写标记外，满足安全闸门时当场重配
+ *       音频会话，不再等「下一首 / 下一次 prepareAudioSession」。闸门是「引擎必须已停」，
+ *       所以这一路下发**两处**：本体内那处管「切换时已经暂停 / 没在播」，函数尾在
+ *       setPause 之后那处管「正在播放时切换」（引擎这一刻才真的停下来）；
+ *   (c) 占用/退出占用：会话口径（混音 = 让出 Now Playing 主会话资格 / 独占 + LongFormAudio =
+ *       重新成为主会话）就是系统据以决定锁屏卡片与灵动岛占用的那个状态，切换当场落下；
+ *       「只关灵动岛、保留锁屏」这种粒度 iOS 没有公开 API（第 34 轮定案），代码不硬做系统 UI；
+ *   (d) 切换即暂停：值真的变了才停（冷启动/幂等下发不停），停在最后一步，见函数尾。
  */
+// 【第 56 轮第 3 条】上一次真正下发过的口径（null = 本进程还没下发过）。
+// 只有「值真的变了」才算用户勾/取消勾选 —— 冷启动 initial 里的首次下发、以及任何幂等
+// 重复下发都不算，绝不能顺手把用户正在听的歌暂停掉（见下方 (d) 分支）。
+let lastAppliedPlayWithOthers: boolean | null = null
+
 const syncPlayWithOthersEnabled = async() => {
   if (Platform.OS != 'ios') return
   const enabled = settingState.setting['player.isHandleAudioFocus'] === false
+  const switched = lastAppliedPlayWithOthers != null && lastAppliedPlayWithOthers != enabled
+  lastAppliedPlayWithOthers = enabled
   await setNativePlayWithOthersPolicy(enabled)
   if (!playerState.musicInfo.id) return
+  // 【第 56 轮第 3 条 (b)(c)】立即生效：除静态标记外，安全闸门满足时**当场**重配音频会话
+  //（原生 applyPlayWithOthersNow：只有本机引擎持有音源且已停下才真的重配，理由与闸门写在
+  // AppDelegate.mm 那一段）。第 33 轮的「要等下一次 prepareAudioSession 才生效」到此收口。
+  // 放在重发布之前：口径先落地，卡片/系统播放态再按新口径对齐。返回 false（只写了标记）
+  // 不是错误，也不再重试——在激活态会话上反复重设分类正是第 24 轮实锤的失声路径。
+  // 这一处覆盖的是「切换时已经暂停 / 没在播」：引擎已停，闸门当场满足。
+  // 「正在播放时切换」由函数尾再下发一次收口（见那里：那一刻引擎才真的停下来）。
+  await applyNativePlayWithOthersNow(enabled)
   // 立即按当前曲目重新发布（不等下一行歌词）：与 core/player/nowPlaying.ts 的
   // syncNowPlayingMetadata 同款调用形状。首次发布 / 重发布都是幂等的。
   void updateMetaData(playerState.musicInfo, playerState.isPlay, playerState.lastLyric, true)
@@ -51,6 +77,24 @@ const syncPlayWithOthersEnabled = async() => {
   // 枢纽（进度条唯一驱动源），必须与播放状态保持一致。
   if (playerState.isPlay) await playNowPlaying().catch(() => {})
   else await pauseNowPlaying().catch(() => {})
+  // 【第 56 轮第 3 条 (d)】切换即自动暂停（用户原话「取消和勾选会自动暂停播放歌曲」）。
+  // 放在最后：先按切换前的真实状态把会话口径与卡片对齐好，再停下这一首，并把系统播放态
+  // 同步成暂停（pauseNowPlaying 幂等）。暂停动作走 plugins/player/utils 的 setPause——
+  // 与 core/player 的 pause() 是同一个原语（先渐出再停，第 39/47 轮口径），
+  // 不是自己搓引擎调用。已暂停时不必再走一遍渐出。
+  if (switched && playerState.isPlay) {
+    await setPause()
+    // 【第 56 轮第 3 条 (b)(c)】停下来的这一刻**再下发一次**：上面那一处（约第 68 行）在
+    // 「正在播放时切换」这条主用例上必然被原生闸门挡回（引擎还在跑 ⇒ 只写标记、resolve NO，
+    // 见 AppDelegate.mm 的闸门）—— 而这正是用户报的「勾选上不会立即配置好，而是需要下首歌
+    // 才执行」：会话口径还是旧的，得等下一次 prepareAudioSession。setPause（含 300ms 渐出）
+    // 返回时引擎已经停下（pause 桥在 renderQueue 内无条件 [engine pause]，同步 resolve），
+    // 闸门此刻才满足，于是这里当场把会话口径换过来：勾选 ⇒ 混音会话（退出灵动岛占用）、
+    // 取消勾选 ⇒ 独占 + LongFormAudio（立即占用）。幂等：写标记不产生副作用，重配走的是
+    // 同一个 prepareAudioSession（会话分类的唯一真源）。
+    await applyNativePlayWithOthersNow(enabled)
+    await pauseNowPlaying().catch(() => {})
+  }
 }
 
 const initial = async({ volume, playRate, cacheSize, isHandleAudioFocus, isEnableAudioOffload }: {
