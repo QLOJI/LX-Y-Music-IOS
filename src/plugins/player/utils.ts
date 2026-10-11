@@ -26,6 +26,8 @@ import { onUnifiedPlayerEvent } from './engine'
 // 【第 41 轮】多一个 syncVolumeFadeState：音量条 / 回前台重贴音量这类「直写」要把
 // 渐入渐出模块的「当前音量」账本一起改掉，否则下一次斜坡的起点是错的（第一拍就是跳变）。
 import { armVolumeFadeIn, fadeOutThenPause, syncVolumeFadeState } from './volumeFade'
+import { setIsPlay } from '@/core/player/playStatus'
+import { pauseNowPlaying, playNowPlaying } from '@/utils/nativeModules/nowPlaying'
 import playerState from '@/store/player/state'
 // import { PlayerMusicInfo } from '@/store/modules/player/playInfo'
 
@@ -159,7 +161,24 @@ export const setPlay = async() => {
   // 把音量当场压 0，而重取不会再触发 'playing' 事件去放行渐入，音量只能干等预约的兜底期限
   // （ARM_TIMEOUT_MS = 1.5s）被一记写回 —— 用户听到的「声音自动不定时中断一下，然后又自动
   // 恢复」正是这六拍阶梯。真·恢复播放这一支 isPlay 本来就是 false，渐入照旧。
-  if (!playerState.isPlay) armVolumeFadeIn()
+  //
+  // 【第 62 轮第 3 条】闸门求值挪到「翻 UI」之前：下面新增的即时翻转会把 isPlay 改成 true，
+  // 再读就成了「已在播」（正是第 58 轮要跳过的情形），渐入预约会被自己吃掉。
+  // 判定只取一次快照 resuming，后面翻转与发布都以它为准，顺序改不动语义。
+  const resuming = !playerState.isPlay
+  if (resuming) armVolumeFadeIn()
+  // 【第 62 轮第 3 条】用户原话：「播放/暂停按钮点击不应该有渐入渐出的动画延迟变化，
+  // 只是音乐有渐入渐出的效果」。旧链路（togglePlay → setPlay → 引擎 play → 'playing' 事件
+  // → app_event 'play' → setIsPlay(true)）里 UI 图标要等引擎跨过出声门槛才翻，听感上就是
+  // 「点了播放键，图标慢半拍」。这里按下即翻：图标 / 状态文案立刻变，锁屏与灵动岛同刻发布
+  // （playNowPlaying 只写「正在播」这一个状态位与播放速率，位置取原生上一份快照），
+  // 音频侧的渐入（armVolumeFadeIn + 'playing' 分支的 applyVolumeOnPlayStart）完全不动。
+  // 闸门用 resuming：重取输出（混音阶梯、回前台重取）进来时 isPlay 一直是 true，
+  // 既不重复发布也不多做一次元数据桥往返。
+  if (resuming) {
+    setIsPlay(true)
+    void playNowPlaying().catch(() => {})
+  }
   if (Platform.OS == 'ios' && isNativeFlacActive()) return resumeNativeFlacPlayback()
   return TrackPlayer.play()
 }
@@ -273,12 +292,22 @@ export const setPause = async() => {
   // 「嘶哑 / 噪声」（见 volumeFade.ts 的说明）。真正的暂停动作以函数传入，斜坡跑完才执行；
   // 非 iOS 平台在 fadeOutThenPause 内部直通（同步调用真暂停），行为与改动前一致。
   // 【第 47 轮】暂停动作改为 pausePlayingEngines（双引擎收口），并在发出后有界复核一次。
+  // 【第 62 轮第 3 条】按下即翻 UI（图标 / 锁屏 / 灵动岛），渐出与真暂停照旧异步跑完 ——
+  // 旧链路里图标要等 300ms 渐出跑完、引擎发出 'paused' 才翻，正是用户这轮的投诉。
+  // 只翻一次：isPlay 仍是播放态才翻，避免停止 / 错误路径重复发布。
   const token = ++pauseVerifyToken
+  if (playerState.isPlay) {
+    setIsPlay(false)
+    void pauseNowPlaying({ playbackRate: 0 }).catch(() => {})
+  }
   if (Platform.OS != 'ios') return fadeOutThenPause(pausePlayingEngines)
   await fadeOutThenPause(pausePlayingEngines)
   setTimeout(() => {
+    // 【第 62 轮第 3 条】复核不再看 playerState.isPlay：UI 是按下即翻的，那一刻起
+    // isPlay 恒为 false，旧闸门会让第 47 轮这条兜底永远早退（「点了暂停声音还在放」没了防线）。
+    // pausePlayingEngines 自身幂等（两台引擎各吞错），带 token 的门控已足够挡住
+    // 「复核窗口内又按了播放」的竞态。
     if (token != pauseVerifyToken) return
-    if (!playerState.isPlay) return
     void pausePlayingEngines()
   }, PAUSE_VERIFY_MS)
 }
