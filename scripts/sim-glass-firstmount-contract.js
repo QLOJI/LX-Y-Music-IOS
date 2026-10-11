@@ -569,10 +569,13 @@ const geometryAnchorInvariants = (f) => {
     reasons.push('noteCaptureGeometry 的调用未都传本次采景尺寸 captureSize（实际传 captureSize 的调用 ' + callIdx.length + ' 处）')
     return reasons
   }
-  const throttleAt = glass.indexOf('if throttled { return }')
+  // 节流守卫的本体在第 59 轮第 1 条换成了跨实例的采景名额申请
+  // （if !requestGlobalCaptureSlot(CACurrentMediaTime()) { return }）——判据不变：
+  // 被守卫跳过的帧不得产生任何采景相关状态。
+  const throttleAt = glass.indexOf('if !requestGlobalCaptureSlot(CACurrentMediaTime()) { return }')
   const frameAt = glass.indexOf('backdropView.frame = CGRect(origin: captureOrigin, size: captureSize)')
   if (throttleAt < 0) {
-    reasons.push('找不到 captureRootView 的节流守卫（几何锚点的落点无法确定）')
+    reasons.push('找不到 captureRootView 的采景名额守卫（几何锚点的落点无法确定）')
   } else if (callIdx[0] < throttleAt) {
     reasons.push('26.2+ 路径的几何锚点落在节流守卫之前（被跳过的帧也在改采景相关状态）')
   }
@@ -1129,8 +1132,8 @@ CE('C18 captureBackdrop 的采景节流被拆掉（滑动时每帧三块玻璃�
 ), '未接采景节流')
 
 CE('C18b 采景节流不再区分实时会话（透镜抬起/横滑跟手被压到常驻档）', existingStructureInvariants, tamperGlass(
-  '        let interval = isLiveCaptureActive ? Self.liveCaptureMinInterval : Self.captureMinInterval',
-  '        let interval = Self.captureMinInterval'
+  '        let interval = isLiveCaptureActive ? Self.liveCaptureMinInterval : Self.captureMinInterval\n        if now - lastCaptureAt < interval { return true }',
+  '        let interval = Self.captureMinInterval\n        if now - lastCaptureAt < interval { return true }'
 ), '未按实时会话区分间隔')
 
 CE('C18c 采景节流不再回写时刻（首帧之后永远拦，玻璃画面冻结）', existingStructureInvariants, tamperGlass(
@@ -1146,13 +1149,13 @@ CE('C19 三路会话被合并成一个标志（isLiveCaptureActive 只看透镜�
 ), '不再是三路会话的 OR')
 
 CE('C20 会话开始不放行下一次采景（滑动开头玻璃里仍是旧位置的画面）', existingStructureInvariants, tamperGlass(
-  '        lastCaptureAt = 0\n        consecutiveUniformFrames = 0',
-  '        consecutiveUniformFrames = 0'
+  '        lastCaptureAt = 0\n        Self.resetGlobalCaptureGate()\n        consecutiveUniformFrames = 0',
+  '        Self.resetGlobalCaptureGate()\n        consecutiveUniformFrames = 0'
 ), '未放行下一次采景')
 
 CE('C21 采景分档丢掉透镜会话（透镜抬起/跟手被压回静止档 —— 滑动跟手的延迟复发出处）', existingStructureInvariants, tamperGlass(
-  '        let interval = isLiveCaptureActive ? Self.liveCaptureMinInterval : Self.captureMinInterval',
-  '        let interval = realtimeCaptureRequested ? Self.liveCaptureMinInterval : Self.captureMinInterval'
+  '        let interval = isLiveCaptureActive ? Self.liveCaptureMinInterval : Self.captureMinInterval\n        if now - lastCaptureAt < interval { return true }',
+  '        let interval = realtimeCaptureRequested ? Self.liveCaptureMinInterval : Self.captureMinInterval\n        if now - lastCaptureAt < interval { return true }'
 ), '未按实时会话区分间隔')
 
 CE('C22 暂停恢复不再复位（返回主界面时先把暂停前那帧旧画面画出去）', existingStructureInvariants, tamperEffect(
@@ -1238,7 +1241,7 @@ CE('C31 didMoveToWindow 不再自恢复（返回转场里玻璃仍是冻的 —�
 ), '未接自恢复')
 
 CE('C32 didMoveToWindow 不再开实时采景窗口（恢复后压在静止档 30fps，追不上整幅在动的转场）', existingStructureInvariants, tamperGlass(
-  '        reentryLiveStartedAt = CACurrentMediaTime()\n        scheduleReentryLiveExpiry()\n',
+  '        reentryLiveStartedAt = CACurrentMediaTime()\n',
   ''
 ), '未开实时采景窗口')
 

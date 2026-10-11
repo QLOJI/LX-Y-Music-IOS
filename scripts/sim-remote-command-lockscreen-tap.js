@@ -26,6 +26,11 @@
  *   ① **一处都不许再说谎**：全文件只允许一处 `center.playbackState = ...`，
  *      且赋的就是真实态 `LXNowPlayingState`（第 35 轮之前有两处「切到相反值再切回」的
  *      强制重绘 —— 那 60ms/150ms 窗口里显示态与启停态互相矛盾，正是「点两次才生效」的根）。
+ *      【第 59 轮第 2 条】这条唯一赋值多了一个**抑制分支**：勾选「与其他应用同时播放」时
+ *      写 `MPNowPlayingPlaybackStateStopped` —— 第 58 轮只收信息、这一行照旧写真实态，
+ *      系统会留下一张空壳媒体卡（灰封面、无标题、无进度、只剩四个按钮）＝ 用户报的
+ *      「锁屏界面未完全取消」。判据仍是同一个 LXSuppressNowPlayingCard，仍然只此一处、
+ *      仍然同源同刻。
  *
  * 【第 43 轮】用户原话：「锁屏界面和灵动岛播放器界面，前几次点击播放/暂停和上一首、
  * 下一首还可以操作，用了一段时间后就不行了，而且点击一次后不能点击第二次，
@@ -277,7 +282,7 @@ const availabilityInvariants = (raw) => {
 }
 
 // ---------------------------------------------------------------------------
-// 不变量 B：全文件只允许一处 playbackState 赋值，且赋真实态（「同源」的前提）
+// 不变量 B：全文件只允许一处 playbackState 赋值，且赋真实态 / 抑制态（「同源」的前提）
 // ---------------------------------------------------------------------------
 
 const singleSourceInvariants = (raw) => {
@@ -289,15 +294,21 @@ const singleSourceInvariants = (raw) => {
   if (assignments.length !== 1) {
     reasons.push(`center.playbackState 赋值出现 ${assignments.length} 处（只允许一处，且只能在 LXApplyNowPlayingInfo 里写真实态 —— 多出来的每一处都是「切到相反值再切回」的说谎窗口：那段时间显示态与启停态互相矛盾，点击被 enabled = NO 静默吞掉）`)
   }
-  // ② 赋的值必须是真实播放态
-  if (!code.includes('center.playbackState = LXNowPlayingState;')) {
-    reasons.push('playbackState 赋的不是真实播放态（`center.playbackState = LXNowPlayingState;` 缺失 —— 卡片显示态必须与命令启停态同源，不许写任何别的值）')
+  // ② 赋的值必须是「真实播放态 —— 抑制期除外」
+  // 【第 59 轮第 2 条】抑制期（勾选「与其他应用同时播放」）必须连启停态一起收：第 58 轮
+  // 只把信息置空、这一行照旧写 Playing，系统留下的是**空壳卡**（灰封面、无标题、无进度、
+  // 只剩上一首/暂停/下一首/发送四个按钮）—— 用户第 59 轮锁屏截图正是这个形态。
+  // 判据与信息三元式同一个 LXSuppressNowPlayingCard：显示态与启停态仍然同源同刻。
+  const liveAssign = 'center.playbackState = LXSuppressNowPlayingCard ? MPNowPlayingPlaybackStateStopped : LXNowPlayingState;'
+  if (!code.includes(liveAssign)) {
+    reasons.push('赋的不是真实播放态 / 抑制态（`' + liveAssign + '` 缺失 —— '
+      + '卡片显示态必须与命令启停态同源；抑制期若照旧写真实播放态，锁屏 / 灵动岛会留一张空壳媒体卡 = 「未完全取消」）')
   }
   // ③ 那句唯一赋值必须在 LXApplyNowPlayingInfo 里
   const apply = extractBracedBody(raw, 'static void LXApplyNowPlayingInfo(void)')
   if (!apply) {
     reasons.push('LXApplyNowPlayingInfo 缺失或抽取失败（锚点漂移）')
-  } else if (!stripComments(apply).includes('center.playbackState = LXNowPlayingState;')) {
+  } else if (!stripComments(apply).includes(liveAssign)) {
     reasons.push('唯一的 playbackState 赋值不在 LXApplyNowPlayingInfo 里（重发链路必须与信息发布同源同真）')
   }
   // ④ 两处「强制重绘」（封面就绪 / 歌词换行）不许再碰 playbackState
@@ -898,8 +909,16 @@ const runCounterExamples = () => {
 
   // r7 唯一那处赋值被写成「相反态」→ 报「赋的不是真实播放态」
   check('r7 唯一赋值改成相反态', () => singleSourceInvariants(tamper(REAL_APPDELEGATE,
-    '      center.playbackState = LXNowPlayingState;',
+    '      center.playbackState = LXSuppressNowPlayingCard ? MPNowPlayingPlaybackStateStopped : LXNowPlayingState;',
     '      center.playbackState = MPNowPlayingPlaybackStatePaused;')),
+  '赋的不是真实播放态')
+
+  // r9 【第 59 轮第 2 条】退回第 58 轮的写法（信息收、启停态照旧写真实态）→ 报「空壳卡」
+  //    这一条正对用户第 59 轮的第二张截图：锁屏上留着一张灰封面、无标题、无进度、
+  //    只剩四个按钮的空壳卡 = 「锁屏界面未完全取消」。必须拦下。
+  check('r9 抑制期启停态照旧写真实播放态（空壳卡回归）', () => singleSourceInvariants(tamper(REAL_APPDELEGATE,
+    'center.playbackState = LXSuppressNowPlayingCard ? MPNowPlayingPlaybackStateStopped : LXNowPlayingState;',
+    'center.playbackState = LXNowPlayingState;')),
   '赋的不是真实播放态')
 
   // r8 封面就绪重绘又去碰 playbackState → 报「LXApplyNowPlayingArtwork 里出现 playbackState」

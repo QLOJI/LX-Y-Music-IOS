@@ -320,9 +320,12 @@ const runCounterExamples = () => {
     '        reanchorCaptureSettleWindowIfNeeded(now)\n        lastCaptureGrid = []')), '自适应升档残留')
 
   // s6 采景节流写死静止档（渲染档与采景档脱钩）→ 报「采景节流未按实时档放宽」
+  // 【第 59 轮第 1 条】同一个三元件在跨实例采景闸门（requestGlobalCaptureSlot）里也有一份，
+  // 锚点必须带上一行（if now - lastCaptureAt ...）才唯一指向 shouldThrottleCapture ——
+  // 否则 String.replace 只换第一处，反例打在闸门上、节流本体纹丝不动，用例退化成永真。
   check('s6 采景节流写死静止档', () => swiftInvariants(tamper(REAL_SWIFT,
-    'let interval = isLiveCaptureActive ? Self.liveCaptureMinInterval : Self.captureMinInterval',
-    'let interval = Self.captureMinInterval')), '采景节流未按实时档放宽')
+    'let interval = isLiveCaptureActive ? Self.liveCaptureMinInterval : Self.captureMinInterval\n        if now - lastCaptureAt < interval { return true }',
+    'let interval = Self.captureMinInterval\n        if now - lastCaptureAt < interval { return true }')), '采景节流未按实时档放宽')
 
   // t1 展开态玻璃摘掉 collapsed 门 → 报「不可见侧未停渲染」
   check('t1 展开态玻璃摘掉 collapsed 门', () => tabBarInvariants(tamper(REAL_TAB,
