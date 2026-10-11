@@ -54,10 +54,11 @@
  *
  *   九、**斜坡要长到听得出来，而且得是感知曲线**：旧值 渐入 220ms / 渐出 160ms（每档 20ms
  *       = 11 档 / 8 档）只够消爆音，人耳基本只察觉到「没有咔哒声」；线性斜坡「一上来就掉
- *       一半、尾巴拖得长」的听感也不像淡入。现在 渐入 600ms / 渐出 300ms + smoothstep
- *       （`easeVolume`：p²(3-2p)，单调不减，第 41 轮定死的「斜坡全程单调」不变）。
- *       渐出刻意不比渐入长：真暂停跟在斜坡之后，界面反馈（锁屏进度条停住、按钮变 ▶）
- *       都在那之后，拖太长会让「按了暂停」显得发闷 —— 反例 v18 / v19 / v20。
+ *       一半、尾巴拖得长」的听感也不像淡入。现在 渐入 600ms / 渐出 700ms + smoothstep
+ *       （`easeVolume`：p²(3-2p)，单调不减，第 41 轮定死的「斜坡全程单调」不变）——
+ *       渐出 300 → 700 是【第 60 轮第 4 条】：当时那句「渐出刻意不比渐入长（拖太长会让
+ *       『按了暂停』显得发闷）」被用户原话推翻（「渐出的时间加长一点」），本条作废；
+ *       手动与自动暂停共用同一条 fadeOutThenPause，改一处两边一起变 —— 反例 v18 / v19 / v31 / v20。
  *   十、**起播 / 换歌也要渐入**：旧实现只在 `utils.setPlay()`（播放/恢复键）里预约，
  *       点歌 / 换歌走 `engine/resourceLoader.ts` 的两条起播落点，一个都没预约 ——
  *       新歌满音量直接砸出来，这才是用户听到最响的那次硬切换。两条落点都要
@@ -473,6 +474,13 @@ const fadeShapeInvariants = (src) => {
     reasons.push('找不到 FADE_OUT_MS（渐出时长）')
   } else if (Number(fadeOut[1]) < 240) {
     reasons.push(`渐出时长太短（${fadeOut[1]}ms）：160ms 级的斜坡听不出「渐出」（第 51 轮第 9 条）`)
+  } else if (Number(fadeOut[1]) < 600) {
+    // 【第 60 轮第 4 条】用户原话「自动暂停和自动播放也要沿用渐入渐出的效果，和手动暂停和
+    // 播放一样，渐出的时间加长一点」。300ms 级的渐出与渐入（600ms，见 FADE_IN_MS 的断言）
+    // 不是一个量级 —— 同一次「暂停」手动与自动共用这条斜坡，收尾听着仍像硬切。下界钉在
+    // 600（与渐入同量级），上限不设：上界由真机听感定，不写死在这里。
+    reasons.push(`渐出时长回落（${fadeOut[1]}ms）：第 60 轮第 4 条要求「渐出的时间加长一点」——`
+      + '300ms 级的渐出与 600ms 的渐入不一个量级，自动暂停 / 手动暂停的收尾听着是硬切')
   }
   if (!code.includes('const easeVolume = (progress: number) => progress * progress * (3 - 2 * progress)')) {
     reasons.push('找不到 smoothstep 感知曲线 easeVolume：线性斜坡「一上来就掉一半、尾巴拖得长」，'
@@ -855,9 +863,16 @@ const runCounterExamples = () => {
   ), '渐入时长太短')
 
   // 【第 51 轮】v19 渐出时长改回 160ms（听不出「渐出」）
+  // 【第 60 轮第 4 条】锚点跟着取值走：300 → 700（用户「渐出的时间加长一点」）
   check('v19 渐出时长改回 160ms', fadeShapeInvariants(
-    tamper(fade, 'const FADE_OUT_MS = 300', 'const FADE_OUT_MS = 160'),
+    tamper(fade, 'const FADE_OUT_MS = 700', 'const FADE_OUT_MS = 160'),
   ), '渐出时长太短')
+
+  // 【第 60 轮第 4 条】v31 渐出时长退回 300ms（第 51 轮的取值 —— 长于 240 够不着 v19 那条，
+  //     但正是用户第 60 轮报的「渐出太短」）
+  check('v31 渐出时长退回 300ms', fadeShapeInvariants(
+    tamper(fade, 'const FADE_OUT_MS = 700', 'const FADE_OUT_MS = 300'),
+  ), '渐出时长回落')
 
   // 【第 51 轮】v20 斜坡退回线性（smoothstep 被拿掉）
   check('v20 斜坡退回线性', fadeShapeInvariants(
@@ -946,7 +961,7 @@ const checks = [
     + ' + 预约时两台引擎一起压 0', () => fadeInGuardInvariants(REAL.fade)],
   ['音量账本：斜坡起点取 currentVolume，三处外部直写都同步（音量条 / 换曲重贴 / 打断恢复）'
     + '且在途渐入期间一律让行', () => volumeLedgerInvariants(REAL.fade, { utils: REAL.utils, core: REAL.core, service: REAL.service })],
-  ['第 51 轮·斜坡时长与感知曲线（渐入 600ms / 渐出 300ms + smoothstep，档距 20ms）',
+  ['第 51 轮·斜坡时长与感知曲线（渐入 600ms / 渐出 700ms + smoothstep，档距 20ms；渐出加长见第 60 轮第 4 条）',
     () => fadeShapeInvariants(REAL.fade)],
   ['第 51 轮·起播 / 换歌的渐入链（resourceLoader 两条落点 + 引擎起始增益 startVolume）',
     () => startFadeChainInvariants({ resourceLoader: REAL.resourceLoader, nativeFlac: REAL.nativeFlac })],

@@ -16,6 +16,14 @@
  *     scheduleDeferredInterruptionBeganHandling 推迟到 LXShortInterruptionIgnoreMs；窗口内
  *     Ended 整单撤销 + 轻量自愈（不启播、不发状态）；用户动作（恢复播放 / 停止 / 切歌复位）
  *     撤销待决。
+ *     【第 60 轮第 4 条追加】真实打断（超过窗口）那一拍**再推迟一层**：执行体里
+ *     「[engine pause] + _sourceRenderingEnabled = NO + playbackStarted = NO」这组硬切整组
+ *     搬进 scheduleInterruptionPauseFallback（LXInterruptionPauseDeferMs = 900ms = JS 的
+ *     FADE_OUT_MS 700 + 200 余量）。理由：JS 的自动暂停走的是与手动暂停同一条
+ *     fadeOutThenPause（700ms 斜坡），当场停引擎会把那条渐出掐在半途 —— 用户第 60 轮原话
+ *     「自动暂停和自动播放也要沿用渐入渐出的效果，和手动暂停和播放一样，渐出的时间加长一点」。
+ *     收摊两条：用户接管（manualPause / 手动播放清了 interruptedBySystem）⇒ 一个字不动；
+ *     打断已结束 ⇒ 这一单作废（否则把刚续上的播放又按停）。判据见 ①-d 的两段式断言。
  *   · service.ts：独占模式打断开始不再立刻 pause，改为 scheduleInterruptionPause() 推迟
  *     SHORT_INTERRUPTION_IGNORE_MS；窗口内「结束」先到 → 撤销待决（scheduleAutoResume 只在
  *     播放真被停掉时接回）；用户动作统一经 cancelResumePending 撤销待决。
@@ -24,6 +32,8 @@
  * 为什么必须靠契约脚本：窗口「漏在哪一侧」都不会崩、也过得了 tsc/eslint（本工程根本没有）：
  * 立刻停引擎（原生）/ 立刻 pause（JS）、Ended 不撤销、计时器不看待决标记、窗口值被改成 0、
  * 用户动作不撤销 —— 全是真机上「按电源键音乐被切一下」或「播报不恢复」的现场。带反例自检。
+ * 【第 60 轮第 4 条】还有一组同形状的反例：推迟兜底那一单被掏空（n7）/ 执行体退回当场硬切
+ * （n8）—— 两者都会让自动暂停的渐出被掐在半途，听感退回「渐出太短」。
  *
  * 运行：node scripts/sim-short-interruption-ignore.js
  * 退出码：不变量全过、且全部反例被拦下时为 0，否则 1。
@@ -144,7 +154,28 @@ const nativeInvariants = (src) => {
   if (execC == null) {
     reasons.push('performInterruptionBeganHandling 缺失（真实打断的完整处理不见了）')
   } else {
-    if (!execC.includes('[self.engine pause]')) reasons.push('执行体不再停引擎（真实打断后音乐照响，会话却被系统掐着）')
+    // 【第 60 轮第 4 条】「停引擎 + 掐渲染」从执行体**搬到了推迟兜底那一单**
+    // （scheduleInterruptionPauseFallback）：执行体当场停会把 JS 那条自动暂停的渐出掐在
+    // 半途（用户第 60 轮第 4 条要的是「和手动暂停一样的渐出」）。判据随之改成两段式 ——
+    //   ① 执行体必须开出那一单；
+    //   ② 那一单里必须真停（[strongSelf.engine pause]）并真掐渲染
+    //      （_sourceRenderingEnabled.store(false)）—— 只延后停引擎、却当场掐渲染，
+    //      等于什么都没延后（渲染回调立刻返回静音，照样是硬切）。
+    if (!execC.includes('[self scheduleInterruptionPauseFallback];')) {
+      reasons.push('执行体既不停引擎、也没开出推迟兜底那一单（真实打断后音乐照响，会话却被系统掐着）')
+    }
+    const fallbackM = methodBody(src, '- (void)scheduleInterruptionPauseFallback {')
+    if (fallbackM == null) {
+      reasons.push('scheduleInterruptionPauseFallback 缺失（真实打断的停引擎 / 掐渲染没有落点）')
+    } else {
+      const fallbackC = stripComments(fallbackM)
+      if (!fallbackC.includes('[strongSelf.engine pause]')) {
+        reasons.push('推迟兜底那一单不停引擎（渐出跑完没人收尾：打断期间引擎一直喂数据）')
+      }
+      if (!fallbackC.includes('_sourceRenderingEnabled.store(false')) {
+        reasons.push('推迟兜底那一单不掐渲染（引擎停了但渲染回调还在喂新数据 —— 第 47 轮「点了暂停声音还在继续」的同一形状）')
+      }
+    }
     if (!execC.includes('shouldEmitPause = !LXPlayWithOthersEnabled;')) reasons.push('执行体丢了「与其他应用同时播放」的呈现口径（第 24 轮）')
     if (!/if \(canReleaseSession\) \{/.test(execC)) reasons.push('执行体丢了让出会话的 canReleaseSession 守卫')
     if (!execC.includes('setActive:NO withOptions:AVAudioSessionSetActiveOptionNotifyOthersOnDeactivation')) reasons.push('执行体不再让出会话（其他音频没声音的第 16 轮现场）')
@@ -319,6 +350,21 @@ const runCounterExamples = () => {
   )
   ce('n6 resume 不撤待决', '用户恢复播放后 1.5s 仍被暂停',
     n6 !== REAL.native && nativeInvariants(n6).length > 0)
+
+  // n7 【第 60 轮第 4 条】推迟兜底那一单被掏空：引擎再也不停 —— 渐出跑完没人收尾
+  //（音乐在「已经暂停」的 UI 下继续喂数据 / 继续出声）
+  const n7 = REAL.native.replace('      if (strongSelf.engine != nil) [strongSelf.engine pause];\n', '')
+  ce('n7 推迟兜底那一单被掏空', '真实打断后引擎再也不停（渐出跑完没人收尾）',
+    n7 !== REAL.native && nativeInvariants(n7).length > 0)
+
+  // n8 【第 60 轮第 4 条】执行体退回「当场硬切」：JS 那条自动暂停的渐出被掐在半途
+  //（用户第 60 轮第 4 条的原样复发）
+  const n8 = REAL.native.replace(
+    '      [self scheduleInterruptionPauseFallback];',
+    '      if (self.engine != nil && self.engine.isRunning) [self.engine pause];\n      _sourceRenderingEnabled.store(false, std::memory_order_release);\n      self.playbackStarted = NO;',
+  )
+  ce('n8 执行体退回当场硬切', 'JS 的自动暂停渐出被掐在半途（渐出太短的原现场）',
+    n8 !== REAL.native && nativeInvariants(n8).length > 0)
 
   // j1 JS 独占分支退回立刻 pause
   const j1 = REAL.service.replace('        scheduleInterruptionPause()\n', '        void pause()\n')

@@ -68,9 +68,21 @@
  *                                                        : LXNowPlayingState;
  *     「有意不动」那半句作废；除此以外第 58 轮的其余口径（只拦发布、不动缓存 / 歌词时钟 /
  *     命令同步、两处下发桥当场补发布）全部保留。
+ * 【第 60 轮第 2 条（2026-10-11）：命令可用性判据也要一起收 —— 第 59 轮只收到启停态】
+ *   用户原话：「当我勾选上『与其他应用同时播放』选项，应该立即取消锁屏和灵动岛界面，目前
+ *   锁屏界面还是未完全取消」+ 图二：锁屏上那张卡连标题都没了，却还留着 ⏮ ⏸ ⏭。
+ *   成因：信息字典（第 58 轮）与启停态（第 59 轮）都收了，但 `LXSyncRemoteCommandAvailability`
+ *   的判据仍是「缓存里有没有歌曲信息」—— 抑制期缓存照旧维护（第 58 轮特意保留，为的是进度 /
+ *   歌词不冻），于是 `hasInfo` 照真、六个命令照旧 enabled，系统就按「有可播内容」把那排按钮
+ *   画出来，看起来仍是一张（空壳）卡。
+ *   ⇒ 第 60 轮的修正：判据折进同一个闸门 ——
+ *       BOOL hasInfo = !LXSuppressNowPlayingCard && LXNowPlayingInfoCache.count > 0;
+ *     抑制期「当缓存为空」处理：hasInfo = NO ⇒ isPlaying = NO ⇒ play/pause 全灰、begin/end
+ *     收发遥控事件也按老口径跟随 ⇒ 整卡连同按钮一起撤下。缓存 / 歌词时钟 / 进度一概不动。
  *   JS 侧口径**没有变**：nowPlaying.ts 里仍不许出现任何抑制开关 / 闸门，index.ts 仍不许在
- *     切换时 clearNowPlayingInfo。抑制只存在于原生发布出口这一处，且只有 5 个标识符出现点
- *     （声明 + 信息三元 + 启停态三元 + 两处下发），多一处就说明有人把它扩成了独立的早退块。
+ *     切换时 clearNowPlayingInfo。抑制只存在于原生发布出口这一处，且只有 6 个标识符出现点
+ *     （声明 + 信息三元 + 启停态三元 + 两处下发 + 命令可用性判据），多一处就说明有人把它扩成了
+ *     独立的早退块。
  *
  * 为什么必须靠契约脚本：以上全是「开关极性 + 调用顺序 + 有界性 + 不许复活的旧设计」，
  * tsc/eslint 一律无感；写反了、忘了撤销、把阶梯写成无界，都只在真机上表现为
@@ -328,12 +340,15 @@ const nativeInvariants = (raw) => {
 
   // D2 第 58 轮第 4 条 + 第 59 轮第 2 条：勾选态撤卡（原生闸门只拦「发布」这一层）
   //     形态被钉死为「折进 LXApplyNowPlayingInfo 的**两个**三元式（信息 + 启停态）」
-  //     +「两处下发桥各写一次标记并当场补发布」；标识符总数 = 5（声明 + 两个三元式 +
-  //     两处下发桥），多一处即有人把它扩成了独立早退块（那形状会顺手清缓存 / 停歌词时钟
-  //     —— 勾选期间进度冻结的老毛病）。
+  //     +「两处下发桥各写一次标记并当场补发布」；标识符总数 = 6（声明 + 信息三元 + 启停态
+  //     三元 + 两处下发桥 + 第 60 轮补的命令可用性判据），多一处即有人把它扩成了独立早退块
+  //     （那形状会顺手清缓存 / 停歌词时钟 —— 勾选期间进度冻结的老毛病）。
   //     启停态那一半是第 59 轮补的：只收信息、不收启停态，系统会留下**空壳卡**（灰封面、
   //     无标题、无进度、只剩上一首/暂停/下一首/发送四个按钮）—— 用户第 59 轮第二张锁屏
   //     截图「锁屏界面未完全取消」正是这个形态（信息字典与启停态必须一起收）。
+  //     命令可用性那一半是第 60 轮补的（`LXSyncRemoteCommandAvailability` 的 `hasInfo`）：
+  //     信息与启停态都收了、六命令却照样 enabled，系统同样留一张带 ⏮ ⏸ ⏭ 的空壳卡
+  //     —— 用户第 60 轮图二「锁屏界面还是未完全取消」正是这个残余形态。
   const decl = 'static BOOL LXSuppressNowPlayingCard = NO;'
   const cardDeclAt = code.indexOf(decl)
   if (cardDeclAt < 0) {
@@ -354,8 +369,8 @@ const nativeInvariants = (raw) => {
       + '少一处就会出现用户报的「不会立即取消锁屏和灵动岛界面」')
   }
   const idCount = countOf(code, 'LXSuppressNowPlayingCard')
-  if (idCount !== 5) {
-    reasons.push(`LXSuppressNowPlayingCard 出现 ${idCount} 处（应为 5：声明 + 信息三元 + 启停态三元 + 两处下发桥）—— 多出来的那一处是被扩成了独立早退块 / 又被别处复位，`
+  if (idCount !== 6) {
+    reasons.push(`LXSuppressNowPlayingCard 出现 ${idCount} 处（应为 6：声明 + 信息三元 + 启停态三元 + 两处下发桥 + 第 60 轮的命令可用性判据）—— 多出来的那一处是被扩成了独立早退块 / 又被别处复位，`
       + '撤卡口径会漂（勾选期间清缓存 = 进度冻结；别处复位 = 取消勾选后卡片装不回来）')
   }
   const firstUse = code.search(/center\.nowPlayingInfo = \(!LXSuppressNowPlayingCard/)
@@ -502,13 +517,13 @@ const runCounterExamples = () => {
   check('k4 闸门被扩成独立早退块', () => nativeInvariants(tamper(REAL.native,
     '    center.nowPlayingInfo = (!LXSuppressNowPlayingCard',
     '    if (LXSuppressNowPlayingCard) {\n      [LXNowPlayingInfoCache removeAllObjects];\n      return;\n    }\n    center.nowPlayingInfo = (!LXSuppressNowPlayingCard')),
-  '出现 6 处')
+  '出现 7 处')
 
   // k5 取消勾选后被别处复位（卡片再也装不回来）
   check('k5 别处复位撤卡标记', () => nativeInvariants(tamper(REAL.native,
     '    center.nowPlayingInfo = (!LXSuppressNowPlayingCard && LXNowPlayingInfoCache.count) ? [LXNowPlayingInfoCache copy] : nil;',
     '    LXSuppressNowPlayingCard = NO;\n    center.nowPlayingInfo = (!LXSuppressNowPlayingCard && LXNowPlayingInfoCache.count) ? [LXNowPlayingInfoCache copy] : nil;')),
-  'LXSuppressNowPlayingCard 出现 6 处')
+  'LXSuppressNowPlayingCard 出现 7 处')
 
   // 【第 59 轮】k6 只收信息字典、启停态又「有意不动」（回到第 58 轮形态 = 锁屏留空壳卡，
   //     用户第 59 轮第二张截图原样复发）

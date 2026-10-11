@@ -219,9 +219,17 @@ const availabilityInvariants = (raw) => {
   }
   const code = stripComments(body)
 
-  // ① 判据必须是「缓存里有没有歌曲信息」
-  if (!code.includes('BOOL hasInfo = LXNowPlayingInfoCache.count > 0;')) {
-    reasons.push('启停判据不再是「有没有歌曲信息」（LXNowPlayingInfoCache.count > 0 缺失 —— 空信息时会留着可点却没歌可播的按钮）')
+  // ① 判据必须是「缓存里有没有歌曲信息」（**且只允许再叠加抑制闸门这一个负向条件**）
+  // 【第 60 轮第 2 条】勾选「与其他应用同时播放」= 卡片整个撤下（第 58/59 轮），六命令
+  // 也必须一起关 —— 否则锁屏 / 灵动岛上留一张带 ⏮ ⏸ ⏭ 的空壳卡（用户第 60 轮图二）。
+  // 所以判据扩成 `!LXSuppressNowPlayingCard && LXNowPlayingInfoCache.count > 0`：
+  //   · 正向条件仍是「缓存有信息」（不能换成别的正向条件 —— 那会回到「有歌却点不动」）；
+  //   · 也不许反过来靠「勾选期间清缓存」实现撤卡（勾选期间进度 / 歌词冻结，第 58 轮已否）。
+  if (!code.includes('BOOL hasInfo = !LXSuppressNowPlayingCard && LXNowPlayingInfoCache.count > 0;')) {
+    reasons.push('启停判据既不是「有没有歌曲信息」，也不是「有信息且不在撤卡抑制期」'
+      + '（期望 `BOOL hasInfo = !LXSuppressNowPlayingCard && LXNowPlayingInfoCache.count > 0;` —— '
+      + '空信息时会留着可点却没歌可播的按钮；缺抑制闸门则勾选「与其他应用同时播放」后'
+      + '锁屏 / 灵动岛会留一张带按钮的空壳卡 = 用户第 60 轮第 2 条）')
   }
 
   // ② 参考工程公式：isPlaying 取自 LXNowPlayingState（与卡片显示态同一个变量）
@@ -900,6 +908,14 @@ const runCounterExamples = () => {
     '  LXBeginReceivingRemoteControlEvents();',
     '')),
   '未开始接收遥控事件')
+
+  // r17 【第 60 轮第 2 条】命令可用性丢掉抑制闸门 → 勾选「与其他应用同时播放」后信息字典
+  //    与启停态都收了，六个命令却还开着：锁屏 / 灵动岛留一张带 ⏮ ⏸ ⏭ 的空壳卡
+  //    （用户第 60 轮图二）
+  check('r17 命令可用性丢掉抑制闸门（空壳卡回归）', () => availabilityInvariants(tamper(REAL_APPDELEGATE,
+    '  BOOL hasInfo = !LXSuppressNowPlayingCard && LXNowPlayingInfoCache.count > 0;',
+    '  BOOL hasInfo = LXNowPlayingInfoCache.count > 0;')),
+  '空壳卡')
 
   // r6 有人把「切到相反值再切回」的说谎翻转加回来 → 报「只允许一处」
   check('r6 歌词换行的 playbackState 说谎翻转被加回', () => singleSourceInvariants(tamper(REAL_APPDELEGATE,
