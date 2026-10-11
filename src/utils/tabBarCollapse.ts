@@ -5,6 +5,8 @@ import { tabBarBaseHeight, designSpacing, collapsedFloatBottom, collapsedPillGap
 import { useSafeAreaBottom, useHomeCovered } from '@/store/common/hook'
 import { useHorizontalMode } from '@/utils/hooks'
 import { useSettingValue } from '@/store/setting/hook'
+import state from '@/store/common/state'
+import { COMPONENT_IDS } from '@/config/constant'
 
 /**
  * 底部 Tab 栏收起状态（iOS 26 风格最小化）：
@@ -12,27 +14,69 @@ import { useSettingValue } from '@/store/setting/hook'
  * - 列表滚回顶部（offset ≤ 2）→ 自动展开；
  * - 点击收起按钮 → 手动展开，保持到下一次列表滚动离开顶部。
  * 状态由原生滚动跟踪器维护（无需逐页接线），仅状态变化时通知 JS。
- * 第 63 轮收窄：只有「主界面自己 + 主界面正露着 + 不在导航转场里」的滚动才算数——
- * 压栈页（播放详情页歌词列表挂载即自动滚到当前行、歌单、设置……）的滚动不再动它；
- * 否则 Home 的 tab 栏会在被盖住期间偷偷收起，而那一刻玻璃被转场按住门冻着不重采，
- * 收起的布局动画会把冻结画面与图层错开（用户看到「透过的画面没更新 / 返回时闪一下」）。
+ * 第 63 轮曾在原生侧把驱动范围收窄成「只有主界面自己的滚动才算数」，但那条门在全
+ * App 恒为假（RNN 的屏幕 VC 嵌在它自己的容器里，拿不到「导航栈根屏」这个身份），
+ * 结果是**任何**滚动都不再驱动状态机 —— 用户第 64 轮第 1 条报的「迷你播放器栏和
+ * 底部 tab 栏不会合并了」。第 64 轮起原生侧改按「只有用户主动的滚动才改变状态」+
+ * 「谁收起的谁负责展开」两条规则拦（见 AppDelegate.mm 的滚动静默观察器），本文件
+ * 只负责**延迟下发**：
+ *
+ * 【第 64 轮第 1 条·避免闪】Home 的两块玻璃在被压栈页盖住 / 导航转场期间是**冻结**的
+ *（转场按住门 + 账本覆盖门，见 store/common/hook 的 useGlassHomeCovered），冻结的纹理
+ * 与「刚刚被 220ms 收起/展开动画挪动的图层」必然错开，恢复那一刻重采对齐 = 用户反复报的
+ *「最后一瞬间闪一下」。所以：玻璃冻着的时候收到的收起/展开**只记账不下发**（布局一动不动，
+ * 冻结纹理就永远对得上），等玻璃真的醒来（转场按住门松开 = navTransitioning 落回 false，
+ * 那一刻原生侧 handleResumeFromPause 正要重采一帧）再一次性落地 —— 布局变化与重采同拍发生，
+ * 用户看到的就是「返回 → 栏回到该有的样子」，中间没有旧画面。
  * 消费方：ModernTabBar（Home）与 PlayerBar（isHome）。
  */
 
 let collapsed = false
+/** 玻璃冻着期间收到的状态（只记账不下发，见头部说明）；null = 没有待落地的 */
+let held: boolean | null = null
 let miniPlayerHeight = 0
 const listeners = new Set<(v: boolean) => void>()
 const heightListeners = new Set<(h: number) => void>()
 let inited = false
 
+/** Home 的两块玻璃（tab 栏 / 收起圆钮 / 迷你播放器）现在是不是被冻着 */
+const glassFrozen = (): boolean => {
+  // 转场窗口：push 与 pop 两侧共用，窗口内玻璃一律按住（第 61 轮第 3 条）
+  if (state.navTransitioning) return true
+  // 账本覆盖门：RNN 栈顶不是 home 即 Home 被盖住（与 useHomeCovered 同一判据，
+  // 这里读的是同一个 state，所以两者的翻转时刻完全一致）
+  const ids = state.componentIds
+  return ids.length > 0 && String(ids[ids.length - 1]?.name) != COMPONENT_IDS.home
+}
+
+const applyCollapsed = (v: boolean): void => {
+  if (collapsed === v) return
+  collapsed = v
+  for (const listener of listeners) listener(v)
+}
+
+/** 玻璃醒了：把欠下的那一次落地 */
+const flushHeld = (): void => {
+  if (held == null || glassFrozen()) return
+  const v = held
+  held = null
+  applyCollapsed(v)
+}
+
 const init = (): void => {
   if (inited) return
   inited = true
   onTabBarCollapseChanged((v) => {
-    if (collapsed === v) return
-    collapsed = v
-    for (const listener of listeners) listener(v)
+    if (glassFrozen()) {
+      held = v
+      return
+    }
+    held = null
+    applyCollapsed(v)
   })
+  // 两个「玻璃醒了」的锚点：转场按住门松开、Home 回到栈顶（账本覆盖门翻转）
+  global.state_event.on('navTransitioningUpdated', flushHeld)
+  global.state_event.on('componentIdsUpdated', flushHeld)
 }
 
 export const useTabBarCollapsed = (): boolean => {
