@@ -383,6 +383,44 @@ final class LiquidGlassView: MTKView {
     /// 窗口开启后是否还没等到「第一帧真实采景」（见 reanchorCaptureSettleWindowIfNeeded）。
     private var captureSettlePendingReanchor = false
 
+    // MARK: - 第五个沉降窗口锚点：采景几何尺寸变化（2026-10-11，第 52 轮）
+
+    /// 上一次采景矩形的尺寸（见 noteCaptureGeometry）。.zero = 还没采过。
+    ///
+    /// 现象（用户第 52 轮第 1 条）：「主界面下滑到底部（Tab 栏收起）再上滑到顶部，
+    /// 碰撞顶部一瞬间，迷你播放器栏右边出现很粗的黑色弧线」。
+    /// 成因链：收起/展开是逐帧变形动画（PlayerBar 的 220ms collapseAnim，
+    /// bottom + paddingLeft 同帧插值）⇒ 胶囊宽/高逐帧变化 ⇒ 本类 bounds 逐帧变化
+    /// ⇒ captureSize 逐帧变化 ⇒ backdropView.frame 逐帧变化 ⇒ CABackdropLayer 每一次
+    /// 都要整幅重新向 window server 要 backdrop。展开时采景矩形**变大**，新长出来的
+    /// 右/下侧那一带还没合成，drawHierarchy(afterScreenUpdates: false) 读到的是黑带；
+    /// 黑带帧**非均匀**（均匀判据看不见它），而稳态下窗口早已过期
+    ///（isInsideCaptureSettleWindow 恒 false）⇒ 半成品判据不参与 ⇒
+    /// commitCapturedTexture 走无条件提交 ⇒ shader 的 clamp_to_edge 边缘折射把黑带
+    /// 弯进胶囊右端圆头 = 用户看到的那道「很粗的黑色弧线」。
+    ///
+    /// 修法：把「采景几何尺寸变了」也当成一次「合成源刚重新建立」，与其余四个锚点
+    /// 同口径开沉降窗口——窗口只「允许沿用可疑帧」，干净帧照常提交，0.6s 到点
+    /// 无条件放行 ⇒ 不存在永久透明 / 永久旧帧的路径，最坏是收展动画期间玻璃多显示
+    /// 一两帧旧背景（动画本身只有 220ms，且透镜的静止尺寸锁定已把同类问题封在
+    /// captureReferenceSize 那条注释里）。
+    private var lastCaptureGeometry = CGSize.zero
+
+    /// 几何变化的判定容差（点）。逐帧动画每帧位移远大于它（220ms 内宽变化约 290pt），
+    /// 取 0.5 只为滤掉浮点噪声与亚像素抖动，避免稳态下被误触发、反复重开窗口。
+    private static let captureGeometryEpsilon: CGFloat = 0.5
+
+    /// 采景尺寸变化 = 第五个沉降窗口锚点（见 lastCaptureGeometry）。
+    /// 只比尺寸**不比原点**：原点平移（透镜拖动、列表滚动时玻璃不动）不需要重新合成，
+    /// 那正是 captureReferenceSize 注释里已被接受的现状；而尺寸变化必然是
+    /// 「CABackdropLayer 整幅重合成」，才是黑带的来源。
+    private func noteCaptureGeometry(_ captureSize: CGSize) {
+        let changed = abs(captureSize.width - lastCaptureGeometry.width) > Self.captureGeometryEpsilon ||
+            abs(captureSize.height - lastCaptureGeometry.height) > Self.captureGeometryEpsilon
+        lastCaptureGeometry = captureSize
+        if changed { beginCaptureSettleWindow() }
+    }
+
     /// 半成品判据（二要素之一）：网格单元格的最大通道值 ≤ 该值视为「近黑」。
     /// 取 8/255：render server 未合成的区域是纯黑（个位数），真实内容即使很暗也
     /// 极少整片 ≤8（8/255 以下在屏幕上已几乎不可辨内容）。
@@ -419,7 +457,7 @@ final class LiquidGlassView: MTKView {
         return now - captureSettleStartedAt < Self.captureSettleDuration
     }
 
-    /// 开启（或重置）沉降窗口。四个锚点（见各自调用点）：
+    /// 开启（或重置）沉降窗口。五个锚点（见各自调用点）：
     /// ① captureBackdrop：backdropView 插入层级——合成源刚建立，最初的捕获不可信；
     /// ② didMoveToWindow：26.2+ 走根视图捕获，没有 backdropView 插入点，视图进窗口
     ///    是同一件事（层级刚建立、页面与合成都还没就绪）；
@@ -428,15 +466,18 @@ final class LiquidGlassView: MTKView {
     ///    刚重新建立。此前本复位路径重置了纹理却没重置窗口（captureSettleStartedAt 还是
     ///    上一次的过期值 → 窗口判据恒 false），恢复后最初的半成品帧被原样接收、黑边被
     ///    折射进胶囊边缘（tab 栏 / 迷你播放器黑边闪烁）。
+    /// ⑤ noteCaptureGeometry（2026-10-11，用户第 52 轮第 1 条）：采景矩形的**尺寸**变了
+    ///    ——逐帧变形动画（Tab 栏收起/展开）期间 CABackdropLayer 每帧整幅重合成，
+    ///    新长出来的那一侧还没合成就是黑带。详见 lastCaptureGeometry 注释。
     private func beginCaptureSettleWindow() {
         captureSettleStartedAt = CACurrentMediaTime()
         captureSettlePendingReanchor = true
     }
 
     /// 第一帧真实采景到达时把窗口重新起算（每个锚点事件只生效一次）。
-    /// 锚点（backdrop 插入 / 进窗口 / 抬起 / 暂停恢复）与「第一帧真的采到像素」之间
-    /// 可能隔着冷启动的主线程长任务；窗口若从锚点墙钟起算，半成品首帧到达时窗口
-    /// 往往已经过期——那几帧正是「很粗的黑边」的载体（用户第 19 轮第 1 条：
+    /// 锚点（backdrop 插入 / 进窗口 / 抬起 / 暂停恢复 / 采景几何变化）与「第一帧真的
+    /// 采到像素」之间可能隔着冷启动的主线程长任务；窗口若从锚点墙钟起算，半成品首帧
+    /// 到达时窗口往往已经过期——那几帧正是「很粗的黑边」的载体（用户第 19 轮第 1 条：
     /// 「第一次进入软件时就会发生」）。改从首帧起算后，窗口覆盖的是真实帧流。
     private func reanchorCaptureSettleWindowIfNeeded(_ now: TimeInterval) {
         guard captureSettlePendingReanchor else { return }
@@ -778,6 +819,12 @@ final class LiquidGlassView: MTKView {
             if throttled { return }
         }
 
+        // 第五个沉降窗口锚点（2026-10-11，第 52 轮第 1 条）：本帧的采景几何与上一帧
+        // 不同（逐帧变形动画 / 尺寸变化）⇒ 合成源要整幅重做，本帧与随后几帧可能带着
+        // 未合成的黑带，必须让半成品判据重新生效（见 noteCaptureGeometry）。
+        // 放在节流之后：被跳过的帧不产生任何采景相关状态，与「被跳过的帧不采景」同口径。
+        noteCaptureGeometry(captureSize)
+
         let previousTexture = backgroundTexture
         let captureStartedAt = CACurrentMediaTime()
         var capturedIsUniform = false
@@ -892,6 +939,12 @@ final class LiquidGlassView: MTKView {
                                  height: baseSize.height * sizeCoefficient + devicePixel * 2)
         let captureOrigin = CGPoint(x: frameInSuperview.midX - captureSize.width / 2,
                                     y: frameInSuperview.midY - captureSize.height / 2)
+
+        // 第五个沉降窗口锚点（2026-10-11，第 52 轮第 1 条）：采景矩形尺寸变了 ⇒ 下一行
+        // 改 backdropView.frame 会让 CABackdropLayer 整幅重新合成，新长出来的那一侧
+        //（展开时是右/下侧）在合成完成前是黑带。先开窗再改 frame，本帧的采样就已经在
+        // 窗口覆盖内——展开瞬间那道「很粗的黑色弧线」正是在这里进来的。
+        noteCaptureGeometry(captureSize)
 
         // Position backdrop view and layer
         backdropView.frame = CGRect(origin: captureOrigin, size: captureSize)
