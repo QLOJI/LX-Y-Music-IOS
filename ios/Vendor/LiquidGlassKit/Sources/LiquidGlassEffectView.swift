@@ -119,6 +119,12 @@ public class LiquidGlassEffectView: UIView, AnyVisualEffectView {
     /// Metal band carries a render loop; the frosted backing has no such selector
     /// and the manager skips it via respondsToSelector.
     @objc public func setPaused(_ paused: Bool) {
+        // 【第 58 轮第 2 条】把 JS 的意图记在视图上并清掉「自行恢复」的痕迹，见
+        // LiquidGlassView.pauseRequested / resumeFromReentryIfPaused：屏幕重新入窗口时
+        // 视图会自行恢复渲染（那一刻它正被露出，右滑返回那条路径压根没有 JS 事件），
+        // 这里必须让 JS 的下一次明确下发重新拿到控制权。
+        liquidGlassView?.pauseRequested = paused
+        if !paused { liquidGlassView?.clearReentryResume() }
         // 恢复（true → false）时先做一次性复位再解除暂停（2026-10-02 用户第 2 条）：
         // 暂停只是停 draw，CAMetalLayer 上仍留着暂停前那帧（折射的是上一次可见时刻的
         // 背景）。不复位的话，恢复后第一次采景若被判「未就绪」就会把那一帧原样画出去
