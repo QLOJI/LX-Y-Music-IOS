@@ -560,21 +560,17 @@ final class LiquidGlassView: MTKView {
     /// 透镜落下（endLiveCapture）会把仍在滑动中的底栏玻璃一起打回 30fps 档。
     private var realtimeCaptureRequested = false
 
-    /// 【第 58 轮第 2 条】JS 省电门（RN prop `paused`）要求的暂停态，唯一写入口是
-    /// LiquidGlassEffectView.setPaused。
-    ///
-    /// 为什么不直接用 MTKView.isPaused：被压栈页覆盖的屏幕**重新入窗口**时（= 返回转场
-    /// 开始，RNN 会把被覆盖屏的视图 detach 出 window、pop 时重新挂回），本类会自行恢复
-    /// 渲染 —— 那一刻屏幕正在被露出来，JS 那一侧的门却还没翻（它只认 RNN 的 screenPopped /
-    /// 露出窗口超时，右滑返回压根不经过 JS）。两个状态因此必须分开记：
-    /// pauseRequested 是 JS 的意图，resumedFromReentry 是「这次恢复是本类自己做的」，
-    /// 手势取消 / 再次被覆盖时按前者把渲染按停。
-    var pauseRequested = false
-
-    /// 是否由「重新入窗口」自行恢复过渲染（JS 尚未下发 unpause）。见 resumeFromReentryIfPaused。
-    var resumedFromReentry = false
-
     /// 重新入窗口后的实时采景窗口起点（CACurrentMediaTime 秒）；0 = 不在窗口内。
+    ///
+    /// 【第 61 轮第 3 条】暂停态（MTKView.isPaused）自此**完全由 JS 决定**，本类不再
+    /// 自行恢复渲染。第 58～60 轮曾在 didMoveToWindow 里「重新入窗口 = 这一屏正在被露出来
+    /// ⇒ 当场自恢复 + 重采」（pauseRequested / resumedFromReentry / resumeFromReentryIfPaused /
+    /// suspendWhileDetached / clearReentryResume 一整条通道，已整体删除）。真机实锤那条通道
+    /// 判断反了：返回转场期间玻璃背后其实还是**正在向右滑走的那一页**（页面向右走、玻璃不动），
+    /// 重采进胶囊就是用户第 60/61 轮反复报的「透过的画面是由右向左滑入的，这个方向是反的」。
+    /// 现在整段转场由 JS 的转场按住门按住（navigation/transitionWindow.ts + useGlassNavHold）
+    /// = 保持转场前那一帧；转场结束、JS 下发 paused=false 时才由 handleResumeFromPause 接管
+    /// （保留旧纹理 → 重采 → 立即画一帧）。
     private var reentryLiveStartedAt: TimeInterval = 0
     /// 实时窗口时长：覆盖一次标准 pop 转场（约 0.35s）加收尾余量。
     private static let reentryLiveDuration: TimeInterval = 0.9
@@ -670,12 +666,10 @@ final class LiquidGlassView: MTKView {
     /// 晚开的锚点只是把窗口开启时刻整体后移（上限始终从开启时刻现算，不会因此失效）。
     override func didMoveToWindow() {
         super.didMoveToWindow()
-        guard window != nil else {
-            suspendWhileDetached()
-            return
-        }
+        // 移出窗口（本屏被压栈页覆盖）不做任何事：暂停与否由 JS 省电门（paused）唯一决定，
+        // 第 61 轮起本类没有任何「自行暂停 / 自行恢复」的记账（见 reentryLiveStartedAt 注释）。
+        guard window != nil else { return }
         beginCaptureSettleWindow()
-        resumeFromReentryIfPaused()
         // 【第 58 轮第 2 条】实时采景窗口：整屏重新入窗口 = 一段转场开始（返回 / 首次挂载），
         // 这一段背景整幅在移动，静止档（30fps）采景会系统性落后 1~3 拍 —— 用户看到的就是
         // 「透过的画面不是底部实时的画面、有错位、动画延迟也很高」。窗口固定时长、
@@ -688,38 +682,6 @@ final class LiquidGlassView: MTKView {
         Self.resetGlobalCaptureGate()
         scheduleReentryLiveExpiry()
         syncRenderFrameRate()
-    }
-
-    /// 【第 58 轮第 2 条】被压栈页覆盖期间本条玻璃是**暂停**的（JS 省电门 paused=true：
-    /// 账本门只认 RNN 的 screenPopped，它在 pop 之前不会翻）。重新入窗口说明这一屏正在被
-    /// 露出来（RNN 把被覆盖屏的视图 detach 出 window，pop 开始时重新挂回）—— 此刻必须
-    /// 当场恢复渲染并重采背景，整段返回动画里玻璃透过的才是实时画面。旧行为要等动画结束
-    /// JS 才解除暂停：整段转场里玻璃是冻结的（CAMetalLayer 上还是暂停前那一帧），
-    /// 用户看到的正是「返回时透过的画面不是底部实时的画面、有错位」。
-    ///
-    /// 这条锚点对**点击返回按钮**与**右滑返回**两条路径都成立（didMoveToWindow 是 UIKit
-    /// 保证的），而 JS 的露出窗口只在返回按钮那条路径打开（见 src/navigation/revealWindow.ts）
-    /// —— 右滑那一条此前完全没人管。手势取消时本视图再次被 detach，suspendWhileDetached
-    /// 会按 JS 的意图重新按停（pauseRequested 仍为 true）。
-    private func resumeFromReentryIfPaused() {
-        guard pauseRequested, isPaused else { return }
-        handleResumeFromPause()
-        isPaused = false
-        resumedFromReentry = true
-    }
-
-    /// 被移出窗口（本屏被覆盖 / 右滑手势取消后重新被覆盖）：只有「这次恢复是本类自己做的」
-    /// 才按停 —— 由 JS 省电门按停的那些保持原样。
-    private func suspendWhileDetached() {
-        guard resumedFromReentry else { return }
-        resumedFromReentry = false
-        isPaused = true
-    }
-
-    /// JS 明确下发 unpause（setPaused(false)）时清掉「自行恢复」的痕迹：此后 isPaused 由
-    /// JS 的门唯一决定，下一次被覆盖时不该再按旧意图把它按停。
-    func clearReentryResume() {
-        resumedFromReentry = false
     }
 
     /// 实时窗口到期后把渲染 / 采景档落回静止档。一次性定时器（每次入窗口一个），
@@ -862,9 +824,10 @@ final class LiquidGlassView: MTKView {
     /// 恢复后最初几帧只要被判未就绪，沿用分支拿到的 previous 就是 nil ⇒ draw() 的
     /// `guard backgroundTexture != nil` 直接返回、**这一帧不 present** ⇒ CAMetalLayer 上
     /// 仍是暂停前那一帧的位图（内容与几何都是旧的），直到第一帧「干净」采景到达才整体换掉。
-    /// 那一下换掉正落在返回动画收尾处，就是用户反复报的闪烁。右滑返回不经过 JS
-    ///（露出窗口只在返回按钮那条路径打开，见 src/navigation/revealWindow.ts），整段转场里
-    /// 玻璃都是冻结的，恢复时刻只有「动画结束」这一个——所有差别都被压到那一刻一起呈现。
+    /// 那一下换掉正落在返回动画收尾处，就是用户反复报的闪烁。第 61 轮起整段转场
+    /// （含右滑返回，那条路径没有 JS 转场事件，靠 handleScreenPopped 续期）都由 JS 按住：
+    /// 从 push 起玻璃就一直处于暂停态，直到转场按住门结束才恢复——恢复时刻就是
+    /// 「转场结束」，所有差别都被压到那一刻一起呈现（本函数就是为这一下准备的）。
     /// 保留纹理后：恢复期每一帧都有可画的背景（内容就是用户刚刚看到的那一张，视觉连续），
     /// 第一帧干净采景到达时自然接替；旧画面最多多留 maxStaleHoldAge（150ms），超过就被
     /// 陈旧度门放行——不会把上一页内容永久留在玻璃里。
