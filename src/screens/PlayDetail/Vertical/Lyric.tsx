@@ -33,7 +33,7 @@ import PlayLine, { type PlayLineType } from '@/screens/PlayDetail/components/Pla
 // 例外：大歌词「换行停留」时长按需求 #1 直接对齐 REF 参考工程，以本文件下方的
 // LINE_CHANGE_HOLD_MS 定义（原因见其注释）；「换行滑动」时长已收口回 lyricAnimation
 // 的 RETURN_TO_ACTIVE_MS —— 小歌词的停手回位复用的就是它，必须同源。
-import { IDLE_RETURN_MS, LINE_CHANGE_HOLD_MS, OVERLAY_FADE_MS, RETURN_TO_ACTIVE_MS } from '@/screens/PlayDetail/lyricAnimation'
+import { IDLE_RETURN_MS, LINE_CHANGE_HOLD_MS, LYRIC_DOUBLE_TAP_MS, OVERLAY_FADE_MS, RETURN_TO_ACTIVE_MS } from '@/screens/PlayDetail/lyricAnimation'
 // import { screenkeepAwake } from '@/utils/nativeModules/utils'
 // import { log } from '@/utils/log'
 // import { toast } from '@/utils/tools'
@@ -1050,7 +1050,24 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
     lyricScrollLayoutRef.current.setDefaultHeight(isSmallWindow ? 40 : 54)
   }, [isSmallWindow])
 
+  // 【第 55 轮第 1 条】单击歌词**不再**跳转播放（用户报「点一下歌词就跳走」，是误触来源）。
+  // 改为双击跳转：两次点击落在**同一行**、间隔 < LYRIC_DOUBLE_TAP_MS 才算一次双击。
+  // 状态放 ref 不放 state：单击时只写这个 ref，不触发任何重渲染（点一下歌词不应该让
+  // 整个歌词列表重算）；index 一起记，相邻两下点在不同行时按「新的第一次」重新计时，
+  // 不会把「点 A 行、紧接着点 B 行」误判成双击 B。
+  // 想从某一行开始播的另一条路是拖动歌词后点浮层右侧的播放三角（handlePlayLine），
+  // 那条通道本轮一字未动。
+  const lastLineTapRef = useRef<{ index: number, at: number }>({ index: -1, at: 0 })
   const handleLinePress = useCallback((index: number) => {
+    const now = Date.now()
+    const lastTap = lastLineTapRef.current
+    if (lastTap.index !== index || now - lastTap.at > LYRIC_DOUBLE_TAP_MS) {
+      // 单击（或换了一行）：只记时间戳，不 seek、不清定位态、不动列表。
+      lastLineTapRef.current = { index, at: now }
+      return
+    }
+    // 双击：以下与「单击即跳转」时代的行为完全一致（清定位态 + seek + 强制定位到该行）。
+    lastLineTapRef.current = { index: -1, at: 0 }
     if (scrollTimoutRef.current) {
       clearTimeout(scrollTimoutRef.current)
       scrollTimoutRef.current = null
@@ -1060,19 +1077,19 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
       scrollCancelRef.current = null
     }
     isPauseScrollRef.current = false
-    // 点歌词行也是一次主动跳转，等同于点了浮层的播放三角：无论浮层当时是否显示，
-    // 都要清掉定位态与浮层，避免「点完行之后浮层还挂在屏幕上」。
+    // 双击歌词行是一次主动跳转，等同于点了浮层的播放三角：无论浮层当时是否显示，
+    // 都要清掉定位态与浮层，避免「跳完行之后浮层还挂在屏幕上」。
     dragStartOffsetRef.current = null
     isOverlayShownRef.current = false
     playLineRef.current?.setVisible(false)
     const line = lyricLines[index]
     if (line) {
-      // 对齐上游：行点击只 seek 音频（setProgress），歌词行不立即镜像——歌词跟
+      // 对齐上游：行跳转（双击）只 seek 音频（setProgress），歌词行不立即镜像——歌词跟
       // 引擎事件走（seek 落点出声时 playing 事件重锚到落点行）。此前的
       // lrcSyncToTime 立即镜像会让行提前跳到目标、而音频还在放旧内容/缓冲。
       global.app_event.setProgress(line.time / 1000)
     }
-    // 用户点击歌词行属于主动跳转：强制让歌词列表立即、无动画地定位到被点行，
+    // 双击歌词行属于主动跳转：强制让歌词列表立即、无动画地定位到被点行，
     // 越过“舒适区 15%”节流与动画延迟，使高亮行与音频（及进度条）绝对同步跟随。
     setForceScroll(true)
     handleScrollToActive(index, true)

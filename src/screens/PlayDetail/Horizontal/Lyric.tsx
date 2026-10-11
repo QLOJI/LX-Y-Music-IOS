@@ -29,7 +29,7 @@ import PlayLine, { type PlayLineType } from '@/screens/PlayDetail/components/Pla
 // 播放页动效时长的统一来源（数值与背景见 lyricAnimation.ts）；大歌词的「换行停留 /
 // 换行滑动」两个时长也在那里（LINE_CHANGE_HOLD_MS / RETURN_TO_ACTIVE_MS），
 // 横竖屏与小歌词回位同源，本文件不再保留本地魔数。
-import { IDLE_RETURN_MS, LINE_CHANGE_HOLD_MS, OVERLAY_FADE_MS, RETURN_TO_ACTIVE_MS, getReturnDuration } from '@/screens/PlayDetail/lyricAnimation'
+import { IDLE_RETURN_MS, LINE_CHANGE_HOLD_MS, LYRIC_DOUBLE_TAP_MS, OVERLAY_FADE_MS, RETURN_TO_ACTIVE_MS, getReturnDuration } from '@/screens/PlayDetail/lyricAnimation'
 
 type FlatListType = FlatListProps<Line>
 
@@ -853,7 +853,24 @@ export default () => {
     scheduleRecentreRef.current()
   }, [])
 
+  // 【第 55 轮第 1 条】单击歌词**不再**跳转播放（用户报「点一下歌词就跳走」，是误触来源）。
+  // 改为双击跳转：两次点击落在**同一行**、间隔 < LYRIC_DOUBLE_TAP_MS 才算一次双击。
+  // 与竖屏大歌词同一套判据、同一个窗口常量（LYRIC_DOUBLE_TAP_MS 单源）。
+  // 状态放 ref 不放 state：单击时只写这个 ref，不触发任何重渲染；index 一起记，
+  // 相邻两下点在不同行时按「新的第一次」重新计时，不会误判成双击。
+  // 想从某一行开始播的另一条路是拖动歌词后点浮层右侧的播放三角（handlePlayLine），
+  // 那条通道本轮一字未动。
+  const lastLineTapRef = useRef<{ index: number, at: number }>({ index: -1, at: 0 })
   const handleLinePress = useCallback((index: number) => {
+    const now = Date.now()
+    const lastTap = lastLineTapRef.current
+    if (lastTap.index !== index || now - lastTap.at > LYRIC_DOUBLE_TAP_MS) {
+      // 单击（或换了一行）：只记时间戳，不 seek、不清定位态、不动列表。
+      lastLineTapRef.current = { index, at: now }
+      return
+    }
+    // 双击：以下与「单击即跳转」时代的行为完全一致（清定位态 + seek + 定位到该行）。
+    lastLineTapRef.current = { index: -1, at: 0 }
     if (scrollTimoutRef.current) {
       clearTimeout(scrollTimoutRef.current)
       scrollTimoutRef.current = null
@@ -863,12 +880,12 @@ export default () => {
       scrollCancelRef.current = null
     }
     isPauseScrollRef.current = false
-    // 点歌词行也是一次主动跳转，等同于点了浮层的播放三角：无论浮层当时是否显示，
-    // 都要清掉定位态与浮层，避免「点完行之后浮层还挂在屏幕上」。
+    // 双击歌词行是一次主动跳转，等同于点了浮层的播放三角：无论浮层当时是否显示，
+    // 都要清掉定位态与浮层，避免「跳完行之后浮层还挂在屏幕上」。
     dragStartOffsetRef.current = null
     isOverlayShownRef.current = false
     playLineRef.current?.setVisible(false)
-    // 点击歌词视为用户主动跳转：强制立即定位，越过连续滚动循环，使高亮行与音频绝对同步。
+    // 双击歌词视为用户主动跳转：强制立即定位，越过连续滚动循环，使高亮行与音频绝对同步。
     setForceScroll(true)
     const line = lyricLines[index]
     if (line) {
