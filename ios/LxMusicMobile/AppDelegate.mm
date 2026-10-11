@@ -900,7 +900,17 @@ static void LXSyncRemoteCommandAvailability(void) {
   LXInstallRemoteCommandHandlers();
 
   MPRemoteCommandCenter *commandCenter = [MPRemoteCommandCenter sharedCommandCenter];
-  BOOL hasInfo = LXNowPlayingInfoCache.count > 0;
+  // 【第 60 轮第 2 条】抑制期（勾选「与其他应用同时播放」）里 Now Playing 缓存**照旧维护**
+  // ——拦截的只是「发布」那一步，字典本身在，于是这一句原样为真 ⇒ 六个命令全开、卡片上的
+  // ⏮ ⏸ ⏭ 与进度条整条留在锁屏 / 灵动岛上，用户第 60 轮图二抓到的就是这张「漏网的卡」，
+  // 原话「目前锁屏界面还是未完全取消」。
+  // 按本函数既有的「显示态与启停态同源」口径，抑制期要连**可用性**一起收：把抑制闸门折进
+  // 判据，直接走下面「无信息」那一支（六命令全 NO + LXEndReceivingRemoteControlEvents）
+  // ⇒ 锁屏 / 灵动岛的整卡（按钮、进度条、封面块）一并消失。取消勾选后，下一次
+  // LXApplyNowPlayingInfo 发布就会回到「有卡」分支（setPlayWithOthers /
+  // applyPlayWithOthersNow 两条桥都会当场重发一次，见它们的第 58/56 轮注释）。
+  // 顺序契约：判据里抑制闸门在前 —— sim-r60-nowplaying-suppress-card 按这个字面量做搬迁。
+  BOOL hasInfo = !LXSuppressNowPlayingCard && LXNowPlayingInfoCache.count > 0;
 
   if (!hasInfo) {
     commandCenter.playCommand.enabled = NO;
@@ -3663,6 +3673,10 @@ RCT_REMAP_METHOD(updateEqualizerConfig, updateEqualizerConfig:(NSDictionary *)co
 // 取消令牌：任何一次取消 / 新斜坡都 ++，在途那一拍醒来发现代数变了就静静退出
 // （斜坡用 dispatch_after 自链，没有源对象，见 scheduleResumeFadeInStepLocked）。
 @property (nonatomic, assign) int64_t outputVolumeRampGeneration;
+// 【第 60 轮第 4 条】打断自动暂停的「推迟兜底停」令牌：见 scheduleInterruptionPauseFallback。
+// 每一次调度 ++（新的一单打断 / 打断结束后的续播都会取代在途那一单），在途的 dispatch_after
+// 醒来发现代数变了就直接退出 —— 绝不允许把「已经续上的播放」按停。
+@property (nonatomic, assign) int64_t interruptionPauseDeferGeneration;
 @property (nonatomic, assign) float currentRate;
 @property (nonatomic, assign) int64_t queuedFrames;
 @property (nonatomic, assign) int64_t completedFrames;
@@ -4386,11 +4400,20 @@ static const int64_t LXShortInterruptionIgnoreMs = 1500;
     }
     if (shouldHandle && !self.manualPause) {
       self.lastKnownPosition = [self currentPlaybackPositionLocked];
-      if (self.engine != nil && self.engine.isRunning) [self.engine pause];
-      _sourceRenderingEnabled.store(false, std::memory_order_release);
-      self.playbackStarted = NO;
-      // 【第 24 轮】「与其他应用同时播放」下不对外呈现暂停：引擎照旧停摆（上面刚停，
-      // 系统已把我们的音频压住），但不发 paused、不改 currentState —— UI / 锁屏 /
+      // 【第 60 轮第 4 条】不再当场硬切：把「停引擎 + 掐渲染 + 记账」整组推迟到
+      // LXInterruptionPauseDeferMs 之后（见该常量与 scheduleInterruptionPauseFallback）。
+      // 理由：JS 的自动暂停（service.ts 的打断暂停 → setPause → fadeOutThenPause）与这里
+      // 同刻起步（两边忽略窗口同为 1500ms），现在当场停引擎会把它的渐出掐在半途 ——
+      // 三件事必须**一起**推迟，动其中任何一件都等于硬切：
+      //   · [engine pause] —— 引擎停了就没有可渐出的声音；
+      //   · _sourceRenderingEnabled = NO —— 渲染回调立刻返回静音（见渲染回调处的判据）；
+      //   · playbackStarted = NO —— 它不是出声开关，但会让 schedulePCMBufferWithFrame 那条
+      //     持续路径（每个解码帧都调 maybeStartPlaybackLocked）当场把播放重新拉起来，
+      //     于是兜底那一单的「已经续上」判据永远为真、再也停不下来。
+      // 窗口内一切照旧（引擎在跑、渲染在喂）—— 这正是 JS 那条渐出要的素材。
+      [self scheduleInterruptionPauseFallback];
+      // 【第 24 轮】「与其他应用同时播放」下不对外呈现暂停：引擎照旧停摆（推迟到上面那一单，
+      // 系统此刻早已把我们的音频压住），但不发 paused、不改 currentState —— UI / 锁屏 /
       // 灵动岛保持「在播」，interruptedBySystem 照置，结束分支会重启引擎并恢复输出。
       shouldEmitPause = !LXPlayWithOthersEnabled;
     }
@@ -4415,6 +4438,54 @@ static const int64_t LXShortInterruptionIgnoreMs = 1500;
   if (!shouldEmitPause) return;
   self.currentState = @"paused";
   [self emitState:@"paused" position:@(self.lastKnownPosition) duration:@(self.duration)];
+}
+
+// 【第 60 轮第 4 条】打断自动暂停：原生这一边 **不再当场硬切**，而是推迟
+// LXInterruptionPauseDeferMs 再兜底停 —— 让 JS 侧的渐出先把音量平滑降到 0。
+//
+// 用户原话（第 60 轮）：「取消勾选后再次播放音乐，当有其他音频播放音乐时，自动暂停和
+// 自动播放也要沿用渐入渐出的效果，和手动暂停和播放一样，渐出的时间加长一点，声音由小
+// 变大」。手动暂停走的是 JS 的 fadeOutThenPause（斜坡降到 0 再真停，第 60 轮已加长到
+// 700ms），而这条自动暂停原来是**硬切**：`[engine pause]` + 掐渲染一句下去，JS 那条渐出
+// 还没降一半就被掐断 —— 同一次「暂停」两种听感，用户听出来的「渐出太短」正是这里。
+//
+// 两条路同刻起步：原生的 LXShortInterruptionIgnoreMs 与 JS 的 SHORT_INTERRUPTION_IGNORE_MS
+// 同为 1500ms、由同一对系统通知触发，所以 JS 的斜坡此刻正好开场。推迟量取
+// 700（JS 的 FADE_OUT_MS）+ 200（余量，别和它的最后一拍抢）—— 到点时 JS 的自动暂停通常
+// 已经落地（引擎已停），本兜底直接空转；只有「JS 那条路没走到」（应用被挂起 / 事件没送达）
+// 时它才真停，engine pause 那句老写法也就落在下面那个方法里。
+// 代价（如实记录）：引擎在这 900ms 内仍是 isRunning，performInterruptionBeganHandling 里
+// 那句 canReleaseSession 因此算出 NO ⇒ 这一次不在这里让出会话；交还由 JS 的自动暂停落到
+// pauseStreamWithResolver 时完成（比老写法晚 900ms 上下；系统在打断那一刻早已把会话从我们
+// 手里拿走，实际无感）。
+static const int64_t LXInterruptionPauseDeferMs = 900;
+
+// 【第 60 轮第 4 条】打断自动暂停的**推迟兜底停**：真正常场与 JS 的渐出斜坡赛跑的那一边
+// （时长与理由见 LXInterruptionPauseDeferMs）。它做的就是老写法当场做的那三件事
+//（停引擎 / 掐渲染 / 清出声记账），只是挪到渐出跑完之后。
+// 两种收摊：
+//   · 用户接管（手动暂停 → manualPause；手动播放 → resume 桥会清 interruptedBySystem）⇒
+//     用户的意图永远赢，一个字都不动；
+//   · 打断已经结束（Ended 分支 / 手动恢复都会把 interruptedBySystem 清掉）⇒ 这一单作废，
+//     否则会把刚续上的播放又按停 —— 那正是用户第 60 轮第 3 条「自动播放」要保住的东西。
+// 全部在 renderQueue 上求值与落地（与其它播放状态机同一条串行队列），代数令牌保证只有
+// 最新一单生效（新的一单打断会 ++，旧的那一单醒来就直接退出）。
+- (void)scheduleInterruptionPauseFallback {
+  self.interruptionPauseDeferGeneration += 1;
+  int64_t generation = self.interruptionPauseDeferGeneration;
+  __weak StreamingFlacPlayerModule *weakSelf = self;
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(LXInterruptionPauseDeferMs * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
+    StreamingFlacPlayerModule *strongSelf = weakSelf;
+    if (strongSelf == nil) return;
+    if (generation != strongSelf.interruptionPauseDeferGeneration) return;
+    dispatch_sync(strongSelf.renderQueue, ^{
+      if (strongSelf.manualPause) return;
+      if (!strongSelf.interruptedBySystem) return;
+      if (strongSelf.engine != nil) [strongSelf.engine pause];
+      strongSelf->_sourceRenderingEnabled.store(false, std::memory_order_release);
+      strongSelf.playbackStarted = NO;
+    });
+  });
 }
 
 // 【第 31 轮·追加】被忽略的短暂系统音结束后的轻量自愈：系统在提示音期间可能把会话掐过
