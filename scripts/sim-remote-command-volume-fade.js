@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /**
  * sim-remote-command-volume-fade.js —— 「锁屏 / 灵动岛按键不许被音量斜坡吞掉」契约（第 41 轮）
+ *                                    + 「播放 / 暂停的渐入渐出要真的听得见」契约（第 51 轮）
  *
  * 需求原话（2026-10-09 第 41 轮，逐字）：
  *   「重大bug：锁屏界面和灵动岛界面的上一首、下一首、播放/暂停按钮点击后还是无法控制，
@@ -45,6 +46,43 @@
  *       里不许再出现「监听者没挂上就 return」，改为暂存（有上限的环形缓冲）并在
  *       `startObserving` 里按序补投。
  *
+ * ---------------------------------------------------------------------------
+ * 【第 51 轮】用户原话（逐字）：「还有一个需求，播放和暂停时增加渐入渐出的效果」。
+ *
+ * 第 39/41 轮那套斜坡本来就在（上面一整段就是它的现场），用户仍然把这个当成「还没做的
+ * 需求」提出来 —— 对着每个调用点核对后，结论是那份实现听得见的只有「半个」。本轮补六件事：
+ *
+ *   九、**斜坡要长到听得出来，而且得是感知曲线**：旧值 渐入 220ms / 渐出 160ms（每档 20ms
+ *       = 11 档 / 8 档）只够消爆音，人耳基本只察觉到「没有咔哒声」；线性斜坡「一上来就掉
+ *       一半、尾巴拖得长」的听感也不像淡入。现在 渐入 600ms / 渐出 300ms + smoothstep
+ *       （`easeVolume`：p²(3-2p)，单调不减，第 41 轮定死的「斜坡全程单调」不变）。
+ *       渐出刻意不比渐入长：真暂停跟在斜坡之后，界面反馈（锁屏进度条停住、按钮变 ▶）
+ *       都在那之后，拖太长会让「按了暂停」显得发闷 —— 反例 v18 / v19 / v20。
+ *   十、**起播 / 换歌也要渐入**：旧实现只在 `utils.setPlay()`（播放/恢复键）里预约，
+ *       点歌 / 换歌走 `engine/resourceLoader.ts` 的两条起播落点，一个都没预约 ——
+ *       新歌满音量直接砸出来，这才是用户听到最响的那次硬切换。两条落点都要
+ *       `armVolumeStartFadeIn`，且 nativeFlac 分支必须把**起始增益**一起传 0
+ *       （`openStreamingFlac` 那次调用会把音量直接交给原生引擎，不传 0 的话预约当场被覆盖）
+ *       —— 反例 v21 / v22。
+ *   十一、**在途的渐入不许被「重贴设定音量」顶掉**：起播重贴音量（`applyCurrentVolume`）与
+ *       打断恢复的 duck 回填（`restoreConfiguredVolume`）都会写一次设定音量，预约期间写下去
+ *       渐入即失效（音量已经落在设定值上，斜坡第一拍只是重复写同一个值）；这两处必须用
+ *       `isVolumeFadeActive()` 让行。注意 `syncVolumeFadeState` 的账本守卫**不**加
+ *       `fadeInArmed`：账本要跟着真正写出的值走（音量条拖动就是一次真实写入），
+ *       拦下来反而会让斜坡从旧值起步（多一次音量塌陷）—— 反例 v23 / v24。
+ *   十二、**渐出途中的播放意图赢**：旧 `armVolumeFadeIn` 在 `fadingOut` 期间直接 return，
+ *       连用户的 ▶ 一起扔了 —— 渐出跑完，真暂停照常落地，按播放得到的却是「停住不动」。
+ *       现在 `armFadeIn` 的 `fadingOut` 分支：`pauseSeq++` 作废在途真暂停 + 斜坡就地掉头
+ *       （从当前值平滑升回设定值，不是跳变）+ 重建预约。第 41 轮那条「渐出期间让行」只管
+ *       **自动**路径（'playing' 事件 / 音量直写），用户的按键不在让行之列；
+ *       `fadeOutThenPause` 也只有在「号没变」时才把暂停落地 —— 反例 v17 / v25 / v26。
+ *   十三、**预约时两台引擎一起压 0**：预约卡在「上一首的引擎还没拆、下一首的引擎还没起」
+ *       的窗口里，只压当前激活那台，另一台会带着旧音量起播（渐入第一拍之前先来一声满音量）
+ *       —— 反例 v27。
+ *   十四、**起播预约用自己的兜底期限**（`START_ARM_TIMEOUT_MS` = 6s）：起播要等拿链接 +
+ *       缓冲，'playing' 比恢复播放晚得多，1.5s 那个期限会在出声前就到期 ——
+ *       起播渐入十次有八次白预约 —— 反例 v28。
+ *
  * 为什么必须靠契约脚本：这四条缺陷在编译期、渲染期全合法（Promise 悬挂是运行期语义，
  * 类型检查看不出来），只有「按住锁屏 ⏸ 的那一刻」才炸。谁把斜坡改回「清 interval 不 resolve」、
  * 把渐出起点改回设定音量、把有界等待拆掉、把让行守卫删掉、把兜底期限删掉，脚本立刻红。
@@ -86,6 +124,9 @@ const F = {
   player: 'src/core/player/player.ts',
   remote: 'src/core/init/player/remoteCommand.ts',
   appDelegate: 'ios/LxMusicMobile/AppDelegate.mm',
+  // 【第 51 轮】起播 / 换歌的两条落点与引擎起始增益（渐入链的上游）
+  resourceLoader: 'src/plugins/player/engine/resourceLoader.ts',
+  nativeFlac: 'src/plugins/player/nativeFlac.ts',
 }
 
 const REAL = {}
@@ -102,6 +143,43 @@ const slice = (src, from, to) => {
 }
 
 const countOf = (src, needle) => src.split(needle).length - 1
+
+/**
+ * 取一个「以 `{` 结尾的声明行」的函数体（花括号配平到与之匹配的收尾 `}`）。
+ * 【第 51 轮】固定长度窗口（slice(at, at + 900)）在这个文件里不够用：volumeFade.ts 的
+ * 函数都很短，窗口会伸进下一个函数 —— 「分支不见了」这类断言会被后一个函数里同名形状
+ * 假满足（反例就变成「未拦下」）。传入的必须是 **stripComments 之后**的副本
+ * （块注释已去，整行 // 已去；剩下的行内 // 由扫描器跳过）。
+ */
+const bracedBody = (src, signature) => {
+  const start = src.indexOf(signature)
+  if (start < 0) return null
+  let i = src.indexOf('{', start)
+  if (i < 0) return null
+  let depth = 0
+  let quote = null
+  for (; i < src.length; i++) {
+    const ch = src[i]
+    if (quote != null) {
+      if (ch == '\\') { i++; continue }
+      if (ch == quote) quote = null
+      continue
+    }
+    if (ch == "'" || ch == '"' || ch == '`') { quote = ch; continue }
+    if (ch == '/' && src[i + 1] == '/') {
+      const nl = src.indexOf('\n', i)
+      if (nl < 0) break
+      i = nl
+      continue
+    }
+    if (ch == '{') depth++
+    else if (ch == '}') {
+      depth--
+      if (depth == 0) return src.slice(start, i + 1)
+    }
+  }
+  return null
+}
 
 // ---------------------------------------------------------------------------
 // 一、斜坡取消必须放行（缺陷①的悬挂现场）
@@ -167,6 +245,17 @@ const pauseNeverBlockedInvariants = (src) => {
         + '不许挂在斜坡的成功路径上（第 41 轮缺陷①）')
     }
   }
+  // 【第 51 轮】「无条件执行」只有一条例外：**用户自己后来按下的播放**。`fadeOutThenPause`
+  // 进门领号、放行后对号，号变了就说明这条暂停已被更新的用户意图取代（`armFadeIn` 的掉头
+  // 分支 ++），不落地。少了这一步，渐出途中按 ▶ 得到的是「停住不动」。
+  const seqAt = code.indexOf('const seq = ++pauseSeq')
+  if (seqAt < 0) {
+    reasons.push('fadeOutThenPause 没有给这次暂停领号（缺 `const seq = ++pauseSeq`）：'
+      + '渐出途中用户按下播放时无法判断这条暂停是否已被取代（第 51 轮第 12 条）')
+  } else if (!code.slice(seqAt, seqAt + 400).includes('if (seq != pauseSeq) return')) {
+    reasons.push('fadeOutThenPause 放行后没有对号（缺 `if (seq != pauseSeq) return`）：'
+      + '渐出途中按下播放，暂停还是会落地 —— 用户按 ▶ 得到「停住不动」（第 51 轮第 12 条）')
+  }
   // 反例形状：文件里不许出现「直接 await 斜坡来暂停」的旧写法
   if (code.includes('await rampVolume(targetVolume()')) {
     reasons.push('出现了旧写法 `await rampVolume(targetVolume(), ...)`：渐出起点又用回设定音量'
@@ -194,34 +283,88 @@ const fadeInGuardInvariants = (src) => {
   const reasons = []
   const code = stripComments(src)
 
-  // 三、渐出期间让行
+  // 三、渐入预约：两个入口（恢复 / 起播）都必须走同一条预约体；渐出途中不许把用户的 ▶ 一起扔掉
   const armAt = code.indexOf('export const armVolumeFadeIn = () => {')
   if (armAt < 0) {
     reasons.push('找不到 armVolumeFadeIn')
+  } else if (!code.slice(armAt, armAt + 200).includes('armFadeIn(ARM_TIMEOUT_MS)')) {
+    reasons.push('armVolumeFadeIn 没有走统一的预约体 armFadeIn：渐出途中的掉头守卫 / 兜底期限会缺')
+  }
+  // 【第 51 轮】起播 / 换歌的预约入口：同一个预约体，但要用自己的（更长的）兜底期限
+  const startArmAt = code.indexOf('export const armVolumeStartFadeIn = () => {')
+  if (startArmAt < 0) {
+    reasons.push('找不到 armVolumeStartFadeIn（第 51 轮起播 / 换歌的渐入预约入口）：'
+      + '点歌 / 换歌那条路的新歌还是满音量直接砸出来')
+  } else if (!code.slice(startArmAt, startArmAt + 200).includes('armFadeIn(START_ARM_TIMEOUT_MS)')) {
+    reasons.push('armVolumeStartFadeIn 没有走统一的预约体，或没用自己的兜底期限：'
+      + '起播要等拿链接 + 缓冲，1.5s 期限会在出声前就到期（起播渐入白预约，第 51 轮第 14 条）')
+  }
+  const body = bracedBody(code, 'const armFadeIn = (timeoutMs: number): boolean => {')
+  if (body == null) {
+    reasons.push('找不到 armFadeIn（渐入预约的统一体）')
   } else {
-    const body = code.slice(armAt, armAt + 700)
-    const guardAt = body.indexOf('if (fadingOut) return')
-    const writeZeroAt = body.indexOf('void writeVolume(0)')
-    if (guardAt < 0) {
-      reasons.push('armVolumeFadeIn 没有让行渐出：用户已经按下暂停（渐出中），setPlay 的预约'
-        + '又把在途斜坡掐掉 = 缺陷①的悬挂现场（第 41 轮）')
-    } else if (writeZeroAt >= 0 && guardAt > writeZeroAt) {
-      reasons.push('armVolumeFadeIn 的让行守卫在写 0 之后：顺序不对，音量已经被压下去了')
+    const abortAt = body.indexOf('if (fadingOut) {')
+    if (abortAt < 0) {
+      reasons.push('armFadeIn 没有处理「渐出途中又按播放」：旧实现一让了之，用户的 ▶ 被自己的渐出吞掉'
+        + ' —— 渐出跑完真暂停照常落地，按播放得到的是「停住不动」（第 51 轮第 12 条）')
+    } else {
+      const abortBody = body.slice(abortAt, abortAt + 500)
+      if (!abortBody.includes('pauseSeq++')) {
+        reasons.push('armFadeIn 的渐出途中分支没有作废在途的真暂停（缺 `pauseSeq++`）：'
+          + '用户的播放意图被自己的暂停吞掉（第 51 轮第 12 条）')
+      }
+      if (!abortBody.includes('void rampVolume(targetVolume(), FADE_IN_MS)')) {
+        reasons.push('armFadeIn 的渐出途中分支没有把音量斜坡拉回设定值：应从当前值平滑升回'
+          + '（不是跳变），否则用户听见的是一次爆音（第 51 轮第 12 条）')
+      }
+      if (!abortBody.includes('beginFadeInArm(')) {
+        reasons.push('armFadeIn 的渐出途中分支没有重建预约：掉头之后若没有 \'playing\' 事件，'
+          + '音量会停在半路（兜底期限也没了）')
+      }
     }
-    // 五、渐入兜底期限
+    if (!body.includes('beginFadeInArm(timeoutMs)')) {
+      reasons.push('armFadeIn 没有走统一的预约体 beginFadeInArm：兜底期限会缺（第 41 轮缺陷④）')
+    }
+    if (!body.includes('silenceBothEngines()')) {
+      reasons.push('armFadeIn 没有把两台引擎一起压到 0：预约卡在「上一首的引擎还没拆、下一首的引擎'
+        + '还没起」的窗口里，只压当前激活那台，另一台会带着旧音量起播（第 51 轮第 13 条）')
+    }
+  }
+  const silenceBody = bracedBody(code, 'const silenceBothEngines = () => {')
+  if (silenceBody == null) {
+    reasons.push('找不到 silenceBothEngines（预约时把两台引擎一起压 0 的唯一出口）')
+  } else {
+    const body = silenceBody
+    if (!body.includes('void writeVolume(0)')) {
+      reasons.push('silenceBothEngines 没有压当前激活的那台引擎')
+    }
+    if (!body.includes('TrackPlayer.setVolume(0)')) {
+      reasons.push('silenceBothEngines 没有压**另一台**（AVPlayer）：跨引擎切换的中间态里它会带着旧音量起播')
+    }
+  }
+  // 五、渐入兜底期限（两个入口共用 beginFadeInArm）
+  const beginBody = bracedBody(code, 'const beginFadeInArm = (timeoutMs: number) => {')
+  if (beginBody == null) {
+    reasons.push('找不到 beginFadeInArm（渐入预约的统一体）')
+  } else {
+    const body = beginBody
     if (!code.includes('const ARM_TIMEOUT_MS')) {
       reasons.push('找不到 ARM_TIMEOUT_MS（渐入预约的兜底期限）：预约后没等到 \'playing\' 就永久停在 0 音量，'
         + '表现为「在播但一点声没有、按什么都没反应」（第 41 轮缺陷④）')
     }
-    if (!body.includes('}, ARM_TIMEOUT_MS)')) {
-      reasons.push('armVolumeFadeIn 没有设兜底定时器：预约写 0 之后必须有个到期无条件恢复设定音量的后手'
+    if (!code.includes('const START_ARM_TIMEOUT_MS')) {
+      reasons.push('找不到 START_ARM_TIMEOUT_MS（起播预约的兜底期限）：起播要等拿链接 + 缓冲，'
+        + '用 1.5s 的期限会在出声前就到期 —— 起播渐入白预约（第 51 轮第 14 条）')
+    }
+    if (!body.includes('}, timeoutMs)')) {
+      reasons.push('beginFadeInArm 没有设兜底定时器：预约写 0 之后必须有个到期无条件恢复设定音量的后手'
         + '（第 41 轮缺陷④）')
     }
     if (!body.includes('if (!fadeInArmed) return')) {
-      reasons.push('armVolumeFadeIn 的兜底回调没有「预约已被消费就跳过」的判定（会把渐入播到一半的音量顶到目标值）')
+      reasons.push('beginFadeInArm 的兜底回调没有「预约已被消费就跳过」的判定（会把渐入播到一半的音量顶到目标值）')
     }
     if (!body.includes('void writeVolume(targetVolume())')) {
-      reasons.push('armVolumeFadeIn 的兜底回调没有恢复用户设定音量')
+      reasons.push('beginFadeInArm 的兜底回调没有恢复用户设定音量')
     }
   }
 
@@ -292,12 +435,88 @@ const volumeLedgerInvariants = (src, deps) => {
   } else if (!applyVolume.includes("syncVolumeFadeState(settingState.setting['player.volume'])")) {
     reasons.push('applyCurrentVolume（起播 / 恢复曲重贴音量）没有同步账本：紧接着的渐入会从 0 起步'
       + '（先瘪下去再升上来，多一次音量抖动）')
+  } else if (!applyVolume.includes('isVolumeFadeActive()')) {
+    // 【第 51 轮】起播渐入在途时这里必须整个让行：它写一次用户设定音量，预约好的渐入当场作废
+    reasons.push('applyCurrentVolume（起播重贴音量）没有给在途的渐入让行：预约把两台引擎压到 0 之后'
+      + '这里又写一次用户设定音量，音量落在设定值上，之后的「渐入」斜坡等于重复写同一个值'
+      + '（听感上还是新歌硬起播）—— 第 51 轮第 11 条')
   }
   const restoreVolume = slice(stripComments(deps.service), 'const restoreConfiguredVolume = () => {', 'const registerPlaybackService')
   if (restoreVolume == null) {
     reasons.push('service.ts 里找不到 restoreConfiguredVolume')
   } else if (!restoreVolume.includes("syncVolumeFadeState(settingState.setting['player.volume'])")) {
     reasons.push('打断恢复（duck 回填）的直写没有同步账本：账本脱节会让下一次渐入/渐出的第一拍变成跳变')
+  } else if (!restoreVolume.includes('isVolumeFadeActive()')) {
+    // 【第 51 轮】同一个道理：打断恢复的 duck 回填也会写一次设定音量，预约期间写下去渐入即失效
+    reasons.push('打断恢复（duck 回填）的直写没有给在途的渐入让行：预约把音量压到 0 之后这里又写回'
+      + '用户设定音量，渐入当场作废（第 51 轮第 11 条）')
+  }
+  return reasons
+}
+
+// ---------------------------------------------------------------------------
+// 九（第 51 轮）：斜坡的时长与曲线 —— 「渐入渐出」要真的听得出来
+// ---------------------------------------------------------------------------
+const fadeShapeInvariants = (src) => {
+  const reasons = []
+  const code = stripComments(src)
+
+  const fadeIn = /const FADE_IN_MS = (\d+)/.exec(code)
+  if (fadeIn == null) {
+    reasons.push('找不到 FADE_IN_MS（渐入时长）')
+  } else if (Number(fadeIn[1]) < 400) {
+    reasons.push(`渐入时长太短（${fadeIn[1]}ms）：220ms 级的斜坡只够消爆音，人耳基本只能察觉到`
+      + '「没有咔哒声」，听不出「渐入」—— 用户第 51 轮要的是听得见的效果（第 51 轮第 9 条）')
+  }
+  const fadeOut = /const FADE_OUT_MS = (\d+)/.exec(code)
+  if (fadeOut == null) {
+    reasons.push('找不到 FADE_OUT_MS（渐出时长）')
+  } else if (Number(fadeOut[1]) < 240) {
+    reasons.push(`渐出时长太短（${fadeOut[1]}ms）：160ms 级的斜坡听不出「渐出」（第 51 轮第 9 条）`)
+  }
+  if (!code.includes('const easeVolume = (progress: number) => progress * progress * (3 - 2 * progress)')) {
+    reasons.push('找不到 smoothstep 感知曲线 easeVolume：线性斜坡「一上来就掉一半、尾巴拖得长」，'
+      + '600ms 级的渐入渐出听上去发假（第 51 轮第 9 条）')
+  }
+  if (!code.includes('from + (target - from) * easeVolume(step / steps)')) {
+    reasons.push('斜坡没有走感知曲线（smoothstep）：音量还是线性摊开')
+  }
+  if (!code.includes('const FADE_STEP_MS = 20')) {
+    reasons.push('找不到 FADE_STEP_MS = 20（斜坡档距）：档距一变大，台阶感（zipper 噪声）就回来了')
+  }
+  return reasons
+}
+
+// ---------------------------------------------------------------------------
+// 十（第 51 轮）：起播 / 换歌的渐入链（resourceLoader 两条落点 → 引擎起始增益）
+// ---------------------------------------------------------------------------
+const startFadeChainInvariants = (deps) => {
+  const reasons = []
+  if (deps.resourceLoader == null || deps.nativeFlac == null) {
+    reasons.push('startFadeChainInvariants 缺依赖（resourceLoader / nativeFlac）')
+    return reasons
+  }
+  const loader = stripComments(deps.resourceLoader)
+  const flac = stripComments(deps.nativeFlac)
+
+  if (countOf(loader, 'armVolumeStartFadeIn()') < 2) {
+    reasons.push('resourceLoader 的两条起播落点没有都预约起播渐入（`armVolumeStartFadeIn()` 少于两处）：'
+      + '漏哪条，那条路上的新歌就是满音量硬起播（第 51 轮第 10 条）')
+  }
+  if (!loader.includes('const startFadeArmed = shouldAutoStart && armVolumeStartFadeIn()')) {
+    reasons.push('起播渐入预约没有挂在 shouldAutoStart 上：恢复曲「起播位置但保持暂停」也会被压 0 六秒')
+  }
+  if (!loader.includes('startFadeArmed ? 0 : undefined')) {
+    reasons.push('nativeFlac 起播没有把**起始增益**传 0：openStreamingFlac 会把用户设定音量直接交给'
+      + '原生引擎，预约的渐入当场被覆盖（音量本来就在设定值上，斜坡第一拍等于重复写同一个值）'
+      + '—— 第 51 轮第 10 条')
+  }
+  if (!flac.includes('startVolume?: number')) {
+    reasons.push('startNativeFlacPlayback 的签名里没有 startVolume 参数（引擎起始增益传不进去）')
+  }
+  if (!flac.includes("startVolume ?? settingState.setting['player.volume']")) {
+    reasons.push('startNativeFlacPlayback 没有把 startVolume 交给引擎（缺省必须回退用户设定音量，'
+      + '否则非渐入起播会没声音）')
   }
   return reasons
 }
@@ -513,6 +732,8 @@ const runCounterExamples = () => {
     // 【第 49 轮】命令语义移到 service.ts 的唯一漏斗，链上多这一环
     service: REAL.service,
   }
+  // 【第 51 轮】起播 / 换歌渐入链的两个上游文件
+  const startDeps = { resourceLoader: REAL.resourceLoader, nativeFlac: REAL.nativeFlac }
 
   // v1 斜坡的取消又不放行 Promise（第 39 轮那颗雷原样回归）
   check('v1 斜坡取消不放行 Promise', rampCancelInvariants(
@@ -532,14 +753,15 @@ const runCounterExamples = () => {
   // v4 拆掉有界等待，直接 await 斜坡再暂停（缺陷①的原始形状）
   check('v4 拆掉有界等待直接 await 斜坡', pauseNeverBlockedInvariants(
     tamper(fade,
-      '    await settleWithin(rampVolume(0, FADE_OUT_MS), FADE_OUT_MS + FADE_STEP_MS * 2)\n    await Promise.resolve(pause()).catch(() => {})',
-      '    await rampVolume(0, FADE_OUT_MS)\n    await Promise.resolve(pause()).catch(() => {})'),
+      'await settleWithin(rampVolume(0, FADE_OUT_MS), FADE_OUT_MS + FADE_STEP_MS * 2)',
+      'await rampVolume(0, FADE_OUT_MS)'),
   ), '有界等待')
 
-  // v5 渐出期间不让行（setPlay 的预约会把在途渐出掐掉）
-  check('v5 armVolumeFadeIn 不让行渐出', fadeInGuardInvariants(
-    tamper(fade, '  if (fadingOut) return\n  fadeInArmed = true', '  fadeInArmed = true'),
-  ), '让行渐出')
+  // v5 渐出途中一让了之（用户的 ▶ 被自己的渐出吞掉 —— 旧形状原样回归）
+  check('v5 渐出途中一让了之', fadeInGuardInvariants(
+    tamper(fade, '  if (fadingOut) {\n    // 【第 51 轮】渐出途中收到播放意图',
+      '  if (false) {\n    // 【第 51 轮】渐出途中收到播放意图'),
+  ), '没有处理「渐出途中又按播放」')
 
   // v6 'playing' 又把在途渐入掐掉直写目标（咔哒噪声）
   check("v6 重复 'playing' 打断在途斜坡", fadeInGuardInvariants(
@@ -548,7 +770,7 @@ const runCounterExamples = () => {
 
   // v7 删掉渐入的兜底期限（预约后没等到 'playing' 就永久静音）
   check('v7 删掉渐入兜底期限', fadeInGuardInvariants(
-    tamper(fade, '  }, ARM_TIMEOUT_MS)', '  }, 0)'),
+    tamper(fade, '  }, timeoutMs)', '  }, 0)'),
   ), '兜底定时器')
 
   // v8 账本不记录（斜坡起点永远是错的）
@@ -627,6 +849,82 @@ const runCounterExamples = () => {
       '  return !!id && !id.startsWith(\'nativeflac://\')'),
   }), '空 id')
 
+  // 【第 51 轮】v18 渐入时长改回 220ms（只够消爆音，听不出「渐入」）
+  check('v18 渐入时长改回 220ms', fadeShapeInvariants(
+    tamper(fade, 'const FADE_IN_MS = 600', 'const FADE_IN_MS = 220'),
+  ), '渐入时长太短')
+
+  // 【第 51 轮】v19 渐出时长改回 160ms（听不出「渐出」）
+  check('v19 渐出时长改回 160ms', fadeShapeInvariants(
+    tamper(fade, 'const FADE_OUT_MS = 300', 'const FADE_OUT_MS = 160'),
+  ), '渐出时长太短')
+
+  // 【第 51 轮】v20 斜坡退回线性（smoothstep 被拿掉）
+  check('v20 斜坡退回线性', fadeShapeInvariants(
+    tamper(fade, 'from + (target - from) * easeVolume(step / steps)',
+      'from + (target - from) * (step / steps)'),
+  ), '感知曲线')
+
+  // 【第 51 轮】v21 起播不再预约渐入（点歌 / 换歌又是满音量砸出来）
+  check('v21 起播不预约渐入', startFadeChainInvariants({
+    ...startDeps,
+    resourceLoader: tamper(REAL.resourceLoader,
+      'const startFadeArmed = shouldAutoStart && armVolumeStartFadeIn()', 'const startFadeArmed = false'),
+  }), '没有都预约起播渐入')
+
+  // 【第 51 轮】v22 起播不把起始增益传 0（预约被 openStreamingFlac 顶掉）
+  check('v22 起播不传起始增益 0', startFadeChainInvariants({
+    ...startDeps,
+    resourceLoader: tamper(REAL.resourceLoader, 'startFadeArmed ? 0 : undefined', 'undefined'),
+  }), '起始增益')
+
+  // 【第 51 轮】v23 起播重贴音量不让行（预约好的渐入当场作废）
+  check('v23 起播重贴音量不让行', volumeLedgerInvariants(REAL.fade, {
+    ...deps,
+    core: tamper(REAL.core, "  if (Platform.OS == 'ios' && isVolumeFadeActive()) return\n", ''),
+  }), '没有给在途的渐入让行')
+
+  // 【第 51 轮】v24 打断恢复的 duck 回填不让行（预约压到 0 之后又写回设定音量）
+  check('v24 打断恢复不留让行', volumeLedgerInvariants(REAL.fade, {
+    ...deps,
+    service: tamper(REAL.service, '    if (isVolumeFadeActive()) return\n', ''),
+  }), '没有给在途的渐入让行')
+
+  // 【第 51 轮】v25 渐出途中分支不作废真暂停（用户的 ▶ 被吞）
+  check('v25 渐出途中不作废真暂停', fadeInGuardInvariants(
+    tamper(fade, '    pauseSeq++\n', ''),
+  ), '没有作废在途的真暂停')
+
+  // 【第 51 轮】v26 渐出途中分支不把斜坡拉回去（掉头没了，音量停在半路）
+  check('v26 渐出途中不拉回音量', fadeInGuardInvariants(
+    tamper(fade, '    void rampVolume(targetVolume(), FADE_IN_MS)\n', ''),
+  ), '没有把音量斜坡拉回设定值')
+
+  // 【第 51 轮】v27 预约只压一台引擎（另一台带着旧音量起播）
+  check('v27 预约只压一台引擎', fadeInGuardInvariants(
+    tamper(fade, "  if (Platform.OS == 'ios' && isNativeFlacActive()) void TrackPlayer.setVolume(0).catch(() => {})\n", ''),
+  ), '另一台')
+
+  // 【第 51 轮】v28 起播预约沿用恢复播放的 1.5s 期限（出声前就到期 = 白预约）
+  check('v28 起播沿用恢复播放的期限', fadeInGuardInvariants(
+    tamper(fade, 'return armFadeIn(START_ARM_TIMEOUT_MS)', 'return armFadeIn(ARM_TIMEOUT_MS)'),
+  ), '没有走统一的预约体，或没用自己的兜底期限')
+
+  // 【第 51 轮】v29 起播预约不再挂在 shouldAutoStart 上（恢复曲「起播但保持暂停」也被压 0）
+  check('v29 起播预约不再看 shouldAutoStart', startFadeChainInvariants({
+    ...startDeps,
+    resourceLoader: tamper(REAL.resourceLoader,
+      'const startFadeArmed = shouldAutoStart && armVolumeStartFadeIn()',
+      'const startFadeArmed = armVolumeStartFadeIn()'),
+  }), '没有挂在 shouldAutoStart 上')
+
+  // 【第 51 轮】v30 引擎起始增益没接上（预约到不了原生引擎）
+  check('v30 引擎没接 startVolume', startFadeChainInvariants({
+    ...startDeps,
+    nativeFlac: tamper(REAL.nativeFlac,
+      "startVolume ?? settingState.setting['player.volume']", "settingState.setting['player.volume']"),
+  }), '没有把 startVolume 交给引擎')
+
   return results
 }
 
@@ -637,14 +935,21 @@ const runCounterExamples = () => {
 console.log('=== sim-remote-command-volume-fade ===')
 console.log('锁屏 / 灵动岛按键不许被音量斜坡吞掉：斜坡取消必放行 + 暂停无条件执行 + 渐出期间让行'
   + ' + 重复 playing 不打断 + 渐入有兜底期限 + 音量账本同步（第 41 轮）')
+console.log('播放 / 暂停的渐入渐出要真的听得见：斜坡够长 + smoothstep 曲线 + 起播也渐入'
+  + '（含引擎起始增益）+ 在途渐入不被外部直写顶掉 + 渐出途中用户按 ▶ 赢（第 51 轮）')
 console.log()
 
 const checks = [
   ['斜坡取消必须放行 Promise（clearInterval 唯一出口，取消/完成共用 stopRamp）', () => rampCancelInvariants(REAL.fade)],
   ['锁屏暂停绝不依赖斜坡（有界等待 + 无条件执行真暂停 + 起点取当前实际音量）', () => pauseNeverBlockedInvariants(REAL.fade)],
-  ['渐出期间让行 + 重复 playing 不打断在途斜坡 + 渐入预约有兜底期限', () => fadeInGuardInvariants(REAL.fade)],
-  ['音量账本：斜坡起点取 currentVolume，三处外部直写都同步（音量条 / 换曲重贴 / 打断恢复）',
-    () => volumeLedgerInvariants(REAL.fade, { utils: REAL.utils, core: REAL.core, service: REAL.service })],
+  ['渐入预约统一体（恢复 / 起播两个入口）：渐出途中让位于用户的 ▶ + 预约有兜底期限'
+    + ' + 预约时两台引擎一起压 0', () => fadeInGuardInvariants(REAL.fade)],
+  ['音量账本：斜坡起点取 currentVolume，三处外部直写都同步（音量条 / 换曲重贴 / 打断恢复）'
+    + '且在途渐入期间一律让行', () => volumeLedgerInvariants(REAL.fade, { utils: REAL.utils, core: REAL.core, service: REAL.service })],
+  ['第 51 轮·斜坡时长与感知曲线（渐入 600ms / 渐出 300ms + smoothstep，档距 20ms）',
+    () => fadeShapeInvariants(REAL.fade)],
+  ['第 51 轮·起播 / 换歌的渐入链（resourceLoader 两条落点 + 引擎起始增益 startVolume）',
+    () => startFadeChainInvariants({ resourceLoader: REAL.resourceLoader, nativeFlac: REAL.nativeFlac })],
   ['整条链不许断：锁屏 ⏸/▶ → player → utils → 渐入渐出（controller 三处落点）',
     () => chainInvariants({
       player: REAL.player, utils: REAL.utils, controller: REAL.controller, remote: REAL.remote,

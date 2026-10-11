@@ -231,8 +231,19 @@ const reclaimInvariants = (raw) => {
   const mixSlice = sliceFn(code, '      if (isPlayWithOthers()) {', '\n      if (ducking) {')
   if (mixSlice == null) {
     reasons.push('service.ts 找不到混音策略分支（if (isPlayWithOthers())）')
-  } else if (countOf(mixSlice, 'scheduleMixReclaim()') !== 2) {
-    reasons.push(`混音分支的布防次数不是 2（现为 ${countOf(mixSlice, 'scheduleMixReclaim()')}）：打断开始与结束各需一次，缺任一次都会留下「状态在播、没有声音」`)
+  } else {
+    if (countOf(mixSlice, 'scheduleMixReclaim()') !== 2) {
+      reasons.push(`混音分支的布防次数不是 2（现为 ${countOf(mixSlice, 'scheduleMixReclaim()')}）：打断开始与结束各需一次，缺任一次都会留下「状态在播、没有声音」`)
+    }
+    // 【第 50 轮】「结束」分支的**即时重取**：Ended 是本机唯一「对方已释放」信号。
+    // 只靠阶梯首拍（1000ms）时用户先听到的是「进度条在加载但是短暂几秒没有声音」
+    // （用户第 50 轮第 2 条原话）。scheduleAutoResume 在勾选态下会因 isPlay 仍为真
+    // 直接早退（我们从不对外呈现暂停），所以现场必须有一条与阶梯同一原语、同一组
+    // 闸门（停止 / 已不在播 / 手动暂停）的重取。
+    if (!mixSlice.includes('if (!global.lx.isPlayedStop && playerState.isPlay && !isManualPause()) play()')) {
+      reasons.push('混音分支的「结束」分支缺即时重取 play()（Ended 是唯一「对方已释放」信号；'
+        + '只靠阶梯首拍 = 用户先听到几秒无声，正是第 50 轮第 2 条要治的）')
+    }
   }
 
   if (countOf(code, 'scheduleMixReclaim()') !== 3) {
@@ -377,10 +388,24 @@ const runCounterExamples = () => {
   '未撤销重取阶梯')
 
   // r5 首次重取太密（会话交接期抢会话必失败）
+  // 【第 50 轮】延时表前压成 [1000, 2500, 4000, 5500, 7000, 9000]（同播时前几秒没声音的修复），
+  // 锚点必须跟着新字面量走，否则 tamper 未命中会直接抛错、反例失效。
   check('r5 延时表首次重取太密', () => reclaimInvariants(tamper(REAL.service,
-    'const MIX_RECLAIM_DELAYS = [1200, 3000, 7000, 15000]',
+    'const MIX_RECLAIM_DELAYS = [1000, 2500, 4000, 5500, 7000, 9000]',
     'const MIX_RECLAIM_DELAYS = [50, 50]')),
   '太密')
+
+  // r6 「结束」分支丢即时重取（对方一松手不现场抢回输出，用户先听到几秒无声）
+  check('r6 结束分支丢即时重取', () => reclaimInvariants(tamper(REAL.service,
+    '        if (!global.lx.isPlayedStop && playerState.isPlay && !isManualPause()) play()\n',
+    '')),
+  '即时重取')
+
+  // r7 即时重取被改成无条件 play()（用户手动暂停 / 停止后也会被抢着出声）
+  check('r7 即时重取丢了闸门', () => reclaimInvariants(tamper(REAL.service,
+    'if (!global.lx.isPlayedStop && playerState.isPlay && !isManualPause()) play()',
+    'play()')),
+  '即时重取')
 
   // k1 原生默认值翻成 YES（未勾选也走混音 ⇒ 未勾选就进混音会话）
   check('k1 原生默认值翻成 YES', () => nativeInvariants(tamper(REAL.native,
