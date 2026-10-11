@@ -117,21 +117,26 @@ const initial = async({ volume, playRate, cacheSize, isHandleAudioFocus, isEnabl
     // 第 24 轮已定案，播放中重建播放器会让锁屏 / 灵动岛卡片消失、原生引擎有进度没声音。
     audioOffload: isEnableAudioOffload,
     autoUpdateMetadata: false,
-    // iOS 音频会话：RNTP / AVPlayer 这条路径（非无损档）**始终**标准 Playback、非混音。
-    // 【第 24 轮】原先「同时播放 ⇒ iosCategoryOptions 带混音」是一条死路，用户实锤两个现象：
-    //   ① 混音（mixable 会话）会让本应用失去 Now Playing 主会话资格 —— 锁屏 /
-    //      灵动岛播放卡片当场消失；
-    //   ② 它与原生流式引擎 prepareAudioSession 的 LongFormAudio 路由策略互斥
-    //      （setCategory 报 -50），会话被停用后表现为「歌曲在走、没有声音」。
-    // 【第 33 轮第 4 条】用户把①反转为需求（勾选后**就是要**退出灵动岛 / 锁屏占用），
-    // 但②仍然成立，且这条 RNTP 路径的分类是在 setupPlayer 时定死的、运行期改分类要
-    // updateOptions 重设激活态会话（第 24 轮实锤的 -50 禁区），因此这里保持非混音不变：
-    // 勾选后的「卡片退出」由 nowPlaying 抑制开关完成，「不停播」由 service.ts 的混音分支
-    // + 有界重取阶梯兜底；真正的「同时出声」落在原生流式引擎（无损档）的
-    // prepareAudioSession 混音分支（AppDelegate.mm，同一轮一起改）。
+    // iOS 音频会话：RNTP / AVPlayer 这条路径（非无损档）的分类由**设置**决定。
+    // 【第 61 轮第 2 条】勾选「与其他应用同时播放」时带 MixWithOthers。不带混音时系统会真
+    // 打断我们的会话、AVPlayer 真被暂停，JS 侧的策略只能「不把暂停呈现出来」，声音回不来 ——
+    // 用户第 61 轮原话「与其他应用同时播放的功能还是无法实现，其他音频播放时，歌曲就自动
+    // 暂停了，无法实现继续播放的效果」。混音会话下系统不再打断我们，才是这条功能真正的落点。
+    // 与第 24 轮那两条实锤的关系（为什么现在可以这么写）：
+    //   ① 「mixable 会话 ⇒ 锁屏 / 灵动岛卡片消失」—— 第 33 轮起用户已把这条**反转为需求**
+    //      （勾选后就是要退出灵动岛占用），卡片那半边由 nowPlaying 抑制开关落地；不勾选时
+    //      这里仍是 []（非混音），卡片照旧在。
+    //   ② 「与原生引擎的 LongFormAudio 路由策略互斥（setCategory 报 -50）」—— 冲突的前提是
+    //      两边口径不一致；现在两边读同一个设置：勾选时原生 prepareAudioSession 也走
+    //      MixWithOthers + RouteSharingPolicyDefault（AppDelegate.mm，LXPlayWithOthersEnabled
+    //      守卫），LongFormAudio 与混音不再同时出现；不勾选时这里非混音、原生走 LongFormAudio。
+    // 仍然不许的只有第 24 轮那个禁区别名：**运行期**改分类（destroy / setupPlayer / 重设激活
+    // 态会话）。取值只在 setupPlayer 这一刻算，切换设置走 syncPlayWithOthersEnabled（只写原生
+    // 标记 + 重配原生那条会话）。代价如实记录：RNTP 这条路径的口径要等**下一次初始化播放器**
+    // 才换上（勾选当场改变的是卡片占用与无损档的会话；无损档本来就是立即生效）。
     // 参考分支面向安卓，未声明这两项；iOS 缺少它会丢失音频会话配置。
     iosCategory: 'playback',
-    iosCategoryOptions: [],
+    iosCategoryOptions: isHandleAudioFocus ? [] : ['MixWithOthers'],
   } as any)
   global.lx.playerStatus.isInitialized = true
   global.lx.playerStatus.isIniting = false

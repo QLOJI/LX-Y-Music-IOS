@@ -1,6 +1,6 @@
 import { Platform } from 'react-native'
 import TrackPlayer from 'react-native-track-player'
-import { isNativeFlacActive, setNativeFlacVolume } from './nativeFlac'
+import { getNativeFlacState, isNativeFlacActive, setNativeFlacVolume } from './nativeFlac'
 import settingState from '@/store/setting/state'
 
 /**
@@ -143,25 +143,34 @@ import settingState from '@/store/setting/state'
 const FADE_IN_MS = 600
 /**
  * 渐出时长：从当前音量降到 0 的总时长（毫秒）；暂停跟着它延后这么多。
- * 【第 51 轮】160 → 300。【第 60 轮第 4 条】300 → 700 —— 用户原话「自动暂停和自动播放
- * 也要沿用渐入渐出的效果，和手动暂停和播放一样，渐出的时间加长一点，声音由小变大」。
+ * 【第 51 轮】160 → 300。【第 61 轮第 1 条】700 → 300 —— 回滚第 60 轮的加长。
+ * 用户第 61 轮原话「越改越乱，就连点击暂停播放按钮显示都有延迟了，需要还原」：真暂停跟在
+ * 斜坡之后（锁屏 / 灵动岛进度条停住、按钮变 ▶、**以及界面上的暂停状态翻转**都在那之后），
+ * 斜坡多长，那一拍就多晚 —— 700ms 是能被眼睛看出来的延迟，300ms 才是用户认可的取值。
  * 这条斜坡同时服务**手动暂停**与**自动暂停**（service.ts 的打断暂停走同一个 setPause →
- * fadeOutThenPause，Android 除外），所以加长一处两边一起变，正是「和手动暂停一样」。
- * 取 700 而不是与渐入的 600 等长：用户要的是「渐出的时间加长一点」，比渐入略长才听得出来；
- * 也刻意不再往上加 —— 真暂停跟在斜坡之后（锁屏进度条停住 / 按钮变 ▶ 都在那之后）。
- * 原生侧不另做渐出（系统打断当下已把我们的输出压住，白做），而是把「停引擎 / 掐渲染 /
- * 清出声记账」整组推迟到 `LXInterruptionPauseDeferMs`（900ms = 700 + 200 余量）—— 让这条
- * 700ms 的斜坡先把音量平滑降下去，两边同拍（见 AppDelegate.mm 的 scheduleInterruptionPauseFallback）。
+ * fadeOutThenPause，Android 除外），所以它必须短：它是「消爆音 + 柔化收尾」的料，不是特效。
+ * 原生侧不另做渐出，也不再有「等斜坡跑完」的推迟：第 60 轮的 LXInterruptionPauseDeferMs +
+ * scheduleInterruptionPauseFallback 已整体撤掉，打断当下按第 47 轮口径当场停引擎 / 掐渲染
+ *（打断期间系统本来就把我们的输出压住了，那条斜坡根本听不见，为它多等一秒纯亏）。
  */
-const FADE_OUT_MS = 700
-/** 每档之间的间隔（毫秒）：20ms 一档 ≈ 30 档渐入 / 35 档渐出，人耳已是连续变化 */
+const FADE_OUT_MS = 300
+/** 每档之间的间隔（毫秒）：20ms 一档 ≈ 30 档渐入 / 15 档渐出，人耳已是连续变化 */
 const FADE_STEP_MS = 20
 /**
  * 渐入预约的兜底期限（毫秒）【第 41 轮缺陷④】：预约后这么久还没等到 'playing'
  * （引擎没跨门槛 / 事件丢了 / 该路径没走 controller），无条件把音量恢复成用户设定值 ——
  * 宁可少一次渐入，也绝不留「在播但一点声没有」。用于**恢复播放**（引擎已就绪，很快出声）。
+ * 【第 61 轮第 4 条】到点前先看一眼引擎在干什么：还在 loading / buffering 就再等一档
+ *（见 beginFadeInArm 的续期与 ARM_RENEW_LIMIT），已出声就补一次渐入而不是一记跳回设定值。
  */
 const ARM_TIMEOUT_MS = 1_500
+/**
+ * 渐入预约的续期次数上限【第 61 轮第 4 条】。到点时引擎仍在 loading / buffering（原生流式
+ * 恢复要重设会话 + 重启引擎 + 重新缓冲，常超过一个兜底期限）就按同样的时长再等一档，最多
+ * 这么多档 ⇒ 总等待上限 = ARM_TIMEOUT_MS * (1 + ARM_RENEW_LIMIT)。上限是「绝不能永久静音」
+ * 这条死规矩的护栏：续完这几档无条件落地，宁可少一次渐入，也绝不留「在播但一点声没有」。
+ */
+const ARM_RENEW_LIMIT = 3
 /**
  * 起播预约的兜底期限（毫秒）【第 51 轮】：换歌 / 点歌要先拿链接、再等缓冲，'playing'
  * 比恢复播放晚得多（几秒是常态）。用 1.5s 那个期限会让预约在出声前就到期 —— 起播渐入
@@ -178,6 +187,13 @@ let fadeResolve: (() => void) | null = null
 let armTimer: ReturnType<typeof setTimeout> | null = null
 /** 是否已被 setPlay / 起播预约了「下一次播放开始时渐入」 */
 let fadeInArmed = false
+/** 本次预约已经续期的档数【第 61 轮第 4 条】，上限见 ARM_RENEW_LIMIT */
+let armRenewals = 0
+/**
+ * 预约代数【第 61 轮第 4 条】：每次新建预约 ++。到点的引擎探针是异步的，回来时只认自己
+ * 那一代 —— 否则「探针在途、用户又按了播放」的新预约会被上一代的结果一记写回设定值。
+ */
+let armGeneration = 0
 /** 渐出进行中【缺陷②③】：期间不许任何「渐入 / 直写」把音量顶回去或掐掉在途斜坡 */
 let fadingOut = false
 /**
@@ -235,6 +251,23 @@ const silenceBothEngines = () => {
  * 后面的「真暂停」就永远不执行 —— 锁屏/灵动岛 ⏸ 点了没反应就是这么来的。
  * 取消与正常跑完共用这一个出口。
  */
+/**
+ * 【第 61 轮第 4 条】引擎此刻到底在干什么（哪一台在驱动就问哪一台）。
+ * 给渐入预约的到点复核用：只有 'playing' 才算「已经在出声」，'loading' / 'buffering' 是
+ * 「还没起 / 还在重填」——两者的处置完全相反（前者补渐入，后者续期）。
+ * 探针失败一律 'unknown' —— 调用方按「不走运就按老口径落地」处理，绝不因此卡住音量。
+ * 与 utils.ts 的同名分发同口径（此处不 import 以免成环，理由见文件头）。
+ */
+const probeEngineState = async(): Promise<string> => {
+  if (Platform.OS != 'ios') return 'unknown'
+  try {
+    if (isNativeFlacActive()) return await getNativeFlacState()
+    return await TrackPlayer.getState()
+  } catch {
+    return 'unknown'
+  }
+}
+
 const stopRamp = () => {
   if (fadeTimer != null) {
     clearInterval(fadeTimer)
@@ -298,17 +331,51 @@ const rampVolume = (to: number, durationMs: number): Promise<void> => {
 
 /**
  * 预约「下一次播放开始时渐入」的公共体：置标记 + 上兜底期限。
- * 到点还没被 'playing' 消费（`applyVolumeOnPlayStart`）就无条件恢复设定音量【缺陷④】。
+ * 到点还没被 'playing' 消费（`applyVolumeOnPlayStart`）【缺陷④】：
+ *   · 引擎还在 loading / buffering → **续期**（最多 ARM_RENEW_LIMIT 档）；
+ *   · 引擎已经在出声（'playing' 事件丢了 / 该路径没走 controller）→ 补一次渐入斜坡；
+ *   · 其它（idle / paused / stopped / 探针失败）→ 无条件恢复设定音量。
+ *
+ * 【第 61 轮第 4 条】为什么到点不能直接硬写：用户原话「自动播放没有渐出效果」。自动续播
+ * 的对面是**原生先重启引擎并重发 'playing'**（重设会话 + 重启引擎 + 重新缓冲），这条链常
+ * 超过一个 1.5s 的兜底期限 —— 旧实现到点无条件写设定音量，于是预约先到期、音量已经回到
+ * 设定值，紧随其后的 'playing' 拿一个「账本 ≈ 目标值」的现场做斜坡，被 MIN_RAMP_DELTA 短路
+ * 成直写：用户听到的是「一记满音量」，不是由小变大。续期是**只晚不丢**：总等待上限 = 一个
+ * 起播预约的期限量级（ARM_TIMEOUT_MS × (1 + ARM_RENEW_LIMIT) = 6s = START_ARM_TIMEOUT_MS），
+ * 到顶无条件落地 —— 「绝不留『在播但一点声没有』」这条死规矩一个字不让。
  */
 const beginFadeInArm = (timeoutMs: number) => {
   fadeInArmed = true
+  armRenewals = 0
   clearArmTimer()
-  armTimer = setTimeout(() => {
-    armTimer = null
-    if (!fadeInArmed) return
-    fadeInArmed = false
-    void writeVolume(targetVolume())
-  }, timeoutMs)
+  const generation = ++armGeneration
+  const settle = () => {
+    armTimer = setTimeout(() => {
+      armTimer = null
+      if (!fadeInArmed) return
+      void (async() => {
+        const state = await probeEngineState()
+        // 探针在途期间：预约可能已被 'playing' 消费、被暂停撤销，或又被下一次预约取代。
+        // 只有「这一代仍是当前那一代」才允许由本回调落地（否则会把新预约的渐入顶掉）。
+        if (generation != armGeneration) return
+        if (!fadeInArmed) return
+        if ((state == 'loading' || state == 'buffering') && armRenewals < ARM_RENEW_LIMIT) {
+          armRenewals++
+          settle()
+          return
+        }
+        fadeInArmed = false
+        armRenewals = 0
+        if (state == 'playing') {
+          // 已经在出声、只是没等到事件：补一次由小变大（从压住的 0 起），而不是一记跳回设定值
+          void rampVolume(targetVolume(), FADE_IN_MS)
+          return
+        }
+        void writeVolume(targetVolume())
+      })()
+    }, timeoutMs)
+  }
+  settle()
 }
 
 /**

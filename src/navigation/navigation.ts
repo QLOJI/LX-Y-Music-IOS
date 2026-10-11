@@ -17,7 +17,7 @@ import commonState from '@/store/common/state'
 import commonActions from '@/store/common/action'
 import { COMPONENT_IDS } from '@/config/constant'
 import { getStatusBarStyle } from './utils'
-import { beginNavRevealWindow, clearNavRevealWindow, endNavRevealWindow } from './revealWindow'
+import { beginNavTransitionWindow } from './transitionWindow'
 import { type ListInfoItem } from '@/store/songlist/state'
 import { getCachedBgPicColor } from '@/utils/nativeModules/utils'
 
@@ -42,49 +42,19 @@ interface StartPushOptions {
    */
   recoverStaleTop?: boolean
 }
-// ---- 转场窗口（2026-10-01 开窗；2026-10-02 拆成「push 开 / pop 关」两端）----
+// ---- 转场窗口 ----
 // 现象：每次切换画面（进详情页 / 返回），底部 tab 栏和迷你播放器都会短暂闪一下。
 // 原因：玻璃每帧都在采「自己背后那一块屏幕」当折射源，而转场期间那块背景是
 // 「旧页正在滑走 + 新页正在盖上来」的中间态——采进胶囊就是那一下。省电门
 // （useHomeCovered / useScreenCovered）只在**账本变化**时暂停：push 时新页
 // setComponentId 发生在它自己 mount 之后（转场已经开始若干帧），pop 时
 // screenPopped 事件也早于转场结束，两头都盖不住整段转场。
-// 2026-10-02（用户第 5 条）按方向拆开——两个方向上玻璃的处境相反：
-//   · push：玻璃正在被盖住。在**发起的那一刻**按住（beginNavTransitionWindow），
-//     按 RNN 系统默认转场时长（iOS 默认 0.35s）留一段窗口罩住整段转场。
-//     此时按住的代价不可见（玻璃本来就在滑出视野）。
-//   · pop：玻璃正在被露出来。事件到达时**立即释放**（endNavTransitionWindow），
-//     不再续期。续期等于让 Home 的 tab 栏/迷你播放器在整段返回动画之外再多显示
-//     420ms 的陈旧纹理（push 之前采到的那一帧），窗口到点才整体跳到当前画面——
-//     用户原话「底部透过的画面短暂刷新，突然变了一下」。立即释放后，玻璃在返回
-//     动画期间就按当前画面重新采样，露出多少就是多少实时。
-const NAV_TRANSITION_SETTLE_MS = 420
-let navTransitionTimer: ReturnType<typeof setTimeout> | null = null
-function beginNavTransitionWindow() {
-  if (navTransitionTimer) clearTimeout(navTransitionTimer)
-  // push 方向与 pop 相反：玻璃正在被盖住，在途的「露出门」必须立即作废，
-  // 否则它会把这次 push 要按住的暂停按掉（见 revealWindow.clearNavRevealWindow）。
-  clearNavRevealWindow()
-  commonActions.setNavTransitioning(true)
-  navTransitionTimer = setTimeout(() => {
-    navTransitionTimer = null
-    commonActions.setNavTransitioning(false)
-  }, NAV_TRANSITION_SETTLE_MS)
-}
-// 返回（pop）路径：立即关窗（清掉在途定时器 + 置 false）。
-// screenPopped 事件可能落在返回转场的开头——越早释放，玻璃越早开始按当前画面重采，
-// 整段返回动画都是实时画面；也可能落在结尾——此时立即恢复，不再多等一整个 420ms。
-// 只影响「何时恢复渲染」，不削弱 push 侧需要罩住的那一段。
-// 注：账本（useScreenCovered / useHomeCovered）与这条窗口是两个独立来源，且同一个
-// screenPopped 处理里先后释放——两者都置 false 之后玻璃才真正恢复渲染。
-function endNavTransitionWindow() {
-  if (navTransitionTimer) {
-    clearTimeout(navTransitionTimer)
-    navTransitionTimer = null
-  }
-  commonActions.setNavTransitioning(false)
-}
-
+//
+// 2026-10-02（用户第 5 条）~ 第 60 轮：push 侧按住、pop 侧**立即释放**（越早释放玻璃
+// 越早按当前画面重采）；第 52 / 56 / 58 轮还给返回加了「露出门」，让玻璃在转场开始前
+// 就复位重采。**第 61 轮整体反转**（用户原话「当我右滑时，底部 tab 栏和迷你播放器栏
+// 透过的画面是由右向左滑入的，这个方向是反的，需要改」）：pop 侧改成**与 push 一样
+// 按住整段转场**，露出门整条删除。理由与历史写在 navigation/transitionWindow.ts。
 const startPush = (id: COMPONENT_IDS, options: StartPushOptions = {}) => {
   if (pendingPushes.has(id)) return false
   if (isTopScreen(id)) {
@@ -108,49 +78,12 @@ const endPush = (id: COMPONENT_IDS) => { pendingPushes.delete(id) }
 export const handleScreenPopped = (componentId: string) => {
   const target = commonState.componentIds.find(item => item.id === componentId)
   commonActions.removeComponentId(componentId)
-  // 2026-10-02（用户第 5 条）：返回不再**续期**转场窗口，改为**立即释放**——
-  // 续期会让底部玻璃在整段返回动画之外多显示 420ms 陈旧画面，返回完成后突然跳一下。
-  // 详见 endNavTransitionWindow 的说明。
-  endNavTransitionWindow()
-  // 露出门收尾（2026-10-11，第 52 轮第 2 条）：本事件到达只说明「账本可以收尾了」，
-  // 而账本（上一行 removeComponentId）与本站状是两个更新源，所以关门在 revealWindow
-  // 里延后一个宏任务落地——保证账本先翻，之后关门是无边沿的 false → false，
-  // 绝不会在收尾这一帧把玻璃重新按回暂停（那正是用户看到的「返回末尾闪一下」）。
-  // 系统边缘返回手势（不经过 JS 的 pop 三入口）也在这里被兜到：开门没赶上，
-  // 但关门必须落，否则露出门会一直开着、玻璃不再省电。
-  endNavRevealWindow()
+  // 【第 61 轮第 3 条】返回侧改为**续期按住**（原先是「立即释放」，见文件头的历史）。
+  // 本事件是「系统边缘返回手势」唯一的 JS 锚点（那条路径不经过 utils 的三个 pop
+  // 入口，开不出窗口），而它可能落在转场开头也可能落在结尾 ⇒ 在这里统一续期一整段
+  // 转场，保证整个返回过程中玻璃都保持返回前那一帧、绝不在转场中采到正在滑走的那一页。
+  beginNavTransitionWindow()
   if (target) endPush(target.name)
-}
-/**
- * 返回方向的**提前锚点**（2026-10-11，第 56 轮第 2 条）。
- *
- * 现象（用户原话）：「当我返回主界面或者从某个界面返回到有底部tab栏和迷你播放器栏的
- * 界面时，返回有点击左上角返回按钮、右滑返回等情况，底部tab栏和迷你播放器栏会在返回
- * 动画结束时出现闪烁一次」。
- *
- * 为什么按钮那条路径已经好了、右滑还是闪：露出窗口只在 JS 派发的 pop 三入口里开
- *（navigation/utils 的 revealBeforePop），而**右滑返回不经过 JS**（revealWindow 的文件头
- * 逐字承认这一点）——整段转场里露出门都没开过 ⇒ 玻璃全程被覆盖门按着（冻结）⇒ 只有
- * screenPopped（动画结束）才复位。于是「冻结 → 复位」这一个边沿正好落在动画收尾处，
- * 用户看到的就是那一下闪烁。
- *
- * 本函数由 index.ts 注册的 componentWillAppear 监听器调用 —— 该事件在**转场动画开始之前**
- * 触发（官方口径），比 screenPopped 早一整段动画，正好把同一个边沿挪到动画开始处：
- * 玻璃的复位与首帧采景都发生在页面还盖着它的时候，等动画把玻璃露出来时画面已经是实时的。
- *
- * 判据 = 「即将出现的这一屏在账本里、且不是栈顶」：
- *   · pop：被露出的那一屏早就在账本里（它的 setComponentId 发生在它 push 时），而账本
- *     要等 screenPopped 才会摘掉被关掉的那一屏 —— 于是它此刻必然「在账本里且不是栈顶」；
- *   · push：新页正被 append 到账本末尾，它自己出现时正是栈顶 ⇒ 本条不成立，不会误开
- *     （push 方向要的是**按住**玻璃，见 beginNavTransitionWindow）。
- * 判据不成立（新屏首次挂载、账本里没有它）时什么都不做，行为与改动前一致。
- * 误开的代价有界：露出门自带 NAV_REVEAL_TIMEOUT_MS 兜底，到点自动关门。
- */
-export const handleScreenWillAppear = (componentId: string) => {
-  const ids = commonState.componentIds
-  const index = ids.findIndex(item => item.id === componentId)
-  if (index < 0 || index === ids.length - 1) return
-  beginNavRevealWindow()
 }
 
 const guardPush = async(promise: Promise<string> | undefined, id: COMPONENT_IDS): Promise<void> => {

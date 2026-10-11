@@ -38,16 +38,8 @@ export default class Event {
   }
 }
 
-// export class App_EVENT {
-//   listeners: Map<string, Array<() => void>>
-//   constructor() {
-//     this.listeners = new Map()
 //   }
 
-//   on(eventName: string, listener: () => void) {
-//     let targetListeners = this.listeners.get(eventName)
-//     if (targetListeners) this.listeners.set(eventName, targetListeners = [])
-//     targetListeners!.push(listener)
 //   }
 
 //   off(eventName: string, listener: () => void) {

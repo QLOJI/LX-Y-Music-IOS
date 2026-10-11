@@ -426,7 +426,18 @@ const registerPlaybackService = async() => {
         // play()（与阶梯同一原语：nativeFlac 路径落到原生 resume，引擎已在播时幂等）
         // 现场拉回；四道闸门与阶梯逐条对齐：停止 / 已不在播 / 手动暂停一律不抢，
         // 取消勾选（isPlayWithOthers 变假）时本分支压根不会走到。
-        if (!global.lx.isPlayedStop && playerState.isPlay && !isManualPause()) play()
+        if (!global.lx.isPlayedStop && playerState.isPlay && !isManualPause()) {
+          // 【第 61 轮第 4 条】重取输出之前先立渐入预约（用户原话「自动播放没有渐出效果」）。
+          // 这一支是勾选态下**唯一**能出声的重取落点，而它此前没有任何渐入：音量账本从没被
+          // 压低（勾选态不暂停、不渐出），紧接着的 'playing' 走 applyVolumeOnPlayStart 的
+          // 未预约分支，斜坡被 MIN_RAMP_DELTA 短路成直写 —— 对方一松手，我们的声音就是一记
+          // 满音量砸回来，正是用户第 56 轮报的「自动播放很快，声音突然很大」。
+          // 此刻按下 0 不会有听感损失：打断期间系统本来就压着我们的输出，而预约的到点复核
+          // （beginFadeInArm → probeEngineState）保证「引擎已出声 / 已停摆 / 探针失败」都会
+          // 在 1.5s 内无条件把音量放回设定值 —— 只可能少一次渐入，绝不留静音洞。
+          armVolumeFadeIn()
+          play()
+        }
         return
       }
       if (ducking) {

@@ -1,5 +1,5 @@
 import { Navigation } from 'react-native-navigation'
-import { beginNavRevealWindow, NAV_REVEAL_LEAD_MS } from './revealWindow'
+import { beginNavTransitionWindow } from './transitionWindow'
 import { VERSION_MODAL, PACT_MODAL, SYNC_MODE_MODAL, ANNOUNCEMENT_MODAL } from './screenNames'
 import themeState from '@/store/theme/state'
 import syncState from '@/store/sync/state'
@@ -48,22 +48,21 @@ export const dismissOverlay = async(compId: string) => {
 // 永不调用 completeTransition，会把整个导航栈卡死。全 app 的 push/pop 统一走系统默认
 // 动画，由 UIKit 处理打断，无此问题（详见 navigation.ts pushPlayDetailScreen 注释）。
 //
-// 2026-10-11（第 52 轮第 2 条）：这三个是**全 app 返回按钮的唯一入口**，统一在这里
-// 「先开玻璃露出门、让出一帧、再派发命令」——顺序不能反（见 revealWindow.ts 的长注释）：
-//   · 开门放在 Navigation.* 之前：玻璃的省电门读的是账本（componentIds），账本要等
-//     screenPopped 才翻，晚于用户按下返回。不提前开门，复位与首帧采景就落在返回转场
-//     中间/末尾 ⇒ 用户看到「返回动画结束时闪一下，然后透过的画面才刷新」。
-//   · 让出一帧（NAV_REVEAL_LEAD_MS）：开门只是 JS 状态更新，要等 React 提交 + RN 桥
-//     把 paused=false 送到原生才会复位；不让帧则原生命令可能抢先，又回到转场中间重采。
-const revealBeforePop = <T>(run: () => Promise<T>): Promise<T> => {
-  beginNavRevealWindow()
-  return new Promise<void>((resolve) => {
-    setTimeout(() => { resolve() }, NAV_REVEAL_LEAD_MS)
-  }).then(run)
+// 【第 61 轮第 3 条】这三个是**全 app 返回按钮的唯一入口**，统一在这里「先开转场窗口、
+// 再派发命令」——开窗必须在 Navigation.* 之前（见 navigation/transitionWindow.ts）：
+// 玻璃的省电门读的是账本（componentIds），账本要等 screenPopped 才翻，晚于用户按下返回；
+// 不在派发前开窗，返回转场里玻璃就会逐帧采到「正在滑走的那一页」，透过的画面反向流。
+//
+// 第 52 轮在这里加过一道「让出一帧（32ms）」——那是为了赶在 pop 之前把**复位重采**
+// 推给原生（露出门时代的做法）。现在返回方向要的是**按住**（不采景），JS 状态晚一两帧
+// 落下去也仍然盖得住整段转场，所以这道延时连同露出门一起删掉，返回按钮少 2 帧延迟。
+const holdTransitionBeforePop = <T>(run: () => Promise<T>): Promise<T> => {
+  beginNavTransitionWindow()
+  return run()
 }
-export const pop = (compId: string) => revealBeforePop(() => Navigation.pop(compId))
-export const popToRoot = (compId: string) => revealBeforePop(() => Navigation.popToRoot(compId))
-export const popTo = (compId: string) => revealBeforePop(() => Navigation.popTo(compId))
+export const pop = (compId: string) => holdTransitionBeforePop(() => Navigation.pop(compId))
+export const popToRoot = (compId: string) => holdTransitionBeforePop(() => Navigation.popToRoot(compId))
+export const popTo = (compId: string) => holdTransitionBeforePop(() => Navigation.popTo(compId))
 
 export const showPactModal = () => {
   if (pendingOverlays.has(PACT_MODAL)) return
@@ -397,12 +396,6 @@ export const showSyncModeModal = (onUnavailable?: () => void) => {
   present(1)
 }
 
-// export const showToast = (text) => {
-//   Navigation.showOverlay({
-//     component: {
-//       name: TOAST_SCREEN,
-//     },
-//   })
 // }
 
 export const showAnnouncementModal = () => {

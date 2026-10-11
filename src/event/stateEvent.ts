@@ -77,17 +77,9 @@ export class StateEvent extends Event {
     this.emit('safeAreaReadyUpdated', ready)
   }
 
-  // push 转场窗口开始 / 结束（pop 侧不置位，见 navigation.beginNavTransitionWindow /
-  // endNavTransitionWindow）
+  // 导航转场窗口开始 / 结束（push 与 pop 两侧共用，见 navigation/transitionWindow.ts）
   navTransitioningUpdated(transitioning: boolean) {
     this.emit('navTransitioningUpdated', transitioning)
-  }
-
-  // 露出门开始 / 结束（2026-10-11，第 52 轮第 2 条）：返回发起时置位、返回收尾时
-  // 撤销。消费点只有玻璃专用门 useGlassCovered / useGlassHomeCovered，账本类
-  // hook（useHomeCovered / useScreenCovered 与其非玻璃消费点）不订阅本事件。
-  navRevealingUpdated(revealing: boolean) {
-    this.emit('navRevealingUpdated', revealing)
   }
 
   apiSourceUpdated(source: LX.AppSetting['common.apiSource']) {
