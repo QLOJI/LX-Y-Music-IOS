@@ -189,6 +189,7 @@ export {
   updateMetaData,
   onStateChange,
   isEmpty,
+  isEngineOnMusic,
   useBufferProgress,
   initTrackInfo,
 } from './utils'

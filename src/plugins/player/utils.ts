@@ -10,6 +10,7 @@ import {
   getNativeFlacDuration,
   getNativeFlacPosition,
   getNativeFlacPositionStamped,
+  getNativeFlacTrackId,
   isNativeFlacActive,
   getNativeFlacState,
   pauseNativeFlacPlayback,
@@ -57,6 +58,32 @@ export const isEmpty = (trackId = global.lx.playerTrackId) => {
 export const isTempId = (trackId = global.lx.playerTrackId) => {
   if (Platform.OS == 'ios' && isNativeFlacActive()) return false
   return !trackId || tempIdRxp.test(trackId)
+}
+
+/**
+ * 【第 53 轮第 1 条】引擎里当前装载的曲目，是不是这一首。
+ *
+ * 用途：`core/player/player.ts` 的刷新分支（播放错误 / 25s 加载超时后的重取）要
+ * 「沿用引擎当前位置」续播**同一首**。但刷新请求发出时新歌的流可能还没真正装载
+ * （引擎里仍是上一首），此刻 `getPosition()` 回报的是上一首的位置 —— 当成起播位置
+ * 用出去，新歌就从旧歌进度开始播放（上一首 / 下一首 / 退出重开后切歌都会命中，
+ * 用户实测「播到 1:00 后切歌，新歌从 1:00 开始」）。
+ *
+ * 判据取「引擎自己的曲目 id」，不取 playerState —— 后者在切歌瞬间就已经是新歌了
+ * （setPlayMusicInfo 同步写入），分不出引擎跟没跟上：
+ *   · nativeFlac 路径的曲目 id 是 `nativeflac://<音乐id>`（nativeFlac.ts 拼的）；
+ *   · AVPlayer 路径是 `<音乐id>__//<随机>__//<url>`（trackPlayerCore.buildTracks 拼的）。
+ * 下载条目（Download.ListItem）外层是下载 id、内层才是音乐 id（nativeFlac 拼 id 用的是
+ * 内层），两个都算命中，避免把「引擎确实在放这首歌」误判成不在。
+ */
+export const isEngineOnMusic = (musicInfo: LX.Music.MusicInfo | LX.Download.ListItem): boolean => {
+  const ids: Array<string | null | undefined> = 'progress' in musicInfo
+    ? [musicInfo.id, musicInfo.metadata.musicInfo.id]
+    : [musicInfo.id]
+  const trackId = Platform.OS == 'ios' && isNativeFlacActive() ? getNativeFlacTrackId() : global.lx.playerTrackId
+  if (!trackId) return false
+  const isNative = trackId.startsWith('nativeflac://')
+  return ids.some(id => id != null && (isNative ? trackId == `nativeflac://${id}` : trackId.startsWith(`${id}__//`)))
 }
 
 // export const replacePlayTrack = async(newTrack, oldTrack) => {
