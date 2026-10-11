@@ -300,12 +300,6 @@ export const connect = (urlInfo: LX.Sync.UrlInfo, keyInfo: LX.Sync.KeyInfo, opti
     onError(error, path, groupName) {
       const name = groupName ?? ''
       log.r_error(`sync call ${name} ${path.join('.')} error:`, error)
-      // if (groupName == null) return
-      // client?.close(SYNC_CLOSE_CODE.failed)
-      // sendSyncStatus({
-      //   status: false,
-      //   message: error.message,
-      // })
     },
   })
 

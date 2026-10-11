@@ -80,14 +80,6 @@ export const encryptMsg = async(keyInfo: LX.Sync.KeyInfo, msg: string): Promise<
 
 export const decryptMsg = async(keyInfo: LX.Sync.KeyInfo, enMsg: string): Promise<string> => {
   return enMsg.substring(0, 3) == 'cg_' ? unGzipString(enMsg.replace('cg_', '')) : enMsg
-  // if (!keyInfo) return ''
-  // let msg = ''
-  // try {
-  //   msg = aesDecrypt(enMsg, keyInfo.key, keyInfo.iv)
-  // } catch (err) {
-  //   console.log(err)
-  // }
-  // return msg
 }
 
 export const parseUrl = (href: string): LX.Sync.UrlInfo => {

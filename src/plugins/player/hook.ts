@@ -85,39 +85,6 @@ export const usePlaybackState = () => {
   return state
 }
 
-/**
- * Attaches a handler to the given TrackPlayer events and performs cleanup on unmount
- * @param events - TrackPlayer events to subscribe to
- * @param handler - callback invoked when the event fires
- */
-// export const useTrackPlayerEvents = (events, handler) => {
-//   const savedHandler = useRef()
-
-//   useEffect(() => {
-//     savedHandler.current = handler
-//   }, [handler])
-
-//   useEffect(() => {
-//     // eslint-disable-next-line no-undef
-//     if (__DEV__) {
-//       const allowedTypes = Object.values(Event)
-//       const invalidTypes = events.filter(type => !allowedTypes.includes(type))
-//       if (invalidTypes.length) {
-//         console.warn(
-//           'One or more of the events provided to useTrackPlayerEvents is ' +
-//             `not a valid TrackPlayer event: ${invalidTypes.join("', '")}. ` +
-//             'A list of available events can be found at ' +
-//             'https://react-native-kit.github.io/react-native-track-player/documentation/#events',
-//         )
-//       }
-//     }
-
-//     const subs = events.map(event =>
-//       TrackPlayer.addEventListener(event, payload => savedHandler.current({ ...payload, type: event })),
-//     )
-
-//     return () => subs.forEach(sub => sub.remove())
-//   }, [events])
 // }
 
 const pollTrackPlayerStates = [
