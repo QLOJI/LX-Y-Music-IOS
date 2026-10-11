@@ -122,6 +122,42 @@ import settingState from '@/store/setting/state'
  * restoreConfiguredVolume 的 isVolumeFadeActive() 守卫让行，账本 / 引擎不会被一步顶回
  * 设定值 —— 否则斜坡的起点已经不是 0，渐入无从谈起。
  * ---------------------------------------------------------------------------
+ * 【第 63 轮第 2 条】用户原话：「渐入渐出的声音变化为渐入（Fade In）：音乐开始播放时，音量
+ * 从 0 在指定时长内平滑升至正常音量。渐出（Fade Out）：音乐停止或切换前，音量从当前值在
+ * 指定时长内平滑降至 0。默认时长：渐入 2 秒，渐出 3 秒（可在播放设置中配置，位置在将播放的
+ * 中文歌词转换为繁体选项下面，调节范围为 0-3 秒）。缓动曲线：默认使用等功率曲线
+ * （Equal-Power），避免音量突变；可选线性（Linear）。触发条件：播放开始时自动渐入；暂停、
+ * 停止、切歌或播放结束时自动渐出。可中断：渐入渐出过程中若用户手动调节音量或切歌，应能
+ * 立即中断当前渐变并按新指令执行。交叉淡化（可选）：切歌时上一首渐出与下一首渐入重叠进行，
+ * 重叠时长 1 秒」。
+ *
+ * 本轮落地（逐条对到代码，偏离的两处写在这里）：
+ *  · **时长可配**：`player.fadeInDuration` / `player.fadeOutDuration`（**秒**，0~3、0.5 步进，
+ *    默认 2 / 3），读取见 readFadeMs / fadeInMs / fadeOutMs；0 = 关闭渐变（直写）。
+ *    UI 在播放设置里，紧跟在「将播放的中文歌词转换为繁体」下面（settings/Player/index.tsx）。
+ *  · **曲线可配**：`player.fadeLinearCurve`（false = 等功率，默认），见 easeVolume。
+ *  · **可中断**：① 手动调音量 → `syncVolumeFadeState` 口径反转为「掐掉在途斜坡、账本按新值」
+ *    （旧口径是让行，见该函数注释）；② 切歌 / 停止 → `setStop` 调 `cancelPendingFadeOut()`。
+ *  · **渐出的触发点**：真正落地的是**暂停**（手动 / 自动 / 锁屏 / 打断）——`setPause` →
+ *    fadeOutThenPause，一条没变，只是时长改成读设置。
+ *  · **偏离一：切歌不做 3 秒渐出。** 需求把「切歌」列在渐出的触发条件里，但本工程切歌是
+ *    「旧引擎停 → 取链 → 新引擎起」（`core/player/player.ts` 的 handlePlay → setStop →
+ *    debouncePlay），中间那段等待时长由网络决定（几百毫秒到几秒不等）。要让渐出「听得见」，
+ *    只能①等斜坡跑完再放下一首（把 3 秒静音塞进每一次切歌）或②两首歌重叠（= 需求里的
+ *    「交叉淡化」）。用户在裁定口径时明确「交叉淡化本轮先不做」，①又明显不是想要的
+ *    （用户第 61 轮刚因为「点一下晚一拍」把渐出从 700ms 打回 300ms），所以切歌处维持
+ *    「旧引擎即时静音（setStop 本来就会掐掉正在出声的流）+ 新歌按设置的渐入时长由小变大」——
+ *    可听见的那一半（新歌渐入）是齐的，旧歌那一段没有可听的下坡。**不做交叉淡化**
+ *    是用户本轮的明确裁定：「本轮先不做这个开关」（双引擎重叠、时长 1 秒那套整块不做）。
+ *  · **偏离二：停止（`player.stop()`）与切歌共用 setStop**，所以也没接斜坡（同一条路：
+ *    在 utils.setStop 里加斜坡会把等待带进**每一次切歌**）。UI 入口见
+ *    screens/Home/Views/Mylist/MusicList/listAction.ts（清缓存流程里的 stop）。
+ *  · **偏离三：播放结束**没有斜坡 —— 音频自然放完时音量已经在 0（无可淡），且引擎的 ended
+ *    处理随后就是切歌 / 停止，与上面两条同理。
+ *  · **硬件音量键不能打断**：iOS 侧没有系统音量变化的观测（本项目没接 KVO on outputVolume），
+ *    所以「手动调节音量」只覆盖**应用内音量条**（PlayDetail 的 SettingVolume.tsx →
+ *    utils.setVolume → syncVolumeFadeState）。
+ * ---------------------------------------------------------------------------
  * 与现有调用点的关系（本文件不引用 plugins/player/utils.ts，避免循环依赖；
  * 因此这里的 writeVolume 自己按同一口径分发两个引擎）：
  *   · natives/流式引擎 → setNativeFlacVolume（非激活态自动 no-op，与 utils.setVolume 一致）；
@@ -139,22 +175,34 @@ import settingState from '@/store/setting/state'
  * 「暂停后音量停在 0、被别的路径恢复播放」会变成没声音，所以那里按老口径直通（不淡）。
  */
 
-/** 渐入时长：从 0 升到用户设定音量的总时长（毫秒）【第 51 轮】220 → 600（要听得出来） */
-const FADE_IN_MS = 600
 /**
- * 渐出时长：从当前音量降到 0 的总时长（毫秒）；暂停跟着它延后这么多。
- * 【第 51 轮】160 → 300。【第 61 轮第 1 条】700 → 300 —— 回滚第 60 轮的加长。
- * 用户第 61 轮原话「越改越乱，就连点击暂停播放按钮显示都有延迟了，需要还原」：真暂停跟在
- * 斜坡之后（锁屏 / 灵动岛进度条停住、按钮变 ▶、**以及界面上的暂停状态翻转**都在那之后），
- * 斜坡多长，那一拍就多晚 —— 700ms 是能被眼睛看出来的延迟，300ms 才是用户认可的取值。
- * 这条斜坡同时服务**手动暂停**与**自动暂停**（service.ts 的打断暂停走同一个 setPause →
- * fadeOutThenPause，Android 除外），所以它必须短：它是「消爆音 + 柔化收尾」的料，不是特效。
- * 原生侧不另做渐出，也不再有「等斜坡跑完」的推迟：第 60 轮的 LXInterruptionPauseDeferMs +
- * scheduleInterruptionPauseFallback 已整体撤掉，打断当下按第 47 轮口径当场停引擎 / 掐渲染
- *（打断期间系统本来就把我们的输出压住了，那条斜坡根本听不见，为它多等一秒纯亏）。
+ * 【第 63 轮第 2 条】渐入 / 渐出时长改为**可配置**。用户原话：「默认时长：渐入 2 秒，渐出 3 秒
+ * （可在播放设置中配置，位置在将播放的中文歌词转换为繁体选项下面，调节范围为 0-3 秒）」。
+ *
+ * 这两个常量由「唯一取值」退化为**兜底值**：设置键缺省 / 脏值（非数字、NaN、Infinity）时
+ * 用它们 —— 也就是需求点名的默认值本身。真正参与运算的是 fadeInMs() / fadeOutMs()。
+ *
+ * 为什么 0 不等同于兜底：滑块量程 0~3 秒里，0 是用户**明确选出来的一个值**，必须按
+ * 「关闭渐变」执行（音量直写，等于第 39 轮之前的行为）；只有**读不到值**才落回默认。
+ * 两种情况的处置完全相反（一个关、一个开），任何「把 0 当缺省」的写法都会让用户的 0 失效 ——
+ * 这是本条最容易写错的地方。
+ *
+ * 渐出被加长到默认 3 秒之后，「真暂停跟在斜坡之后」这条老口径的代价由第 62 轮第 3 条兜住：
+ * 界面 / 锁屏 / 灵动岛的暂停态**按下即翻**，不再等斜坡（sim-r62-instant-playstate.js 钉着）。
+ * 所以这个值现在只决定**声音**什么时候降到 0，不再决定按钮什么时候翻面。
+ * 历史取值：渐入 220 → 600（第 51 轮）；渐出 160 → 300（第 51 轮）→ 700（第 60 轮）→ 300
+ * （第 61 轮回滚）→ 第 63 轮整体交给设置项，默认 3000。
  */
-const FADE_OUT_MS = 300
-/** 每档之间的间隔（毫秒）：20ms 一档 ≈ 30 档渐入 / 15 档渐出，人耳已是连续变化 */
+const FADE_IN_FALLBACK_MS = 2_000
+const FADE_OUT_FALLBACK_MS = 3_000
+/** 渐入 / 渐出滑块的量程上限（秒）：设置里的值超范围时夹到 0~它（见 readFadeMs） */
+const FADE_MAX_SECONDS = 3
+/**
+ * 每档之间的间隔（毫秒）= 斜坡的写入频率（50 次/秒）。默认 2 秒渐入 = 100 档、3 秒渐出 =
+ * 150 档 —— 频率与第 51 轮那版（600ms/30 档）**完全一致**，只是档数随可配时长变多，
+ * 所以「时长可配」没有引入任何新的桥调用密度（每条一次 setNativeFlacVolume /
+ * TrackPlayer.setVolume），第 57 轮的省电口径不受影响。
+ */
 const FADE_STEP_MS = 20
 /**
  * 渐入预约的兜底期限（毫秒）【第 41 轮缺陷④】：预约后这么久还没等到 'playing'
@@ -218,12 +266,53 @@ const targetVolume = () => {
 }
 
 /**
- * 感知曲线（smoothstep）【第 51 轮】：线性斜坡的听感是「一上来就掉一半、尾巴拖得长」，
- * 200ms 级的消爆音够用，600ms 级的渐入渐出就发假。smoothstep 两头慢、中间快，
- * 同样的起止点听上去才像「淡入 / 淡出」。**单调不减**（p ∈ [0,1] 上导数 ≥ 0），
- * 第 41 轮定死的「斜坡全程单调」不变。
+ * 读一个渐入 / 渐出时长设置项（单位：**秒**），返回毫秒【第 63 轮第 2 条】。
+ *   · 缺省 / 脏值（非数字、NaN、Infinity）→ 兜底值（= 需求点名的默认值）；
+ *   · ≤ 0 → **0**（用户在滑块上选的「关闭渐变」，不是缺省 —— 见常量段的说明）；
+ *   · 其它 → 夹到 (0, FADE_MAX_SECONDS * 1000]，防止旧版本残留 / 手工改坏的超范围值
+ *     把斜坡拖成分钟级（真暂停跟在斜坡之后，超长斜坡等于「按了暂停半天不停」）。
+ * 每次调用现读设置：用户在设置页改完滑块，下一次渐入 / 渐出即生效，无需重启（与
+ * 「与其他应用同时播放」那条设置同一口径）。
  */
-const easeVolume = (progress: number) => progress * progress * (3 - 2 * progress)
+const readFadeMs = (key: 'player.fadeInDuration' | 'player.fadeOutDuration', fallbackMs: number) => {
+  const seconds = settingState.setting[key]
+  if (typeof seconds != 'number' || !Number.isFinite(seconds)) return fallbackMs
+  if (seconds <= 0) return 0
+  return Math.min(seconds, FADE_MAX_SECONDS) * 1000
+}
+
+/** 渐入时长（毫秒）：设置项 player.fadeInDuration（秒），默认 2 秒 */
+const fadeInMs = () => readFadeMs('player.fadeInDuration', FADE_IN_FALLBACK_MS)
+
+/** 渐出时长（毫秒）：设置项 player.fadeOutDuration（秒），默认 3 秒 */
+const fadeOutMs = () => readFadeMs('player.fadeOutDuration', FADE_OUT_FALLBACK_MS)
+
+/** 曲线是不是线性的：设置项 player.fadeLinearCurve（勾选 = 线性），默认关 = 等功率 */
+const isLinearCurve = () => settingState.setting['player.fadeLinearCurve'] === true
+
+/**
+ * 感知曲线【第 63 轮第 2 条】。用户原话：「缓动曲线：默认使用等功率曲线（Equal-Power），
+ * 避免音量突变；可选线性（Linear）」。
+ *
+ * 等功率（默认）——**升 / 降互为 sin / cos**：
+ *   · 渐入（rising）： `sin(π/2 · p)`，p 0→1 时 0→1；
+ *   · 渐出（falling）：`sin(π/2 · (1-p))` = `cos(π/2 · p)`，p 0→1 时 1→0。
+ * 两者平方和为 1 ⇒ 过渡期间**功率恒定**，人耳听到的是能量不变的过渡（这正是它在音频里
+ * 叫 equal-power 的原因）；两端导数都是 0（头尾平缓），所以既没有「一上来就掉一半」的突兀，
+ * 也没有台阶。
+ * 线性：升 `p` / 降 `1-p`，等幅度变化。
+ *
+ * 单调性（第 41 轮定死的「斜坡全程单调」）：等功率与线性在 p ∈ [0,1] 上都单调，方向由
+ * rising 决定 —— 方向判据取的是「终点比起点大」，所以从任意当前音量起斜坡都成立
+ *（渐出被打断到半途后再渐出、音量条拖到一半再暂停……这些现场起点都不是 0 或设定值）。
+ * 方向而不是「上调 / 下调」这两个调用点来决定，是因为同一个调用点（暂停 / 播放）的
+ * 当前音量在不同现场下高低不定（渐入被打断后暂停，起点就在半途）。
+ */
+const easeVolume = (progress: number, linear: boolean, rising: boolean) => {
+  if (linear) return rising ? progress : 1 - progress
+  const radian = (Math.PI / 2) * (rising ? progress : 1 - progress)
+  return Math.sin(radian)
+}
 
 /** 与 plugins/player/utils.ts 的 setVolume 同口径的两个引擎分发（此处不 import 以免成环） */
 const writeVolume = (volume: number): Promise<unknown> => {
@@ -305,25 +394,33 @@ const settleWithin = (promise: Promise<void>, ms: number): Promise<void> => {
 }
 
 /**
- * 音量斜坡：从**当前实际音量**（currentVolume）走到 to【缺陷②】，按 smoothstep 感知曲线
- * 【第 51 轮】摊开。完成或被 stopRamp 掐掉都会 resolve【缺陷①】；起点与终点几乎相同就不
- * 白跑一趟。
+ * 音量斜坡：从**当前实际音量**（currentVolume）走到 to【缺陷②】，按感知曲线【第 51 轮 /
+ * 第 63 轮第 2 条】在 durationMs 内摊开。完成或被 stopRamp 掐掉都会 resolve【缺陷①】。
+ * 两种不白跑一趟的情况，都退化成「直接写终点」：
+ *   · 起点与终点几乎相同（MIN_RAMP_DELTA）—— 老口径，避免给「根本没停过的播放」凭空加一次淡入；
+ *   · **时长为 0**【第 63 轮第 2 条】—— 用户在设置里把渐入 / 渐出调到 0 = 关闭渐变，
+ *     必须逐字回到第 39 轮之前的直写行为（不许留下一个「最小档位」的斜坡）。
+ *
+ * 曲线与方向在**起斜坡时快照**（不在每一拍里现读设置）：拖动曲线开关 / 时长滑块不该
+ * 改写在途斜坡的形状 —— 那会让同一次过渡前后两半用两条曲线，听感上是一处折点。
  */
 const rampVolume = (to: number, durationMs: number): Promise<void> => {
   stopRamp()
   const from = currentVolume
   const target = clamp01(to)
-  if (Math.abs(target - from) < MIN_RAMP_DELTA) {
+  if (durationMs <= 0 || Math.abs(target - from) < MIN_RAMP_DELTA) {
     void writeVolume(target)
     return Promise.resolve()
   }
+  const linear = isLinearCurve()
+  const rising = target > from
   return new Promise<void>((resolve) => {
     const steps = Math.max(1, Math.round(durationMs / FADE_STEP_MS))
     let step = 0
     fadeResolve = resolve
     fadeTimer = setInterval(() => {
       step++
-      void writeVolume(from + (target - from) * easeVolume(step / steps))
+      void writeVolume(from + (target - from) * easeVolume(step / steps, linear, rising))
       if (step >= steps) stopRamp()
     }, FADE_STEP_MS)
   })
@@ -368,7 +465,7 @@ const beginFadeInArm = (timeoutMs: number) => {
         armRenewals = 0
         if (state == 'playing') {
           // 已经在出声、只是没等到事件：补一次由小变大（从压住的 0 起），而不是一记跳回设定值
-          void rampVolume(targetVolume(), FADE_IN_MS)
+          void rampVolume(targetVolume(), fadeInMs())
           return
         }
         void writeVolume(targetVolume())
@@ -395,7 +492,7 @@ const armFadeIn = (timeoutMs: number): boolean => {
     // 用户的显式播放意图不在让行之列。
     pauseSeq++
     beginFadeInArm(timeoutMs)
-    void rampVolume(targetVolume(), FADE_IN_MS)
+    void rampVolume(targetVolume(), fadeInMs())
     return true
   }
   beginFadeInArm(timeoutMs)
@@ -448,6 +545,9 @@ export const armVolumeStartFadeIn = () => {
  */
 export const applyVolumeOnPlayStart = async() => {
   const target = targetVolume()
+  // 【第 63 轮第 2 条】时长按设置现读一次，同一拍里两处斜坡共用（方案与曲线快照同理：
+  // 一次渐入不该因为用户正好在拖滑块而被切成两段）
+  const duration = fadeInMs()
   if (Platform.OS != 'ios' || !fadeInArmed) {
     if (Platform.OS == 'ios' && fadingOut) return
     if (Platform.OS == 'ios' && fadeTimer != null) return
@@ -456,13 +556,13 @@ export const applyVolumeOnPlayStart = async() => {
     // 互不等待的异步路径，谁先到没有保证：'playing' 抢先的那些次序里 fadeInArmed 还是 false。
     // 旧实现这一支是**直写**目标音量 —— 而自动暂停已经把音量压到 0（账本 currentVolume = 0），
     // 于是自动续播听上去就是「从静音一记跳到满音量」：用户这轮报的「自动播放很快，声音突然
-    // 很大」。现在这一支同样走 FADE_IN_MS 的斜坡：
-    //   · 账本在低处（真被自动暂停压过）→ 由小变大的 600ms 渐入；
+    // 很大」。现在这一支同样走渐入斜坡（时长取设置值，默认 2 秒）：
+    //   · 账本在低处（真被自动暂停压过）→ 由小变大的渐入；
     //   · 账本已经 ≈ 目标值（音量根本没被压过，例如短暂系统音、播放中的重缓冲）→
     //     rampVolume 内部按 MIN_RAMP_DELTA 短路成直写，与改动前逐字节一致。
     // Android 仍然直通（那边没有 controller 的 'playing' 兜底，见文件头末段）。
     if (Platform.OS == 'ios') {
-      await rampVolume(target, FADE_IN_MS)
+      await rampVolume(target, duration)
       return
     }
     await writeVolume(target)
@@ -470,11 +570,12 @@ export const applyVolumeOnPlayStart = async() => {
   }
   fadeInArmed = false
   clearArmTimer()
-  await rampVolume(target, FADE_IN_MS)
+  await rampVolume(target, duration)
 }
 
 /**
- * 渐出后再暂停：先斜坡降到 0（FADE_OUT_MS），然后执行真正的暂停动作。
+ * 渐出后再暂停：先斜坡降到 0（时长取设置项 player.fadeOutDuration，默认 3 秒），
+ * 然后执行真正的暂停动作。
  * @param pause 真正的暂停动作（传函数而不是已调用的 Promise —— 斜坡跑完才允许它执行）
  *
  * 【第 41 轮】这里是「锁屏 / 灵动岛按钮点了没反应」的正凶现场，改法三条：
@@ -484,9 +585,17 @@ export const applyVolumeOnPlayStart = async() => {
  *   · 斜坡只负责「柔和」，**暂停动作无条件执行**：斜坡被掐 / 卡死也在有限时间内放行，
  *     正常跑完则立刻放行【缺陷①的后半】—— 用户按下 ⏸ 就一定要停，这是第 41 轮的死规矩。
  *
- * 【第 51 轮】唯一的例外是**用户自己又按了播放**：`pauseSeq` 进门领号，放行后先对号，
+ * 【第 51 轮】只有**用户自己又按了播放**这一种情况例外：`pauseSeq` 进门领号，放行后先对号，
  * 号变了（armFadeIn 的掉头分支 ++）就跳过真暂停 —— 死规矩让位于更新的用户意图。
  * 自动路径（'playing' 事件、音量直写）不碰这个号，按不下来就是按不下来。
+ *
+ * 【第 63 轮第 2 条】这个号多了**第二个**递增点：`cancelPendingFadeOut()`（切歌 / 停止，
+ * 由 plugins/player/utils.ts 的 setStop 收口）。渐出加长到默认 3 秒之后，这条「渐出跑完
+ * 就真暂停」的尾巴会跨过一次切歌 —— setStop 已经停了旧引擎、新歌的引擎随后起来，而那条
+ * 在途斜坡到点照样执行 `pausePlayingEngines()`，把**刚起的新歌**按停。旧值 300ms 时这个
+ * 窗口太窄撞不上，3 秒之后是常态。语义仍是「更新的用户意图赢」，只是意图从「播放」扩到
+ * 「切歌 / 停止」——两者都是「这条暂停已经过期」的同一个意思。用户原话「可中断：渐入渐出
+ * 过程中若用户手动调节音量或切歌，应能立即中断当前渐变并按新指令执行」。
  */
 export const fadeOutThenPause = async(pause: () => Promise<unknown> | unknown) => {
   // 渐出优先于任何还没跑完的渐入预约：用户要的是「停」，不是接着升音量
@@ -504,9 +613,13 @@ export const fadeOutThenPause = async(pause: () => Promise<unknown> | unknown) =
   }
   const seq = ++pauseSeq
   fadingOut = true
+  // 【第 63 轮第 2 条】时长按设置现读一次：两处（斜坡 + settleWithin 的上限）必须同值 ——
+  // 用两次 readFadeMs 的话，用户在斜坡途中把滑块从 3 拖到 0.5 会让上限缩到比斜坡还短，
+  // 第二道闸抢在斜坡前面放行（听感上就是渐出被拦腰砍断）。
+  const duration = fadeOutMs()
   try {
     // settleWithin 是第二道闸：即便斜坡 Promise 出意外没有放行，到点也照常往下走
-    await settleWithin(rampVolume(0, FADE_OUT_MS), FADE_OUT_MS + FADE_STEP_MS * 2)
+    await settleWithin(rampVolume(0, duration), duration + FADE_STEP_MS * 2)
     // 号变了 = 渐出途中用户按了播放（armFadeIn 的掉头分支）—— 这条暂停已被取代，不落地
     if (seq != pauseSeq) return
     await Promise.resolve(pause()).catch(() => {})
@@ -524,18 +637,50 @@ export const fadeOutThenPause = async(pause: () => Promise<unknown> | unknown) =
 export const isVolumeFadeActive = () => fadeInArmed || fadeTimer != null || fadingOut
 
 /**
+ * 作废在途的渐出及其真暂停【第 63 轮第 2 条】。
+ * 调用点：`plugins/player/utils.ts` 的 `setStop`（切歌 / 停止 / 错误重载的唯一收口，
+ * 见那里的调用点注释）。
+ *
+ * 为什么必须由切歌路径显式作废：渐出时长现在可配到 3 秒，「渐出跑完就真暂停」这条尾巴
+ * 会跨过一次切歌 —— setStop 已经停了旧引擎、新歌的引擎随后起来（debounce + 取链），
+ * 而那条在途斜坡到点照样执行 `pausePlayingEngines()`，把**刚起的新歌**按停。旧值 300ms
+ * 时这个窗口太窄撞不上，3 秒之后是常态。
+ * 两件事一起做：
+ *   · `pauseSeq++` —— 那条 fadeOutThenPause 放行后会跳过真暂停（与「渐出途中按播放」
+ *     同一个号，见其注释）；
+ *   · `stopRamp()` —— 掐掉在途斜坡。**必须掐**：斜坡每一拍都按 `isNativeFlacActive()`
+ *     现查当前驱动，切歌之后查到的可能是**新歌的引擎**，那几拍降音会直接写在新歌上，
+ *     与它自己的渐入对顶。账本停在当前值不跳变（`stopRamp` 不写音量）。
+ * 不碰 `fadeInArmed`：新歌的起播渐入由 resourceLoader 的 armVolumeStartFadeIn 另行立预约。
+ */
+export const cancelPendingFadeOut = () => {
+  if (Platform.OS != 'ios') return
+  pauseSeq++
+  stopRamp()
+}
+
+/**
  * 外部直写音量后同步本模块的账本（utils.setVolume 在音量条写音量时调用）。
  * 【第 41 轮缺陷②】斜坡起点取自 currentVolume：账本一旦和实际值脱节，
- * 下一次渐入/渐出的第一拍就是一次跳变（用户听见的爆音）。斜坡/渐出在跑时以斜坡为准，不覆盖。
- * 【第 51 轮】**预约期间不拦**（刻意）：账本必须跟着真正写出的值走 —— 音量条拖动就是一次
- * 真实写入（引擎立刻变成新音量、setSetting 同步更新设定值），这时若把账本按在 0 上，
- * 紧接着的渐入会从 0 起步（先掉下去再升上来 = 一次多余的音量塌陷）。保护预约靠的是
- * 「重贴设定音量」那两处调用点的让行（trackPlayerCore.applyCurrentVolume /
- * service.restoreConfiguredVolume 的 isVolumeFadeActive() 守卫），它们在预约期间根本不会写。
+ * 下一次渐入/渐出的第一拍就是一次跳变（用户听见的爆音）。
+ *
+ * 【第 63 轮第 2 条·口径反转】旧写法是「斜坡 / 渐出在跑时让行、不覆盖账本」（第 41 轮
+ * 的取舍：以斜坡为准）。渐入渐出加长到 0~3 秒可配之后这条取舍站不住了：用户在 3 秒的
+ * 渐出里把音量条从 30% 拖到 80%，让行的结果是下一秒被斜坡按回 0 —— 听到的是「拖了没用，
+ * 声音照样掉下去」。用户原话「可中断：渐入渐出过程中若用户手动调节音量或切歌，应能立即
+ * 中断当前渐变并按新指令执行」，所以现在反过来：**手动音量优先，掐掉在途斜坡**。
+ *
+ * 掐斜坡不等于取消暂停：`stopRamp` 会放行斜坡的 Promise，等在那一行的 `fadeOutThenPause`
+ * 照常走完并落地真暂停（它自己的号没变）—— 用户的意图是「音量听我的」，不是「别暂停了」。
+ *
+ * 这个函数只在「外部真的写了音量」时才被调用，而唯一能在斜坡途中调用它的路径是音量条
+ *（`utils.setVolume`）；两处「重贴设定音量」的自动路径（trackPlayerCore.applyCurrentVolume /
+ * service.restoreConfiguredVolume）各自带着 `isVolumeFadeActive()` 前置让行，斜坡在途时
+ * 根本走不到这里 —— 所以「自动重贴」不会误伤渐入（见文件头与那两处的注释）。
  */
 export const syncVolumeFadeState = (volume: number) => {
   if (Platform.OS != 'ios') return
   if (typeof volume != 'number' || !Number.isFinite(volume)) return
-  if (fadeTimer != null || fadingOut) return
+  stopRamp()
   currentVolume = clamp01(volume)
 }

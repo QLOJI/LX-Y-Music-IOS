@@ -6,14 +6,6 @@ import type { I18n } from '@/lang/i18n'
 import type { Buffer as _Buffer } from 'buffer'
 import type { SettingScreenIds } from '@/screens/Home/Views/Setting'
 
-// interface Process {
-//   env: {
-//     NODE_ENV: 'development' | 'production'
-//   }
-//   versions: {
-//     app: string
-//   }
-// }
 interface GlobalData {
   fontSize: number
   gettingUrlId: string

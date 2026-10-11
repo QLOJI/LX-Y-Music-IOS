@@ -61,6 +61,28 @@ declare global {
       'player.isShowBluetoothLyric': boolean
 
       /**
+       * 播放渐入时长（**秒**，0~3，0.5 步进，默认 2）。
+       * 音乐开始播放时音量从 0 平滑升到设定值的总时长；0 = 关闭渐入（音量直写）。
+       * 落点：`src/plugins/player/volumeFade.ts` 的 `fadeInMs()`，只对 iOS 生效。
+       * 设置项 UI：播放设置里的「渐入时长（秒）」（`setting_play_fade_in_duration`）。
+       */
+      'player.fadeInDuration': number
+
+      /**
+       * 播放渐出时长（**秒**，0~3，0.5 步进，默认 3）。
+       * 暂停 / 停止前音量从当前值平滑降到 0 的总时长；0 = 关闭渐出（音量直写）。
+       * 注意：真暂停跟在斜坡之后（锁屏 / 灵动岛 / 界面按钮的暂停态翻转都在那之后），
+       * 这个值越大，「按下暂停」的界面落地越晚 —— 上限 3 秒是需求原话给的调节范围。
+       */
+      'player.fadeOutDuration': number
+
+      /**
+       * 渐入渐出的缓动曲线：false = 等功率（Equal-Power，默认），true = 线性（Linear）。
+       * 等功率在听感上功率恒定（升 `sin`/ 降 `cos`，两者平方和为 1），避免音量突变。
+       */
+      'player.fadeLinearCurve': boolean
+
+      /**
        * 是否允许拖动播放进度条跳转（关闭后进度条仅展示，不可 seek）
        */
       'common.allowProgressBarSeek': boolean

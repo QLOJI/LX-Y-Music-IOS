@@ -25,7 +25,9 @@ import { onUnifiedPlayerEvent } from './engine'
 // 【第 39 轮第 4 条】播放 / 暂停的渐入渐出（本模块只依赖 nativeFlac + TrackPlayer，不成环）
 // 【第 41 轮】多一个 syncVolumeFadeState：音量条 / 回前台重贴音量这类「直写」要把
 // 渐入渐出模块的「当前音量」账本一起改掉，否则下一次斜坡的起点是错的（第一拍就是跳变）。
-import { armVolumeFadeIn, fadeOutThenPause, syncVolumeFadeState } from './volumeFade'
+// 【第 63 轮第 2 条】多一个 cancelPendingFadeOut：切歌 / 停止（setStop）要作废在途的渐出，
+// 否则「渐出跑完就真暂停」会在新歌起播后落地，把新歌按停（见那里的注释）。
+import { armVolumeFadeIn, cancelPendingFadeOut, fadeOutThenPause, syncVolumeFadeState } from './volumeFade'
 import { setIsPlay } from '@/core/player/playStatus'
 import { pauseNowPlaying, playNowPlaying } from '@/utils/nativeModules/nowPlaying'
 import playerState from '@/store/player/state'
@@ -233,6 +235,22 @@ export const getDuration = async() => {
   return TrackPlayer.getDuration()
 }
 export const setStop = async() => {
+  // 【第 63 轮第 2 条】切歌（core/player/player.ts 的 handlePlay）/ 停止（player.stop()）/
+  // 错误重载都收口在这里，两件「新指令作废在途意图」的事都在这一处做：
+  //
+  // ① pauseVerifyToken++ —— 上一次 setPause 的 700ms 复核不许把**新起的这首歌**按停。
+  //    复核是在 `await fadeOutThenPause(...)` 之后才挂上的（setPause 末尾那行）：渐出可配到
+  //    3 秒之后，一次「按下暂停 → 立刻切歌」的次序里，那条复核会排在**新歌起播之后**，
+  //    而它认的是 setPause 进门领的号。旧值 300ms 时窗口太窄撞不上，3 秒之后是常态。
+  //
+  // ② cancelPendingFadeOut() —— 在途的「渐出跑完就真暂停」整条作废（含掐斜坡），
+  //    否则它到点会执行 pausePlayingEngines() 把刚起的新歌按停。理由与判据写在
+  //    volumeFade.ts 的同名函数上。
+  //
+  // 两句话都刻意放在平台分支**之前**：nativeFlac 与 RNTP 两条路都要作废（它们走的是同一条
+  // 渐出 / 复核）。
+  pauseVerifyToken++
+  cancelPendingFadeOut()
   if (Platform.OS == 'ios' && isNativeFlacActive()) {
     global.lx.playerTrackId = ''
     return stopNativeFlacPlayback()
@@ -319,6 +337,10 @@ export const setCurrentTime = async(time: number) => {
 export const setVolume = async(num: number) => {
   // 【第 41 轮】音量条 / 冷启动 / 回前台重贴音量都会走这里：这是「外部直写」，
   // 必须同步渐入渐出模块的当前音量账本（斜坡起点取自它，账本错了下一拍就是一声跳变）。
+  // 【第 63 轮第 2 条】这个调用现在还会**掐掉在途渐变**（用户原话「可中断：渐入渐出过程中
+  // 若用户手动调节音量……应能立即中断当前渐变并按新指令执行」），口径反转写在
+  // volumeFade.ts 的 syncVolumeFadeState 上。真正会撞上这条的只有音量条 —— 冷启动 /
+  // 重贴音量那几处各自带着 isVolumeFadeActive() 前置让行。
   syncVolumeFadeState(num)
   if (Platform.OS == 'ios' && isNativeFlacActive()) return setNativeFlacVolume(num)
   return TrackPlayer.setVolume(num)

@@ -132,6 +132,15 @@ const defaultSetting: LX.AppSetting = {
   'player.isShowLyricRoma': false,
   'player.isShowNotificationImage': true,
   'player.isS2t': true,
+  // 【第 63 轮第 2 条】播放渐入 / 渐出的可配置时长（**秒**，0~3，0.5 步进）与曲线。
+  // 默认值就是需求原话里的两个数：「默认时长：渐入 2 秒，渐出 3 秒」。
+  // 0 = 关闭渐变（音量直写，等于第 39 轮之前的行为）；这两个键只在 iOS 生效
+  // （见 plugins/player/volumeFade.ts 的文件头）。
+  'player.fadeInDuration': 2,
+  'player.fadeOutDuration': 3,
+  // 缓动曲线：false = 等功率（默认，需求原话「默认使用等功率曲线（Equal-Power），避免音量
+  // 突变」），true = 线性（需求原话「可选线性（Linear）」）。
+  'player.fadeLinearCurve': false,
   // 返回软件时自动播放：默认开（用户明确要求「其它音频结束播放后不用回前台也会自动续播」）。
   // 仅当暂停由系统音频中断/其它音频抢占造成时才会恢复，用户主动按的暂停不会被恢复（见 service.ts）。
   'player.autoPlayOnReturn': true,
