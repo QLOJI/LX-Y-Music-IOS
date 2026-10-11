@@ -7290,7 +7290,8 @@ RCT_REMAP_METHOD(getSafeAreaInsets,
 // ============================================================================
 // 监听主界面的滚动视图（Home 各页歌曲列表、搜索页列表……无需逐页接线）：
 // swizzle -[RCTScrollView scrollViewDidScroll:]，原生侧维护收起状态机
-// （offset > 48 收起 / ≤ 2 展开，中间为迟滞区防抖），仅在状态变化时把
+// （offset > LXTabBarCollapseOffset 收起 / ≤ LXTabBarExpandOffset 展开，中间为迟滞区防抖，
+// 两个门限的定义与取值见下方常量），仅在状态变化时把
 // tabBarCollapseChanged 事件发给 JS——滚动事件本身不过桥，性能无损。
 // 状态变化经 NSNotification 通知 UtilsModule 转发（避免跨模块拿 bridge 实例）。
 //
@@ -7314,10 +7315,21 @@ RCT_REMAP_METHOD(getSafeAreaInsets,
 //      → 返回」会莫名其妙看到栏又展开了。
 // 剩下的「布局在玻璃冻着的时候变化」由 JS 侧兜底：utils/tabBarCollapse.ts 在 Home 被盖住 /
 // 转场窗口期间只记账不下发，等玻璃真的醒来（转场按住门松开）再一次性落地。
+//
+// 【第 65 轮第 2 条】用户原话：「迷你播放器栏和底部tab栏的合并触发设置为容易触发，目前不
+// 容易触发」。触发门限从 48 / 2 降到 16 / 8（见下方 LXTabBarCollapseOffset / ExpandOffset）：
+// 随手往下一滑就合并、回到接近顶部就展开。**规则一条没动**（主动滚动 / 手动展开门 / 驱动者
+// 守卫全部照旧），只调门限 —— 用户要的是「更容易触发」，不是「无条件触发」。
 static BOOL LXTabBarCollapsedState = NO;
 static IMP LXOrigRCTScrollViewDidScroll = NULL;
 // 驱动者（谁收起的谁负责展开）：弱引用，列表被销毁/重建后自动归零 = 谁都可以重新接管
 static __weak UIScrollView *LXTabBarCollapseDriver = nil;
+// 触发门限【第 65 轮第 2 条】用户原话：「迷你播放器栏和底部tab栏的合并触发设置为容易触发，
+// 目前不容易触发」。第 31 轮定的 48 / 2 对「随手滑一下」太钝：下滑不到 48pt 不合并、回顶
+// 要回到 2pt 以内才展开。降到 16 / 8（中间仍留 8pt 迟滞区，防顶部抖动来回切换）。
+// 两个数只在这里出现一次 —— 以后调手感改这两行，状态机的结构一个字不用动。
+static const CGFloat LXTabBarCollapseOffset = 16;
+static const CGFloat LXTabBarExpandOffset = 8;
 
 static void LXSetTabBarCollapsed(BOOL collapsed) {
   if (LXTabBarCollapsedState == collapsed) return;
@@ -7339,7 +7351,7 @@ static void LX_RCTScrollView_scrollViewDidScroll(id self, SEL _cmd, UIScrollView
   CGPoint offset = scrollView.contentOffset;
   // 用户主动的滚动（含松手后的惯性）：pan 只要离开 Possible 就说明这一串滚动有手指参与。
   BOOL userDriven = scrollView.panGestureRecognizer.state != UIGestureRecognizerStatePossible;
-  if (offset.y > 48) {
+  if (offset.y > LXTabBarCollapseOffset) {
     // 程序化滚动不许收起（歌词列表挂载自动滚到当前行 = 用户第 63 轮第 1 条报的
     //「突然进入播放详情页就变成合并状态」）
     if (!userDriven) return;
@@ -7347,7 +7359,7 @@ static void LX_RCTScrollView_scrollViewDidScroll(id self, SEL _cmd, UIScrollView
     if (LXTabBarManualExpanded) return;
     LXTabBarCollapseDriver = scrollView;
     LXSetTabBarCollapsed(YES);
-  } else if (offset.y <= 2) {
+  } else if (offset.y <= LXTabBarExpandOffset) {
     // 展开：驱动者自己（同一列表滚回顶部，含程序化的归位）或用户主动拖的滚动都可以；
     // 别的列表在 Home 被盖住期间程序化滚到顶部不算（见 ②）
     if (!userDriven && LXTabBarCollapseDriver != nil && LXTabBarCollapseDriver != scrollView) return;
@@ -7355,7 +7367,7 @@ static void LX_RCTScrollView_scrollViewDidScroll(id self, SEL _cmd, UIScrollView
     LXTabBarManualExpanded = NO;
     LXSetTabBarCollapsed(NO);
   }
-  // (2, 48] 迟滞区：保持当前状态，避免顶部抖动来回切换
+  // (LXTabBarExpandOffset, LXTabBarCollapseOffset] 迟滞区：保持当前状态，避免顶部抖动来回切换
 }
 
 @interface LXTabBarCollapseSetup : NSObject
