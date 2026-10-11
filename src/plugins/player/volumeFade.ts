@@ -227,6 +227,15 @@ const ARM_RENEW_LIMIT = 3
 const START_ARM_TIMEOUT_MS = 6_000
 /** 两次音量写入之间的最小可感知差：差得比它小就直接写终点，不白跑一趟斜坡 */
 const MIN_RAMP_DELTA = 0.01
+/**
+ * 斜坡里「这一拍的值和上一拍几乎一样」的跳过阈值【第 64 轮·降低耗电与发热】。
+ * 等功率曲线两端极平（`sin` / `cos` 的导数在两端为 0）：3 秒渐出的头 ~12% 拍、2 秒渐入的
+ * 尾 ~12% 拍，相邻两拍差不到 0.002 —— 这点差（-54dB 量级）耳朵听不出来，桥调用却是实打实的
+ * （每拍一次 `setNativeFlacVolume` / `TrackPlayer.setVolume`，原生侧还要写一次音量）。
+ * 只跳过「差得极小」的拍：跳过后的写入序列仍是完整序列的**子序列**，单调性不变；末拍
+ * **无条件写**，终点值永远精确落定。
+ */
+const FADE_WRITE_EPSILON = 0.002
 
 let fadeTimer: ReturnType<typeof setInterval> | null = null
 /** 在途斜坡的放行句柄【第 41 轮缺陷①】：斜坡被取消 / 完成都从这一处 resolve，绝不留悬挂 */
@@ -291,27 +300,31 @@ const fadeOutMs = () => readFadeMs('player.fadeOutDuration', FADE_OUT_FALLBACK_M
 const isLinearCurve = () => settingState.setting['player.fadeLinearCurve'] === true
 
 /**
- * 感知曲线【第 63 轮第 2 条】。用户原话：「缓动曲线：默认使用等功率曲线（Equal-Power），
- * 避免音量突变；可选线性（Linear）」。
+ * 感知曲线【第 63 轮第 2 条 / 第 64 轮第 2 条修正】。用户原话：「缓动曲线：默认使用等功率
+ * 曲线（Equal-Power），避免音量突变；可选线性（Linear）」。
  *
- * 等功率（默认）——**升 / 降互为 sin / cos**：
- *   · 渐入（rising）： `sin(π/2 · p)`，p 0→1 时 0→1；
- *   · 渐出（falling）：`sin(π/2 · (1-p))` = `cos(π/2 · p)`，p 0→1 时 1→0。
- * 两者平方和为 1 ⇒ 过渡期间**功率恒定**，人耳听到的是能量不变的过渡（这正是它在音频里
- * 叫 equal-power 的原因）；两端导数都是 0（头尾平缓），所以既没有「一上来就掉一半」的突兀，
- * 也没有台阶。
- * 线性：升 `p` / 降 `1-p`，等幅度变化。
+ * 本函数返回的**永远是单调 0→1 的插值参数**（两个方向都从 0 开局、到 1 收尾）：
+ *   · 等功率（默认）：升 `sin(π/2 · p)`、降 `1 - cos(π/2 · p)`——后者就是前者在 p 轴上
+ *     翻转，两者平方和恒为 1 ⇒ 过渡期间**功率恒定**（人耳听到的是能量不变的过渡，这正是
+ *     它在音频里叫 equal-power 的原因）；两端导数为 0（头尾平缓），没有「一上来就掉一半」
+ *     的突兀，也没有台阶。
+ *   · 线性：两个方向都是 `p`（等幅度变化）。
  *
- * 单调性（第 41 轮定死的「斜坡全程单调」）：等功率与线性在 p ∈ [0,1] 上都单调，方向由
- * rising 决定 —— 方向判据取的是「终点比起点大」，所以从任意当前音量起斜坡都成立
- *（渐出被打断到半途后再渐出、音量条拖到一半再暂停……这些现场起点都不是 0 或设定值）。
- * 方向而不是「上调 / 下调」这两个调用点来决定，是因为同一个调用点（暂停 / 播放）的
- * 当前音量在不同现场下高低不定（渐入被打断后暂停，起点就在半途）。
+ * 【第 64 轮第 2 条】用户原话：「渐入声音变化是 0 至当前音量，渐出声音变化是当前音量至 0，
+ * 目前存在当前音量降低再变高再至 0 的情况，需要修复……暂停后的音量只会变低，不会突然变高，
+ * 播放后的音量只会变高，不会变低」。
+ * 症结就在返回值的方向上：调用式 `from + (target - from) * ease`（见 rampVolume）里 ease
+ * 只能当插值参数用，第 63 轮却把下降方向写成了 `sin(π/2 · (1-p))` = `cos(π/2 · p)`
+ * （p 0→1 时它从 1 掉到 0）——整条渐出**掉了个方向**：第一拍掉到 ≈0，随后一路升回起点，
+ * 最后被真暂停切到 0。用户听到的正是「降低 → 变高 → 再至 0」。线性档 `1 - p` 同病。
+ * 方向仍然由「终点比起点大」判定（见 rampVolume 的 rising），本函数只负责形状——
+ * 所以从任意当前音量起斜坡都成立（渐出被打断到半途后再渐出、音量条拖到一半再暂停……
+ * 这些现场起点既不是 0 也不是设定值）。
  */
 const easeVolume = (progress: number, linear: boolean, rising: boolean) => {
-  if (linear) return rising ? progress : 1 - progress
-  const radian = (Math.PI / 2) * (rising ? progress : 1 - progress)
-  return Math.sin(radian)
+  if (linear) return progress
+  const radian = (Math.PI / 2) * progress
+  return rising ? Math.sin(radian) : 1 - Math.cos(radian)
 }
 
 /** 与 plugins/player/utils.ts 的 setVolume 同口径的两个引擎分发（此处不 import 以免成环） */
@@ -417,10 +430,16 @@ const rampVolume = (to: number, durationMs: number): Promise<void> => {
   return new Promise<void>((resolve) => {
     const steps = Math.max(1, Math.round(durationMs / FADE_STEP_MS))
     let step = 0
+    let written = from
     fadeResolve = resolve
     fadeTimer = setInterval(() => {
       step++
-      void writeVolume(from + (target - from) * easeVolume(step / steps, linear, rising))
+      const next = from + (target - from) * easeVolume(step / steps, linear, rising)
+      // 末拍无条件写（终点必须精确落定）；中间拍与上一拍差得听不出来就不发桥
+      //（FADE_WRITE_EPSILON：等功率曲线两端极平，这些拍纯属白耗电）
+      if (step < steps && Math.abs(next - written) < FADE_WRITE_EPSILON) return
+      written = next
+      void writeVolume(next)
       if (step >= steps) stopRamp()
     }, FADE_STEP_MS)
   })
