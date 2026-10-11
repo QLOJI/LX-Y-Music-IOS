@@ -445,6 +445,26 @@ final class LiquidGlassView: MTKView {
     /// 第 16/19 轮那套行为逐字保留。
     private static let maxStaleHoldAge: TimeInterval = 0.15
 
+    /// 【第 62 轮第 1 条】暂停恢复后的**静默窗**：handleResumeFromPause 之后的头 120ms 里，
+    /// 无论这一帧采景看着干不干净，都不换画面（继续挂着手上的纹理）。
+    ///
+    /// 用户现场：「底部 tab 栏和迷你播放器栏透过的画面固定了，但是在点击左上角返回按钮、
+    /// 右滑返回主界面的最后一瞬间，会出现短暂的闪一下（应该是在刷新画面）」。玻璃在第 61 轮
+    /// 之后整段转场都被按住，恢复时刻就是转场收尾——那一瞬间的采景落在「合成源刚建立」
+    /// 的窗口里：分类出来的可疑帧（均匀 / 带近黑条带）本应被沿用门挡住，但恢复时
+    /// lastCommitAcceptedAt 还是 push 之前的时刻（早已超过 maxStaleHoldAge），陈旧度门当场
+    /// 把沿用翻掉、把可疑帧画了出去 —— 那一下就是用户看到的「闪一下」，紧跟着真实内容到达
+    /// 又换一次（用户措辞「然后移动位置后，又会出现一次」）。
+    /// 静默窗与陈旧度门配合：窗内不换（最坏也只是把手上那张**内容本来就对**的画面多挂一会儿），
+    /// 窗（120ms）短于陈旧度门的 150ms，所以它不会把旧画面留过 maxStaleHoldAge。
+    /// 只对「手上已有纹理」（backgroundTexture != nil）生效——冷启动那种 previous == nil
+    /// 的「沿用等于保持透明」不受影响（第 16/19 轮行为逐字保留）。
+    private var resumeQuietUntil: TimeInterval = 0
+
+    /// 静默窗长度（墙钟秒）。120ms ≈ 7 拍（60fps）：足够跨过恢复瞬间那次合成的滞后，
+    /// 又短到用户感知不到「画面停在上一帧」。
+    private static let resumeQuietDuration: TimeInterval = 0.12
+
     /// 采景尺寸变化 = 第五个沉降窗口锚点（见 lastCaptureGeometry）。
     /// 只比尺寸**不比原点**：原点平移（透镜拖动、列表滚动时玻璃不动）不需要重新合成，
     /// 那正是 captureReferenceSize 注释里已被接受的现状；而尺寸变化必然是
@@ -851,6 +871,22 @@ final class LiquidGlassView: MTKView {
         // maxStaleHoldAge（150ms）就被陈旧度门放行——既不会把半成品折射进玻璃边缘，
         // 也不会把上一页内容整段留在玻璃里。
         // 顺序：先开窗再 captureBackground，采到的这一帧本身也在窗口覆盖内。
+        //
+        // 【第 62 轮第 1 条】恢复静默窗 + 重新锚定「上一张被接受的画面」的时刻：
+        // 上面那条沉降窗口（captureSettleDuration = 0.6s）在恢复路径上**一直是失效的**——
+        // commitCapturedTexture 的陈旧度门拿 lastCommitAcceptedAt 判断「手上这张画面有多旧」，
+        // 而恢复时这个时刻还是 push 之前写下的（玻璃整段转场都被按住，中间没有任何一次
+        // 「接受」），于是 now - lastCommitAcceptedAt 必然 > maxStaleHoldAge(0.15)，
+        // 沿用门刚打开就被陈旧度门当场翻掉：恢复第一帧的**可疑采景被直接画出去**，
+        // 一两拍后真实内容到达再换一次 —— 用户第 62 轮第 1 条看到的「最后一瞬间闪一下
+        // （像在刷新画面）」，以及紧随其后的第二次。
+        // 语义上这里没有说谎：此刻手上挂着的纹理内容就是**当下**这一页（第 61 轮口径下
+        // 它整段转场都对），它就是「刚被接受的画面」。所以把锚点挪到恢复时刻，
+        // 让沿用门在这之后仍然只有 150ms 的有效期（上限不变），再叠一个 120ms 的静默窗
+        // 兜住启发式漏判的干净可疑帧。
+        let resumeNow = CACurrentMediaTime()
+        lastCommitAcceptedAt = resumeNow
+        resumeQuietUntil = resumeNow + Self.resumeQuietDuration
         beginCaptureSettleWindow()
         captureBackground()
         // 复位之后还差最后一脚（2026-10-02，用户第 11 轮第 10 条：
@@ -1324,6 +1360,17 @@ final class LiquidGlassView: MTKView {
                isInsideCaptureSettleWindow(now) {
                 shouldHold = true
             }
+        }
+        // 【第 62 轮第 1 条】恢复静默窗（见 resumeQuietUntil 的文档注释）：暂停恢复后的头
+        // 120ms 一律不换画面。这一条**不看启发式**——恢复瞬间的采景是不是「半成品」由稀疏
+        // 网格猜，猜漏一次用户就看到一次闪；这里用墙钟直接盖住那段窗口。
+        // 采景矩形刚变大（geometryGrew）时**不参与**：那条路径手上是「旧尺寸」的纹理，
+        // 多挂 120ms 等于让新长出来的区域多拉 120ms 的旧图（第 56 轮那条结构性沿用本来
+        // 只挂一帧），不值得。尺寸没变时才谈「内容对不对」。
+        // 放在陈旧度门**之前**求值：陈旧度门仍有最终否决权（它的上限 150ms 比本窗的 120ms
+        // 长，正常情况下不会打架；真打起来以「不挂太旧的画面」为准）。
+        if !shouldHold, !geometryGrew, now < resumeQuietUntil, backgroundTexture != nil, previous != nil {
+            shouldHold = true
         }
         // 陈旧度门（2026-10-11，第 56 轮第 2 条）：沿用到手的画面不能「太旧」——
         // 超过 maxStaleHoldAge 就宁可把这一帧半成品画出去，也不再挂旧画面。
