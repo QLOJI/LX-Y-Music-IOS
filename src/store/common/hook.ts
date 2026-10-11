@@ -99,6 +99,36 @@ export const useNavTransitioning = () => {
   return value
 }
 
+/**
+ * 是否处于**返回（pop）露出窗口**内（2026-10-11，第 52 轮第 2 条）。
+ *
+ * 与 useNavTransitioning 是反作用力：那个把玻璃按住（push：玻璃正在被盖住），
+ * 这个把玻璃的**覆盖门**临时作废（pop：玻璃正在被露出来）。
+ *
+ * 为什么需要它：覆盖门读的是账本（componentIds），而账本只在 screenPopped 事件到达时
+ * 才翻——该事件晚于「用户按下返回」，于是从按下返回到账本收尾之间，玻璃被「以为还盖着」
+ * 而暂停渲染、显示的是暂停前那一帧（push 之前的画面）；等到账本收尾、原生走
+ * handleResumeFromPause（丢纹理 + 重采 + 立即画）时，返回动画已经跑完 —— 用户看到的就是
+ * 「返回动画结束时闪一下，然后透过的画面才刷新」。
+ *
+ * 本 hook 只给玻璃省电门用（见 useGlassCovered / useGlassHomeCovered），
+ * **不要**用它替换 useHomeCovered / useScreenCovered —— 后两者还有非玻璃消费点
+ * （tabBarCollapse 的 useAboveMiniPlayerBottom 布局、PlayingIcon 动画门等），
+ * 提前翻转会让那些布局在返回动画中途跳一下。
+ */
+export const useNavRevealing = () => {
+  const [value, update] = useState(state.navRevealing)
+
+  useEffect(() => {
+    global.state_event.on('navRevealingUpdated', update)
+    return () => {
+      global.state_event.off('navRevealingUpdated', update)
+    }
+  }, [])
+
+  return value
+}
+
 // 底部悬浮层（悬浮迷你播放器 + 底部 Tab）的固定部分总高（pt），
 // 实际避让高度还需叠加底部安全区（useBottomOverlayInset）。
 export const BOTTOM_OVERLAY_BASE_HEIGHT = 180
@@ -208,6 +238,37 @@ export const useScreenCovered = (componentId?: string) => {
   const ids = useComponentIds()
   if (!componentId) return false
   return String(ids[ids.length - 1]?.id) !== String(componentId)
+}
+
+/**
+ * **玻璃专用**覆盖门：useScreenCovered + 露出窗口（2026-10-11，第 52 轮第 2 条）。
+ *
+ * 语义 = 「现在还需要暂停这块玻璃吗」，即 `被覆盖 且 不在返回露出窗口内`。
+ * 返回发起时（navigation/revealWindow 的 beginNavRevealWindow）窗口打开，本门立刻
+ * 变 false ⇒ <LiquidGlass paused> 落 false ⇒ 原生在**转场开始之前**完成一次
+ * 复位（丢旧纹理 + 重采当前背景 + 立即 draw）。那一刻页面还盖着玻璃，复位与首帧
+ * 采景都看不见；等返回动画把玻璃露出来时，透过的画面已经是当前画面，全程实时，
+ * 动画结束不再跳变（用户第 52 轮第 2 条）。
+ *
+ * ⚠️ 只替换**玻璃省电门**，不要拿它去替换 useScreenCovered / useHomeCovered 本身：
+ * 那两个还被非玻璃消费点读（useAboveMiniPlayerBottom 的布局、PlayingIcon 的动画门），
+ * 让它们在返回动画中途提前翻转，会让列表底部留白与图标动画在转场里跳一下。
+ */
+export const useGlassCovered = (componentId?: string) => {
+  const covered = useScreenCovered(componentId)
+  const revealing = useNavRevealing()
+  return covered && !revealing
+}
+
+/**
+ * **玻璃专用**覆盖门（Home 版）：useHomeCovered + 露出窗口。
+ * 消费点 = ModernTabBar 的两块玻璃（展开态 Tab 栏 / 收起态圆钮）。
+ * ⚠️ 同上：只用于玻璃的 paused，不要用它替换 useHomeCovered 的其它消费点。
+ */
+export const useGlassHomeCovered = () => {
+  const covered = useHomeCovered()
+  const revealing = useNavRevealing()
+  return covered && !revealing
 }
 
 const hasVisible = (visibleNames: COMPONENT_IDS[], ids: InitState['componentIds']) => {

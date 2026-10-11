@@ -83,6 +83,13 @@ export class StateEvent extends Event {
     this.emit('navTransitioningUpdated', transitioning)
   }
 
+  // 露出门开始 / 结束（2026-10-11，第 52 轮第 2 条）：返回发起时置位、返回收尾时
+  // 撤销。消费点只有玻璃专用门 useGlassCovered / useGlassHomeCovered，账本类
+  // hook（useHomeCovered / useScreenCovered 与其非玻璃消费点）不订阅本事件。
+  navRevealingUpdated(revealing: boolean) {
+    this.emit('navRevealingUpdated', revealing)
+  }
+
   apiSourceUpdated(source: LX.AppSetting['common.apiSource']) {
     this.emit('apiSourceUpdated', source)
   }

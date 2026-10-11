@@ -1,4 +1,5 @@
 import { Navigation } from 'react-native-navigation'
+import { beginNavRevealWindow, NAV_REVEAL_LEAD_MS } from './revealWindow'
 import { VERSION_MODAL, PACT_MODAL, SYNC_MODE_MODAL, ANNOUNCEMENT_MODAL } from './screenNames'
 import themeState from '@/store/theme/state'
 import syncState from '@/store/sync/state'
@@ -46,9 +47,23 @@ export const dismissOverlay = async(compId: string) => {
 // pop 不带自定义转场：RNN iOS 的自定义转场被取消（如动画期间再次导航）或 JS 空闲时
 // 永不调用 completeTransition，会把整个导航栈卡死。全 app 的 push/pop 统一走系统默认
 // 动画，由 UIKit 处理打断，无此问题（详见 navigation.ts pushPlayDetailScreen 注释）。
-export const pop = async(compId: string) => Navigation.pop(compId)
-export const popToRoot = async(compId: string) => Navigation.popToRoot(compId)
-export const popTo = async(compId: string) => Navigation.popTo(compId)
+//
+// 2026-10-11（第 52 轮第 2 条）：这三个是**全 app 返回按钮的唯一入口**，统一在这里
+// 「先开玻璃露出门、让出一帧、再派发命令」——顺序不能反（见 revealWindow.ts 的长注释）：
+//   · 开门放在 Navigation.* 之前：玻璃的省电门读的是账本（componentIds），账本要等
+//     screenPopped 才翻，晚于用户按下返回。不提前开门，复位与首帧采景就落在返回转场
+//     中间/末尾 ⇒ 用户看到「返回动画结束时闪一下，然后透过的画面才刷新」。
+//   · 让出一帧（NAV_REVEAL_LEAD_MS）：开门只是 JS 状态更新，要等 React 提交 + RN 桥
+//     把 paused=false 送到原生才会复位；不让帧则原生命令可能抢先，又回到转场中间重采。
+const revealBeforePop = <T>(run: () => Promise<T>): Promise<T> => {
+  beginNavRevealWindow()
+  return new Promise<void>((resolve) => {
+    setTimeout(() => { resolve() }, NAV_REVEAL_LEAD_MS)
+  }).then(run)
+}
+export const pop = (compId: string) => revealBeforePop(() => Navigation.pop(compId))
+export const popToRoot = (compId: string) => revealBeforePop(() => Navigation.popToRoot(compId))
+export const popTo = (compId: string) => revealBeforePop(() => Navigation.popTo(compId))
 
 export const showPactModal = () => {
   if (pendingOverlays.has(PACT_MODAL)) return

@@ -17,6 +17,7 @@ import commonState from '@/store/common/state'
 import commonActions from '@/store/common/action'
 import { COMPONENT_IDS } from '@/config/constant'
 import { getStatusBarStyle } from './utils'
+import { clearNavRevealWindow, endNavRevealWindow } from './revealWindow'
 import { type ListInfoItem } from '@/store/songlist/state'
 import { getCachedBgPicColor } from '@/utils/nativeModules/utils'
 
@@ -61,6 +62,9 @@ const NAV_TRANSITION_SETTLE_MS = 420
 let navTransitionTimer: ReturnType<typeof setTimeout> | null = null
 function beginNavTransitionWindow() {
   if (navTransitionTimer) clearTimeout(navTransitionTimer)
+  // push 方向与 pop 相反：玻璃正在被盖住，在途的「露出门」必须立即作废，
+  // 否则它会把这次 push 要按住的暂停按掉（见 revealWindow.clearNavRevealWindow）。
+  clearNavRevealWindow()
   commonActions.setNavTransitioning(true)
   navTransitionTimer = setTimeout(() => {
     navTransitionTimer = null
@@ -108,6 +112,13 @@ export const handleScreenPopped = (componentId: string) => {
   // 续期会让底部玻璃在整段返回动画之外多显示 420ms 陈旧画面，返回完成后突然跳一下。
   // 详见 endNavTransitionWindow 的说明。
   endNavTransitionWindow()
+  // 露出门收尾（2026-10-11，第 52 轮第 2 条）：本事件到达只说明「账本可以收尾了」，
+  // 而账本（上一行 removeComponentId）与本站状是两个更新源，所以关门在 revealWindow
+  // 里延后一个宏任务落地——保证账本先翻，之后关门是无边沿的 false → false，
+  // 绝不会在收尾这一帧把玻璃重新按回暂停（那正是用户看到的「返回末尾闪一下」）。
+  // 系统边缘返回手势（不经过 JS 的 pop 三入口）也在这里被兜到：开门没赶上，
+  // 但关门必须落，否则露出门会一直开着、玻璃不再省电。
+  endNavRevealWindow()
   if (target) endPush(target.name)
 }
 const guardPush = async(promise: Promise<string> | undefined, id: COMPONENT_IDS): Promise<void> => {
