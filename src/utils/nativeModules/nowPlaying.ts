@@ -41,6 +41,12 @@ interface NativeNowPlayingModule {
    * snapshotAtMs：快照的原生时钟戳（CACurrentMediaTime 毫秒，精确回放锚点时刻）；
    * ageMs：快照墙钟年龄（无原生戳时原生以「now − 年龄」回放）。两者都缺省 = 旧行为。 */
   reanchorNowPlayingLyric?: (positionMs: number, snapshotAtMs?: number, ageMs?: number) => Promise<void>
+  /** 【第 50 轮】卡片歌词区状态文案（「歌曲链接获取中 / 歌曲加载中 / 缓存中…」）。
+   * 非空 = 覆盖歌词区并让行仲裁让位；空串 = 撤销覆盖、恢复当前歌词行。 */
+  setNowPlayingStatusText?: (text: string) => Promise<void>
+  /** 【第 50 轮】逐行快速通路：把当前歌词行直接写进卡片歌词区（取消换行延迟）。
+   * 与 JS 逐行钩子（详情页大歌词）同一个事件触发，不走元数据发布管线。 */
+  setNowPlayingCurrentLine?: (text: string) => Promise<void>
 }
 
 const NowPlayingModule = NativeModules.NowPlayingModule as NativeNowPlayingModule | undefined
@@ -102,4 +108,23 @@ export const setNowPlayingLyrics = async(
 export const reanchorNowPlayingLyric = async(positionMs: number, snapshotAtMs?: number, ageMs?: number) => {
   if (!hasMethod('reanchorNowPlayingLyric')) return
   return NowPlayingModule?.reanchorNowPlayingLyric?.(positionMs, snapshotAtMs, ageMs)
+}
+
+/** 【第 50 轮】把播放状态文案推给系统媒体卡片的歌词区（「歌曲链接获取中 / 歌曲加载中 /
+ * 缓存中…」）。数据源与详情页底部状态条**完全同源**：store/player/action.ts 的 setStatusText
+ * → global.state_event.playStateTextChanged → 转发器 core/init/player/nowPlayingStatus.ts
+ * （受「显示蓝牙歌词」开关门控，与该字段的歌词用途一致）。
+ * 状态非空时原生把它覆盖到歌词区（优先于时间轴行与逐行通路），传空串撤销覆盖、
+ * 把当前歌词行立即仲裁回来。 */
+export const setNowPlayingStatusText = async(text: string) => {
+  if (!hasMethod('setNowPlayingStatusText')) return
+  return NowPlayingModule?.setNowPlayingStatusText?.(text)
+}
+
+/** 【第 50 轮】逐行快速通路（取消换行延迟）：JS 逐行钩子（详情页大歌词的同一个
+ * onLyricPlay 事件）把当前行直接写进卡片歌词区，不等元数据发布管线的桥往返。
+ * 原生时钟仍是行权威（0.05s 内仲裁纠偏）；文本未变时原生直接跳过（幂等）。 */
+export const setNowPlayingCurrentLine = async(text: string) => {
+  if (!hasMethod('setNowPlayingCurrentLine')) return
+  return NowPlayingModule?.setNowPlayingCurrentLine?.(text)
 }
