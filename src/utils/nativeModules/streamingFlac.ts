@@ -51,6 +51,12 @@ interface NativeStreamingFlacModule {
   setRate?: (rate: number) => Promise<void>
   /** 【第 24 轮】下发「与其他应用同时播放」策略：true = 不因其它音频自我暂停（打断时对外不呈现暂停） */
   setPlayWithOthers?: (enabled: boolean) => Promise<void>
+  /**
+   * 【第 56 轮第 3 条】(b)(c) 立即生效版：写标记 **并且**（满足安全闸门时）当场重配音频会话。
+   * 返回 true = 这次真的重配了会话；false = 只写了标记（引擎还在跑 / 非无损档），
+   * 口径落到下一次 prepareAudioSession。调用方（index.ts）据此不必再等下一首。
+   */
+  applyPlayWithOthersNow?: (enabled: boolean) => Promise<boolean>
   getPosition?: () => Promise<number>
   /** 带原生时钟戳的位置快照：snapshotAt = 快照产生时的 CACurrentMediaTime 毫秒 */
   getPositionStamped?: () => Promise<StreamingFlacStampedPosition>
@@ -102,6 +108,9 @@ export const setStreamingFlacVolume = async(volume: number) => assertSupported('
 export const setStreamingFlacRate = async(rate: number) => assertSupported('setRate')(rate)
 // 【第 24 轮】「与其他应用同时播放」策略开关（只写原生标记，不碰播放器 / 音频会话）
 export const setStreamingFlacPlayWithOthers = async(enabled: boolean) => assertSupported('setPlayWithOthers')(enabled)
+// 【第 56 轮第 3 条】同一开关的**立即生效**版：除写标记外，安全闸门满足时当场重配会话
+//（见 AppDelegate.mm 的 applyPlayWithOthersNow 与 nativeFlac.ts 的包装）。
+export const applyStreamingFlacPlayWithOthersNow = async(enabled: boolean) => assertSupported('applyPlayWithOthersNow')(enabled)
 export const getStreamingFlacPosition = async() => assertSupported('getPosition')()
 export const getStreamingFlacPositionStamped = async(): Promise<StreamingFlacStampedPosition> => assertSupported('getPositionStamped')()
 export const getStreamingFlacBufferedPosition = async() => assertSupported('getBufferedPosition')()
