@@ -25,18 +25,6 @@ globalThis.lx_setup = (key, id, name, description, version, author, homepage, ra
       return nativeFunc(...args)
     }
   }
-  // const set_timeout = globalThis.__lx_native_call__set_timeout
-  // delete globalThis.__lx_native_call__set_timeout
-  // const utils_str2b64 = globalThis.__lx_native_call__utils_str2b64
-  // delete globalThis.__lx_native_call__utils_str2b64
-  // const utils_b642buf = globalThis.__lx_native_call__utils_b642buf
-  // delete globalThis.__lx_native_call__utils_b642buf
-  // const utils_str2md5 = globalThis.__lx_native_call__utils_str2md5
-  // delete globalThis.__lx_native_call__utils_str2md5
-  // const utils_aes_encrypt = globalThis.__lx_native_call__utils_aes_encrypt
-  // delete globalThis.__lx_native_call__utils_aes_encrypt
-  // const utils_rsa_encrypt = globalThis.__lx_native_call__utils_rsa_encrypt
-  // delete globalThis.__lx_native_call__utils_rsa_encrypt
   const KEY_PREFIX = {
     publicKeyStart: '-----BEGIN PUBLIC KEY-----',
     publicKeyEnd: '-----END PUBLIC KEY-----',
@@ -193,11 +181,6 @@ globalThis.lx_setup = (key, id, name, description, version, author, homepage, ra
     }
     requestQueue.set(requestKey, {
       callback,
-      // timeout: setTimeout(() => {
-      //   const req = requestQueue.get(requestKey)
-      //   if (req) req.timeout = null
-      //   nativeCall(NATIVE_EVENTS_NAMES.cancelRequest, requestKey)
-      // }, 30000),
       requestInfo,
     })
 
@@ -307,11 +290,6 @@ globalThis.lx_setup = (key, id, name, description, version, author, homepage, ra
       // sendMessage(NATIVE_EVENTS_NAMES.init, false, null, typeof info.message === 'string' ? info.message.substring(0, 100) : '')
       return
     }
-    // if (!info.status) {
-    //   nativeCall(NATIVE_EVENTS_NAMES.init, { info: null, status: false, errorMessage: 'Init failed' })
-    //   // sendMessage(NATIVE_EVENTS_NAMES.init, false, null, typeof info.message === 'string' ? info.message.substring(0, 100) : '')
-    //   return
-    // }
     const sourceInfo = {
       sources: {},
     }
@@ -423,24 +401,6 @@ globalThis.lx_setup = (key, id, name, description, version, author, homepage, ra
         }
       },
     },
-    // zlib: {
-    //   inflate(buf) {
-    //     return new Promise((resolve, reject) => {
-    //       zlib.inflate(buf, (err, data) => {
-    //         if (err) reject(new Error(err.message))
-    //         else resolve(data)
-    //       })
-    //     })
-    //   },
-    //   deflate(data) {
-    //     return new Promise((resolve, reject) => {
-    //       zlib.deflate(data, (err, buf) => {
-    //         if (err) reject(new Error(err.message))
-    //         else resolve(buf)
-    //       })
-    //     })
-    //   },
-    // }),
   }
 
   globalThis.lx = {

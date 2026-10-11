@@ -737,6 +737,18 @@ static NSNotificationName const LXPlayerPositionNotificationName = @"LXPlayerPos
 // 停一会、隔几句又同步"）；冻结在最后已知位置才能与音频保持一致。
 // 定义在文件前部：生命周期通知处理器（歌词驱动区块之前）即需读写。
 static BOOL LXNowPlayingClockHold = NO;
+// 【第 58 轮第 4 条】Now Playing 抑制闸门。勾选「与其他应用同时播放」时期望**当场撤下**锁屏 /
+// 灵动岛的媒体卡（用户原话「勾选上『与其他应用同时播放』选项……立即取消锁屏和灵动岛界面，
+// 取消勾选后再次播放音乐，继续占用锁屏和灵动岛界面」）。闸门落在唯一的发布出口
+// LXApplyNowPlayingInfo 里：只把「对外发布」这一步拦成空卡片 + Stopped，缓存 / 播放态变量 /
+// 歌词时钟 / 六个命令的 enabled 全部照旧维护 —— 第 56 轮之后 JS 侧的切换路径本来就会补一次
+// 元数据发布（updateMetaData），取消勾选时闸门一放，下一次发布就把卡片原样装回去。
+// 为什么不走 JS 的 clearNowPlayingInfo：它会清缓存、停 20Hz 歌词时钟，而
+// LXNowPlayingLyricStep 是本机「前台位置事件 → JS 进度条」的唯一驱动源，播放中撤卡会把
+// 进度条一起冻住。定义必须在本文件首个使用点（LXApplyNowPlayingInfo，见下）之前，也不能
+// 复用 LXPlayWithOthersEnabled —— 那个定义在后面（setPlayWithOthers 一带），.mm 按 C++
+// 规则编译，不给「先用后定义」。
+static BOOL LXSuppressNowPlayingCard = NO;
 // JS 发布元数据/播放态时 elapsedTime 对应的原生时钟戳（CACurrentMediaTime 毫秒，
 // 由 JS 透传 elapsedTimeSnapshotAt / elapsedTimeAgeMs 换算，见
 // LXResolveElapsedSnapshotAtMs）。0 = 无戳（退回「锚点钉在现在」的旧行为）。
@@ -1013,7 +1025,18 @@ static void LXApplyNowPlayingInfo(void) {
       }
     }
 
-    center.nowPlayingInfo = LXNowPlayingInfoCache.count ? [LXNowPlayingInfoCache copy] : nil;
+    // 【第 58 轮第 4 条】混音抑制：勾选「与其他应用同时播放」期间不对外发布卡片 ——
+    // 这一条按「缓存为空」处理（信息置空），锁屏 / 灵动岛的媒体卡当场撤下（第 33 轮实测过
+    // 这条机制本身有效：置空后锁屏与灵动岛一起消失）。
+    // 为什么折进这一个三元式、而不另起一段早退：本文件的两条硬约束 ——「center.nowPlayingInfo
+    // 赋值恰一处」「LXSyncRemoteCommandAvailability() 恰一处」，以及「不许出现整条信息置空的
+    // 独立语句」（那形状被防的是换封面链路的会话拆除，见 sim-remote-command-lockscreen-tap）。
+    // 只挡「发布」这一步：缓存、LXNowPlayingState、歌词时钟、命令的 enabled 全部照旧维护
+    //（下面的可用性同步仍按缓存判断），所以播放中的进度不冻、取消勾选后下一次元数据发布就把
+    // 卡片原样装回来 —— 这正是用户要的「取消勾选后继续占用锁屏和灵动岛界面」。
+    // 有意不动下一行的 playbackState：显示态与启停态「同源同刻」是第 36/43 轮钉下的铁律，
+    // 卡片有没有只由这条信息字典决定。
+    center.nowPlayingInfo = (!LXSuppressNowPlayingCard && LXNowPlayingInfoCache.count) ? [LXNowPlayingInfoCache copy] : nil;
     if (@available(iOS 13.0, *)) {
       center.playbackState = LXNowPlayingState;
     }
@@ -1489,6 +1512,10 @@ static NSInteger LXNowPlayingLyricIndex = -1;
 // 原生时钟戳（CACurrentMediaTime 毫秒）。0 = 还没对过表（起播后第一拍立即对一次）。
 // 见 LXNowPlayingLyricStep 里的 1Hz 心跳：只把已有 tick 拿来计数，不新建定时器。
 static double LXNowPlayingElapsedRefreshAtMs = 0;
+// 【第 57 轮】上一次「前台位置事件」（LXPlayerPosition → JS）发出的原生时钟戳（毫秒）。
+// 0 = 还没发过（起播后第一拍立即发一次）。见 LXNowPlayingLyricStep 里的 250ms 节流：
+// 时钟本身 20Hz（第 47 轮，为歌词换行延迟服务），位置事件按注释口径只发 4Hz。
+static double LXNowPlayingPositionBroadcastAtMs = 0;
 
 // 临时诊断（定位控制中心歌词冻结，定位后置 0 关闭）：非前台时把时钟内部状态
 // 写进媒体卡片 artist 字段——D+计数前进=时钟运行且卡片可重绘；计数冻结=时钟
@@ -1717,13 +1744,20 @@ static void LXNowPlayingLyricStep(void) {
       LXApplyNowPlayingInfo();
     }
 
-    // 位置事件枢纽：前台播放时把外推位置广播给 JS（4Hz 单向事件），驱动进度条等
-    // UI，替代 JS 侧每 250ms 两次桥接查询（getPosition + 引擎状态）。后台/熄屏
-    // 不发（无 UI 需要更新）；暂停也不发（位置不变，JS 自己知道暂停点）。
+    // 位置事件枢纽：前台播放时把外推位置广播给 JS，驱动进度条等 UI。后台/熄屏不发
+    // （无 UI 需要更新）；暂停也不发（位置不变，JS 自己知道暂停点）。
+    // 【第 57 轮】节流到 250ms：时钟是 20Hz（第 47 轮，为歌词换行延迟服务），原先每拍都
+    // 发 ⇒ 20Hz 桥接事件（桥接 → JS 处理器 → store 派发 → 进度组件重渲染）。250ms 与 JS
+    // 侧既有设计同档（慢校准 1s、seek 收敛 2s、进度条 tick 不挂过渡），观感无差异；歌词
+    // 换行仍走 20Hz。**单独嵌套一层**、不并进上面的闸门条件：那一行是契约脚本
+    // （lockscreen-tap 的 g7 反例、lyric-arbitration ⑥）逐字钉住的锚点，换行即锚点漂移。
     if (!paused && [UIApplication sharedApplication].applicationState == UIApplicationStateActive) {
-      [[NSNotificationCenter defaultCenter] postNotificationName:LXPlayerPositionNotificationName
-                                                          object:nil
-                                                          userInfo:@{ @"position": @(positionMs / 1000.0), @"rate": @(rate) }];
+      if (elapsedRefreshNowMs - LXNowPlayingPositionBroadcastAtMs >= 250.0) {
+        LXNowPlayingPositionBroadcastAtMs = elapsedRefreshNowMs;
+        [[NSNotificationCenter defaultCenter] postNotificationName:LXPlayerPositionNotificationName
+                                                            object:nil
+                                                            userInfo:@{ @"position": @(positionMs / 1000.0), @"rate": @(rate) }];
+      }
     }
     // 【第 50 轮】状态文案覆盖：非空时歌词区显示状态（歌曲链接获取中 / 歌曲加载中 /
     // 缓存中…），整段行仲裁让位（状态优先于时间轴行与 JS 逐行通路）。放在这一拍的理由：
@@ -3580,7 +3614,6 @@ RCT_REMAP_METHOD(updateEqualizerConfig, updateEqualizerConfig:(NSDictionary *)co
 @property (nonatomic, strong) AVAudioMixerNode *wetMixerNode;
 @property (nonatomic, strong) AVAudioMixerNode *soundEffectMixerNode;
 @property (nonatomic, strong) AVAudioFormat *outputFormat;
-@property (nonatomic, strong) dispatch_source_t pannerTimer;
 @property (nonatomic, copy) NSString *convolutionAssetKey;
 @property (nonatomic, copy) NSString *currentState;
 @property (nonatomic, copy) NSString *currentURL;
@@ -3971,7 +4004,6 @@ RCT_EXPORT_MODULE();
   self.wetMixerNode = nil;
   self.soundEffectMixerNode = nil;
   self.convolutionAssetKey = nil;
-  self.pannerTimer = nil;
   self.pannerPhase = 0.0f;
   std::atomic_store_explicit(&_realtimeEqualizerProcessor, std::shared_ptr<LXRealtimeEqualizerProcessor>(), std::memory_order_release);
   std::atomic_store_explicit(&_realtimeDynamicsProcessor, std::shared_ptr<LXRealtimeDynamicsProcessor>(), std::memory_order_release);
@@ -4015,11 +4047,10 @@ RCT_EXPORT_MODULE();
   }
 }
 
+// 【第 57 轮】拆掉 pannerTimer 定时器家族（属性 + 创建 + 取消）：声像摆动早已改由
+// _realtimePannerProcessor 在渲染回调里做，那个 dispatch_source 没有任何创建点，
+// 只留下「取消一个永远是 nil 的定时器」——纯冗余。
 - (void)stopPannerLocked {
-  if (self.pannerTimer != nil) {
-    dispatch_source_cancel(self.pannerTimer);
-    self.pannerTimer = nil;
-  }
   std::atomic_store_explicit(&_realtimePannerProcessor, std::shared_ptr<LXRealtimeSpatialPannerProcessor>(), std::memory_order_release);
   self.pannerPhase = 0.0f;
   if (self.soundEffectMixerNode != nil) self.soundEffectMixerNode.pan = 0.0f;
@@ -4322,6 +4353,20 @@ static const int64_t LXShortInterruptionIgnoreMs = 1500;
   __block BOOL canReleaseSession = NO;
   dispatch_sync(self.renderQueue, ^{
     BOOL shouldHandle = self.sourceNode != nil && (self.playbackStarted || [self.currentState isEqualToString:@"buffering"]);
+    // 【第 58 轮第 3 条】勾选「与其他应用同时播放」时**整段让行**：不停引擎、不掐渲染、
+    // 不交还会话，只记一下播放位置。第 24 轮的写法在混音态仍然走完「[engine pause] +
+    // _sourceRenderingEnabled = NO + setActive:NO」，只把 paused 事件吞掉不发 —— 于是其它
+    // 应用每次出声都要经历一轮「拆掉自己 → JS 重取阶梯的 play() 再装回来」，用户听到的正是
+    // 「声音自动不定时中断，然后又自动播放」；而重取阶梯（scheduleMixReclaim 的六拍）把
+    // 非混音的会话抢回来，和对方来回拉锯时更是一停一响。
+    // 混音口径下正确做法是原地不动：iOS 在打断期间本来就已把我们的输出压住，打断结束它会
+    // 自己把会话还回来 —— 引擎不拆、渲染开关不动时这一过程是连续的，不需要拆装。
+    // 这里的早退只跳会话 / 状态那两步，interruptedBySystem 照置（Ended 分支口径不变）；
+    // 混音态本来就不发 paused（shouldEmitPause 恒为 NO），所以也不存在「不呈现暂停」的落差。
+    if (LXPlayWithOthersEnabled) {
+      if (shouldHandle && !self.manualPause) self.lastKnownPosition = [self currentPlaybackPositionLocked];
+      return;
+    }
     if (shouldHandle && !self.manualPause) {
       self.lastKnownPosition = [self currentPlaybackPositionLocked];
       if (self.engine != nil && self.engine.isRunning) [self.engine pause];
@@ -4776,7 +4821,11 @@ static const int64_t LXShortInterruptionIgnoreMs = 1500;
       shouldWait = limit > 0 && queuedSeconds >= limit;
     }
     if (!shouldWait) break;
-    [NSThread sleepForTimeInterval:0.03];
+    // 【第 57 轮】手动暂停时把轮询从 33Hz（30ms）放宽到 5Hz（200ms）：暂停期间环里已经
+    // 存着 pausedBufferSeconds 的音频，恢复播放后最坏 200ms 才补货（存货是这个量级的
+    // 几十倍，听感无差异），换来「暂停挂着」每秒少 28 次线程唤醒——这是暂停 / 挂着后台
+    // 时唯一还在高频转的轮询（歌词时钟早已按播放态 + 熄屏双闸停钟，第 23/42 轮）。
+    [NSThread sleepForTimeInterval:self.manualPause ? 0.2 : 0.03];
   }
 }
 
@@ -5136,12 +5185,43 @@ RCT_REMAP_METHOD(pause, pauseStreamWithResolver:(RCTPromiseResolveBlock)resolve 
   resolve(nil);
 }
 
+// 【第 57 轮】停止播放后释放音频会话（只在「图已拆干净」时）。
+//
+// 为什么释放：会话既是「正在播放」的所有权凭证，也是**后台执行权**的凭证
+// （Info.plist 的 UIBackgroundModes=audio：进程持有激活的 playback 会话时不会被系统挂起）。
+// 停止之后已经没有流可播，会话却一直挂在进程上——全文件此前只有「被打断」与 openStream
+// 两处 setActive:NO——于是「不播放音乐、退到后台」时进程照旧活着：JS 定时器、桥接、
+// 各类存活检查全部继续跑，是用户第 57 轮「不播放音乐留在后台也会很烫」的一条确定成因。
+//
+// 只在 stop 释放，**不动 pause、也不动 reset**：
+//   · pause —— 会话常驻是第 48 轮定案（删不得：暂停即让出会让锁屏卡片变灰、遥控按键与
+//     进度条拖动全部失效，见 pauseStreamWithResolver 的长注释；那是用户拿真机反复确认过的）。
+//   · reset —— JS 侧把 reset 当作「换引擎前的清场」（resourceLoader 的 nativeFlac → AVPlayer
+//     兜底、startNativeFlacPlayback 的开场），紧随其后就是另一台引擎起播；那条兜底路径的
+//     会话激活由 RNTP 自己做，见下一条。
+// 安全性（【第 57 轮·已核实，不是推断】）：回到播放的每条路都会重新激活会话——
+//   · 原生流式引擎：openStream 自己先 setActive:NO 再 prepareAudioSession（setActive:YES），
+//     resume / 打断结束 / 输出恢复 / applyPlayWithOthersNow 也全走 prepareAudioSession；
+//   · RNTP / AVPlayer 兜底路径：已下载 lyswhut/react-native-track-player 该 commit
+//     （d4a062f，package.json 里钉的那个）的 ios/RNTrackPlayer/RNTrackPlayer.swift 逐字核对：
+//     `@objc(play:rejecter:)` 的第一句就是 `try? AVAudioSession.sharedInstance().setActive(true)`，
+//     即 JS 每次 TrackPlayer.play() 都会把会话抢回来（SwiftAudioEx 0.14.7 自己完全不碰会话，
+//     这一步只可能由 RNTP 桥做）。所以 stopped → 播放（无论哪台引擎）都不会失声。
+// 代价（如实记录）：stopped 且退后台时进程可被系统挂起，锁屏卡片在这个状态下的按键投递
+// 会失效到用户重新打开 App 为止。暂停态不受影响（会话仍常驻），锁屏控制的主用例不变。
+- (void)releaseAudioSessionWhenIdle {
+  if (self.engine != nil || self.sourceNode != nil) return;
+  AVAudioSession *session = [AVAudioSession sharedInstance];
+  [session setActive:NO withOptions:AVAudioSessionSetActiveOptionNotifyOthersOnDeactivation error:nil];
+}
+
 RCT_REMAP_METHOD(stop, stopStreamWithResolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
   self.manualPause = YES;
   self.interruptedBySystem = NO;
   // 【第 31 轮·追加】停止：短暂系统音窗口的待决暂停一并作废
   self.pendingShortInterruptionIgnore = NO;
   [self stopStreamingInternal:YES];
+  [self releaseAudioSessionWhenIdle];
   self.currentState = @"stopped";
   [self emitState:@"stopped" position:@0 duration:@(self.duration)];
   resolve(nil);
@@ -5242,6 +5322,11 @@ RCT_REMAP_METHOD(setRate, setStreamRate:(nonnull NSNumber *)rate resolver:(RCTPr
 // handleAudioSessionInterruption: 的 Began 分支。
 RCT_REMAP_METHOD(setPlayWithOthers, setPlayWithOthers:(BOOL)enabled resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
   LXPlayWithOthersEnabled = enabled;
+  // 【第 58 轮第 4 条】勾选态当场撤下锁屏 / 灵动岛卡片（取消勾选当场放行，下一次元数据
+  // 发布就把卡片装回来）：这里是标记下发的**最短路径**，JS 侧若没走到补发布那一步，
+  // 也必须让抑制口径立即生效。
+  LXSuppressNowPlayingCard = enabled;
+  LXApplyNowPlayingInfo();
   resolve(nil);
 }
 
@@ -5269,6 +5354,12 @@ RCT_REMAP_METHOD(setPlayWithOthers, setPlayWithOthers:(BOOL)enabled resolver:(RC
 // 选项字面量仍**只有 prepareAudioSession 里那一处**（本方法复用它）——
 // sim-play-with-others-toggle 的「全文恰一处」计数契约不破。
 RCT_REMAP_METHOD(applyPlayWithOthersNow, applyPlayWithOthersNow:(BOOL)enabled resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
+  // 【第 58 轮第 4 条】与 setPlayWithOthers 同一口径：无论下面的会话重配是否走得通
+  //（引擎还在跑 / 非无损档都会在这里早退），锁屏 / 灵动岛卡片的抑制都必须当场生效。
+  // 位置有意放在策略标记之前、闸门之前：标记那一行与紧随的闸门判定是一对**连写**的
+  // 顺序契约（sim-play-with-others-immediate 的 n7 反例按这个字面量做搬迁），不许在中间插东西。
+  LXSuppressNowPlayingCard = enabled;
+  LXApplyNowPlayingInfo();
   LXPlayWithOthersEnabled = enabled;
   if (self.sourceNode == nil || self.engine == nil || self.engine.isRunning) {
     resolve(@(NO));
