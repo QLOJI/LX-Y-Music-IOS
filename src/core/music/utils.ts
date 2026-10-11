@@ -13,7 +13,7 @@ import settingState from '@/store/setting/state'
 import { requestMsg } from '@/utils/message'
 import BackgroundTimer from 'react-native-background-timer'
 import { storageDataPrefix } from '@/config/constant'
-import { removeData } from '@/plugins/storage'
+import { getAllKeys, removeData, removeDataMultiple } from '@/plugins/storage'
 import { apis } from '@/utils/musicSdk/api-source'
 import { log } from '@/utils/log'
 import { state as userApiState } from '@/store/userApi'
@@ -511,6 +511,27 @@ export const getNextTryQuality = (highQuality: LX.Quality, musicInfo: LX.Music.M
 // 清除指定歌曲+音质的缓存 URL（失败音质重试前清掉，避免重复命中坏链）
 export const removeMusicUrl = async(musicInfo: LX.Music.MusicInfo | LX.Download.ListItem, quality: LX.Quality) => {
   await removeData(`${storageDataPrefix.musicUrl}${musicInfo.id}_${quality}`)
+}
+
+/**
+ * 【第 53 轮第 2 条】清掉这首歌的全部缓存链接（含「请求档 → 达成档」映射记录）。
+ *
+ * 只清「上次达成档」一条（removeMusicUrl）不够：读缓存是两段式
+ * （utils/data.ts getMusicUrlResolved）——**先按请求档直连**，未命中才走映射回退。
+ * 坏链若躺在请求档那个键上，它永远先被命中，映射指向的良好链接根本没机会用上：
+ * 表现为「每次重播都先拿坏链试一次、再重新请求一次」，正是用户要消灭的重复取链。
+ * 所以链接确认不可用时把这首歌的缓存整体作废，让下一次取链的结果干净地重建缓存。
+ *
+ * 键前缀沿用 musicUrl（与 clearMusicUrl 的 startsWith 口径一致）；
+ * `${id}_` 的尾下划线保证 id 前缀相同的另一首（abc / abc123）不会被误删。
+ */
+export const removeMusicUrlAll = async(musicInfo: LX.Music.MusicInfo | LX.Download.ListItem): Promise<void> => {
+  const prefixes = [
+    `${storageDataPrefix.musicUrl}${musicInfo.id}_`,
+    `${storageDataPrefix.musicUrl}request_quality__${musicInfo.id}_`,
+  ]
+  const keys = (await getAllKeys()).filter(key => prefixes.some(prefix => key.startsWith(prefix)))
+  if (keys.length) await removeDataMultiple(keys)
 }
 // 【C-11-7】档位排序基准（从高到低）：给「曲目标注的可用档」等做排序/位次判断用
 // （如 online.ts 的 wy 详情判定）。本表含 atmos_plus/192k 等历史档，代表「排序」而非「取流顺序」：

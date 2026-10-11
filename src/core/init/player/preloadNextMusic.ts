@@ -1,4 +1,5 @@
 import { getMusicUrlInfo } from '@/core/music'
+import { removeMusicUrlAll } from '@/core/music/utils'
 import { getNextPlayMusicInfo, resetRandomNextMusicInfo } from '@/core/player/player'
 import { startPreload } from '@/core/player/preload'
 import { checkUrl } from '@/utils/request'
@@ -58,6 +59,12 @@ const preloadNextMusicUrl = async(curTime: number) => {
       if (requestId !== preloadMusicInfo.requestId) return
       await warmPreloadUrl(info.musicInfo, urlInfo.url, urlInfo.quality)
     } catch {
+      // 【第 53 轮第 2 条】预热失败 = 这条链接不可用：先把它的缓存整体作废再重取。
+      // 不作废的话，下一次播放这首歌时读缓存仍会**首选命中**这条坏链（预取写入的坏链
+      // 与重取到的好链可能落在不同档位的键上，见 core/music/utils.removeMusicUrlAll 的
+      // 两段式说明），于是「先拿坏链试一次、再重新请求一次」的循环永远打不破——
+      // 与用户要求的「链接可用就沿用缓存、别再取链」正好相反。
+      await removeMusicUrlAll(info.musicInfo).catch(() => {})
       const refreshedUrlInfo = await getMusicUrlInfo({ musicInfo: info.musicInfo, isRefresh: true }).catch(() => null)
       console.log('preload url refresh', refreshedUrlInfo?.url ?? '')
       if (requestId !== preloadMusicInfo.requestId) return

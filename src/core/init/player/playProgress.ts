@@ -503,6 +503,12 @@ export default () => {
 
     void setCurrentTime(time).then((targetPosition) => {
       if (!playerState.musicInfo.id) return
+      // 【第 53 轮第 1 条】落点回填要确认「还是同一首歌」：本代 seek 期间用户可能已经切歌
+      // （setCurrentTime 内部的稳定化轮询要等引擎到达落点，nativeFlac 流式 seek 缓冲
+      // 5~8s 是常态）。旧实现只比代际，切歌的清理恰好晚一拍、或在途 resolve 先返回时，
+      // 上一首的落点会写进新歌的进度条与落盘进度（新歌一起播就是旧位置）。
+      // musicId 是 setProgress 入口捕获的当次歌曲 id。
+      if (playerState.musicInfo.id != musicId) return
       if (genAtSeek != seekGen) return
       if (targetPosition > 0) {
         setNowPlayTime(targetPosition)
@@ -596,11 +602,44 @@ export default () => {
   }
 
 
+  // 【第 53 轮第 1 条】切歌即整批作废「位置意图 / seek 窗口 / 快路径门控」。
+  //
+  // 为什么必须在切歌路径上做：切歌（上一首 / 下一首 / 列表点播 / 自然播完跳下一首 /
+  // 单曲循环重播）走的是 handlePlayNext → setPlayMusicInfo → app_event.musicToggled，
+  // 它**只发 musicToggled、不发 stop** —— `await setStop()`（plugins/player 的 setStop）
+  // 并不触发 app_event.stop，所以 handleStop 里那套位置意图复位在切歌时根本不执行。
+  // 残留后果（都是「新歌从旧进度/旧时钟开始」的因）：
+  //   · restorePlayTime / restorePlayTimeTrack 还是上一首的 seek 意图 → 新歌 first
+  //     playing 事件把 resumeTime 当成自己的意图，setCurrentTime(resumeTime) 把新歌拽回
+  //     上一首的位置；同一首歌重播时 `restorePlayTimeTrack == musicId` 这道守卫恒真；
+  //   · mediaBuffer.track / playTime 还是上一首的 → 出声回拉的兜底位置同样是旧歌的；
+  //   · engineConfirmedPlaying 残留 → 4Hz 位置快路径在上首歌曲的原生时钟位置上继续工作
+  //     （handleStop 的注释已自述此因，但切歌不经过 handleStop）；
+  //   · seekTargetPosition / seekHoldUntil 窗口残留 → 新歌上报的位置被按旧落点拦截/改写。
+  // 复用 handleStop 的同款复位集合，另加 seekGen++（在途的 setCurrentTime resolve、
+  // 位置快照、状态查询全部作废，与模块内既有的代际约定一致）。
+  // 调用时机：handlePause() 之后（ticker/时钟先停，再清，避免清理期间旧时钟继续外推）。
+  const resetTrackPositionIntents = () => {
+    seekTargetPosition = null
+    seekHoldUntil = 0
+    seekGen++
+    clearBufferTimeout()
+    restorePlayTime = null
+    restorePlayTimeTrack = null
+    lastSeekIntentAt = 0
+    pullBackCount = 0
+    engineConfirmedPlaying = false
+    isBufferingHold = false
+    // 注意：这里**不**动 audioClock / nowPlayTime / maxPlayTime —— 进度条归零由
+    // setPlayMusicInfo 的 store 层 setProgress(0, 0) 完成，重复归零只会让 UI 多抖一次。
+  }
+
   const handleSetPlayInfo = () => {
-    // restorePlayTime = playProgress.nowPlayTime
-    // void setCurrentTime(playerState.progress.nowPlayTime)
-    // setMaxplayTime(playProgress.maxPlayTime)
+    // 【第 53 轮第 1 条】切歌 = 上一首的位置意图全部过期，先整批作废再做别的
+    // （放在 isRestoringCurrentMusic 早退**之前**：早退只保护「恢复曲的保存进度不被 0 覆盖」，
+    // 与位置意图无关；放在后面会让启动恢复那条路漏掉清理）。
     handlePause()
+    resetTrackPositionIntents()
     updateScrobbleInfo()
     // Skip the startup restore transition so we don't overwrite saved progress with 0.
     if (isRestoringCurrentMusic()) return

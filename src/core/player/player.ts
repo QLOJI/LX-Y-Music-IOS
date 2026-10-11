@@ -1,4 +1,4 @@
-import { isInitialized, initial as playerInitial, isEmpty, setPause, setPlay, setResource, setStop, initTrackInfo, getPosition } from '@/plugins/player'
+import { isInitialized, initial as playerInitial, isEmpty, isEngineOnMusic, setPause, setPlay, setResource, setStop, initTrackInfo, getPosition } from '@/plugins/player'
 import {
   setStatusText,
 } from '@/core/player/playStatus'
@@ -21,6 +21,7 @@ import {
   removeTempPlayList,
 } from '@/core/player/tempPlayList'
 import { getMusicUrlInfo, getPicPath, getLyricInfo } from '@/core/music'
+import { removeMusicUrlAll } from '@/core/music/utils'
 import { requestMsg } from '@/utils/message'
 import { getRandom } from '@/utils/common'
 import { filterList } from './utils'
@@ -154,8 +155,36 @@ const getMusicPlayUrl = async(musicInfo: LX.Music.MusicInfo | LX.Download.ListIt
 // 失败/被取消时意图会残留（旧实现只在成功分支清），被 5s 后自动跳歌或用户手动
 // 点播的任意一首歌误消费，再次把新歌 seek 到旧进度——带 id 后按歌匹配，
 // 任何「另一首歌先加载」的路径都因 id 不匹配自然丢弃该意图。
+// 【第 53 轮第 1 条】id 匹配仍挡不住「同一首歌被再次播放」（单曲循环重播 / 随机连抽同一首 /
+// 手动重播），所以消费再加一道开关：只有 setMusicUrl 的 allowRestoreSeek=true（即 play()
+// 恢复上次播放）能拿到这个时间，其余调用一律 0 起播——见 setMusicUrl 的说明与 play()。
 let pendingRestoreSeek: { id: string, time: number } | null = null
-export const setMusicUrl = (musicInfo: LX.Music.MusicInfo | LX.Download.ListItem, isRefresh?: boolean, quality?: LX.Quality) => {
+
+// 【第 53 轮第 2 条】刷新取链前的缓存作废：走到 isRefresh 说明「上一次拿到的链接已被判定
+// 不可用」（加载错误 / 降级 / 25s 加载超时，见 controller.ts），此时这条链接的缓存必须整体
+// 作废，否则它永远是下一次读取的**首选命中**——重取到的好链接按达成档另存一条，坏链那条
+// 键还在原位，于是每次重播都变成「命中坏链 → 失败 → 再请求一次」，正好是用户要消灭的
+// 重复取链（用户原话：「如果链接可用，将不再获取歌曲链接……为接口减轻负担」）。
+//
+// 必须 await 完再取链：取链成功后会 saveMusicUrl 写回缓存，先清后写才是「旧键作废 + 新键
+// 生效」；若并发清（不 await），这次写入可能被随后的删除一起带走，缓存反而被清空。
+//
+// 两首歌都要清：getMusicPlayUrl 优先按 meta.toggleMusicInfo（换源后的目标曲）取链，
+// 坏链可能挂在那首的 id 下，只清本曲等于没清。
+const invalidateUrlCacheOnRefresh = async(musicInfo: LX.Music.MusicInfo | LX.Download.ListItem) => {
+  const baseInfo = 'progress' in musicInfo ? musicInfo.metadata.musicInfo : musicInfo
+  const toggleMusicInfo = baseInfo.meta.toggleMusicInfo
+  await Promise.all([
+    removeMusicUrlAll(musicInfo).catch(() => {}),
+    toggleMusicInfo ? removeMusicUrlAll(toggleMusicInfo).catch(() => {}) : Promise.resolve(),
+  ])
+}
+
+/**
+ * 取链并装载资源。`allowRestoreSeek` 是本函数唯一的「允许从非 0 位置起播」开关：
+ * 只有 `play()`（恢复上次播放）那条调用传 true，切歌 / 重播 / 失败重取一律 false。
+ */
+export const setMusicUrl = (musicInfo: LX.Music.MusicInfo | LX.Download.ListItem, isRefresh?: boolean, quality?: LX.Quality, allowRestoreSeek = false) => {
   // addLoadTimeout()
   if (!diffCurrentMusicInfo(musicInfo)) return
   if (cancelDelayRetry) cancelDelayRetry()
@@ -167,15 +196,32 @@ export const setMusicUrl = (musicInfo: LX.Music.MusicInfo | LX.Download.ListItem
   // - 无条件清空：意图是一次性的，本次加载若不是它的目标曲（另一首歌先加载），
   //   它就已经过期，留着只会污染后续歌曲。
   // - id 匹配：只有恢复曲本身的首次非刷新加载能拿到恢复时间，从保存进度起播。
-  const restoreTime = !isRefresh && pendingRestoreSeek && pendingRestoreSeek.id === musicInfo.id
-    ? pendingRestoreSeek.time
-    : 0
+  //   【第 53 轮第 1 条】两侧 id 都必须非空：`null == null` 会退化成相等，裸意图漏给下一首。
+  // - 【第 53 轮第 1 条】只有 allowRestoreSeek 的那条路径能消费：id 匹配是**不够**的，
+  //   它挡不住「同一首歌的第二次播放」——单曲循环自动重播、随机连抽到同一首、手动点播
+  //   当前正在放的这首，id 全都相等，旧逻辑就把「上次退出时的保存进度」当成这次的起播
+  //   位置，正是用户报的「下一首歌从 1:00 开始放」（用户原话：上一首/下一首都要从头播放）。
+  //   本函数的调用方里只有 play() 是「恢复上次播放」，其余（debouncePlay / isRefresh 重取）
+  //   都必须 0 起播，所以开关由调用方显式给出，而不是在这里猜。
+  const canConsumeRestoreSeek = allowRestoreSeek && !isRefresh &&
+    pendingRestoreSeek != null && pendingRestoreSeek.id != null && musicInfo.id != null &&
+    pendingRestoreSeek.id === musicInfo.id
+  const restoreTime = canConsumeRestoreSeek && pendingRestoreSeek ? pendingRestoreSeek.time : 0
   pendingRestoreSeek = null
-  const currentTimePromise = isRefresh
+  // 【第 53 轮第 1 条】刷新重取的位置同样要「引擎真在放这首歌」才允许沿用。
+  // 旧实现无条件取 getPosition()：引擎此刻停在哪，这个数就是哪首歌的——包括上一首的
+  // 残留位置（错误/降级/加载超时这几条 isRefresh 路径上，引擎可能还装着旧资源）。
+  // 那种情况下新歌就被 seek 到旧歌的位置（用户报的 1:00 起播的另一条通路）。
+  // isEngineOnMusic 按引擎曲目 id 比对（nativeflac://<id> / <id>__//…），确认是同一首才沿用。
+  const currentTimePromise = isRefresh && isEngineOnMusic(musicInfo)
     ? getPosition().catch(() => playerState.progress.nowPlayTime)
     // 非 refresh = 新歌：仅恢复曲的首次加载携带显式恢复时间，其余一律从 0 开始
-    : Promise.resolve(restoreTime)
-  void getMusicPlayUrl(musicInfo, isRefresh, false, quality).then(async(result) => {
+    : Promise.resolve(isRefresh ? 0 : restoreTime)
+  void (async() => {
+    // 【第 53 轮第 2 条】刷新 = 这条链接已被判定不可用，先作废缓存再取链（顺序不可颠倒，见函数注释）
+    if (isRefresh) await invalidateUrlCacheOnRefresh(musicInfo)
+    return getMusicPlayUrl(musicInfo, isRefresh, false, quality)
+  })().then(async(result) => {
     if (!result) return
     const currentTime = await currentTimePromise
     currentStreamInfo.musicId = musicInfo.id
@@ -660,7 +706,10 @@ export const playPrev = async(isAutoToggle = false): Promise<void> => {
 export const play = () => {
   if (playerState.playMusicInfo.musicInfo == null) return
   if (isEmpty()) {
-    if (createGettingUrlId(playerState.playMusicInfo.musicInfo) != global.lx.gettingUrlId) setMusicUrl(playerState.playMusicInfo.musicInfo)
+    // 【第 53 轮第 1 条】这里是「恢复上次播放」的**唯一**入口（启动恢复由 init/player/playInfo.ts
+    // 的 setTimeout(play) 或用户点播放触发，handleRestorePlay 写入的恢复意图只该在这里被消费），
+    // 所以第四参传 true —— 其余任何 setMusicUrl 调用点都必须从 0 起播。
+    if (createGettingUrlId(playerState.playMusicInfo.musicInfo) != global.lx.gettingUrlId) setMusicUrl(playerState.playMusicInfo.musicInfo, false, undefined, true)
     return
   }
   void setPlay()

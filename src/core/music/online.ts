@@ -75,23 +75,12 @@ export const getMusicUrlInfo = async({
   const hasFullDetails = currentMusicInfo.meta._full
   if (!silent) console.log('播放：currentMusicInfo:', currentMusicInfo)
 
-  if (isWySource && !hasFullDetails) {
-    // 仅用于决定「是否向 wy 拉取音质详情」的位次判断：候选链已改为固定天梯、忽略 _qualitys
-    // （utils.ts C-11-3），这里仍按 QUALITY_RANK（排序基准，含历史档）比位次，语义不变。
-    // `?? {}` 兜底：详情缺失时 Object.keys(undefined) 会直接抛错，连带整条 wy 取链挂掉。
-    const availableQualities = Object.keys(currentMusicInfo.meta._qualitys ?? {}) as LX.Quality[]
-    const preferredQualityIndex = QUALITY_RANK.indexOf(preferredQuality)
-    const maxAvailableQualityIndex = Math.min(...availableQualities.map(q => QUALITY_RANK.indexOf(q)))
-
-    if (preferredQualityIndex < maxAvailableQualityIndex) {
-      if (!silent) console.log('用户想要的音质比当前已知的最好音质还要高，获取音质详情')
-      currentMusicInfo = await fetchAndApplyDetailedQuality(currentMusicInfo, 0, silent)
-    } else {
-      if (!silent) console.log('用户想要的音质比当前已知的最好音质还要低，无需获取音质详情')
-      void fetchAndApplyDetailedQuality(currentMusicInfo, 0, silent)
-    }
-  }
-
+  // 【第 53 轮第 2 条】缓存判据前移到「任何网络动作之前」——这条链路的第一原则是
+  // 「链接可用就沿用缓存、不再取链（为接口减轻负担）」，所以缓存命中必须一次请求都不发。
+  // 旧顺序是「先 wy 音质详情（fetchAndApplyDetailedQuality，一次真实请求）→ 再查缓存」：
+  // 已取过链接的歌每次重播都白搭一次详情请求，缓存命中省下的只有取流那一发。
+  // 前移是等价的：targetQuality 取固定天梯首档（getPlayQuality 忽略 meta._qualitys，见
+  // C-11-2），与音质详情无关；详情回填也不改 id（musicDetail.js 只换 meta），缓存键不变。
   const targetQuality = quality ?? getPlayQuality(preferredQuality, currentMusicInfo)
 
   // 如果不是刷新请求，先检查缓存
@@ -108,6 +97,23 @@ export const getMusicUrlInfo = async({
       // 缓存命中没有「本次请求回传的达成档」：缓存按档位为键存取（utils/data.ts saveMusicUrl/
       // getMusicUrl），命中的这条缓存链接本身就属于返回的档位（映射回退时是达成档），用该已知档位兜底。
       return { url: cached.url, quality: cached.quality }
+    }
+  }
+
+  if (isWySource && !hasFullDetails) {
+    // 仅用于决定「是否向 wy 拉取音质详情」的位次判断：候选链已改为固定天梯、忽略 _qualitys
+    // （utils.ts C-11-3），这里仍按 QUALITY_RANK（排序基准，含历史档）比位次，语义不变。
+    // `?? {}` 兜底：详情缺失时 Object.keys(undefined) 会直接抛错，连带整条 wy 取链挂掉。
+    const availableQualities = Object.keys(currentMusicInfo.meta._qualitys ?? {}) as LX.Quality[]
+    const preferredQualityIndex = QUALITY_RANK.indexOf(preferredQuality)
+    const maxAvailableQualityIndex = Math.min(...availableQualities.map(q => QUALITY_RANK.indexOf(q)))
+
+    if (preferredQualityIndex < maxAvailableQualityIndex) {
+      if (!silent) console.log('用户想要的音质比当前已知的最好音质还要高，获取音质详情')
+      currentMusicInfo = await fetchAndApplyDetailedQuality(currentMusicInfo, 0, silent)
+    } else {
+      if (!silent) console.log('用户想要的音质比当前已知的最好音质还要低，无需获取音质详情')
+      void fetchAndApplyDetailedQuality(currentMusicInfo, 0, silent)
     }
   }
 
