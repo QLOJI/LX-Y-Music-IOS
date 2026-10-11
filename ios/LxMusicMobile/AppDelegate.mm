@@ -5245,6 +5245,40 @@ RCT_REMAP_METHOD(setPlayWithOthers, setPlayWithOthers:(BOOL)enabled resolver:(RC
   resolve(nil);
 }
 
+// 【第 56 轮第 3 条】(b)(c)「勾选/取消勾选**立即**生效」：把静态标记换成真的重配音频会话。
+// 第 33 轮的既知代价之一是「混音会话要等下一次 prepareAudioSession（下次起播/换流）才生效」，
+// 而用户这一条明确要求「勾选上就立即执行设置」——正在放的这一首也要当场换口径，不能等下一首。
+//
+// 为什么安全：第 24 轮实锤的 -50 / 失声是「**激活态的**会话被重设分类」造成的，而本方法的
+// 调用顺序由 JS 侧保证——闸门要的「引擎已停」在两条路径上都成立后才调到这里：
+//   · 切换时已经暂停 / 没在播 ⇒ JS 本体内那次下发，此刻引擎就是停的；
+//   · 正在播放时切换 ⇒ JS 先 await setPause（300ms 渐出 + pause 桥在 renderQueue 内无条件
+//     [engine pause]），停下之后**再**下发一次（第 56 轮第 3 条 (b)：这两处缺一处，
+//     「勾选上就立即执行设置」在最常见的那条用例上就等于没生效）。
+// 再加一道原生闸门：只有**本机流式引擎持有音源、且引擎已经不在跑**（= 已暂停/已停）时才重配。
+//   · 引擎还在跑（暂停还没落地、或用户在 0.x 秒内又点了播放）⇒ 只写标记，resolve NO，
+//     口径照旧落到下一次 prepareAudioSession —— 与改动前逐字一致，不会更差。
+//   · 非无损档（RNTP / AVPlayer 持有音源，self.sourceNode == nil）⇒ 同样只写标记：
+//     那条路径的会话分类在 setupPlayer 时定死（第 24 轮禁区别名），不从这里碰。
+//
+// 「占用灵动岛」方向：取消勾选 ⇒ 会话当场回到独占口径（Playback + LongFormAudio），
+// 本应用重新成为 Now Playing 主会话；勾选 ⇒ 会话当场变混音（Playback + Default 路由策略），
+// 失去主会话资格。两者都是**系统**据此决定卡片/灵动岛占用的状态，代码不介入系统 UI
+// （第 34 轮定案：iOS 没有「只关灵动岛、保留锁屏」这种粒度的公开 API）。
+//
+// 选项字面量仍**只有 prepareAudioSession 里那一处**（本方法复用它）——
+// sim-play-with-others-toggle 的「全文恰一处」计数契约不破。
+RCT_REMAP_METHOD(applyPlayWithOthersNow, applyPlayWithOthersNow:(BOOL)enabled resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
+  LXPlayWithOthersEnabled = enabled;
+  if (self.sourceNode == nil || self.engine == nil || self.engine.isRunning) {
+    resolve(@(NO));
+    return;
+  }
+  NSError *error = nil;
+  BOOL ok = [self prepareAudioSession:&error];
+  resolve(@(ok));
+}
+
 RCT_REMAP_METHOD(getPosition, getStreamPositionWithResolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
   __block double position = 0;
   dispatch_sync(self.renderQueue, ^{
