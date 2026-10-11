@@ -67,7 +67,9 @@
  *      两路会话标志分开记（liveCaptureRequested / realtimeCaptureRequested，会同时为真）、
  *      isLiveCaptureActive = 两者 OR（降档门控与采景分档的唯一判据）、
  *      setRealtimeCapture 幂等 + 会话起止都放行下一次采景 + 退会话避让透镜会话、
- *      handleResumeFromPause（丢旧纹理 / 清沿用痕迹 / 立刻采一次）与 setPaused 恢复路径；
+ *      handleResumeFromPause（**保留纹理** / 清沿用痕迹 / 立刻采一次；2026-10-11 第 56 轮
+ *      第 2 条把「丢旧纹理」反转为「保留纹理」，失败形态随之反转为「又丢弃旧纹理」）
+ *      与 setPaused 恢复路径；
  *   C  反例自检：任一条修复被拆掉一点，本脚本必须判不合格；替换未命中 = 失败
  *      （防止用例指向的代码被改名后脚本退化成永真）。
  *
@@ -736,7 +738,9 @@ const existingStructureInvariants = (f) => {
   //    else if !liveCaptureRequested 已被这个唯一判据取代）。
   // ⑤ 暂停恢复复位（handleResumeFromPause）：暂停只是停 draw，CAMetalLayer 上仍留着
   //    暂停前那帧；不复位就会先把旧画面画出去（用户第 2 条「返回主界面时先闪一帧旧
-  //    画面」）。复位 = 丢旧纹理 + 清沿用痕迹 + 立刻同步采一次 + 同步渲染档。
+  //    画面」）。复位 = 清沿用痕迹 + 立刻同步采一次 + 同步渲染档；**不**再丢旧纹理
+  //    （2026-10-11 第 56 轮第 2 条反转 —— 丢纹理会让恢复期 draw() 整帧不 present，
+  //    屏幕上反而更久地留着暂停前那张位图；旧画面改由陈旧度门 maxStaleHoldAge 兜底）。
   if (!/private var realtimeCaptureRequested = false/.test(glass)) {
     reasons.push('缺 realtime 会话的独立开关（与透镜会话合并成一个标志会互相覆盖）')
   }
@@ -767,8 +771,14 @@ const existingStructureInvariants = (f) => {
   if (!resumeBody) {
     reasons.push('缺 handleResumeFromPause（暂停恢复后会把暂停前那一帧旧画面先画出去）')
   } else {
-    if (!/backgroundTexture = nil/.test(resumeBody)) {
-      reasons.push('handleResumeFromPause 未丢弃暂停前的旧纹理')
+    // 【2026-10-11 第 56 轮第 2 条反转】这里原先是 `!backgroundTexture = nil ⇒ 未丢弃旧纹理`。
+    // 用户复报「返回动画结束时闪一次」后定案：丢纹理反而制造了闪烁——恢复后最初几帧被判
+    // 未就绪时 previous 为 nil ⇒ draw() 的 guard 直接返回、这一帧不 present ⇒ CAMetalLayer
+    // 上留着暂停前那一帧位图，直到第一帧干净采景才整体换掉（那一下换掉就在动画收尾处）。
+    // 现在反向钉住：复位里**不得**再丢纹理，旧画面由 commitCapturedTexture 的陈旧度门
+    //（maxStaleHoldAge）兜底，超过 150ms 就不许再沿用。
+    if (/backgroundTexture = nil/.test(resumeBody)) {
+      reasons.push('handleResumeFromPause 又丢弃旧纹理（恢复期 draw 无纹理整帧不 present → CAMetalLayer 上留着暂停前那一帧，返回动画收尾闪一下）')
     }
     // 第 20 轮：变化检测基准（lastCaptureGrid）已随自适应升降档整条删除，沿用痕迹只剩
     // 均匀帧计数与半成品标记两处，都要清。
@@ -784,7 +794,7 @@ const existingStructureInvariants = (f) => {
   }
   if (!/if !paused, liquidGlassView\?\.isPaused == true \{/.test(effect) ||
       !/liquidGlassView\?\.handleResumeFromPause\(\)/.test(effect)) {
-    reasons.push('setPaused 恢复路径未接复位（暂停恢复时不会丢旧纹理/立刻采一次）')
+    reasons.push('setPaused 恢复路径未接复位（暂停恢复时不会清沿用痕迹/立刻采一次）')
   }
   return reasons
 }
@@ -1017,8 +1027,8 @@ CE('C16 每帧路径（captureBackground）里多加一处开窗（窗口每帧�
 ), '恰 5 处')
 
 CE('C17 每帧路径（commitCapturedTexture）里多加一处起点写入（窗口每帧重置）', settleReopenInvariants, tamperGlass(
-  '        let now = CACurrentMediaTime()\n        var shouldHold = false',
-  '        captureSettleStartedAt = CACurrentMediaTime()\n        let now = CACurrentMediaTime()\n        var shouldHold = false'
+  '        let now = CACurrentMediaTime()\n        let geometryGrew = captureGeometryGrewPending',
+  '        captureSettleStartedAt = CACurrentMediaTime()\n        let now = CACurrentMediaTime()\n        let geometryGrew = captureGeometryGrewPending'
 ), '写入点不是')
 
 // —— 2026-10-02 契约加固：采景节流（C18~C18c）——
@@ -1060,10 +1070,13 @@ CE('C22 暂停恢复不再复位（返回主界面时先把暂停前那帧旧画
   '        if false {\n            liquidGlassView?.handleResumeFromPause()\n        }'
 ), 'setPaused 恢复路径未接复位')
 
-CE('C23 恢复复位不再丢旧纹理（沿用分支仍能把暂停前那一帧画出来）', existingStructureInvariants, tamperGlass(
-  '    func handleResumeFromPause() {\n        backgroundTexture = nil',
-  '    func handleResumeFromPause() {\n        consecutiveUniformFrames = 0'
-), '未丢弃暂停前的旧纹理')
+// C23 在 2026-10-11（第 56 轮第 2 条）整体反转：原用例是「恢复复位不再丢旧纹理」，
+// 现在的失败形态是「**又**丢旧纹理」——恢复期 draw() 拿不到纹理就整帧不 present，
+// CAMetalLayer 上留着暂停前那一帧位图，直到第一帧干净采景才整体换掉（动画收尾闪一下）。
+CE('C23 恢复复位又丢弃旧纹理（第 56 轮第 2 条反转被回退）', existingStructureInvariants, tamperGlass(
+  '    func handleResumeFromPause() {\n        consecutiveUniformFrames = 0',
+  '    func handleResumeFromPause() {\n        backgroundTexture = nil\n        consecutiveUniformFrames = 0'
+), '又丢弃旧纹理')
 
 // —— 2026-10-02 契约加固：第 16 轮第 1 条（暂停恢复补开窗，C24 / C24b）——
 
@@ -1114,8 +1127,8 @@ CE('C27 无条件开窗（去掉「几何变化」判断 → 窗口每帧重开�
 ), '未在「几何变化」时才开')
 
 CE('C28 把原点也比进判据（原点平移不需要重新合成）', geometryAnchorInvariants, tamperGlass(
-  '        let changed = abs(captureSize.width - lastCaptureGeometry.width) > Self.captureGeometryEpsilon ||',
-  '        let changed = captureOrigin != .zero || abs(captureSize.width - lastCaptureGeometry.width) > Self.captureGeometryEpsilon ||'
+  '        let changed = grew ||',
+  '        let changed = captureOrigin != .zero || grew ||'
 ), '把原点也比进')
 
 CE('C29 容差被改成 0（稳态浮点噪声每帧重开窗口、永不到点）', geometryAnchorInvariants, tamperGlass(

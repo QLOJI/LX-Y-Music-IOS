@@ -116,8 +116,28 @@ const nativeInvariants = (raw) => {
   if (!raw.includes('RCT_REMAP_METHOD(setPlayWithOthers')) {
     reasons.push('原生缺少 setPlayWithOthers 桥方法（JS 下发的策略进不来）')
   }
-  if (!raw.includes('LXPlayWithOthersEnabled = enabled;')) {
+  // 标记下发**按桥方法分别查**（2026-10-11 第 56 轮）：`LXPlayWithOthersEnabled = enabled;`
+  // 现在有两处（setPlayWithOthers + applyPlayWithOthersNow），文件级 includes 会被另一处
+  // 满足而漏放行 —— 必须把每个桥的函数体切出来各查各的。
+  const bridgeBody = (name) => {
+    const at = raw.indexOf('RCT_REMAP_METHOD(' + name)
+    if (at < 0) return null
+    const end = raw.indexOf('\n}', at)
+    return end < 0 ? raw.slice(at) : raw.slice(at, end)
+  }
+  const setBody = bridgeBody('setPlayWithOthers')
+  if (!setBody || !setBody.includes('LXPlayWithOthersEnabled = enabled;')) {
     reasons.push('setPlayWithOthers 未把策略标记下发（策略标记未下发，勾选无效果）')
+  }
+  // 【第 56 轮第 3 条 (b)】立即生效桥也必须写同一个标记：它除了重配会话还要保证
+  // 「闸门不满足（引擎在跑 / 非无损档 / 桥缺失）时标记已经落地」——那条只写标记的
+  // 退化路径全靠它，否则勾选后仍按独占口径对外呈现暂停（卡片 / 灵动岛行为不一致）。
+  const nowBody = bridgeBody('applyPlayWithOthersNow')
+  if (!nowBody || !nowBody.includes('LXPlayWithOthersEnabled = enabled;')) {
+    reasons.push('立即生效桥未下发策略标记（applyPlayWithOthersNow 的标记写入缺失 → 闸门不满足时标记不落地，「与其他应用同时播放」勾了却仍按独占口径对外呈现暂停）')
+  }
+  if (raw.split('LXPlayWithOthersEnabled = enabled;').length - 1 !== 2) {
+    reasons.push('策略标记写入点不是恰 2 处（setPlayWithOthers + applyPlayWithOthersNow 各一处；多一处 = 又多了一条下发路径，口径会漂）')
   }
   if (!raw.includes('shouldEmitPause = !LXPlayWithOthersEnabled;')) {
     reasons.push('Began 分支 shouldEmitPause 未接策略标记（勾选下打断仍对外呈现暂停 ⇒ 锁屏 / 灵动岛卡片会消失）')
@@ -191,10 +211,19 @@ const runCounterExamples = () => {
   'shouldEmitPause')
 
   // m6 原生 setPlayWithOthers 不再下发标记（勾选无效果）
+  // 锚点必须带上桥方法签名：2026-10-11 第 56 轮起 `LXPlayWithOthersEnabled = enabled;`
+  // 在 AppDelegate.mm 里有**两处**（setPlayWithOthers + applyPlayWithOthersNow），
+  // 裸串会被 String.replace 命中第一处以外的语义混淆（旧用例正是因此漏放行）。
   check('m6 原生标记未下发', () => nativeInvariants(tamper(REAL.native,
-    'LXPlayWithOthersEnabled = enabled;',
-    'LXPlayWithOthersEnabled = NO;')),
+    'RCT_REMAP_METHOD(setPlayWithOthers, setPlayWithOthers:(BOOL)enabled resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {\n  LXPlayWithOthersEnabled = enabled;',
+    'RCT_REMAP_METHOD(setPlayWithOthers, setPlayWithOthers:(BOOL)enabled resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {\n  LXPlayWithOthersEnabled = NO;')),
   '策略标记未下发')
+
+  // m6b 立即生效桥（第 56 轮第 3 条 b）不再写标记（闸门不满足时标记不落地）
+  check('m6b 立即生效桥未下发标记', () => nativeInvariants(tamper(REAL.native,
+    'applyPlayWithOthersNow:(BOOL)enabled resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {\n  LXPlayWithOthersEnabled = enabled;',
+    'applyPlayWithOthersNow:(BOOL)enabled resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {\n  LXPlayWithOthersEnabled = YES;')),
+  '立即生效桥未下发策略标记')
 
   // m7 打断结束不再真正重启播放（引擎在起、但不出声）
   check('m7 打断结束不重启播放', () => nativeInvariants(tamper(REAL.native,

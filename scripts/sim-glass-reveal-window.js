@@ -30,8 +30,12 @@
  *     作废是同步关（push 方向）；
  *   B 三入口（navigation/utils.ts）：pop / popTo / popToRoot 都经 revealBeforePop，
  *     且**开门与让帧都在派发 Navigation.* 之前**；
- *   C 两端动作（navigation.ts）：push 起手 clearNavRevealWindow（作废在途露出门）、
- *     screenPopped 收尾 endNavRevealWindow（且不得反过来开门）；
+ *   C 三端动作（navigation.ts）：push 起手 clearNavRevealWindow（作废在途露出门）、
+ *     screenPopped 收尾 endNavRevealWindow（且不得反过来开门）、**返回方向的提前锚点**
+ *     handleScreenWillAppear（2026-10-11 第 56 轮第 2 条：componentWillAppear 在转场动画
+ *     开始之前触发 → 右滑返回这条不经过 JS 的路径也能在动画开始就让玻璃复位；
+ *     判据 =「即将出现的那一屏在账本里、且不是栈顶」，push 方向不成立）+ 它的注册点
+ *     （navigation/index.ts，按「可选方法 + 运行时守卫」接）；
  *   D 状态管线（state / action / stateEvent / hook）：navRevealing 字段 + 初值 false +
  *     同值短路 + 事件 + 订阅/退订；
  *   E 玻璃专用门与消费点：useGlassCovered / useGlassHomeCovered = 账本门 ∧ 不在露出窗口内
@@ -50,7 +54,11 @@
  * 声明：本脚本是**静态断言**（对源码文本做结构检查）。通过只代表源码形态符合约定，
  * 不代表能编译、更不代表真机观感 —— 本机没有 Xcode / 真机，Swift 与转场行为无法验证。
  * 已知边界（写在这里免得被当成缺陷）：系统**边缘返回手势**不经过 JS 的 pop 三入口，
- * 那条路径只能等 screenPopped 到达时才开门（与改动前一致，不会更差）。
+ * 第 52 轮时那条路径只能等 screenPopped 到达时才开门（与改动前一致，不会更差）；
+ * 2026-10-11（第 56 轮第 2 条）补了 componentWillAppear 提前锚点兜它 —— 但那个事件
+ * 是否真的在转场动画**开始之前**到达、以及 RNN 7.39.2 是否注册了
+ * `registerComponentWillAppearListener`，本机（无 node_modules / 无真机）**无法验证**：
+ * 代码按「有就用、没有就静默跳过」写（运行时 typeof 守卫），退化行为 = 第 52 轮形态。
  */
 
 'use strict'
@@ -65,6 +73,7 @@ const F = {
   reveal: 'src/navigation/revealWindow.ts',
   utils: 'src/navigation/utils.ts',
   nav: 'src/navigation/navigation.ts',
+  index: 'src/navigation/index.ts',
   state: 'src/store/common/state.ts',
   action: 'src/store/common/action.ts',
   event: 'src/event/stateEvent.ts',
@@ -249,8 +258,15 @@ const navigationHooksInvariants = (f) => {
   const reasons = []
   const nav = f.nav
 
-  if (!/import \{ clearNavRevealWindow, endNavRevealWindow \} from '\.\/revealWindow'/.test(nav)) {
-    reasons.push('navigation.ts 未从 ./revealWindow 引入 clearNavRevealWindow + endNavRevealWindow（转发门两端动作无从落地）')
+  // 引入名单（2026-10-11 第 56 轮：多了 beginNavRevealWindow —— handleScreenWillAppear 的
+  // 提前锚点要用；三个名字缺一不可，顺序不限）
+  const importLine = /import \{ ([^}]*)\} from '\.\/revealWindow'/.exec(nav)
+  const imported = importLine ? importLine[1] : ''
+  if (!importLine ||
+      !/\bclearNavRevealWindow\b/.test(imported) ||
+      !/\bendNavRevealWindow\b/.test(imported) ||
+      !/\bbeginNavRevealWindow\b/.test(imported)) {
+    reasons.push('navigation.ts 未从 ./revealWindow 引入 clearNavRevealWindow + endNavRevealWindow + beginNavRevealWindow（露出门三端动作无从落地）')
   }
 
   const beginTrans = fnBody(nav, /function beginNavTransitionWindow\(\)\s*\{/)
@@ -276,6 +292,33 @@ const navigationHooksInvariants = (f) => {
     if (/beginNavRevealWindow/.test(popped)) {
       reasons.push('handleScreenPopped 里出现开门调用（事件到达时才开门 = 返回动画期间仍是陈旧透过画面，第 52 轮要消除的正是这个）')
     }
+  }
+
+  // C2 返回方向的**提前锚点**（2026-10-11，第 56 轮第 2 条）：右滑返回不经过 JS 的 pop
+  // 三入口、开不出露出门，只能由 componentWillAppear（转场动画开始之前触发）兜。
+  // 两件事必须同时成立：① 收到事件要开门；② 判据必须把「即将出现的那一屏是栈顶」
+  //（= push 方向，玻璃正要被盖住）排除掉 —— 否则 push 的新页出现时玻璃仍在渲染，
+  // 转场中间态照旧被采进玻璃。
+  const willAppear = fnBody(nav, /export const handleScreenWillAppear = \(componentId: string\) => \{/)
+  if (!willAppear) {
+    reasons.push('navigation.ts 缺 handleScreenWillAppear（右滑返回不经过 JS，玻璃只能在动画收尾才复位 → 「返回动画结束时闪一次」原地复发）')
+  } else {
+    if (!/beginNavRevealWindow\(\)/.test(willAppear)) {
+      reasons.push('handleScreenWillAppear 未开门（提前锚点没接到露出门，等于没接）')
+    }
+    if (!/index < 0/.test(willAppear) || !/index === ids\.length - 1/.test(willAppear)) {
+      reasons.push('handleScreenWillAppear 的账本判据被改（「在账本里且不是栈顶」被拆 → push 方向也会开门，转场中间态被采进玻璃）')
+    }
+  }
+
+  // C3 注册点（navigation/index.ts）：提前锚点必须真的被订阅，且按「可选方法 + 运行时守卫」
+  // 接（工程没装 RNN 的类型/源码，桥不认这个方法时只能静默跳过，不能把启动打挂）。
+  const index = f.index
+  if (!/navigations\.handleScreenWillAppear\(componentId\)/.test(index)) {
+    reasons.push('navigation/index 未把 componentWillAppear 事件接到 handleScreenWillAppear（提前锚点没有任何触发源）')
+  }
+  if (!/typeof registry\.registerComponentWillAppearListener != 'function'/.test(index)) {
+    reasons.push('navigation/index 未对 registerComponentWillAppearListener 做运行时守卫（桥不认识该方法时会在启动阶段抛错）')
   }
   return reasons
 }
@@ -498,6 +541,27 @@ CE('F16 PlayerBar 的 useMemo 依赖漏掉 glassCovered（露出门翻转不会�
 
 CE('F17 action 的 setNavRevealing 被改成直写（同值短路被拆，每帧重发事件）', statePipelineInvariants, () => mut('action',
   '    if (state.navRevealing == revealing) return\n', ''), '同值短路')
+
+// —— 2026-10-11 契约加固：返回方向的提前锚点（第 56 轮第 2 条，F18~F20b）——
+// 用户第 56 轮原话：「返回有点击左上角返回按钮、右滑返回等情况，底部tab栏和迷你播放器栏
+// 会在返回动画结束时出现闪烁一次」。按钮那条路径第 52 轮已修；右滑不经过 JS 的 pop
+// 三入口，只能靠 componentWillAppear（转场动画开始之前）把复位边沿从动画收尾挪到动画开始。
+
+CE('F18 提前锚点不再开门（右滑返回又只能等动画收尾才复位）', navigationHooksInvariants, () => mut('nav',
+  '  if (index < 0 || index === ids.length - 1) return\n  beginNavRevealWindow()',
+  '  if (index < 0 || index === ids.length - 1) return'), '未开门')
+
+CE('F19 提前锚点丢掉账本判据（push 的新页出现时也开门 → 转场中间态被采进玻璃）', navigationHooksInvariants, () => mut('nav',
+  '  if (index < 0 || index === ids.length - 1) return',
+  '  if (false) return'), '账本判据被改')
+
+CE('F20 componentWillAppear 事件没接上提前锚点（锚点没有任何触发源）', navigationHooksInvariants, () => mut('index',
+  '      navigations.handleScreenWillAppear(componentId)',
+  '      void componentId'), '未把 componentWillAppear 事件接到')
+
+CE('F20b 注册点的运行时守卫被拆（桥不认识 registerComponentWillAppearListener 时启动即抛错）', navigationHooksInvariants, () => mut('index',
+  "    if (typeof registry.registerComponentWillAppearListener != 'function') return\n",
+  ''), '运行时守卫')
 
 // ---------------------------------------------------------------------------
 // 输出
