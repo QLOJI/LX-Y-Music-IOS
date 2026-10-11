@@ -928,19 +928,25 @@ final class LiquidGlassView: MTKView {
         let scaleCoefficient = layer.contentsScale * liquidGlass.backgroundTextureScaleCoefficient
 
         // Determine our on-screen rect in the root view coordinate space.
-        // IMPORTANT: During `UIView.animate`, the view's *model* layer jumps to the final frame
-        // immediately; the in-flight position lives in the *presentation* layer. Using the
-        // presentation layer makes the captured background track the view while it animates.
-        let currentLayer = layer.presentation() ?? layer
-        let frameInRoot = currentLayer.convert(currentLayer.bounds, to: rootView.layer)
+        // 【第 60 轮第 1 条】几何一律取 **model（静止态）**，与下面渲染的那棵树**同源**。
+        // 判据：`render(in:)` 画的是 layer 树的 model 值 —— UIKit 的转场动画挂在 render
+        // 树上，对 render 不可见。所以**采样窗口也必须按 model 算**，否则窗口在画面里挪，
+        // 而贴图是贴在这一层上、被合成器按同一条在途变换一起搬走的：
+        //   层向右走 o(T)、窗口也向右挪 o(T) ⇒ 透过玻璃看到的画面相对玻璃**向左**流 o(T)。
+        // 用户第 60 轮原话「当我右滑时，底部 tab 栏和迷你播放器栏透过的画面是从右向左
+        // 滑入的，反了」正是这个反向；同源之后贴图与它背后的真实内容严丝合缝（层被搬到
+        // 哪里，贴图就跟着到哪里），「拉伸 / 错位 / 撕裂」随之消失。
+        // 历史：这里原取 presentation()（上游「让捕获跟踪动画中的视图」的写法）—— 拿在途
+        // 矩形去截 model 的画面，截到的是「模型位置上那一块」，而玻璃自己已经按在途位置
+        // 被画到别处，两者相差的正是这一帧的位移。
+        let frameInRoot = layer.convert(layer.bounds, to: rootView.layer)
 
         // Expand capture area around the MTKView center (in root view coordinates).
-        // 【尺寸】与背景像素缓冲同源（captureBaseSize，见 layoutSubviews 的 setupBuffer），
-        // 【中心】跟随 presentation 保持动画位置跟踪：逐帧变形动画（迷你播放器收窄/放出、
-        // 透镜挤压/拉伸）期间 presentation 尺寸比 model 慢一拍，若用 presentation 尺寸，
-        // 变宽瞬间缓冲右/下侧会留下一条没画到的黑带，被 shader 折射进胶囊边缘。
-        // 再外扩 1 缓冲像素盖住 Int 取整缝隙，保证缓冲无未绘制纹理，
-        // clamp_to_edge 边缘采样不会读到黑边。
+        // 【尺寸】与背景像素缓冲同源（captureBaseSize，见 layoutSubviews 的 setupBuffer）：
+        // 尺寸与中心现在都是 model 值（同一次布局的结果），不会出现「中心在途、尺寸静止」
+        // 那种一帧内自相矛盾的组合（逐帧变形动画期间正是它把缓冲右/下侧留出一条没画到的
+        // 黑带、被 shader 折进胶囊边缘）。再外扩 1 缓冲像素盖住 Int 取整缝隙，保证缓冲
+        // 无未绘制纹理，clamp_to_edge 边缘采样不会读到黑边。
         let baseSize = captureBaseSize
         let devicePixel = 1.0 / scaleCoefficient
         let captureSize = CGSize(width: baseSize.width * sizeCoefficient + devicePixel * 2,
@@ -986,8 +992,10 @@ final class LiquidGlassView: MTKView {
                 context.scaleBy(x: scaleCoefficient, y: scaleCoefficient)
                 context.translateBy(x: -captureRectInRoot.origin.x, y: -captureRectInRoot.origin.y)
 
-                let rootViewLayer = rootView.layer.presentation() ?? rootView.layer
-                let rendered = self.useLayerRender && LXGlassTryRenderLayer(rootViewLayer, context)
+                // 【第 60 轮第 1 条】渲染整棵 layer 树的 model 值，与上面的采样矩形同源。
+                // render(in:) 本来就不认 render 树上的动画，取 presentation() 只是把**根层**
+                // 的在途几何单独搬进来、与子层（model）自相矛盾 —— 这是「错位」的另一半。
+                let rendered = self.useLayerRender && LXGlassTryRenderLayer(rootView.layer, context)
                 if rendered {
                     self.layerRenderFailures = 0
                 } else {
