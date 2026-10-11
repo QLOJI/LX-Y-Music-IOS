@@ -4860,8 +4860,10 @@ static const int64_t LXShortInterruptionIgnoreMs = 1500;
   }
 }
 
-// 【第 59 轮第 3 条】自动续播的原生渐入：总时长与 JS 侧 FADE_IN_MS 同值（600ms），
-// 步长 40ms（15 步）—— 同一段 smoothstep 曲线，两层叠在一起时听感一致。
+// 【第 59 轮第 3 条】自动续播的原生渐入：600ms，步长 40ms（15 步）。
+// 【第 63 轮第 2 条】定为**衔接斜坡**，不再与 JS 侧同值：JS 的主渐入改成 0~3 秒可配的设置项
+//（默认 2 秒），这一段只在「引擎刚重启、JS 还没接手」的窗口里把首拍补平，随后 JS 的任一显式
+// 写音量都会取消它（setVolume 桥 = explicitWrite:YES）。所以只要求「短于主渐入、长到听得出来」。
 static const int64_t LXResumeFadeInMs = 600;
 static const int64_t LXResumeFadeStepMs = 40;
 
@@ -7286,11 +7288,18 @@ RCT_REMAP_METHOD(getSafeAreaInsets,
 // ============================================================================
 // Tab 栏收起跟踪器（iOS 26 风格：列表滚动收起、回顶展开、点收起按钮手动展开）
 // ============================================================================
-// 监听所有 RN 滚动视图（Home 各页歌曲列表、详情页列表……无需逐页接线）：
+// 监听主界面的滚动视图（Home 各页歌曲列表、搜索页列表……无需逐页接线）：
 // swizzle -[RCTScrollView scrollViewDidScroll:]，原生侧维护收起状态机
 // （offset > 48 收起 / ≤ 2 展开，中间为迟滞区防抖），仅在状态变化时把
 // tabBarCollapseChanged 事件发给 JS——滚动事件本身不过桥，性能无损。
 // 状态变化经 NSNotification 通知 UtilsModule 转发（避免跨模块拿 bridge 实例）。
+//
+// 第 63 轮收窄（原来是「全 App 通吃」）：播放详情页的歌词列表挂载即自动滚到当前行
+// （程序化 scrollToOffset，offset 普遍 > 48），旧实现里「进入播放详情页」这一个动作
+// 就把 Home 的 tab 栏收起了。而那一刻 Home 的两块玻璃正被第 61 轮的转场按住门冻着、
+// 不会重采：收起态的 220ms 布局动画把冻结纹理和已经移动的图层错开半条栏（用户看到的
+// 「透过的画面没有更新」），返回松开按住门那一瞬重采对齐 =「最后一瞬间闪一下」。
+// 现在只有「主界面自己 + 主界面正露着 + 不在转场里」的滚动才驱动状态机。
 static BOOL LXTabBarCollapsedState = NO;
 static IMP LXOrigRCTScrollViewDidScroll = NULL;
 
@@ -7302,10 +7311,44 @@ static void LXSetTabBarCollapsed(BOOL collapsed) {
                                                     userInfo:@{ @"collapsed": @(collapsed) }];
 }
 
+// 沿响应链上溯最近的 UIViewController（RN 视图不覆写 nextResponder，一路能走到屏幕 VC）
+static UIViewController *LXNearestViewController(UIView *view) {
+  UIResponder *responder = view;
+  while (responder != nil) {
+    if ([responder isKindOfClass:[UIViewController class]]) return (UIViewController *)responder;
+    responder = responder.nextResponder;
+  }
+  return nil;
+}
+
+// 第 63 轮的门：这个滚动视图有没有资格驱动 Home 的 tab 栏收起状态。
+//   ① 属于主界面：主界面是 Navigation.setRoot 的根屏（src/navigation/navigation.ts
+//      的 HOME_SCREEN），也就是导航栈里最底下那一页——压栈页（播放详情、歌单、设置、
+//      下载管理……）的列表一律不算。presentingViewController != nil 排除 RNN 模态栈。
+//   ② 主界面正露着：被压栈页盖住期间不驱动。那一刻 Home 的玻璃被按住门冻着不重采，
+//      任何布局变化都会让冻结纹理跟图层错开（就是本轮用户报的「画面没更新」）。
+//   ③ 不在转场里：push/pop 动画期间 VC 与列表都在动，状态机让位。
+static BOOL LXScrollViewDrivesTabBar(UIView *view) {
+  UIViewController *vc = LXNearestViewController(view);
+  if (vc == nil) return NO;
+  UINavigationController *nav = vc.navigationController;
+  if (nav == nil) return NO;
+  if (nav.presentingViewController != nil) return NO;    // RNN 模态栈：另起的导航栈
+  if (nav.viewControllers.firstObject != vc) return NO;  // 不是根屏（不是主界面）
+  if (nav.viewControllers.lastObject != vc) return NO;   // 主界面被压栈页盖住
+  if (vc.transitionCoordinator != nil) return NO;
+  if (nav.transitionCoordinator != nil) return NO;
+  return YES;
+}
+
 static void LX_RCTScrollView_scrollViewDidScroll(id self, SEL _cmd, UIScrollView *scrollView) {
   if (LXOrigRCTScrollViewDidScroll != NULL) {
     ((void (*)(id, SEL, UIScrollView *))LXOrigRCTScrollViewDidScroll)(self, _cmd, scrollView);
   }
+  // 第 63 轮三个门（顺序即口径）：挂着窗口 / 有资格驱动（属于主界面且正露着且不在转场里）
+  UIView *host = [self isKindOfClass:[UIView class]] ? (UIView *)self : (UIView *)scrollView;
+  if (host.window == nil) return;
+  if (!LXScrollViewDrivesTabBar(host)) return;
   CGPoint offset = scrollView.contentOffset;
   if (offset.y > 48) {
     // 仅「主动拖动」的滚动才收起：惯性滑行（decelerating）与被动偏移不收起——
