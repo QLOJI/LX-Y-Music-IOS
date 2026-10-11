@@ -410,14 +410,54 @@ final class LiquidGlassView: MTKView {
     /// 取 0.5 只为滤掉浮点噪声与亚像素抖动，避免稳态下被误触发、反复重开窗口。
     private static let captureGeometryEpsilon: CGFloat = 0.5
 
+    /// 采景矩形**刚变大**、且这一帧还没被提交（2026-10-11，第 56 轮第 1 条）。
+    ///
+    /// 第 52 轮的第五锚点只做到「尺寸变化 ⇒ 开沉降窗口」，而窗口**只允许沿用**——
+    /// 真正沿用与否取决于 lastCaptureHadPartialBlack 这个稀疏网格启发式，可 shader 的
+    /// 边缘折射（clamp_to_edge）采的恰是纹理**最外一圈**：黑带整条落在网格采样点之间就漏判
+    /// ⇒ 无条件提交 ⇒ 粗黑弧照旧。用户第 56 轮第 1 条复报「上次还是没有解决」，就是这条缝。
+    ///
+    /// 所以这里改成结构性的判据：尺寸**变大**这一帧，采景直接沿用上一帧纹理，不采信任何
+    /// 启发式。理由：矩形刚变大时，新长出来那一带在 CABackdropLayer 里还没合成，这一帧的
+    /// 采景必然带黑带；它的正确内容要等下一次合成（≈1~2 拍）才拿得到。
+    /// · 只在「变大」方向生效：变小（收起）没有新长出来的区域，玻璃照旧实时，不冻结。
+    /// · previous == nil 时不沿用（照常走既有判据）——绝不制造「永久透明」。
+    /// · 标记在 commitCapturedTexture 里消费（无论沿用与否都清掉），否则「沿用 → 标记还在
+    ///   → 下一帧继续沿用」会自锁到窗口上限。
+    private var captureGeometryGrewPending = false
+
+    /// 上一次**被接受**（写进 backgroundTexture）的采景时刻（墙钟秒，2026-10-11，第 56 轮第 2 条）。
+    /// 见 maxStaleHoldAge。
+    private var lastCommitAcceptedAt: TimeInterval = 0
+
+    /// 沿用的画面最多可以「多旧」（墙钟秒）。超过它就不再沿用，宁可把这一帧半成品画出去。
+    ///
+    /// 为什么需要它（第 56 轮第 2 条「返回动画结束时闪一下」）：
+    /// 沿用（shouldHold ⇒ 把上一帧纹理挂回背景）等价于「把上一次接受的画面继续挂在
+    /// 玻璃上」——静止场景下这是对的（背景没变，沿用 = 画面不动），但在**返回动画**这种背景
+    /// 正在大幅变化的场景里：恢复渲染那一刻的 previous 是**暂停前**那一帧（push 之前的页面
+    /// 内容），沿用它就是让玻璃在整段返回动画里显示旧页面，等沉降窗口放行时画面猛地跳回
+    /// 当前内容 —— 正是用户第 16/52/56 轮反复报的「返回动画结束时闪一下、透过的画面才刷新」。
+    /// 150ms ≈ 静止档 4~5 拍：足够桥过「合成还没跟上」的短暂滞后（沿用机制的本意），又短到
+    /// 旧画面来不及在动画里留下可见的中段跳变。同时它也是 captureGeometryGrewPending 那条
+    /// 新沿用路径的安全阀（那条路径本身不带时间上限）。
+    /// 冷启动（backgroundTexture == nil：沿用结果是保持透明，而不是显示旧内容）不受此门约束，
+    /// 第 16/19 轮那套行为逐字保留。
+    private static let maxStaleHoldAge: TimeInterval = 0.15
+
     /// 采景尺寸变化 = 第五个沉降窗口锚点（见 lastCaptureGeometry）。
     /// 只比尺寸**不比原点**：原点平移（透镜拖动、列表滚动时玻璃不动）不需要重新合成，
     /// 那正是 captureReferenceSize 注释里已被接受的现状；而尺寸变化必然是
     /// 「CABackdropLayer 整幅重合成」，才是黑带的来源。
     private func noteCaptureGeometry(_ captureSize: CGSize) {
-        let changed = abs(captureSize.width - lastCaptureGeometry.width) > Self.captureGeometryEpsilon ||
+        let grew = captureSize.width > lastCaptureGeometry.width + Self.captureGeometryEpsilon ||
+            captureSize.height > lastCaptureGeometry.height + Self.captureGeometryEpsilon
+        let changed = grew ||
+            abs(captureSize.width - lastCaptureGeometry.width) > Self.captureGeometryEpsilon ||
             abs(captureSize.height - lastCaptureGeometry.height) > Self.captureGeometryEpsilon
         lastCaptureGeometry = captureSize
+        // 变大 ⇒ 标一帧「沿用」（见 captureGeometryGrewPending）
+        if grew { captureGeometryGrewPending = true }
         if changed { beginCaptureSettleWindow() }
     }
 
@@ -427,12 +467,13 @@ final class LiquidGlassView: MTKView {
     private static let partialBlackValueThreshold: UInt8 = 8
 
     /// 半成品判据（二要素之二）：近黑格子占比 ≥ 该比例 → 判为「部分合成未完成」。
-    /// 标定依据（2026-10-01 阈值核算，用户实测形态 = 「边缘一圈黑、中间正常」）：
-    /// 采样网格每轴 16~17 格（sampleCapture：ceil(dim / floor(dim/16))，2x 机短条
-    /// 可到 22 行）。最外 1 格厚的边环 = NM-(N-2)(M-2) = 2N+2M-4 格：
-    /// 16×16 → 60/256 ≈ 23.4%；17×17 → 64/289 ≈ 22.2%；最差实际网格
-    /// 17×22 → 74/374 ≈ 19.8%。原 0.35 高过上述全部值——「一圈黑边」整类形态
-    /// 都会漏过（黑边照常提交，bug 残留）。取 0.18：低于最差实际网格 19.8%
+    /// 标定依据（2026-10-01 阈值核算；2026-10-11 第 56 轮按固定网格重算，
+    /// 用户实测形态 = 「边缘一圈黑、中间正常」）：
+    /// 采样网格固定 17 列 × 17 行、首尾贴边（sampleCapture；宽/高不足 17 像素时按
+    /// 实际尺寸，网格越小边环占比越高）。最外 1 格厚的边环 = NM-(N-2)(M-2) = 2N+2M-4 格：
+    /// 17×17 → 64/289 ≈ 22.2%（最坏口径的下限；16×16 → 60/256 ≈ 23.4%）。
+    /// 原 0.35 高过上述全部值——「一圈黑边」整类形态
+    /// 都会漏过（黑边照常提交，bug 残留）。取 0.18：低于 22.2%
     /// 且留余量；误触发（真实暗内容恰好 ≥18%）的代价被沉降窗口（≤0.6s）封顶
     /// ——最坏只让玻璃晚接受到窗口到点，不画错内容、不永久透明
     ///（见 commitCapturedTexture 与 captureSettleDuration 注释）。
@@ -440,9 +481,10 @@ final class LiquidGlassView: MTKView {
 
     /// 半成品判据（三要素之三，2026-10-02 第 19 轮补）：**外圈**近黑占比 ≥ 该比例。
     /// 为什么单独盯外圈：shader 边缘采样折射的恰是纹理最外一圈（clamp_to_edge），
-    /// 而部分合成常常只吃掉一条边——1 格厚的单侧黑带占全网格只有 17/374 ≈ 4.5%
-    /// （全网格阈值 0.18 接不住），却占外圈 N/(2N+2M-4)：17×17 → 17/64 ≈ 26.6%、
-    /// 最差实际网格 17×22 → 17/74 ≈ 23.0%。取 0.20：低于上述两值且留余量，
+    /// 采样网格首尾贴边后（见 sampleCapture）统计的正是那一圈；而部分合成常常只吃掉
+    /// 一条边——1 格厚的单侧黑带占全网格只有 17/289 ≈ 5.9%
+    /// （全网格阈值 0.18 接不住），却占外圈 N/(2N+2M-4)：17×17 → 17/64 ≈ 26.6%
+    ///（网格更小则占比更高，这是最坏口径的下限）。取 0.20：低于 26.6% 且留余量，
     /// 又放过外圈偶发的零星暗格（外圈 ≤20% 暗格不判未就绪）。
     private static let partialBlackEdgeRatioThreshold: Double = 0.20
 
@@ -710,21 +752,35 @@ final class LiquidGlassView: MTKView {
     /// 原样画出去，于是用户先看到一截旧画面，过几帧才跳回当前画面。
     ///
     /// 复位三件事：
-    ///  ① 丢掉旧纹理（backgroundTexture = nil）：沿用分支从此无可沿用，只能「继续透明，
-    ///     等本次真实背景」，页面背景直接透出来 —— 用户要看的是**当前**画面；
+    ///  ① **保留**旧纹理（2026-10-11，第 56 轮第 2 条把这里从「丢掉」改成「保留」，理由见
+    ///     函数内「改动 ① 反转」）：恢复后每一帧都有一张背景可画，draw() 不会因为
+    ///     backgroundTexture == nil 而整帧不 present（那种情况下 CAMetalLayer 上留着的
+    ///     是**暂停前那一帧的位图**——几何已变、内容也旧，用户看到的就是那一下闪烁）；
     ///  ② 清掉「未就绪沿用」的全部痕迹（均匀帧计数、半成品标记、变化检测基准）；
     ///  ③ 立刻同步采一次（复位节流 + captureBackground），让恢复后的**第一帧** draw
     ///     就用上当前背景，而不是等下一个 tick（30fps 档下最多 33ms 的旧画面）；
     ///  ④ 重开墙钟沉降窗口（beginCaptureSettleWindow，2026-10-02 用户第 16 轮第 1 条）——
     ///     暂停恢复同样属于「合成源刚建立」，恢复后最初的半成品帧（非均匀但带近黑条带）
-    ///     必须按未就绪沿用（previous 刚被置 nil ⇒ 透明），否则黑边会被折射进胶囊边缘。
+    ///     必须按未就绪沿用，否则黑边会被折射进胶囊边缘。沿用到的 previous 现在是
+    ///     **暂停前刚放下的那张画面**（改动 ① 反转后它一定存在），由陈旧度门
+    ///     （maxStaleHoldAge，见 commitCapturedTexture）兜底：恢复后超过 150ms 就不再挂它。
     ///
     /// 剩余代价：CAMetalLayer 上那一帧旧图像必然要显示到下一次 draw 为止（≤1 拍），
     /// 这是暂停式省电门的固有代价；本次复位把「多次沿用旧帧 / 等到下一 tick」压到
     /// 「最多一拍」。渲染档与采景档重新同步（第 20 轮：两者同速，见 syncRenderFrameRate）
     /// ——静止档下一拍 ≤33ms，与既有静止态上限一致。
+    /// 改动 ① 反转（2026-10-11，第 56 轮第 2 条「返回动画结束时闪一下」）：
+    /// 旧写法丢掉纹理的用意是「别把上一页内容留在玻璃里」，代价却在恢复的那一刻才显形——
+    /// 恢复后最初几帧只要被判未就绪，沿用分支拿到的 previous 就是 nil ⇒ draw() 的
+    /// `guard backgroundTexture != nil` 直接返回、**这一帧不 present** ⇒ CAMetalLayer 上
+    /// 仍是暂停前那一帧的位图（内容与几何都是旧的），直到第一帧「干净」采景到达才整体换掉。
+    /// 那一下换掉正落在返回动画收尾处，就是用户反复报的闪烁。右滑返回不经过 JS
+    ///（露出窗口只在返回按钮那条路径打开，见 src/navigation/revealWindow.ts），整段转场里
+    /// 玻璃都是冻结的，恢复时刻只有「动画结束」这一个——所有差别都被压到那一刻一起呈现。
+    /// 保留纹理后：恢复期每一帧都有可画的背景（内容就是用户刚刚看到的那一张，视觉连续），
+    /// 第一帧干净采景到达时自然接替；旧画面最多多留 maxStaleHoldAge（150ms），超过就被
+    /// 陈旧度门放行——不会把上一页内容永久留在玻璃里。
     func handleResumeFromPause() {
-        backgroundTexture = nil
         consecutiveUniformFrames = 0
         lastCaptureHadPartialBlack = false
         lastCaptureAt = 0
@@ -738,8 +794,10 @@ final class LiquidGlassView: MTKView {
         // 上面三处锚点（backdrop 插入 / didMoveToWindow / beginLiveCapture）都会开沉降窗口，
         // 唯独本复位路径漏了（它重置了纹理却不重置窗口，captureSettleStartedAt 还是上一次
         // 早已过期的值 → isInsideCaptureSettleWindow 恒 false → 半成品判据与墙钟沿用全失效）。
-        // 这里补上与其余锚点同口径的开窗：窗口内未就绪帧沿用 previous，而 previous 刚被置 nil
-        // → 显示为透明（页面背景直出），等本次会话第一帧可信背景，绝不会把半成品折射进玻璃边缘。
+        // 这里补上与其余锚点同口径的开窗：窗口内未就绪帧沿用 previous（改动 ① 反转后
+        // previous 恒为暂停前那张画面，沿用 = 画面先不动，而不是「透明」），最多挂
+        // maxStaleHoldAge（150ms）就被陈旧度门放行——既不会把半成品折射进玻璃边缘，
+        // 也不会把上一页内容整段留在玻璃里。
         // 顺序：先开窗再 captureBackground，采到的这一帧本身也在窗口覆盖内。
         beginCaptureSettleWindow()
         captureBackground()
@@ -994,27 +1052,33 @@ final class LiquidGlassView: MTKView {
         let bpr = CVPixelBufferGetBytesPerRow(buffer)
         guard let base = CVPixelBufferGetBaseAddress(buffer) else { return ([], 0) }
         let ptr = base.assumingMemoryBound(to: UInt8.self)
-        let stepX = max(w / 16, 1)
-        let stepY = max(h / 16, 1)
+        // 采样点位置（2026-10-11，第 56 轮第 1 条修的外圈盲区）：固定 17 列 × 17 行，
+        // **首尾各落在缓冲边界上**（0 与 w-1 / h-1），中间等距。
+        // 旧写法 stepX = w/16、从 0 起步长，右/下缘最后至多 stepX-1 像素永不入样；而 shader
+        // 的边缘折射（sampler 的 clamp_to_edge，见 LiquidGlassShaderSource）采的恰是纹理
+        // **最外一圈**——黑带整条落在那一段里就是「判据看不见、shader 照样把黑带放大成粗弧」。
+        // 首尾贴边后，外圈口径统计的正是 shader 真正采样的那一圈；中间等距保证网格仍是
+        // 规整矩形（analyzeCapture 靠它还原行列）。
+        let columns = min(17, w)
+        let rows = min(17, h)
+        guard columns > 0, rows > 0 else { return ([], 0) }
+        var xs: [Int] = []
+        xs.reserveCapacity(columns)
+        for i in 0 ..< columns {
+            xs.append(columns <= 1 ? 0 : (i * (w - 1)) / (columns - 1))
+        }
         var grid: [UInt8] = []
         grid.reserveCapacity(17 * 17)
-        var columns = 0
-        var y = 0
-        while y < h {
+        for j in 0 ..< rows {
+            let y = rows <= 1 ? 0 : (j * (h - 1)) / (rows - 1)
             let row = y * bpr
-            var x = 0
-            var rowColumns = 0
-            while x < w {
+            for x in xs {
                 let o = row + x * 4 // BGRA
                 let r = Int(ptr[o + 2])
                 let g = Int(ptr[o + 1])
                 let b = Int(ptr[o])
                 grid.append(UInt8(max(r, max(g, b))))
-                rowColumns += 1
-                x += stepX
             }
-            if columns == 0 { columns = rowColumns }
-            y += stepY
         }
         return (grid, columns)
     }
@@ -1105,9 +1169,19 @@ final class LiquidGlassView: MTKView {
     /// 最坏结局 = 玻璃晚出现一会儿：上限由墙钟常量现算，到点必然接受当前帧，
     /// 不存在「永久透明」或「永久留着上一页内容」的路径（沿用值恰是 previous，
     /// 窗口只是延后接受当前帧，从不改写当前帧）。
+    /// 2026-10-11（第 56 轮第 1 条）：新增**结构性**判据「采景矩形刚变大 ⇒ 这一帧沿用」。
+    /// 第 52 轮把「尺寸变化」接到了沉降窗口上（第五锚点，见 noteCaptureGeometry），但窗口
+    /// 里沿用与否仍取决于 16×16 稀疏网格启发式，而 shader 的边缘折射（clamp_to_edge）采的
+    /// 恰是纹理最外一圈——黑带整条落在采样点之间就漏判。用户第 56 轮第 1 条复报的粗黑弧
+    /// 就是这条缝：迷你播放器展开/收起撞顶时高度跳变，新长出来那一带在 CABackdropLayer 里
+    /// 还没合成，这一帧的采景必然带黑带。变大 ⇒ 无条件沿用（有 previous 时），不看启发式。
+    /// 标记在这里消费并**无条件清掉**：否则「沿用 → 标记还在 → 下一帧继续沿用」会自锁
+    /// 到窗口上限（最坏结局仍是玻璃晚出现一会儿，不会永久冻结）。
     private func commitCapturedTexture(_ texture: MTLTexture?, previous: MTLTexture?, isUniform: Bool) {
         let now = CACurrentMediaTime()
-        var shouldHold = false
+        let geometryGrew = captureGeometryGrewPending
+        captureGeometryGrewPending = false
+        var shouldHold = geometryGrew && previous != nil
         if isUniform {
             consecutiveUniformFrames += 1
             if consecutiveUniformFrames <= Self.maxUniformHoldFrames {
@@ -1140,11 +1214,19 @@ final class LiquidGlassView: MTKView {
                 shouldHold = true
             }
         }
+        // 陈旧度门（2026-10-11，第 56 轮第 2 条）：沿用到手的画面不能「太旧」——
+        // 超过 maxStaleHoldAge 就宁可把这一帧半成品画出去，也不再挂旧画面。
+        // 只对「手上已经有一张旧图」（backgroundTexture != nil）生效：冷启动那种
+        // 「previous == nil ⇒ 沿用等于保持透明」不受影响（第 16/19 轮行为逐字保留）。
+        if shouldHold, backgroundTexture != nil, now - lastCommitAcceptedAt > Self.maxStaleHoldAge {
+            shouldHold = false
+        }
         if shouldHold {
             backgroundTexture = previous
             return
         }
         backgroundTexture = texture
+        lastCommitAcceptedAt = now
     }
 
     func blurTexture() {
