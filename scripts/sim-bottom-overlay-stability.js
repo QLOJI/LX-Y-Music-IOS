@@ -24,6 +24,14 @@
  *     调 endNavTransitionWindow）——返回时玻璃正在被露出来，续期等于让 Home 的
  *     tab 栏/迷你播放器多显示 420ms 的陈旧纹理（用户原话「底部透过的画面短暂刷新、
  *     突然变了一下」）。断言随之从「pop 必须续期」改成「pop 必须关窗且不得再续期」。
+ *     2026-10-11（用户第 52 轮第 2 条）再补一层：navTransitioning 只在**事件到达时**关，
+ *     而账本门（上面那两个）要等同一个 screenPopped —— 从用户按下返回到事件到达的缝里
+ *     玻璃仍在暂停态，透出的还是暂停前那一帧（用户原话「返回动画结束时出现一瞬间闪烁，
+ *     然后透过的画面才刷新」）。修法：navigation/utils 的 pop 三入口在派发命令**之前**
+ *     就开「露出门」（revealWindow），两条栏的 paused 改用玻璃专用门
+ *     glassHomeCovered / glassCovered（= 账本门 ∧ 不在露出窗口内）。本节的消费点检查
+ *     只要求「每一块玻璃的 paused 都并入 navTransitioning」（门名不敏感），
+ *     露出门全链路由 scripts/sim-glass-reveal-window.js 单独钉住。
  *
  *  ③ 出现瞬间闪很粗的黑边 —— 原生 LiquidGlassView 的 commitCapturedTexture：冷启动
  *     头几帧 backdrop 还没合成，drawHierarchy 采到的是**整幅均匀色**，原实现写成
@@ -319,8 +327,9 @@ counterExamples.push(run('C6c endNavTransitionWindow 只清定时器不关标志
   '未关闭 navTransitioning'))
 counterExamples.push(run('C7 TabBar 玻璃的 paused 丢掉 navTransitioning', transitionInvariants,
   // 2026-10-02：该绑定后来又并入了前台门（!appActive，用户第 8 条）与实时采景（live=），
+  // 2026-10-11 第 52 轮第 2 条：覆盖门又换成玻璃专用门（glassHomeCovered），
   // 反例的替换目标必须跟着当前的完整形态走，否则 replace 未命中、反例退化成永真。
-  { tabbar: REAL.tabbar.replace(/paused=\{homeCovered \|\| collapsed \|\| navTransitioning \|\| !appActive\}/, 'paused={homeCovered || collapsed || !appActive}') },
+  { tabbar: REAL.tabbar.replace(/paused=\{glassHomeCovered \|\| collapsed \|\| navTransitioning \|\| !appActive\}/, 'paused={glassHomeCovered || collapsed || !appActive}') },
   '未并入 navTransitioning'))
 counterExamples.push(run('C8 均匀帧沿用又加回 previous 非空条件（旧实现）', captureInvariants,
   { glassSwift: REAL.glassSwift.replace('if consecutiveUniformFrames <= Self.maxUniformHoldFrames {', 'if consecutiveUniformFrames <= Self.maxUniformHoldFrames, let previous {') },

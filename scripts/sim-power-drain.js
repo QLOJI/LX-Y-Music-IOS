@@ -394,19 +394,28 @@ const pausedInvariants = (files) => {
     reasons.push('LiquidGlass.tsx 未透传 paused（声明了但没接）')
   }
   // ④ 消费点：TabBar 按全局 Home 判定；PlayerBar 按所属屏幕 componentId 判定。
-  // 匹配口径（2026-10-01 C-9 补充）：homeCovered 允许再或上「本块玻璃当前不可见」的
+  // 【第 52 轮第 2 条（2026-10-11）】门已升级为**玻璃专用**门：
+  //   glassHomeCovered = useGlassHomeCovered()（= useHomeCovered ∧ 不在返回露出窗口内）
+  //   glassCovered     = useGlassCovered(componentId)
+  // 为什么要换：省电门读的是账本（componentIds），账本要等 RNN screenPopped 才翻，
+  // 晚于用户按下返回 —— 整段返回动画里玻璃还处于暂停态、透过的始终是暂停前那一帧，
+  // 动画结束才跳一下（用户原话「要保证不要有瞬间闪烁，透过的画面要在返回动画之前就
+  // 实时显示」）。玻璃门在**派发 pop 之前**就把「被覆盖」作废，账本本体与它的非玻璃
+  // 消费点一个字不动（见 ⑤ 与 scripts/sim-glass-reveal-window.js）。
+  // 匹配口径（2026-10-01 C-9 补充，沿用）：玻璃门允许再或上「本块玻璃当前不可见」的
   // 条件（收起态圆钮玻璃在展开态不可见、展开态胶囊玻璃在收起态不可见，两边都该停帧），
-  // 故写成 paused={homeCovered} 或 paused={homeCovered || <不可见条件>} 都算达标；
-  // 但 homeCovered **必须是第一个析取项** —— 少了它才是真缺陷（被压栈页覆盖仍渲染）。
-  if (!/useHomeCovered\(\)/.test(files.tabbar) || !/paused=\{homeCovered\s*(\|\|[^}]*)?\}/.test(files.tabbar)) {
-    reasons.push('ModernTabBar 未接 paused={homeCovered}(||…)（Tab 栏玻璃被覆盖时仍逐帧渲染）')
+  // 故写成 paused={glassHomeCovered} 或 paused={glassHomeCovered || <不可见条件>} 都算达标；
+  // 但玻璃门**必须是第一个析取项** —— 少了它才是真缺陷（被压栈页覆盖仍渲染 /
+  // 返回动画期间透出的还是暂停前那一帧）。
+  if (!/useGlassHomeCovered\(\)/.test(files.tabbar) || !/paused=\{glassHomeCovered\s*(\|\|[^}]*)?\}/.test(files.tabbar)) {
+    reasons.push('ModernTabBar 未接 paused={glassHomeCovered}(||…)（Tab 栏玻璃被覆盖时仍逐帧渲染 / 返回动画期间透出的还是暂停前那一帧）')
   }
   // 同一口径（2026-10-01 转场门）：PlayerBar 也允许再或上「本块玻璃此刻不该渲染」的
   // 条件（转场窗口 navTransitioning，见 navigation.beginNavTransitionWindow，
-  // 起因是「每次切换画面胶囊都会闪一下」），但 screenCovered 必须是**第一个析取项**
+  // 起因是「每次切换画面胶囊都会闪一下」），但玻璃门必须是**第一个析取项**
   // —— 少了它才是真缺陷（被压栈页覆盖仍逐帧渲染）。
-  if (!/useScreenCovered\(componentId\)/.test(files.playerbar) || !/paused=\{screenCovered\s*(\|\|[^}]*)?\}/.test(files.playerbar)) {
-    reasons.push('PlayerBar 未接 paused={screenCovered}(||…)（迷你条玻璃被覆盖时仍逐帧渲染）')
+  if (!/useGlassCovered\(componentId\)/.test(files.playerbar) || !/paused=\{glassCovered\s*(\|\|[^}]*)?\}/.test(files.playerbar)) {
+    reasons.push('PlayerBar 未接 paused={glassCovered}(||…)（迷你条玻璃被覆盖时仍逐帧渲染 / 返回动画期间透出的还是暂停前那一帧）')
   }
   // ⑤ 覆盖判定 hook 本体
   if (!/export const useHomeCovered/.test(files.hookCommon) || !/export const useScreenCovered/.test(files.hookCommon)) {
@@ -441,16 +450,16 @@ const runPausedCounterExamples = () => {
   check('P4 LiquidGlass 抹掉透传', readGlass({
     comp: read(GLASS_FILES.comp).replace('paused={paused}', 'removedX={paused}'),
   }), '未透传 paused')
-  // P5 消费点脱钩
+  // P5 消费点脱钩（第 52 轮：门名换成玻璃专用门）
   check('P5 TabBar 抹掉 paused', readGlass({
-    tabbar: read(GLASS_FILES.tabbar).replace(/paused=\{homeCovered\s*(\|\|[^}]*)?\}/g, 'removedX={homeCovered}'),
+    tabbar: read(GLASS_FILES.tabbar).replace(/paused=\{glassHomeCovered\s*(\|\|[^}]*)?\}/g, 'removedX={glassHomeCovered}'),
   }), 'ModernTabBar 未接')
   check('P6 PlayingIcon 恢复无条件动画', readGlass({
     playingIcon: read(GLASS_FILES.playingIcon).replace('const active = isPlay && !homeCovered', 'const active = isPlay'),
   }), 'PlayingIcon 缺覆盖门控')
   // P7：PlayerBar 消费点脱钩（与 P5 同款反例，覆盖 2026-10-01 新加的 ||… 分支）
   check('P7 PlayerBar 抹掉 paused', readGlass({
-    playerbar: read(GLASS_FILES.playerbar).replace(/paused=\{screenCovered\s*(\|\|[^}]*)?\}/g, 'removedX={screenCovered}'),
+    playerbar: read(GLASS_FILES.playerbar).replace(/paused=\{glassCovered\s*(\|\|[^}]*)?\}/g, 'removedX={glassCovered}'),
   }), 'PlayerBar 未接')
   return results
 }

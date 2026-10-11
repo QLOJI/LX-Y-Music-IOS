@@ -34,8 +34,12 @@
  *   · shouldThrottleCapture 的采景间隔仍按 isLiveCaptureActive 选档（渲染档跟采景档，
  *     前提是采景档自己没被写死）；
  *   · Tab 栏两块玻璃各在「自己不可见」时 paused（展开态含 collapsed、收起态含
- *     !collapsed，并带 homeCovered / navTransitioning / !appActive 全部门），
- *     迷你播放条玻璃接 screenCovered 等门；
+ *     !collapsed，并带 glassHomeCovered / navTransitioning / !appActive 全部门），
+ *     迷你播放条玻璃接 glassCovered 等门；
+ *     （第 52 轮第 2 条：门名由 homeCovered / screenCovered 换成玻璃专用门
+ *      glassHomeCovered / glassCovered —— 账本门的反应晚于用户按下返回，
+ *      返回动画期间透出的还是暂停前那一帧。完整链路见
+ *      scripts/sim-glass-reveal-window.js，门本体见 scripts/sim-power-drain.js）
  *   · ③ 的前台门本体由 scripts/sim-progress-poll-foreground-gate.js 深查，
  *     本脚本只做交叉回归守卫（门与起表点还在）。
  *
@@ -209,11 +213,13 @@ const swiftDirInvariants = () => {
 const tabBarInvariants = (src) => {
   const reasons = []
   // 展开态玻璃：收起时（collapsed）不可见；收起态玻璃：展开时（!collapsed）不可见。
-  // 两条 paused 串都必须整串在场（含 homeCovered / navTransitioning / !appActive）。
-  const expandedPaused = 'paused={homeCovered || collapsed || navTransitioning || !appActive}'
-  const pillPaused = 'paused={homeCovered || !collapsed || navTransitioning || !appActive}'
+  // 两条 paused 串都必须整串在场（含 glassHomeCovered / navTransitioning / !appActive）。
+  // 第 52 轮第 2 条起门名是 glassHomeCovered（= useHomeCovered ∧ 不在返回露出窗口内）：
+  // 账面门要等 screenPopped 才翻，返回动画期间玻璃还在暂停态、透过的还是暂停前那一帧。
+  const expandedPaused = 'paused={glassHomeCovered || collapsed || navTransitioning || !appActive}'
+  const pillPaused = 'paused={glassHomeCovered || !collapsed || navTransitioning || !appActive}'
   if (!src.includes(expandedPaused) || !src.includes(pillPaused)) {
-    reasons.push('不可见侧未停渲染（Tab 栏两块玻璃的 paused 门缺失：展开态须含 collapsed、收起态须含 !collapsed，并带 homeCovered / navTransitioning / !appActive）')
+    reasons.push('不可见侧未停渲染（Tab 栏两块玻璃的 paused 门缺失：展开态须含 collapsed、收起态须含 !collapsed，并带 glassHomeCovered / navTransitioning / !appActive）')
   }
   const liveCount = (src.match(/live=\{pagerDragging\}/g) ?? []).length
   if (liveCount !== 2) {
@@ -224,8 +230,8 @@ const tabBarInvariants = (src) => {
 
 const playerBarInvariants = (src) => {
   const reasons = []
-  if (!src.includes('paused={screenCovered || navTransitioning || !appActive}')) {
-    reasons.push('迷你播放条玻璃未接省电门（paused 须含 screenCovered / navTransitioning / !appActive）')
+  if (!src.includes('paused={glassCovered || navTransitioning || !appActive}')) {
+    reasons.push('迷你播放条玻璃未接省电门（paused 须含 glassCovered / navTransitioning / !appActive）')
   }
   if (!src.includes('live={pagerDragging}')) {
     reasons.push('迷你播放条玻璃未接横滑实时档（live={pagerDragging}）')
@@ -306,17 +312,17 @@ const runCounterExamples = () => {
 
   // t1 展开态玻璃摘掉 collapsed 门 → 报「不可见侧未停渲染」
   check('t1 展开态玻璃摘掉 collapsed 门', () => tabBarInvariants(tamper(REAL_TAB,
-    'paused={homeCovered || collapsed || navTransitioning || !appActive}',
-    'paused={homeCovered || navTransitioning || !appActive}')), '不可见侧未停渲染')
+    'paused={glassHomeCovered || collapsed || navTransitioning || !appActive}',
+    'paused={glassHomeCovered || navTransitioning || !appActive}')), '不可见侧未停渲染')
 
   // t2 收起态玻璃摘掉 !collapsed 门 → 报「不可见侧未停渲染」
   check('t2 收起态玻璃摘掉 !collapsed 门', () => tabBarInvariants(tamper(REAL_TAB,
-    'paused={homeCovered || !collapsed || navTransitioning || !appActive}',
-    'paused={homeCovered || navTransitioning || !appActive}')), '不可见侧未停渲染')
+    'paused={glassHomeCovered || !collapsed || navTransitioning || !appActive}',
+    'paused={glassHomeCovered || navTransitioning || !appActive}')), '不可见侧未停渲染')
 
   // t3 迷你播放条玻璃摘掉省电门 → 报「未接省电门」
   check('t3 迷你播放条玻璃摘掉省电门', () => playerBarInvariants(tamper(REAL_PLAYER,
-    'paused={screenCovered || navTransitioning || !appActive}',
+    'paused={glassCovered || navTransitioning || !appActive}',
     'paused={false}')), '迷你播放条玻璃未接省电门')
 
   // h1 进度轮询前台门被摘（交叉回归）→ 报「进度轮询前台门缺失」

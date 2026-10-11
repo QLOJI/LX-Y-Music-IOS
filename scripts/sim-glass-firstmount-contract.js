@@ -47,9 +47,14 @@
  *   A4 放行出口唯一：非 hold 分支恰一处 backgroundTexture = texture，且不在 shouldHold
  *      分支内（删掉/挪进 hold 分支都必须被拦下——beginLiveCapture 已置 nil，出口缺失
  *      = 玻璃永久透明，正是本轮设计约束禁止的最坏形态）；
- *   A5 开窗点（beginCaptureSettleWindow）恰 4 处调用（三条锚点 + 暂停恢复复位，
- *      2026-10-02 第 16 轮第 1 条补上 handleResumeFromPause）、起点（captureSettleStartedAt）
- *      写入唯一：每帧路径再塞一处开窗/重置必须被拦下（否则窗口永不关闭、永久 hold）；
+ *   A5 开窗点（beginCaptureSettleWindow）恰 **5** 处调用（三条锚点 + 暂停恢复复位 +
+ *      采景几何尺寸变化，2026-10-11 第 52 轮第 1 条补上 noteCaptureGeometry）、
+ *      起点（captureSettleStartedAt）写入唯一：每帧路径再塞一处开窗/重置必须被拦下
+ *      （否则窗口永不关闭、永久 hold）；
+ *   A6 第五个锚点本体（2026-10-11，用户第 52 轮第 1 条）：noteCaptureGeometry 存在、
+ *      **只比尺寸不比原点**、有 >0 的容差、变化才开窗（无条件开窗 = 每帧重开永不到点）、
+ *      回写基准、两条采景路径各恰一处调用（26.2+ 在节流守卫之后 / 14~26.1 在改
+ *      backdropView.frame 之前）；
  *   B  既有事实未被改坏：**渲染帧率 = 采景档**（第 20 轮起：静止 30fps / 实时 60fps，
  *      全类唯一赋值点 syncRenderFrameRate；旧的自适应升降档 30/120/0.4 已整条删除）、
  *      采样基准锁定语义、均匀沿用修复（previous 非空条件不得再出现）、
@@ -73,6 +78,19 @@
  *   实时 60fps ↔ liveCaptureMinInterval，全类唯一赋值点在 syncRenderFrameRate）；
  *   完整口径另见 scripts/sim-glass-render-rate.js。A2 随之反向钉住：analyzeCapture
  *   （分析层）不得再出现帧率赋值或变化检测残迹。
+ *
+ * 【第 52 轮（2026-10-11）】用户第 1 条「主界面下滑到底部（Tab 栏收起）再上滑到顶部，
+ *   碰撞顶部一瞬间，迷你播放器栏右边出现很粗的黑色弧线」——第 15/16/19 轮的代码形态
+ *   原样健在，坏的是**覆盖面**：那三个判据都只在「窗口内」生效，而收展动画不产生锚点事件。
+ *   成因链：收起/展开是逐帧变形动画（PlayerBar 的 220ms collapseAnim 同帧插值
+ *   bottom + paddingLeft）⇒ 胶囊宽/高逐帧变 ⇒ 本类 bounds 逐帧变 ⇒ captureSize 逐帧变
+ *   ⇒ backdropView.frame 逐帧变 ⇒ CABackdropLayer 整幅重合成（ZeroCopyBridge 的
+ *   setupBuffer 也按尺寸重建 3 个 CVPixelBuffer）⇒ 展开时新长出来的右/下侧还没合成 = 黑带。
+ *   该帧**非均匀**（均匀判据看不见），而窗口的时间判据早已过期（形态判据不参与）
+ *   ⇒ commitCapturedTexture 无条件提交 ⇒ shader clamp_to_edge 把黑带弯进右端圆头。
+ *   修法：新增**第五个锚点**——采景几何尺寸变化（noteCaptureGeometry，只比尺寸不比原点）。
+ *   收展动画每帧都触发开窗 ⇒ 半成品帧改为沿用 previous；干净帧照常提交；0.6s 到点必放行
+ *   ⇒ 不存在永久透明/永久旧帧路径。A5 的开窗计数随之由 4 改 5，并新增 A6 钉住锚点本体。
  *
  * 运行：node scripts/sim-glass-firstmount-contract.js
  *   （本机没有 node，真跑法用 %TEMP% 下的浏览器版迷你运行器（headless Edge/Chrome +
@@ -408,23 +426,25 @@ const releaseExitInvariants = (f) => {
 // 窗口就每帧重开、永不到点 → 均匀帧永远被 hold（永久挡住），而旧断言照样通过。
 // 起点写入同理：只允许两个写入点（beginCaptureSettleWindow 开窗 / 首帧重锚函数），
 // 且重锚调用恰 1 处——接到每帧路径上等于窗口每帧后移、永不到点（2026-10-02 第 19 轮）。
-// 4 处的构成（缺一处都必须是失败）：
+// 5 处的构成（缺一处都必须是失败）：
 //   ① captureBackdrop 的 backdropView 插入点；② didMoveToWindow；③ beginLiveCapture；
 //   ④ handleResumeFromPause（2026-10-02 第 16 轮第 1 条：暂停恢复 = 合成源刚建立，
 //      漏开窗时 captureSettleStartedAt 还是上一次早已过期的值 → 半成品判据与墙钟沿用全失效，
-//      切回底部栏的瞬间黑边就是这么漏出来的）。
+//      切回底部栏的瞬间黑边就是这么漏出来的）；
+//   ⑤ noteCaptureGeometry（2026-10-11 第 52 轮第 1 条：采景几何尺寸变化——收展动画逐帧
+//      改胶囊宽/高，CABackdropLayer 每帧整幅重合成，新长出来的一侧还没合成就是黑带）。
 const settleReopenInvariants = (f) => {
   const reasons = []
   const glass = f.glass
 
-  // 定义行本身含 `beginCaptureSettleWindow()`，计数时先剔除（否则 4 次调用被数成 5）
+  // 定义行本身含 `beginCaptureSettleWindow()`，计数时先剔除（否则 5 次调用被数成 6）
   const defs = countOf(glass, 'func beginCaptureSettleWindow()')
   if (defs !== 1) {
     reasons.push('beginCaptureSettleWindow 定义不是恰一处（实际 ' + defs + '）')
   }
   const calls = countOf(glass, 'beginCaptureSettleWindow()') - defs
-  if (calls !== 4) {
-    reasons.push('beginCaptureSettleWindow() 调用不是恰 4 处（实际 ' + calls + '）——多一处（尤其每帧路径）= 窗口反复重开永不到点、均匀帧被永久挡住；少一处 = 某条路径首帧没人保护')
+  if (calls !== 5) {
+    reasons.push('beginCaptureSettleWindow() 调用不是恰 5 处（实际 ' + calls + '）——多一处（尤其每帧路径）= 窗口反复重开永不到点、均匀帧被永久挡住；少一处 = 某条路径首帧没人保护（第 52 轮起第 5 处是 noteCaptureGeometry 的采景几何锚点）')
   }
 
   // 第 4 处必须在暂停恢复复位里（本轮修复本体）：只数总数会被「把某处的调用挪到别处」
@@ -434,6 +454,15 @@ const settleReopenInvariants = (f) => {
     reasons.push('缺 handleResumeFromPause 函数体（暂停恢复复位的开窗点无法确定）')
   } else if (!/beginCaptureSettleWindow\(\)/.test(resumeBody)) {
     reasons.push('handleResumeFromPause 未开沉降窗口（暂停恢复 = 合成源刚建立，漏开窗时半成品判据与墙钟沿用全失效 → 切回底部栏瞬间闪黑边）')
+  }
+
+  // 第 5 处必须在 noteCaptureGeometry 里（本轮修复本体，2026-10-11 第 52 轮第 1 条）：
+  // 只数总数会被「把某处的调用挪到别处」蒙混过去——总数仍是 5，但收展动画重新变成没人保护。
+  const geomBodyAt5 = fnBody(glass, /private func noteCaptureGeometry\(_ captureSize: CGSize\)\s*\{/)
+  if (!geomBodyAt5) {
+    reasons.push('缺 noteCaptureGeometry 函数体（采景几何锚点的开窗点无法确定）')
+  } else if (!/beginCaptureSettleWindow\(\)/.test(geomBodyAt5)) {
+    reasons.push('noteCaptureGeometry 未开沉降窗口（采景几何变化 = 合成源整幅重做，半成品判据不生效 → 收起/展开瞬间左端/右端黑弧被无条件提交）')
   }
 
   const beginBody = fnBody(glass, /private func beginCaptureSettleWindow\(\)\s*\{/)
@@ -458,6 +487,87 @@ const settleReopenInvariants = (f) => {
     if (reanchorCalls !== 1) {
       reasons.push('reanchorCaptureSettleWindowIfNeeded 调用不是恰 1 处（实际 ' + reanchorCalls + ' 处）——每帧路径再接一处 = 窗口每帧后移、永不到点')
     }
+  }
+  return reasons
+}
+
+// ---------------------------------------------------------------------------
+// A6 第五个锚点：采景几何尺寸变化（2026-10-11，第 52 轮第 1 条）
+// ---------------------------------------------------------------------------
+// 用户原话：「主界面下滑到底部或者某个位置，然后再上滑到顶部，在碰撞顶部一瞬间，
+// 迷你播放器栏右边出现很粗的黑色弧线」。
+// 不是判据本体坏了（A1/A2 全绿），而是**覆盖面**：三个锚点都是「层级/会话事件」，
+// 收展动画一个都不产生。只比尺寸不比原点：原点平移（透镜拖动）不需要重新合成，
+// 是 captureReferenceSize 注释里已被接受的现状；尺寸变化必然是 CABackdropLayer
+// 整幅重合成，才是黑带来源。
+const geometryAnchorInvariants = (f) => {
+  const reasons = []
+  const glass = f.glass
+
+  const eps = swiftNumber(glass, 'captureGeometryEpsilon')
+  if (eps === null) {
+    reasons.push('缺 captureGeometryEpsilon（几何变化的判定容差不存在）')
+  } else if (!(eps > 0 && eps <= 2)) {
+    reasons.push('captureGeometryEpsilon=' + eps + ' 不在 (0, 2] 内（0 = 稳态浮点噪声每帧重开窗口、永不关闭；过大 = 小尺寸变化漏判、黑弧照漏）')
+  }
+  if (!/private var lastCaptureGeometry = CGSize\.zero/.test(glass)) {
+    reasons.push('缺 lastCaptureGeometry（几何锚点没有上一帧基准）')
+  }
+  const writes = countOf(glass, 'lastCaptureGeometry =')
+  if (writes !== 2) {
+    reasons.push('lastCaptureGeometry 写入点不是恰 2 处（实际 ' + writes + ' 处：声明初值 + noteCaptureGeometry 内）——写入点扩散 = 基准可被任意路径重置')
+  }
+
+  const body = fnBody(glass, /private func noteCaptureGeometry\(_ captureSize: CGSize\)\s*\{/)
+  if (!body) {
+    reasons.push('缺 noteCaptureGeometry（采景几何变化不是沉降窗口锚点）')
+  } else {
+    if (!/abs\(captureSize\.width - lastCaptureGeometry\.width\) > Self\.captureGeometryEpsilon/.test(body) ||
+        !/abs\(captureSize\.height - lastCaptureGeometry\.height\) > Self\.captureGeometryEpsilon/.test(body)) {
+      reasons.push('noteCaptureGeometry 未按宽高与容差判定几何变化（判据自身被改坏）')
+    }
+    // 注意用 [Oo]rigin 而不是 \borigin\b：后者在 captureOrigin / captureOrigin 这类
+    // 驼峰标识符里根本没有词边界，篡改注入 captureOrigin 时它会一声不吭（C28 就是看门狗）。
+    if (/[Oo]rigin/.test(body)) {
+      reasons.push('noteCaptureGeometry 把原点也比进了判据（原点平移不需要重新合成，是 captureReferenceSize 注释里已被接受的现状）')
+    }
+    if (!/lastCaptureGeometry = captureSize/.test(body)) {
+      reasons.push('noteCaptureGeometry 未回写基准（每帧都判成「变了」→ 窗口每帧重开、永不到点）')
+    }
+    if (!/beginCaptureSettleWindow\(\)/.test(body)) {
+      reasons.push('noteCaptureGeometry 未开沉降窗口（几何变化期间半成品判据不生效 → 黑弧被无条件提交）')
+    }
+    if (!/if changed \{ beginCaptureSettleWindow\(\) \}/.test(body)) {
+      reasons.push('noteCaptureGeometry 未在「几何变化」时才开沉降窗口（无条件开窗 = 窗口每帧重开、永不到点，均匀帧被永久挡住）')
+    }
+  }
+
+  // 调用点：两条采景路径各恰一处，且都在正确的位置
+  //   26.2+  → captureRootView：必须在全局节流守卫之后（被跳过的帧不改采景相关状态）
+  //   14~26.1 → captureBackdrop：必须在改 backdropView.frame **之前**（本帧采样已经在窗口内）
+  const callRe = /noteCaptureGeometry\(captureSize\)/g
+  const callIdx = []
+  let m
+  while ((m = callRe.exec(glass)) !== null) callIdx.push(m.index)
+  const totalCalls = countOf(glass, 'noteCaptureGeometry(') - 1
+  if (totalCalls !== 2) {
+    reasons.push('noteCaptureGeometry 调用不是恰 2 处（实际 ' + totalCalls + ' 处；两条采景路径各一处：26.2+ 的 captureRootView 与 14~26.1 的 captureBackdrop）')
+  }
+  if (callIdx.length !== 2) {
+    reasons.push('noteCaptureGeometry 的调用未都传本次采景尺寸 captureSize（实际传 captureSize 的调用 ' + callIdx.length + ' 处）')
+    return reasons
+  }
+  const throttleAt = glass.indexOf('if throttled { return }')
+  const frameAt = glass.indexOf('backdropView.frame = CGRect(origin: captureOrigin, size: captureSize)')
+  if (throttleAt < 0) {
+    reasons.push('找不到 captureRootView 的节流守卫（几何锚点的落点无法确定）')
+  } else if (callIdx[0] < throttleAt) {
+    reasons.push('26.2+ 路径的几何锚点落在节流守卫之前（被跳过的帧也在改采景相关状态）')
+  }
+  if (frameAt < 0) {
+    reasons.push('找不到 captureBackdrop 的 backdropView.frame 赋值（几何锚点的落点无法确定）')
+  } else if (callIdx[1] > frameAt) {
+    reasons.push('14~26.1 路径的几何锚点落在改 frame 之后（本帧采样已经带着未合成的黑带，先开窗再改 frame 才来得及）')
   }
   return reasons
 }
@@ -688,7 +798,8 @@ const assertions = [
   { name: 'A2 半成品判据（全网格 + 外圈近黑占比，无外观逃逸；分析层不得再碰渲染帧率）', hits: partialFrameInvariants(REAL) },
   { name: 'A3 三条窗口锚点 + draw() 无纹理 guard', hits: anchorInvariants(REAL) },
   { name: 'A4 放行出口：非 hold 分支恰一处 backgroundTexture = texture（不在 shouldHold 内）', hits: releaseExitInvariants(REAL) },
-  { name: 'A5 开窗点恰 4 处调用（含暂停恢复）+ 起点写入唯一（beginCaptureSettleWindow 内）', hits: settleReopenInvariants(REAL) },
+  { name: 'A5 开窗点恰 5 处调用（含暂停恢复 + 采景几何）+ 起点写入唯一（beginCaptureSettleWindow 内）', hits: settleReopenInvariants(REAL) },
+  { name: 'A6 第五锚点：采景几何尺寸变化（只比尺寸不比原点 / 变化才开窗 / 两条采景路径各恰一处）', hits: geometryAnchorInvariants(REAL) },
   { name: 'B 既有结构未改坏（渲染帧率=采景档 30/60 唯一赋值点/采样基准/均匀沿用/采景几何/透镜链路/采景节流/实时会话/暂停复位）', hits: existingStructureInvariants(REAL) },
 ]
 
@@ -903,7 +1014,7 @@ CE('C15 放行赋值被挪进 shouldHold 分支（未就绪帧会被当成背景
 CE('C16 每帧路径（captureBackground）里多加一处开窗（窗口每帧重开、永不关闭）', settleReopenInvariants, tamperGlass(
   '    func captureBackground() {',
   '    func captureBackground() {\n        beginCaptureSettleWindow()'
-), '恰 4 处')
+), '恰 5 处')
 
 CE('C17 每帧路径（commitCapturedTexture）里多加一处起点写入（窗口每帧重置）', settleReopenInvariants, tamperGlass(
   '        let now = CACurrentMediaTime()\n        var shouldHold = false',
@@ -977,6 +1088,46 @@ CE('C24 恢复路径的开窗被删（切回底部栏时半成品判据与墙钟
     'handleResumeFromPause 未开沉降窗口')
 }
 
+// —— 2026-10-11 契约加固：第五个锚点（采景几何尺寸变化，C25~C30）——
+// 用户第 52 轮第 1 条：「下滑到底部再上滑到顶部，碰撞顶部一瞬间，迷你播放器栏右边
+// 出现很粗的黑色弧线」。锚点本体被拆/被改坏/被挪位都必须拦下——否则收展动画期间
+// 半成品帧重新被无条件提交，右端圆头的黑弧原地复发。
+
+CE('C25 几何锚点不再开窗（黑弧被无条件提交）', geometryAnchorInvariants, tamperGlass(
+  'if changed { beginCaptureSettleWindow() }',
+  'if changed { lastCaptureGeometry = captureSize }'
+), '未开沉降窗口')
+
+CE('C26 几何锚点被接到每帧路径上（调用不是恰 2 处）', geometryAnchorInvariants, tamperGlass(
+  '    override func layoutSubviews() {',
+  '    override func layoutSubviews() {\n        noteCaptureGeometry(bounds.size)'
+), '调用不是恰 2 处')
+
+CE('C26b 几何锚点的调用没传本次采景尺寸（判据吃的不是本帧几何）', geometryAnchorInvariants, tamperGlass(
+  'noteCaptureGeometry(captureSize)',
+  'noteCaptureGeometry(bounds.size)'
+), '未都传本次采景尺寸')
+
+CE('C27 无条件开窗（去掉「几何变化」判断 → 窗口每帧重开、永不到点）', geometryAnchorInvariants, tamperGlass(
+  'if changed { beginCaptureSettleWindow() }',
+  'beginCaptureSettleWindow()'
+), '未在「几何变化」时才开')
+
+CE('C28 把原点也比进判据（原点平移不需要重新合成）', geometryAnchorInvariants, tamperGlass(
+  '        let changed = abs(captureSize.width - lastCaptureGeometry.width) > Self.captureGeometryEpsilon ||',
+  '        let changed = captureOrigin != .zero || abs(captureSize.width - lastCaptureGeometry.width) > Self.captureGeometryEpsilon ||'
+), '把原点也比进')
+
+CE('C29 容差被改成 0（稳态浮点噪声每帧重开窗口、永不到点）', geometryAnchorInvariants, tamperGlass(
+  'captureGeometryEpsilon: CGFloat = 0.5',
+  'captureGeometryEpsilon: CGFloat = 0'
+), '不在 (0, 2]')
+
+CE('C30 14~26.1 路径的锚点被挪到改 frame 之后（本帧采样已带黑带，开窗来不及）', geometryAnchorInvariants, tamperGlass(
+  /        noteCaptureGeometry\(captureSize\)\r?\n\r?\n        \/\/ Position backdrop view and layer\r?\n        backdropView\.frame = CGRect\(origin: captureOrigin, size: captureSize\)/,
+  '        // Position backdrop view and layer\n        backdropView.frame = CGRect(origin: captureOrigin, size: captureSize)\n\n        noteCaptureGeometry(captureSize)'
+), '落在改 frame 之后')
+
 // ---------------------------------------------------------------------------
 // 输出
 // ---------------------------------------------------------------------------
@@ -990,7 +1141,8 @@ console.log('  A1 沉降窗口 = 墙钟口径（不是帧数）+ 墙钟硬上限
 console.log('  A2 半成品判据：全网格 + 外圈近黑占比，无外观逃逸（阈值须低于对应形态占比下限；分析层不得再碰渲染帧率）')
 console.log('  A3 三条窗口锚点（backdrop 插入 / didMoveToWindow / beginLiveCapture）+ draw guard')
 console.log('  A4 放行出口唯一：非 hold 分支恰一处 backgroundTexture = texture（缺 = 玻璃永久透明）')
-console.log('  A5 开窗点恰 4 处（三条锚点 + 暂停恢复复位）+ 起点写入唯一（每帧路径不得开窗/重置）')
+console.log('  A5 开窗点恰 5 处（三条锚点 + 暂停恢复复位 + 采景几何变化）+ 起点写入唯一（每帧路径不得开窗/重置）')
+console.log('  A6 第五锚点 noteCaptureGeometry：只比尺寸不比原点、变化才开窗、两条采景路径各恰一处（2026-10-11 第 52 轮）')
 console.log('  B  既有事实未改坏（渲染帧率 = 采景档 30/60、唯一赋值点、采样基准锁定、均匀沿用修复、采景几何、透镜链路、实时会话、暂停复位）')
 console.log('  B7 采景节流：每实例最小采景间隔（常驻 30fps / 实时 60fps），首帧放行、按会话分档（2026-10-02）')
 console.log('  B8 实时采景会话（两路标志分开 + OR 判据 + 会话起止放行采景 + 退会话按 OR 统一算档）+ 暂停恢复复位（2026-10-02）')
