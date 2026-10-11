@@ -23,19 +23,14 @@ export default {
     state.safeAreaBottom = size
     global.state_event.safeAreaBottomUpdated(size)
   },
+  // 导航转场窗口（push / pop 两侧共用，第 61 轮第 3 条）：玻璃专用门
+  // （useGlassCovered / useGlassHomeCovered 里的 useGlassNavHold）消费它。
+  // 同值短路保留：门是布尔边沿，重复置位不需要重渲染任何玻璃。
+  // 详见 navigation/transitionWindow.ts。
   setNavTransitioning(transitioning: boolean) {
     if (state.navTransitioning == transitioning) return
     state.navTransitioning = transitioning
     global.state_event.navTransitioningUpdated(transitioning)
-  },
-  // 露出门（第 52 轮第 2 条）：只在 glassCovered（玻璃专用覆盖门）里消费，
-  // 与 navTransitioning 是两条独立来源——同一帧里前者为真、后者为假是常态
-  // （返回发起后、账本还没收尾的那一段）。同值短路保留：门是布尔边沿，重复置位
-  // 不需要重渲染任何玻璃。详见 state.navRevealing 与 navigation/revealWindow.ts。
-  setNavRevealing(revealing: boolean) {
-    if (state.navRevealing == revealing) return
-    state.navRevealing = revealing
-    global.state_event.navRevealingUpdated(revealing)
   },
   setComponentId(name: COMPONENT_IDS, id: string) {
     state.componentIds.push({ name, id })

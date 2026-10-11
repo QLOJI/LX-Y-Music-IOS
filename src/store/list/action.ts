@@ -22,12 +22,6 @@ export default {
   },
 }
 
-// Other code such as selectors can use the imported `RootState` type
-// export const defaultList = (state: LX.State) => state.userList.defaultList
-// export const loveList = (state: LX.State) => state.userList.loveList
-// export const userList = (state: LX.State) => state.userList.userList
-// export const selectAllList = createSelector(defaultList, loveList, userList, (defaultList, loveList, userList) => {
-//   return [defaultList, loveList, ...userList]
 // })
 
 // export const selectActiveListId = (state: LX.State) => state.userList.activeListId

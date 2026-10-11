@@ -80,11 +80,12 @@ export const useSafeAreaReady = () => {
 }
 
 /**
- * 是否处于 **push** 转场窗口内（pop 不再置位，见下）。
- * push 期间玻璃（Tab 栏 / 迷你播放器）必须暂停渲染：转场中途采到的背景是
- * 「上一页正在滑走 + 新页正在盖上来」的中间态，采进胶囊就是每次切页闪的那一下。
- * 返回方向相反——玻璃正在被露出来，按住等于让用户多看一截陈旧画面，所以 pop
- * 事件到达即释放。详见 navigation.beginNavTransitionWindow / endNavTransitionWindow。
+ * 是否处于**导航转场窗口**内（push 与 pop 两侧共用，第 61 轮第 3 条起）。
+ * 窗口内玻璃（Tab 栏 / 迷你播放器）暂停渲染：转场中途采到的背景是「旧页正在滑走 +
+ * 新页正在盖上来」的中间态，返回时更是「正在滑走的那一页」本身——采进胶囊就是每次
+ * 切页闪的那一下、以及返回时透过的画面反向流。按住 = 保持转场前那一帧。
+ * 另有一个非玻璃消费点：SettingDetail 的返回按钮防重复点击。
+ * 详见 navigation/transitionWindow.ts。
  */
 export const useNavTransitioning = () => {
   const [value, update] = useState(state.navTransitioning)
@@ -93,36 +94,6 @@ export const useNavTransitioning = () => {
     global.state_event.on('navTransitioningUpdated', update)
     return () => {
       global.state_event.off('navTransitioningUpdated', update)
-    }
-  }, [])
-
-  return value
-}
-
-/**
- * 是否处于**返回（pop）露出窗口**内（2026-10-11，第 52 轮第 2 条）。
- *
- * 与 useNavTransitioning 是反作用力：那个把玻璃按住（push：玻璃正在被盖住），
- * 这个把玻璃的**覆盖门**临时作废（pop：玻璃正在被露出来）。
- *
- * 为什么需要它：覆盖门读的是账本（componentIds），而账本只在 screenPopped 事件到达时
- * 才翻——该事件晚于「用户按下返回」，于是从按下返回到账本收尾之间，玻璃被「以为还盖着」
- * 而暂停渲染、显示的是暂停前那一帧（push 之前的画面）；等到账本收尾、原生走
- * handleResumeFromPause（丢纹理 + 重采 + 立即画）时，返回动画已经跑完 —— 用户看到的就是
- * 「返回动画结束时闪一下，然后透过的画面才刷新」。
- *
- * 本 hook 只给玻璃省电门用（见 useGlassCovered / useGlassHomeCovered），
- * **不要**用它替换 useHomeCovered / useScreenCovered —— 后两者还有非玻璃消费点
- * （tabBarCollapse 的 useAboveMiniPlayerBottom 布局、PlayingIcon 动画门等），
- * 提前翻转会让那些布局在返回动画中途跳一下。
- */
-export const useNavRevealing = () => {
-  const [value, update] = useState(state.navRevealing)
-
-  useEffect(() => {
-    global.state_event.on('navRevealingUpdated', update)
-    return () => {
-      global.state_event.off('navRevealingUpdated', update)
     }
   }, [])
 
@@ -203,6 +174,28 @@ export const usePagerDragging = () => {
   return value
 }
 
+/**
+ * **玻璃专用**「转场按住门」（第 61 轮第 3 条）：导航转场窗口 ∧ 用户没有在拖首页 Pager。
+ *
+ * 为什么返回方向也要按住：转场期间玻璃背后那一块屏幕正在变，返回时玻璃背后其实还是
+ * **正在滑走的那一页**（页面向右走、玻璃不动），采进胶囊就是「透过的画面由右向左滑入」
+ * （用户第 61 轮原话「这个方向是反的」）。整段按住则显示的是转场前那一帧——对返回来说
+ * 就是底层页面自己的画面，它本来就是静止的，看起来才是「贴着玻璃一起滑进来」。
+ *
+ * 为什么要 `!dragging` 兜底：窗口在 screenPopped（系统边缘返回手势的唯一 JS 锚点）那里
+ * 会续期 420ms，而用户返回后常常立刻横向拖 Pager —— 那时玻璃必须立刻恢复实时采景，
+ * 否则底层在横向移动、玻璃却钉着旧画面。拖页本身就是「用户已上手」的信号，优先级最高。
+ *
+ * ⚠️ 只给玻璃省电门用（useGlassCovered / useGlassHomeCovered），不要替换账本类
+ * hook：useHomeCovered / useScreenCovered 还有非玻璃消费点（useAboveMiniPlayerBottom
+ * 的布局、PlayingIcon 动画门等），让它们在转场中途翻转会让布局跳一下。
+ */
+export const useGlassNavHold = () => {
+  const transitioning = useNavTransitioning()
+  const dragging = usePagerDragging()
+  return transitioning && !dragging
+}
+
 export const useComponentIds = () => {
   const [value, update] = useState(state.componentIds)
 
@@ -241,34 +234,33 @@ export const useScreenCovered = (componentId?: string) => {
 }
 
 /**
- * **玻璃专用**覆盖门：useScreenCovered + 露出窗口（2026-10-11，第 52 轮第 2 条）。
+ * **玻璃专用**省电门：账本覆盖门 ∨ 转场按住门。
  *
- * 语义 = 「现在还需要暂停这块玻璃吗」，即 `被覆盖 且 不在返回露出窗口内`。
- * 返回发起时（navigation/revealWindow 的 beginNavRevealWindow）窗口打开，本门立刻
- * 变 false ⇒ <LiquidGlass paused> 落 false ⇒ 原生在**转场开始之前**完成一次
- * 复位（丢旧纹理 + 重采当前背景 + 立即 draw）。那一刻页面还盖着玻璃，复位与首帧
- * 采景都看不见；等返回动画把玻璃露出来时，透过的画面已经是当前画面，全程实时，
- * 动画结束不再跳变（用户第 52 轮第 2 条）。
+ * 语义 = 「现在还需要暂停这块玻璃吗」。账本（componentIds）只在 RNN screenPopped
+ * 到达时才翻，晚于用户按下返回；转场按住门补的正是前后那两段缝（见 useGlassNavHold）。
+ * 两个来源都是**暂停**方向，所以这里是或——第 61 轮第 3 条之前这里是
+ * `covered && !revealing`（露出门在返回时把覆盖门作废、让玻璃转场中途重采），
+ * 那条路径与露出门一起删除。
  *
  * ⚠️ 只替换**玻璃省电门**，不要拿它去替换 useScreenCovered / useHomeCovered 本身：
  * 那两个还被非玻璃消费点读（useAboveMiniPlayerBottom 的布局、PlayingIcon 的动画门），
- * 让它们在返回动画中途提前翻转，会让列表底部留白与图标动画在转场里跳一下。
+ * 让它们在转场中途翻转会让列表底部留白与图标动画跳一下。
  */
 export const useGlassCovered = (componentId?: string) => {
   const covered = useScreenCovered(componentId)
-  const revealing = useNavRevealing()
-  return covered && !revealing
+  const navHold = useGlassNavHold()
+  return covered || navHold
 }
 
 /**
- * **玻璃专用**覆盖门（Home 版）：useHomeCovered + 露出窗口。
+ * **玻璃专用**省电门（Home 版）：useHomeCovered ∨ 转场按住门。
  * 消费点 = ModernTabBar 的两块玻璃（展开态 Tab 栏 / 收起态圆钮）。
  * ⚠️ 同上：只用于玻璃的 paused，不要用它替换 useHomeCovered 的其它消费点。
  */
 export const useGlassHomeCovered = () => {
   const covered = useHomeCovered()
-  const revealing = useNavRevealing()
-  return covered && !revealing
+  const navHold = useGlassNavHold()
+  return covered || navHold
 }
 
 const hasVisible = (visibleNames: COMPONENT_IDS[], ids: InitState['componentIds']) => {
