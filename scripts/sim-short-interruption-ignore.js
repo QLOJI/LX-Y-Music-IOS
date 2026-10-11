@@ -38,6 +38,19 @@
  * 【第 61 轮第 1 条】还有一组同形状的反例：执行体三件套缺引擎暂停（n7）/ 推迟机制被接回来
  * （n8）—— 前者让真实打断后引擎继续喂数据，后者让暂停延迟回归（用户第 61 轮的现场）。
  *
+ * 【第 63 轮第 2 条】本轮给这一条需求收尾时补的是另一半（判据见 ①-h）：
+ *   用户原话「当我取消勾选"与其他应用同时播放"选项，在出现系统提示音（截图音、按钮音等）和
+ *   其他的音乐，将不会自动暂停播放」—— 短音**保持不暂停**是本文件既有口径，不改；要补的是
+ *   「不暂停的同时也不许有声音异常/音量跳变」（同轮新增的 JS 主渐入默认 2 秒、0~3 秒可配，
+ *   必须能在整段忽略窗口里走完）。两条不变量：
+ *     · 自愈重贴音量 restorePlaybackOutputLocked 走**非显式**写入（applyOutputVolumeLocked:…:
+ *       explicitWrite:NO）——显式写入会取消在途斜坡、把 JS 的渐入顶回满值；
+ *     · 自愈不主动 cancelOutputVolumeRampLocked。
+ *   反例 n9（改成显式写入）/ n10（干脆不重贴，输出停在斜坡中途）。
+ *   注意：原生续播斜坡自身的形状（beginResumeFadeInLocked 在 currentVolume ≤ 0.001f 时早退、
+ *   唯一写出口的让行语义）已由 sim-r59-transition-capture-and-resume-fade.js 的 B2 钉死，
+ *   这里不重复断言，只补自愈这一条路径。
+ *
  * 运行：node scripts/sim-short-interruption-ignore.js
  * 退出码：不变量全过、且全部反例被拦下时为 0，否则 1。
  */
@@ -221,6 +234,31 @@ const nativeInvariants = (src) => {
     if (healC.includes('manualPause = NO')) reasons.push('自愈动手动暂停闸门（用户暂停会被悄悄抬起来）')
   }
 
+  // —— ①-h 【第 63 轮第 2 条】自愈路径的音量口径：让行在途渐入，不制造音量跳变 ——
+  // 短音不暂停是 ①-a~①-g 的既有口径（用户第 63 轮裁定「保持不暂停」）；本条收尾要保住的是
+  // 用户第 63 轮同一句里的另一半 ——「在出现系统提示音（截图音、按钮音等）和其他的音乐」期间
+  // **不许出现声音异常/音量跳变**。JS 侧的主渐入（默认 2 秒、0~3 秒可配）必须能在整段忽略
+  // 窗口里活着走完，原生自愈只许「让行」不许「顶掉」：
+  //   · 自愈重贴音量（restorePlaybackOutputLocked，被 schedulePlaybackOutputRestoreWithDelays
+  //     反复调、也被路由自愈与 IO 死检共用）必须是**非显式**写入 → 在途斜坡不被取消；
+  //   · 自愈不得主动 cancelOutputVolumeRampLocked。
+  // 显式写入会取消原生斜坡、也把 JS 的渐入顶回满值 —— 听感就是「提示音过后音量突然变大」。
+  const restoreM = methodBody(src, '- (void)restorePlaybackOutputLocked {')
+  const restoreC = restoreM ? stripComments(restoreM) : null
+  if (restoreC == null) {
+    reasons.push('restorePlaybackOutputLocked 缺失（自愈重贴音量没有唯一落点）')
+  } else {
+    if (!restoreC.includes('[self applyOutputVolumeLocked:self.currentVolume explicitWrite:NO];')) {
+      reasons.push('自愈重贴音量不是非显式写入：会取消 JS 在途渐入，短音过后音量跳到满值')
+    }
+    if (restoreC.includes('explicitWrite:YES')) {
+      reasons.push('自愈重贴音量用了显式写入（同上：顶掉在途渐入）')
+    }
+    if (restoreC.includes('cancelOutputVolumeRampLocked')) {
+      reasons.push('自愈主动作废在途渐入（短音期间 JS 的渐入被打断 = 音量断崖，第 63 轮第 2 条）')
+    }
+  }
+
   // —— ①-g 用户动作撤销待决：恢复播放 / 停止 / 切歌复位 ——
   const clearLine = 'self.pendingShortInterruptionIgnore = NO;'
   if (resumeC == null || !resumeC.includes(clearLine)) reasons.push('resume（用户主动恢复播放）不撤销待决暂停')
@@ -375,6 +413,23 @@ const runCounterExamples = () => {
   ce('n8 推迟机制被接回来', '停引擎 / 掐渲染被推迟 = 暂停延迟回归',
     n8 !== REAL.native && nativeInvariants(n8).length > 0)
 
+  // n9 【第 63 轮第 2 条】自愈重贴音量改成显式写入：取消 JS 在途渐入 —— 提示音过后音量突然变大
+  const n9 = REAL.native.replace(
+    '  // 【第 59 轮第 3 条】非显式写入（让行在途渐入，见 applyOutputVolumeLocked）\n' +
+    '  [self applyOutputVolumeLocked:self.currentVolume explicitWrite:NO];\n',
+    '  [self applyOutputVolumeLocked:self.currentVolume explicitWrite:YES];\n',
+  )
+  ce('n9 自愈重贴音量改成显式写入', '短音期间取消在途渐入 = 提示音过后音量跳变',
+    n9 !== REAL.native && nativeInvariants(n9).length > 0)
+
+  // n10 【第 63 轮第 2 条】自愈不再重贴音量：短音过后输出停在斜坡中途（有声但音量不对）
+  const n10 = REAL.native.replace(
+    '  [self schedulePlaybackOutputRestoreWithDelays:@[ @0.1, @0.5 ]];\n}\n\n// 【第 31 轮·条五】',
+    '}\n\n// 【第 31 轮·条五】',
+  )
+  ce('n10 自愈不再重贴音量', '短音过后输出停在旧值（被掐过的会话拿不回来）',
+    n10 !== REAL.native && nativeInvariants(n10).length > 0)
+
   // j1 JS 独占分支退回立刻 pause
   const j1 = REAL.service.replace('        scheduleInterruptionPause()\n', '        void pause()\n')
   ce('j1 JS 独占分支退回立刻 pause', '短暂系统音会切一下播放',
@@ -410,11 +465,11 @@ const runCounterExamples = () => {
 // ---------------------------------------------------------------------------
 
 console.log('=== sim-short-interruption-ignore ===')
-console.log('短暂系统音忽略窗口（两侧同值 1.5s：Began 立即置标记 + 推迟完整处理；窗口内 Ended 整单撤销）（第 31 轮·追加；真实打断同一拍硬切、无第二层推迟 —— 第 61 轮第 1 条）')
+console.log('短暂系统音忽略窗口（两侧同值 1.5s：Began 立即置标记 + 推迟完整处理；窗口内 Ended 整单撤销）（第 31 轮·追加；真实打断同一拍硬切、无第二层推迟 —— 第 61 轮第 1 条；自愈重贴音量让行在途渐入 —— 第 63 轮第 2 条）')
 console.log()
 
 const checks = [
-  ['原生 AppDelegate.mm（窗口常量 / Began 立即置标记与推迟 / 回调看待决 / 执行体同一拍硬切三件套 + 无推迟残留 / Ended 整单撤销 / 轻量自愈 / 用户动作撤待决）', () => nativeInvariants(REAL.native)],
+  ['原生 AppDelegate.mm（窗口常量 / Began 立即置标记与推迟 / 回调看待决 / 执行体同一拍硬切三件套 + 无推迟残留 / Ended 整单撤销 / 轻量自愈 / 自愈音量口径（第 63 轮第 2 条）/ 用户动作撤待决）', () => nativeInvariants(REAL.native)],
   ['service.ts（窗口常量与计时器工具 / 独占分支推迟暂停 / 结束分支窗口内撤销 / 混音分支不受影响 / cancelResumePending 统一撤销）', () => serviceInvariants(REAL.service)],
 ]
 

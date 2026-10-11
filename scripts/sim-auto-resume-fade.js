@@ -29,7 +29,7 @@
  *
  * 本轮口径（三条，每条配一个能拦住回退的反例）：
  *   一、**未预约的 'playing' 也走渐入斜坡**：applyVolumeOnPlayStart 的「未预约」支在 iOS 上
- *       与预约支同样走 FADE_IN_MS 的斜坡；账本本来就在目标值附近时，rampVolume 内部按
+ *       与预约支同样走渐入斜坡（第 63 轮第 2 条起时长改由设置项现读：`fadeInMs()`）；账本本来就在目标值附近时，rampVolume 内部按
  *       MIN_RAMP_DELTA 短路成直写 —— 「根本没停过的播放」（短暂系统音、播放中的重缓冲）
  *       不会被凭空加一次淡入，行为与改动前逐字节一致。Android 不变（仍直通：那边没有
  *       controller.ts 的 'playing' 兜底）。
@@ -50,7 +50,7 @@
  *       `armVolumeFadeIn()` + `play()`（预约必须在 play() **之前**，缩进 10 格、贴死相邻）。
  *       同时把预约的**到点**从「无条件写设定音量」改成「先探引擎状态」（volumeFade.ts
  *       beginFadeInArm）：loading / buffering 续期（上限 ARM_RENEW_LIMIT，总上限 6s），
- *       已出声就补一次 FADE_IN_MS 斜坡，代数令牌挡住「探针在途时的新预约被上一代顶掉」。
+ *       已出声就补一次渐入斜坡（时长按设置现读），代数令牌挡住「探针在途时的新预约被上一代顶掉」。
  *
  * 为什么必须靠契约脚本：这几处全是运行期语义（事件次序、Promise 时序），tsc / eslint 全合法，
  * 只有真机上「其它音频结束的那一刻」才听得出来。
@@ -176,7 +176,10 @@ const autoResumeFadeInvariants = (deps) => {
   if (applyBody == null) {
     reasons.push('volumeFade.ts 里找不到 applyVolumeOnPlayStart')
   } else {
-    if (countOf(applyBody, 'await rampVolume(target, FADE_IN_MS)') !== 2) {
+    // 【第 63 轮第 2 条】渐入时长从常量 FADE_IN_MS 改成设置项现读的 `duration`
+    // （`const duration = fadeInMs()` 就在函数头部）：两处斜坡必须共用同一个快照，
+    // 否则用户正好在拖滑块时，同一次渐入的两半会落在两个时长上。
+    if (countOf(applyBody, 'await rampVolume(target, duration)') !== 2) {
       reasons.push('applyVolumeOnPlayStart 的**未预约**支没有走渐入斜坡（两处 rampVolume 应当'
         + '一处是预约支、一处是未预约支）：系统打断结束时原生先重启引擎并重发 \'playing\'，'
         + 'JS 的预约（setPlay）跟它是两条互不等待的路径 —— 未预约支直写目标音量 = 自动续播'
@@ -306,7 +309,7 @@ const autoResumeFadeInvariants = (deps) => {
       reasons.push('loading / buffering 的续期判定被拆（或丢掉了 armRenewals < ARM_RENEW_LIMIT '
         + '上限）：前者让「引擎还在缓冲就硬写」回来，后者让静音洞没有护栏')
     }
-    if (!armDeadlineBody.includes('rampVolume(targetVolume(), FADE_IN_MS)')) {
+    if (!armDeadlineBody.includes('rampVolume(targetVolume(), fadeInMs())')) {
       reasons.push('到点探到引擎已经在出声时不再补一次渐入斜坡：改回一记硬写 = 用户听到的'
         + '仍然是满音量，「自动播放没有渐出效果」原样复发')
     }
@@ -350,7 +353,7 @@ const runCounterExamples = () => {
   check('r1 未预约的 playing 退回直写目标音量', () => autoResumeFadeInvariants({
     ...REAL,
     fade: tamperFade(
-      "    if (Platform.OS == 'ios') {\n      await rampVolume(target, FADE_IN_MS)\n      return\n    }\n    await writeVolume(target)",
+      "    if (Platform.OS == 'ios') {\n      await rampVolume(target, duration)\n      return\n    }\n    await writeVolume(target)",
       '    await writeVolume(target)'),
   }),
   '未预约')
@@ -457,7 +460,7 @@ const runCounterExamples = () => {
   check('r12 到点已出声时不再补渐入斜坡', () => autoResumeFadeInvariants({
     ...REAL,
     fade: tamperFade(
-      '          void rampVolume(targetVolume(), FADE_IN_MS)\n          return',
+      '          void rampVolume(targetVolume(), fadeInMs())\n          return',
       '          void writeVolume(targetVolume())\n          return'),
   }),
   '不再补一次渐入斜坡')

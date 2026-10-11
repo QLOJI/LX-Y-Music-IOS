@@ -68,7 +68,9 @@
  *   这一拍（引擎重启 → 首帧出声）完全由原生决定，JS 的渐入要等它自己的 'playing' 才起步，
  *   两次事件谁先谁后没有保证 —— 原生先出声的次序里首拍就是满音量。⇒ 在「引擎确实被重新
  *   启动」这个唯一收口（ensureAudioEngineRunningLocked 的 !isRunning 分支）先压 0、再按
- *   600ms / 40ms 步进 smoothstep 升到 currentVolume；JS 任一显式写音量（setVolume 桥）
+ *   600ms / 40ms 步进 smoothstep 升到 currentVolume（【第 63 轮第 2 条】起定性为「衔接斜坡」：
+ *   JS 侧的主渐入改成 0~3 秒可配的设置项，两边不再同值，只要求这一段短于主渐入且听得出来）；
+ *   JS 任一显式写音量（setVolume 桥）
  *   即作废本斜坡 —— 两层不互顶。
  *
  * 反例自检：以上全是「节拍 / 顺序 / 唯一性 / 不许复活的旧写法」，写反了、漏一处复位、
@@ -249,17 +251,30 @@ const resumeFadeInvariants = (raw) => {
   const reasons = []
   const code = stripComments(raw)
 
-  // B1 常量：与 JS 侧 FADE_IN_MS 同值，且步数落在合理区间
+  // B1 常量：一段**短的衔接斜坡**（不是主渐入），步数落在合理区间。
+  // 【第 63 轮第 2 条】JS 侧的渐入时长改成设置项了（默认 2 秒、0~3 秒可配），两边不再是
+  // 「同值」关系 —— 原生的这一段是引擎重启后**接上去**用的（JS 任一显式写音量都会让行，
+  // 见下面的 B2），主渐入仍由 JS 侧负责（volumeFade.ts 的 fadeInMs()）。所以判据从
+  // 「必须 = 600，与 JS 同值」退化成三条：
+  //   · 短到不像主渐入（≤ JS 的默认渐入 2000ms）—— 原生斜坡若比主渐入还长，两层叠起来
+  //     就是一段听得出来的双折点；
+  //   · 长到听得出来（≥ 200ms）—— 太短就只剩「消爆音」，起不到把 JS 接过手之前那一段
+  //     补平的作用；
+  //   · 步长整除 + 拍数 [4, 40]（台阶感 / 省电口径，与第 57 轮同一把尺子）。
   const msMatch = code.match(/static const int64_t LXResumeFadeInMs = (\d+);/)
   const stepMatch = code.match(/static const int64_t LXResumeFadeStepMs = (\d+);/)
   if (msMatch == null) {
-    reasons.push('缺渐入时长常量 LXResumeFadeInMs（或写法被改）：渐入总时长必须与 JS 侧 FADE_IN_MS 同值'
-      + '（600ms），两层叠在一起时听感才一致')
+    reasons.push('缺渐入时长常量 LXResumeFadeInMs（或写法被改）：引擎重启后那一段衔接斜坡没了，'
+      + 'JS 的主渐入接手之前会有一段硬接')
   } else {
     const total = Number(msMatch[1])
-    if (total !== 600) {
-      reasons.push(`渐入时长被改成 ${total}ms（应为 600，与 JS 音量渐变的 FADE_IN_MS 同值）：`
-        + '两层斜坡用同一段曲线、同一总时长，观感才是一个渐入而不是两个')
+    if (total > 2000) {
+      reasons.push(`原生衔接斜坡 ${total}ms 长过了 JS 的默认渐入（2000ms）：主渐入由 JS 侧负责，`
+        + '原生这一段只是「接上去」，两层叠起来就是一段听得出来的双折点（第 63 轮第 2 条把 JS 侧'
+        + '的时长改成可配设置项之后，两边不再是同值关系）')
+    } else if (total < 200) {
+      reasons.push(`原生衔接斜坡只有 ${total}ms：太短就只剩「消爆音」，起不到把 JS 接过手之前`
+        + '那一段补平的作用')
     }
     if (stepMatch == null) {
       reasons.push('缺渐入步长常量 LXResumeFadeStepMs')
@@ -523,7 +538,13 @@ const runCounterExamples = () => {
   check('f1 渐入时长被改成 0', () => resumeFadeInvariants(tamper(REAL.native,
     'static const int64_t LXResumeFadeInMs = 600;',
     'static const int64_t LXResumeFadeInMs = 0;')),
-  '渐入时长被改成 0ms')
+  '太短就只剩「消爆音」')
+
+  // f1b 【第 63 轮第 2 条】原生衔接斜坡长过 JS 的默认渐入（两层叠起来 = 一段双折点）
+  check('f1b 原生斜坡长过主渐入', () => resumeFadeInvariants(tamper(REAL.native,
+    'static const int64_t LXResumeFadeInMs = 600;',
+    'static const int64_t LXResumeFadeInMs = 4000;')),
+  '长过了 JS 的默认渐入')
 
   // f2 让行语义被删（引擎重启 / 输出自愈那几句把斜坡顶回满音量）
   check('f2 让行语义被删', () => resumeFadeInvariants(tamper(REAL.native,
@@ -638,7 +659,7 @@ console.log()
 const checks = [
   ['转场采景闸门（节拍按实时档 + 2ms 抖动余量 + FIFO 轮转 + 首帧放行记账 + 四处复位 + 每实例节流同档）',
     () => glassGateInvariants(REAL.swift)],
-  ['自动续播的原生渐入（600/40ms smoothstep + 唯一出口让行 + 引擎重启收口 + 拆图/建图/JS 桥三处配合）',
+  ['自动续播的原生渐入（600/40ms smoothstep 衔接斜坡 + 唯一出口让行 + 引擎重启收口 + 拆图/建图/JS 桥三处配合）',
     () => resumeFadeInvariants(REAL.native)],
   ['混音态不被系统打断停播（五条守卫 + 只吞 paused + 两份判定同口径 + 不成环）',
     () => mixSuppressionInvariants(REAL.controller, REAL.service)],

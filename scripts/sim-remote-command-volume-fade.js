@@ -111,6 +111,73 @@
  *       用户又按了播放」的新预约会被上一代的结果一记写回设定音量。
  *       —— 反例 v32 / v33 / v34 / v35 / v36。
  *
+ * ---------------------------------------------------------------------------
+ * 【第 63 轮第 2 条】用户原话（逐字）：「当我取消勾选"与其他应用同时播放"选项，在出现系统
+ * 提示音（截图音、按钮音等）和其他的音乐，将不会自动暂停播放；渐入渐出的声音变化为渐入
+ * （Fade In）：音乐开始播放时，音量从 0 在指定时长内平滑升至正常音量。渐出（Fade Out）：
+ * 音乐停止或切换前，音量从当前值在指定时长内平滑降至 0。默认时长：渐入 2 秒，渐出 3 秒
+ * （可在播放设置中配置，位置在将播放的中文歌词转换为繁体选项下面，调节范围为 0-3 秒）。
+ * 缓动曲线：默认使用等功率曲线（Equal-Power），避免音量突变；可选线性（Linear）。触发条件：
+ * 播放开始时自动渐入；暂停、停止、切歌或播放结束时自动渐出。可中断：渐入渐出过程中若用户
+ * 手动调节音量或切歌，应能立即中断当前渐变并按新指令执行。交叉淡化（可选）：切歌时上一首
+ * 渐出与下一首渐入重叠进行，重叠时长 1 秒」。
+ *
+ * 本轮这一条对契约的改动分四块（旧断言与新口径相反的地方必须一起改，否则反例自检会把
+ * 「已经改对的形状」当成回退拦下来）：
+ *
+ *   十七、**时长从常量变成设置项**：`FADE_IN_MS` / `FADE_OUT_MS` 退场，换成
+ *       `FADE_IN_FALLBACK_MS = 2_000` / `FADE_OUT_FALLBACK_MS = 3_000`（= 需求点名的默认值，
+ *       只在设置键缺省 / 脏值时使用）+ `readFadeMs` 的三分支读取器：
+ *         · 非数字 / NaN / Infinity → 兜底值；
+ *         · **≤ 0 → 0**（用户明确选出来的「关闭渐变」，不是缺省 —— 把 0 当缺省是本条最容易
+ *           写错的地方，所以单独一条断言）；
+ *         · 其余 → 夹到 (0, FADE_MAX_SECONDS × 1000]（需求原话「调节范围为 0-3 秒」）。
+ *       时长为 0 时斜坡并入既有的直写短路（`durationMs <= 0 ||` 与 MIN_RAMP_DELTA 同一行），
+ *       逐字回到第 39 轮之前的直写行为 —— 不许留下一个「最小档位」的斜坡。
+ *       —— 反例 v18 / v19 / v31 / v41 / v42 / v43 / v51。
+ *
+ *   十八、**曲线从 smoothstep 换成等功率（默认）/ 线性（可选）**：需求原话「默认使用等功率
+ *       曲线（Equal-Power）……可选线性（Linear）」—— 第 51 轮的 `p²(3-2p)` 不是等功率，本轮
+ *       换掉。`easeVolume(progress, linear, rising)`：等功率升 `sin(π/2 · p)` / 降
+ *       `sin(π/2 · (1-p))`（= `cos(π/2 · p)`），两者平方和为 1 ⇒ 过渡期间功率恒定；线性升
+ *       `p` / 降 `1-p`。方向由「终点比起点大」现算（`const rising = target > from`）而不是由
+ *       调用点决定 —— 同一个调用点的当前音量在不同现场下高低不定（渐入被打断后暂停，起点就
+ *       在半途），只有从起点 / 终点现算方向才能保住第 41 轮定死的「斜坡全程单调」。
+ *       曲线与方向在**起坡时快照**：拖动曲线开关 / 时长滑块不该改写在途斜坡的形状（同一次
+ *       过渡前后两半用两条曲线，听感上是一处折点）。
+ *       —— 反例 v20 / v40 / v44 / v45。
+ *
+ *   十九、**可中断（用户原话「若用户手动调节音量或切歌，应能立即中断当前渐变并按新指令
+ *       执行」）**，两个方向各一条：
+ *         · **手动调音量**（音量条 → utils.setVolume → `syncVolumeFadeState`）：口径**反转**。
+ *           第 41 轮是「斜坡 / 渐出在跑时让行、不覆盖账本」（以斜坡为准）；渐入渐出加长到
+ *           0~3 秒可配之后这条取舍站不住了 —— 用户在 3 秒的渐出里把音量条从 30% 拖到 80%，
+ *           让行的结果是下一秒被斜坡按回 0，听到的是「拖了没用，声音照样掉下去」。现在反过来：
+ *           **手动音量优先，掐掉在途斜坡**，账本按新值走。注意掐斜坡 ≠ 取消暂停：`stopRamp`
+ *           会放行斜坡的 Promise，等在那一行的 `fadeOutThenPause` 照常走完并落地真暂停
+ *           （它自己的号没变）—— 所以 `syncVolumeFadeState` 里**不许**出现 `pauseSeq++`。
+ *         · **切歌 / 停止**（`setStop`，切歌 / 停止 / 错误重载的唯一收口）→
+ *           `cancelPendingFadeOut()`：`pauseSeq++`（作废「渐出跑完就真暂停」）+ `stopRamp()`
+ *           （掐斜坡）。**必须掐**：斜坡每一拍都按 `isNativeFlacActive()` 现查当前驱动，
+ *           切歌之后查到的可能是**新歌的引擎**，那几拍降音会直接写在新歌上，与它自己的渐入
+ *           对顶。不碰 `fadeInArmed`（新歌的起播渐入由 resourceLoader 的
+ *           armVolumeStartFadeIn 另行立预约）、不碰账本（停在哪里就从哪里继续，改掉会让新歌
+ *           的渐入从错的起点起坡 = 一次跳变）。同样口径的还有 `setStop` 里的
+ *           `pauseVerifyToken++`：一次「按下暂停 → 立刻切歌」的次序里，那条 700ms 复核会排在
+ *           **新歌起播之后**并把新歌按停（旧值 300ms 时窗口太窄撞不上，3 秒之后是常态）。
+ *       —— 反例 v46 / v47 / v48 / v49。
+ *
+ *   二十、**设置项本身**（三个键 + 设置页位置 + 文案）：`player.fadeInDuration` = 2、
+ *       `player.fadeOutDuration` = 3、`player.fadeLinearCurve` = false（等功率），三者在
+ *       defaultSetting / types 里都要有；设置页位置是需求点名的「将播放的中文歌词转换为繁体
+ *       选项下面」，顺序即原话顺序（先渐入、再渐出、最后曲线）。—— 反例 v50 / v51 / v52。
+ *
+ *   本轮**明确不做**的两件事（用户裁定，写在这里防止以后被当成漏做）：
+ *     · 短音（系统提示音 / 截图音 / 按钮音）**保持不暂停**（第 31 轮口径的 1500ms 忽略窗口），
+ *       本轮只确认短音路径不引入音量跳变，不改回暂停；
+ *     · **交叉淡化不做**（用户原话「本轮先不做这个开关」）：切歌维持「旧引擎即时静音 +
+ *       新歌按设置的渐入时长由小变大」，双引擎重叠那套整块不做。
+ *
  * 为什么必须靠契约脚本：这四条缺陷在编译期、渲染期全合法（Promise 悬挂是运行期语义，
  * 类型检查看不出来），只有「按住锁屏 ⏸ 的那一刻」才炸。谁把斜坡改回「清 interval 不 resolve」、
  * 把渐出起点改回设定音量、把有界等待拆掉、把让行守卫删掉、把兜底期限删掉，脚本立刻红。
@@ -155,6 +222,11 @@ const F = {
   // 【第 51 轮】起播 / 换歌的两条落点与引擎起始增益（渐入链的上游）
   resourceLoader: 'src/plugins/player/engine/resourceLoader.ts',
   nativeFlac: 'src/plugins/player/nativeFlac.ts',
+  // 【第 63 轮第 2 条】渐变时长 / 曲线的设置项：默认值、类型声明、设置页位置、文案
+  defaultSetting: 'src/config/defaultSetting.ts',
+  types: 'src/types/app_setting.d.ts',
+  playerSettings: 'src/screens/Home/Views/Setting/settings/Player/index.tsx',
+  lang: 'src/lang/zh-cn.json',
 }
 
 const REAL = {}
@@ -259,13 +331,21 @@ const pauseNeverBlockedInvariants = (src) => {
   if (!code.includes('const settleWithin = (promise: Promise<void>, ms: number): Promise<void> => {')) {
     reasons.push('找不到 settleWithin（有界等待）：斜坡只是让「停」柔和，绝不允许拦住暂停动作')
   }
-  const at = code.indexOf('await settleWithin(rampVolume(0, FADE_OUT_MS)')
+  // 【第 63 轮第 2 条】渐出时长从常量变成设置项读取，锚点跟着从 `FADE_OUT_MS` 换成
+  // `duration`（`const duration = fadeOutMs()` 就在上面两行）。**两处必须是同一个 `duration`**：
+  // 用两次 readFadeMs 的话，用户在斜坡途中把滑块从 3 拖到 0.5，上限会缩到比斜坡还短，
+  // 第二道闸抢在斜坡前面放行（听感上就是渐出被拦腰砍断）。
+  const at = code.indexOf('await settleWithin(rampVolume(0, duration)')
   if (at < 0) {
-    reasons.push('fadeOutThenPause 没有用有界等待包住渐出斜坡（`await settleWithin(rampVolume(0, FADE_OUT_MS), ...)`）：'
+    reasons.push('fadeOutThenPause 没有用有界等待包住渐出斜坡（`await settleWithin(rampVolume(0, duration), ...)`）：'
       + '斜坡一旦被掐/卡住，真暂停就跟着永远不执行 —— 锁屏/灵动岛 ⏸ 点了没反应就是这个（第 41 轮缺陷①）')
   } else {
-    if (!code.slice(at, at + 160).includes('FADE_OUT_MS + FADE_STEP_MS * 2')) {
+    if (!code.slice(at, at + 160).includes('duration + FADE_STEP_MS * 2')) {
       reasons.push('有界等待的期限不是「渐出时长 + 两拍余量」：期限必须有限，否则等于没有兜底')
+    }
+    if (!code.slice(Math.max(0, at - 300), at).includes('const duration = fadeOutMs()')) {
+      reasons.push('渐出时长没有在起斜坡前现读一次（缺 `const duration = fadeOutMs()`）：'
+        + '斜坡与有界等待的期限必须取同一个值（第 63 轮第 2 条）')
     }
     const after = code.slice(at, at + 400)
     if (!after.includes('await Promise.resolve(pause()).catch(() => {})')) {
@@ -341,7 +421,7 @@ const fadeInGuardInvariants = (src) => {
         reasons.push('armFadeIn 的渐出途中分支没有作废在途的真暂停（缺 `pauseSeq++`）：'
           + '用户的播放意图被自己的暂停吞掉（第 51 轮第 12 条）')
       }
-      if (!abortBody.includes('void rampVolume(targetVolume(), FADE_IN_MS)')) {
+      if (!abortBody.includes('void rampVolume(targetVolume(), fadeInMs())')) {
         reasons.push('armFadeIn 的渐出途中分支没有把音量斜坡拉回设定值：应从当前值平滑升回'
           + '（不是跳变），否则用户听见的是一次爆音（第 51 轮第 12 条）')
       }
@@ -428,8 +508,8 @@ const fadeInGuardInvariants = (src) => {
     if (!body.includes("if (state == 'playing') {")) {
       reasons.push("beginFadeInArm 到点探到 'playing' 没有补一次渐入斜坡：引擎已经在出声，"
         + '无条件写设定音量 = 一记满音量直写，渐入效果没了（第 61 轮第 4 条）')
-    } else if (!body.includes('void rampVolume(targetVolume(), FADE_IN_MS)')) {
-      reasons.push("beginFadeInArm 的 'playing' 分支没走 FADE_IN_MS 的渐入斜坡（应从压住的 0 起由小变大）")
+    } else if (!body.includes('void rampVolume(targetVolume(), fadeInMs())')) {
+      reasons.push("beginFadeInArm 的 'playing' 分支没走渐入斜坡（应从压住的 0 起由小变大）")
     }
     if (!body.includes('void writeVolume(targetVolume())')) {
       reasons.push('beginFadeInArm 的兜底回调没有恢复用户设定音量（探针失败 / 其余状态的最后出路）')
@@ -507,8 +587,28 @@ const volumeLedgerInvariants = (src, deps) => {
     reasons.push('找不到 syncVolumeFadeState（外部直写音量时同步账本的唯一入口）')
   } else {
     const body = code.slice(syncAt, syncAt + 500)
-    if (!body.includes('if (fadeTimer != null || fadingOut) return')) {
-      reasons.push('syncVolumeFadeState 在斜坡/渐出进行中也会覆盖账本：会把在途斜坡的起点改错（应让行）')
+    // 【第 63 轮第 2 条·口径反转】旧口径是「斜坡 / 渐出在跑时让行、不覆盖账本」。渐入渐出
+    // 加长到 0~3 秒可配之后这条取舍站不住了：用户在 3 秒的渐出里把音量条从 30% 拖到 80%，
+    // 让行的结果是下一秒被斜坡按回 0 —— 听到的是「拖了没用，声音照样掉下去」。用户原话
+    //「可中断：渐入渐出过程中若用户手动调节音量或切歌，应能立即中断当前渐变并按新指令执行」。
+    // 现在反过来：**手动音量优先，掐掉在途斜坡**，账本按新值走。
+    if (body.includes('if (fadeTimer != null || fadingOut) return')) {
+      reasons.push('syncVolumeFadeState 又回到「斜坡 / 渐出在跑就让行」的旧口径：用户在渐出途中'
+        + '拖动音量条，下一秒会被斜坡按回 0 ——「拖了没用，声音照样掉下去」（第 63 轮第 2 条'
+        + '「可中断：手动调节音量应能立即中断当前渐变」）')
+    }
+    if (!body.includes('stopRamp()')) {
+      reasons.push('syncVolumeFadeState 没有掐掉在途斜坡（缺 `stopRamp()`）：手动调音量的指令'
+        + '压不住正在跑的渐变（第 63 轮第 2 条「应立即中断当前渐变并按新指令执行」）')
+    }
+    if (!body.includes('currentVolume = clamp01(volume)')) {
+      reasons.push('syncVolumeFadeState 没有把新值记进账本：斜坡起点取自 currentVolume，'
+        + '账本与实际值脱节则下一次斜坡的第一拍又是一次跳变（第 41 轮缺陷②）')
+    }
+    if (body.includes('pauseSeq++')) {
+      reasons.push('syncVolumeFadeState 动了 pauseSeq：掐斜坡 ≠ 取消暂停 —— `stopRamp` 会放行'
+        + '斜坡的 Promise，等在那一行的 fadeOutThenPause 应照常走完并落地真暂停'
+        + '（用户的意图是「音量听我的」，不是「别暂停了」）')
     }
   }
 
@@ -545,43 +645,264 @@ const volumeLedgerInvariants = (src, deps) => {
 }
 
 // ---------------------------------------------------------------------------
-// 九（第 51 轮）：斜坡的时长与曲线 —— 「渐入渐出」要真的听得出来
+// 九（第 51 轮 + 第 63 轮第 2 条）：斜坡的时长与曲线 —— 「渐入渐出」要真的听得出来，且可配
 // ---------------------------------------------------------------------------
 const fadeShapeInvariants = (src) => {
   const reasons = []
   const code = stripComments(src)
 
-  const fadeIn = /const FADE_IN_MS = (\d+)/.exec(code)
-  if (fadeIn == null) {
-    reasons.push('找不到 FADE_IN_MS（渐入时长）')
-  } else if (Number(fadeIn[1]) < 400) {
-    reasons.push(`渐入时长太短（${fadeIn[1]}ms）：220ms 级的斜坡只够消爆音，人耳基本只能察觉到`
-      + '「没有咔哒声」，听不出「渐入」—— 用户第 51 轮要的是听得见的效果（第 51 轮第 9 条）')
-  }
-  const fadeOut = /const FADE_OUT_MS = (\d+)/.exec(code)
-  if (fadeOut == null) {
-    reasons.push('找不到 FADE_OUT_MS（渐出时长）')
-  } else if (Number(fadeOut[1]) < 240) {
-    reasons.push(`渐出时长太短（${fadeOut[1]}ms）：160ms 级的斜坡听不出「渐出」（第 51 轮第 9 条）`)
-  } else if (Number(fadeOut[1]) > 400) {
-    // 【第 61 轮第 1 条】上界回到「延迟区」判定：渐出后面跟着**真暂停** —— 锁屏 / 灵动岛
-    // 进度条停住、按钮变 ▶、界面状态翻转全排在斜坡之后，700ms 是能被眼睛看出来的延迟
-    //（用户原话「越改越乱，就连点击暂停播放按钮显示都有延迟了，需要还原」）。这条斜坡
-    // 手动与自动暂停共用，只允许在 [240, 400] 内微调；600 上限是第 60 轮第 4 条的旧口径，
-    // 已随 700 → 300 回滚作废。
-    reasons.push(`渐出时长又加长（${fadeOut[1]}ms）：真暂停与界面状态翻转都排在斜坡之后，`
-      + '700ms 级是能被眼睛看出来的延迟（用户第 61 轮第 1 条「点击暂停播放按钮显示都有延迟了，'
-      + '需要还原」）；只允许在 [240, 400] 内微调')
-  }
-  if (!code.includes('const easeVolume = (progress: number) => progress * progress * (3 - 2 * progress)')) {
-    reasons.push('找不到 smoothstep 感知曲线 easeVolume：线性斜坡「一上来就掉一半、尾巴拖得长」，'
-      + '600ms 级的渐入渐出听上去发假（第 51 轮第 9 条）')
-  }
-  if (!code.includes('from + (target - from) * easeVolume(step / steps)')) {
-    reasons.push('斜坡没有走感知曲线（smoothstep）：音量还是线性摊开')
-  }
+  // ---- 第 51 轮的底线（第 63 轮不撤）：档距与「听得出来」的量级 ----
   if (!code.includes('const FADE_STEP_MS = 20')) {
     reasons.push('找不到 FADE_STEP_MS = 20（斜坡档距）：档距一变大，台阶感（zipper 噪声）就回来了')
+  }
+
+  // ---- 第 63 轮第 2 条：时长改由设置项提供，两个兜底常量 = 需求点名的默认值 ----
+  // 用户原话：「默认时长：渐入 2 秒，渐出 3 秒（可在播放设置中配置，位置在将播放的中文歌词
+  // 转换为繁体选项下面，调节范围为 0-3 秒）」。这两个常量退化为**兜底值**（键缺省 / 脏值时用），
+  // 真正参与运算的是 fadeInMs() / fadeOutMs()。
+  const fallbackIn = /const FADE_IN_FALLBACK_MS = ([\d_]+)/.exec(code)
+  if (fallbackIn == null) {
+    reasons.push('找不到 FADE_IN_FALLBACK_MS（渐入的兜底时长）：设置键读不到值时必须回落到'
+      + '需求点名的默认 2 秒，写成 0 会变成「默认关闭渐入」')
+  } else if (Number(fallbackIn[1].replace(/_/g, '')) !== 2000) {
+    reasons.push(`渐入兜底值不是 2000ms（${fallbackIn[1]}）：需求原话「默认时长：渐入 2 秒」`)
+  }
+  const fallbackOut = /const FADE_OUT_FALLBACK_MS = ([\d_]+)/.exec(code)
+  if (fallbackOut == null) {
+    reasons.push('找不到 FADE_OUT_FALLBACK_MS（渐出的兜底时长）：设置键读不到值时必须回落到'
+      + '需求点名的默认 3 秒')
+  } else if (Number(fallbackOut[1].replace(/_/g, '')) !== 3000) {
+    reasons.push(`渐出兜底值不是 3000ms（${fallbackOut[1]}）：需求原话「默认时长：……渐出 3 秒」`)
+  }
+  if (!code.includes('const FADE_MAX_SECONDS = 3')) {
+    reasons.push('找不到 FADE_MAX_SECONDS = 3（滑块量程上限）：需求原话「调节范围为 0-3 秒」；'
+      + '上限没了，旧版本残留 / 手工改坏的超范围值会把斜坡拖成分钟级（真暂停跟在斜坡之后，'
+      + '等于「按了暂停半天不停」）')
+  }
+
+  // ---- 读取器：三分支必须都在，且顺序由语义决定（0 不等于缺省，这是本条最容易写错的地方）----
+  const readBody = bracedBody(code, 'const readFadeMs = (key:')
+  if (readBody == null) {
+    reasons.push('找不到 readFadeMs（渐入 / 渐出时长的唯一读取器）')
+  } else {
+    if (!readBody.includes('if (typeof seconds != \'number\' || !Number.isFinite(seconds)) return fallbackMs')) {
+      reasons.push('readFadeMs 缺「缺省 / 脏值 → 兜底值」分支（非数字、NaN、Infinity 都要落回默认）')
+    }
+    if (!readBody.includes('if (seconds <= 0) return 0')) {
+      reasons.push('readFadeMs 缺「≤ 0 → 0」分支：滑块量程 0~3 秒里的 0 是用户**明确选出来的**'
+        + '「关闭渐变」，任何「把 0 当缺省」的写法都会让用户的 0 失效（第 63 轮第 2 条）')
+    }
+    if (!readBody.includes('return Math.min(seconds, FADE_MAX_SECONDS) * 1000')) {
+      reasons.push('readFadeMs 没有把超范围的值夹到上限（缺 `Math.min(seconds, FADE_MAX_SECONDS) * 1000`）：'
+        + '设置里写坏的大值会把斜坡拖成分钟级（第 63 轮第 2 条）')
+    }
+  }
+  if (!code.includes("const fadeInMs = () => readFadeMs('player.fadeInDuration', FADE_IN_FALLBACK_MS)")) {
+    reasons.push('找不到 fadeInMs（渐入时长的消费口）：它必须读 player.fadeInDuration 并带上兜底值')
+  }
+  if (!code.includes("const fadeOutMs = () => readFadeMs('player.fadeOutDuration', FADE_OUT_FALLBACK_MS)")) {
+    reasons.push('找不到 fadeOutMs（渐出时长的消费口）：它必须读 player.fadeOutDuration 并带上兜底值')
+  }
+  // 时长必须是**现读**（每次调用现查设置），不是模块加载时读一次：用户在设置页改完滑块，
+  // 下一次渐入 / 渐出即生效（与「与其他应用同时播放」那条设置同一口径）。
+  if (/const\s+fadeInMs\s*=\s*readFadeMs\(|const\s+fadeOutMs\s*=\s*readFadeMs\(/.test(code)) {
+    reasons.push('渐变时长被提前算成常量（模块加载时读一次）：用户在设置页改完滑块要重进 App 才生效')
+  }
+
+  // ---- 曲线：等功率（默认）/ 线性（可选），方向感知 ----
+  // 需求原话：「缓动曲线：默认使用等功率曲线（Equal-Power），避免音量突变；可选线性（Linear）」。
+  const easeBody = bracedBody(code, 'const easeVolume = (progress: number, linear: boolean, rising: boolean) => {')
+  if (easeBody == null) {
+    reasons.push('找不到方向感知的 easeVolume（缺 `(progress, linear, rising)` 三个参数）：'
+      + '曲线要可配，且升 / 降必须走同一条曲线的两个方向（第 63 轮第 2 条）')
+  } else {
+    if (!easeBody.includes('if (linear) return rising ? progress : 1 - progress')) {
+      reasons.push('easeVolume 缺线性分支（`if (linear) return rising ? progress : 1 - progress`）：'
+        + '需求原话「可选线性（Linear）」')
+    }
+    if (!easeBody.includes('const radian = (Math.PI / 2) * (rising ? progress : 1 - progress)')
+      || !easeBody.includes('return Math.sin(radian)')) {
+      reasons.push('easeVolume 缺等功率分支（`sin(π/2 · p)` 升 / `sin(π/2 · (1-p))` 降）：'
+        + '需求原话「默认使用等功率曲线（Equal-Power），避免音量突变」—— 升 / 降互为 sin / cos，'
+        + '两者平方和为 1，过渡期间功率恒定')
+    }
+  }
+  if (!code.includes('const isLinearCurve = () => settingState.setting[\'player.fadeLinearCurve\'] === true')) {
+    reasons.push('找不到 isLinearCurve（曲线设置的消费口）：它必须读 player.fadeLinearCurve，'
+      + '且只有严格 true 才算线性（默认等功率，与设置项的默认值一致）')
+  }
+  // 逐拍调用点：曲线与方向是两个入参
+  if (!code.includes('from + (target - from) * easeVolume(step / steps, linear, rising)')) {
+    reasons.push('斜坡没有把曲线 / 方向传进 easeVolume（缺 `easeVolume(step / steps, linear, rising)`）：'
+      + '音量还是按固定的一条曲线摊开')
+  }
+  const rampBody = bracedBody(code, 'const rampVolume = (to: number, durationMs: number): Promise<void> => {')
+  if (rampBody == null) {
+    reasons.push('找不到 rampVolume（斜坡本体）')
+  } else {
+    // 曲线与方向在**起斜坡时快照**：拖动曲线开关不该改写在途斜坡的形状
+    //（同一次过渡前后两半用两条曲线，听感上是一处折点）。
+    if (!rampBody.includes('const linear = isLinearCurve()')) {
+      reasons.push('斜坡没有在起坡时快照曲线（缺 `const linear = isLinearCurve()`）：每拍现读设置会让'
+        + '同一次渐入前后两半用两条曲线（听感上是一处折点）')
+    }
+    if (!rampBody.includes('const rising = target > from')) {
+      reasons.push('斜坡没有按「终点比起点大」判方向（缺 `const rising = target > from`）：'
+        + '同一个调用点的当前音量在不同现场下高低不定（渐入被打断后暂停，起点就在半途），'
+        + '只有从起点 / 终点现算方向才能全程单调（第 41 轮定死的「斜坡全程单调」）')
+    }
+    // 【第 63 轮第 2 条】0 = 关闭渐变，必须逐字回到第 39 轮之前的直写行为
+    if (!rampBody.includes('if (durationMs <= 0 || Math.abs(target - from) < MIN_RAMP_DELTA) {')) {
+      reasons.push('斜坡没有把「时长为 0」并入直写短路（缺 `durationMs <= 0 ||`）：用户在设置里把'
+        + '渐入 / 渐出调到 0 = 关闭渐变，不许留下一个「最小档位」的斜坡（第 63 轮第 2 条）')
+    } else if (!rampBody.slice(rampBody.indexOf('if (durationMs <= 0')).includes('void writeVolume(target)')) {
+      reasons.push('斜坡的 0 时长分支没有直写终点音量：关闭渐变后音量会停在起点（听感上是没声音 / 音量不对）')
+    }
+    // 曲线快照必须在短路之后、setInterval 之前 —— 写在短路前面的话，0 时长那一支也会去读设置
+    //（无害但暴露顺序漂移）；更重要的是快照一旦掉到 setInterval 里面就等于每拍现读。
+    if (rampBody.indexOf('const linear = isLinearCurve()') > rampBody.indexOf('setInterval(')) {
+      reasons.push('曲线 / 方向快照落在 setInterval 之后或之内：等于每拍现读设置，在途斜坡会被拖滑块的动作用两条曲线切两半')
+    }
+  }
+  return reasons
+}
+
+// ---------------------------------------------------------------------------
+// 九之二（第 63 轮第 2 条）：三个设置键 —— 默认值、类型声明、设置页位置、文案
+// ---------------------------------------------------------------------------
+const fadeSettingInvariants = (deps) => {
+  const reasons = []
+  if (deps.defaultSetting == null || deps.types == null || deps.playerSettings == null || deps.lang == null) {
+    reasons.push('fadeSettingInvariants 缺依赖（defaultSetting / types / playerSettings / lang）')
+    return reasons
+  }
+  const def = deps.defaultSetting
+  const types = deps.types
+  const ui = deps.playerSettings
+  const lang = deps.lang
+
+  // 默认值 = 需求点名的两个数 + 默认等功率（false）
+  if (!/['"]player\.fadeInDuration['"]:\s*2\b/.test(def)) {
+    reasons.push("defaultSetting 里没有 'player.fadeInDuration': 2（需求原话「默认时长：渐入 2 秒」）")
+  }
+  if (!/['"]player\.fadeOutDuration['"]:\s*3\b/.test(def)) {
+    reasons.push("defaultSetting 里没有 'player.fadeOutDuration': 3（需求原话「默认时长：……渐出 3 秒」）")
+  }
+  if (!/['"]player\.fadeLinearCurve['"]:\s*false\b/.test(def)) {
+    reasons.push("defaultSetting 里没有 'player.fadeLinearCurve': false（需求原话「默认使用等功率曲线"
+      + '（Equal-Power）」—— false = 等功率）')
+  }
+  for (const key of ['player.fadeInDuration', 'player.fadeOutDuration', 'player.fadeLinearCurve']) {
+    if (!types.includes(`'${key}'`)) {
+      reasons.push(`types/app_setting.d.ts 里没有声明 '${key}'：设置键没有类型，读写两侧都是 any`)
+    }
+  }
+  // 设置页位置：需求原话「位置在将播放的中文歌词转换为繁体选项下面」
+  const atS2T = ui.indexOf('<IsS2T />')
+  const atIn = ui.indexOf('<FadeInDuration />')
+  const atOut = ui.indexOf('<FadeOutDuration />')
+  const atCurve = ui.indexOf('<IsLinearFadeCurve />')
+  if (atS2T < 0) {
+    reasons.push('播放设置里找不到 <IsS2T />（「将播放的中文歌词转换为繁体」——本条的位置基准）')
+  } else if (atIn < 0 || atOut < 0 || atCurve < 0) {
+    reasons.push('播放设置里缺渐入 / 渐出 / 曲线三个设置行之一（<FadeInDuration /> / <FadeOutDuration /> /'
+      + ' <IsLinearFadeCurve />）')
+  } else if (!(atS2T < atIn && atIn < atOut && atOut < atCurve)) {
+    reasons.push('三个渐入渐出设置行的顺序不对：必须在「将播放的中文歌词转换为繁体」下面，'
+      + '且先渐入、再渐出、最后曲线（第 63 轮第 2 条点名的位置）')
+  }
+  for (const key of [
+    'setting_play_fade_in_duration', 'setting_play_fade_in_duration_desc',
+    'setting_play_fade_out_duration', 'setting_play_fade_out_duration_desc',
+    'setting_play_fade_linear_curve', 'setting_play_fade_linear_curve_desc',
+  ]) {
+    if (!lang.includes(`"${key}"`)) {
+      reasons.push(`zh-cn.json 里没有 "${key}"：设置行会显示成裸键名`)
+    }
+  }
+  return reasons
+}
+
+// ---------------------------------------------------------------------------
+// 九之三（第 63 轮第 2 条）：**可中断** —— 「渐入渐出过程中若用户手动调节音量或切歌，
+// 应能立即中断当前渐变并按新指令执行」（用户原话）
+// ---------------------------------------------------------------------------
+const interruptInvariants = (deps) => {
+  const reasons = []
+  if (deps.fade == null || deps.utils == null) {
+    reasons.push('interruptInvariants 缺依赖（fade / utils）')
+    return reasons
+  }
+  const fade = stripComments(deps.fade)
+  const utils = stripComments(deps.utils)
+
+  // ① 切歌 / 停止 → setStop 是唯一收口（core/player 的 handlePlay、player.stop()、
+  //    错误重载都走它，见 utils.ts 里的调用点注释）。
+  const stop = slice(utils, 'export const setStop = async() => {', 'export const setLoop')
+  if (stop == null) {
+    reasons.push('utils.ts 里找不到 setStop（切歌 / 停止的唯一收口）')
+  } else {
+    if (!stop.includes('cancelPendingFadeOut()')) {
+      reasons.push('setStop 没有作废在途的渐出（缺 `cancelPendingFadeOut()`）：渐出默认 3 秒，'
+        + '「渐出跑完就真暂停」这条尾巴会跨过一次切歌 —— setStop 已经停了旧引擎、新歌的引擎随后'
+        + '起来，而那条在途斜坡到点照样执行暂停动作，把**刚起的新歌**按停（第 63 轮第 2 条'
+        + '「切歌应立即中断当前渐变」）')
+    }
+    // 位置：必须在平台分支**之前**（nativeFlac 与 RNTP 两条路都要作废；放到某个分支里，
+    // 另一条路就漏了）。
+    if (!stop.includes('cancelPendingFadeOut()\n  if (Platform.OS == \'ios\' && isNativeFlacActive()) {')) {
+      reasons.push('setStop 里的 cancelPendingFadeOut() 不在平台分支之前：它只覆盖了其中一台引擎的路径，'
+        + '另一条路上的在途渐出照样会把新歌按停')
+    }
+    if (!stop.includes('pauseVerifyToken++')) {
+      reasons.push('setStop 没有作废在途的暂停复核（缺 `pauseVerifyToken++`）：一次「按下暂停 → 立刻切歌」'
+        + '的次序里，那条 700ms 复核会排在**新歌起播之后**并把新歌按停（第 63 轮第 2 条）')
+    }
+    if (stop.includes('cancelPendingFadeOut()') && stop.indexOf('cancelPendingFadeOut()') > stop.indexOf('await TrackPlayer.stop()')) {
+      reasons.push('cancelPendingFadeOut() 落在真正停引擎之后：等到那时新歌的起播路径可能已经把渐入立起来了，'
+        + '作废变成了「把新歌的渐入一起掐掉」')
+    }
+  }
+
+  // ② 作废函数本体：掐斜坡 + 作废真暂停，但要**留账本**（停在哪里就从哪里继续，
+  //    否则新歌的渐入会从旧账本起坡 = 一次跳变），且不碰 fadeInArmed（新歌的起播渐入
+  //    由 resourceLoader 的 armVolumeStartFadeIn 另行立预约）。
+  const cancelAt = fade.indexOf('export const cancelPendingFadeOut = () => {')
+  if (cancelAt < 0) {
+    reasons.push('volumeFade.ts 里找不到 cancelPendingFadeOut（切歌 / 停止作废在途渐出的唯一出口）')
+  } else {
+    const body = bracedBody(fade, 'export const cancelPendingFadeOut = () => {')
+    if (body == null) {
+      reasons.push('cancelPendingFadeOut 的函数体解析失败（花括号不配平）')
+    } else {
+      if (!body.includes('pauseSeq++')) {
+        reasons.push('cancelPendingFadeOut 没有作废在途的真暂停（缺 `pauseSeq++`）：斜坡虽然被掐了，'
+          + '那条 fadeOutThenPause 仍会在有界等待放行后执行暂停动作，把新歌按停')
+      }
+      if (!body.includes('stopRamp()')) {
+        reasons.push('cancelPendingFadeOut 没有掐掉在途斜坡（缺 `stopRamp()`）：斜坡每一拍都按'
+          + '`isNativeFlacActive()` 现查当前驱动，切歌之后查到的可能是**新歌的引擎**，'
+          + '那几拍降音会直接写在新歌上，与它自己的渐入对顶')
+      }
+      if (body.includes('fadeInArmed = false')) {
+        reasons.push('cancelPendingFadeOut 碰了 fadeInArmed：新歌的起播渐入由 resourceLoader 的'
+          + 'armVolumeStartFadeIn 另行立预约，在这里清掉等于把新歌的渐入一起作废')
+      }
+      if (body.includes('currentVolume =')) {
+        reasons.push('cancelPendingFadeOut 改了账本：账本要停在当前值（停在哪里就从哪里继续），'
+          + '改掉会让新歌的渐入从错的起点起坡 = 一次跳变')
+      }
+      if (!body.includes("if (Platform.OS != 'ios') return")) {
+        reasons.push("cancelPendingFadeOut 非 iOS 平台没有直接返回（其余平台不跑斜坡，这里的调用是空转）")
+      }
+    }
+  }
+
+  // ③ 手动调音量那条路（音量条 → utils.setVolume → syncVolumeFadeState）的「掐斜坡」
+  //    已经在上面的 volumeLedgerInvariants 里钉住，这里只补一句「不许顺手把暂停也取消掉」。
+  const syncBody = bracedBody(fade, 'export const syncVolumeFadeState = (volume: number) => {')
+  if (syncBody != null && !syncBody.includes('stopRamp()')) {
+    reasons.push('syncVolumeFadeState 没有掐掉在途斜坡：手动调音量的指令压不住正在跑的渐变（第 63 轮第 2 条）')
   }
   return reasons
 }
@@ -848,6 +1169,11 @@ const runCounterExamples = () => {
   }
   // 【第 51 轮】起播 / 换歌渐入链的两个上游文件
   const startDeps = { resourceLoader: REAL.resourceLoader, nativeFlac: REAL.nativeFlac }
+  // 【第 63 轮第 2 条】三个设置键的落点（默认值 / 类型 / 设置页位置 / 文案）
+  const settingDeps = {
+    defaultSetting: REAL.defaultSetting, types: REAL.types,
+    playerSettings: REAL.playerSettings, lang: REAL.lang,
+  }
 
   // v1 斜坡的取消又不放行 Promise（第 39 轮那颗雷原样回归）
   check('v1 斜坡取消不放行 Promise', rampCancelInvariants(
@@ -865,10 +1191,11 @@ const runCounterExamples = () => {
   ), '缺陷②')
 
   // v4 拆掉有界等待，直接 await 斜坡再暂停（缺陷①的原始形状）
+  // 【第 63 轮第 2 条】锚点里的 FADE_OUT_MS 换成 duration（时长改由设置项读取）
   check('v4 拆掉有界等待直接 await 斜坡', pauseNeverBlockedInvariants(
     tamper(fade,
-      'await settleWithin(rampVolume(0, FADE_OUT_MS), FADE_OUT_MS + FADE_STEP_MS * 2)',
-      'await rampVolume(0, FADE_OUT_MS)'),
+      'await settleWithin(rampVolume(0, duration), duration + FADE_STEP_MS * 2)',
+      'await rampVolume(0, duration)'),
   ), '有界等待')
 
   // v5 渐出途中一让了之（用户的 ▶ 被自己的渐出吞掉 —— 旧形状原样回归）
@@ -965,28 +1292,108 @@ const runCounterExamples = () => {
       '  return !!id && !id.startsWith(\'nativeflac://\')'),
   }), '空 id')
 
-  // 【第 51 轮】v18 渐入时长改回 220ms（只够消爆音，听不出「渐入」）
-  check('v18 渐入时长改回 220ms', fadeShapeInvariants(
-    tamper(fade, 'const FADE_IN_MS = 600', 'const FADE_IN_MS = 220'),
-  ), '渐入时长太短')
+  // 【第 63 轮第 2 条】v18 渐入的**兜底默认值**被改短（设置键读不到值时的兜底必须就是
+  //     需求点名的 2 秒；改成 220ms 等于「默认只够消爆音，听不出渐入」）
+  check('v18 渐入默认时长被改短', fadeShapeInvariants(
+    tamper(fade, 'const FADE_IN_FALLBACK_MS = 2_000', 'const FADE_IN_FALLBACK_MS = 220'),
+  ), '渐入兜底值不是 2000ms')
 
-  // 【第 51 轮】v19 渐出时长改回 160ms（听不出「渐出」）
-  // 【第 61 轮第 1 条】锚点跟着取值走：700 → 300（回滚第 60 轮第 4 条的加长）
-  check('v19 渐出时长改回 160ms', fadeShapeInvariants(
-    tamper(fade, 'const FADE_OUT_MS = 300', 'const FADE_OUT_MS = 160'),
-  ), '渐出时长太短')
+  // 【第 63 轮第 2 条】v19 渐出的兜底默认值被改短（需求原话「默认时长：……渐出 3 秒」）
+  check('v19 渐出默认时长被改短', fadeShapeInvariants(
+    tamper(fade, 'const FADE_OUT_FALLBACK_MS = 3_000', 'const FADE_OUT_FALLBACK_MS = 160'),
+  ), '渐出兜底值不是 3000ms')
 
-  // 【第 61 轮第 1 条】v31 渐出时长又加长到 700ms（第 60 轮第 4 条的取值 —— 正是用户
-  //     第 61 轮报的「点击暂停播放按钮显示都有延迟」：真暂停与界面翻转全排在斜坡之后）
-  check('v31 渐出时长又加长到 700ms', fadeShapeInvariants(
-    tamper(fade, 'const FADE_OUT_MS = 300', 'const FADE_OUT_MS = 700'),
-  ), '又加长')
+  // 【第 63 轮第 2 条】v31 滑块量程上限被拿掉（超范围值不再夹）：旧版本残留 / 手工改坏的
+  //     大值会把斜坡拖成分钟级 —— 真暂停跟在斜坡之后，等于「按了暂停半天不停」
+  check('v31 量程上限被拿掉', fadeShapeInvariants(
+    tamper(fade, 'const FADE_MAX_SECONDS = 3', 'const FADE_MAX_SECONDS = 999'),
+  ), 'FADE_MAX_SECONDS')
 
-  // 【第 51 轮】v20 斜坡退回线性（smoothstep 被拿掉）
-  check('v20 斜坡退回线性', fadeShapeInvariants(
-    tamper(fade, 'from + (target - from) * easeVolume(step / steps)',
+  // 【第 63 轮第 2 条】v20 曲线开关被架空：调用点不再把曲线 / 方向传进去（音量还是按固定
+  //     的一条曲线摊开，设置里的「线性」勾了没用）
+  check('v20 曲线开关被架空', fadeShapeInvariants(
+    tamper(fade, 'from + (target - from) * easeVolume(step / steps, linear, rising)',
       'from + (target - from) * (step / steps)'),
-  ), '感知曲线')
+  ), '没有把曲线')
+
+  // 【第 63 轮第 2 条】v40 等功率分支被摘掉（只剩线性 —— 需求点名的默认曲线没了）
+  check('v40 等功率分支被摘掉', fadeShapeInvariants(
+    tamper(fade, 'const radian = (Math.PI / 2) * (rising ? progress : 1 - progress)',
+      'const radian = progress'),
+  ), '等功率分支')
+
+  // 【第 63 轮第 2 条】v41 readFadeMs 缺「≤ 0 → 0」分支（用户的 0 被当成缺省 ⇒ 关不掉渐变）
+  check('v41 0 被当成缺省', fadeShapeInvariants(
+    tamper(fade, '  if (seconds <= 0) return 0\n', ''),
+  ), '≤ 0 → 0')
+
+  // 【第 63 轮第 2 条】v42 超范围的值不再夹到上限
+  check('v42 超范围不夹上限', fadeShapeInvariants(
+    tamper(fade, 'return Math.min(seconds, FADE_MAX_SECONDS) * 1000', 'return seconds * 1000'),
+  ), '夹到上限')
+
+  // 【第 63 轮第 2 条】v43 斜坡不再把「时长为 0」并入直写短路（关闭渐变后音量停在起点）
+  check('v43 0 时长不短路', fadeShapeInvariants(
+    tamper(fade, 'if (durationMs <= 0 || Math.abs(target - from) < MIN_RAMP_DELTA) {',
+      'if (Math.abs(target - from) < MIN_RAMP_DELTA) {'),
+  ), '时长为 0')
+
+  // 【第 63 轮第 2 条】v44 曲线不在起坡时快照（改成每拍现读 / 写死）
+  check('v44 曲线不快照', fadeShapeInvariants(
+    tamper(fade, 'const linear = isLinearCurve()', 'const linear = false'),
+  ), '快照曲线')
+
+  // 【第 63 轮第 2 条】v45 方向判据被写死（rising 恒 true ⇒ 渐出变成渐入，音量反向跳）
+  check('v45 方向判据被写死', fadeShapeInvariants(
+    tamper(fade, 'const rising = target > from', 'const rising = true'),
+  ), '判方向')
+
+  // 【第 63 轮第 2 条】v46 手动调音量又变成「让行」（第 41 轮的口径反转被改回去：
+  //     用户在 3 秒的渐出里拖音量条，下一秒被斜坡按回 0 ——「拖了没用，声音照样掉下去」）
+  check('v46 手动音量又让行', volumeLedgerInvariants(
+    tamper(fade, "  if (typeof volume != 'number' || !Number.isFinite(volume)) return\n",
+      "  if (fadeTimer != null || fadingOut) return\n  if (typeof volume != 'number' || !Number.isFinite(volume)) return\n"),
+    deps,
+  ), '又回到')
+
+  // 【第 63 轮第 2 条】v47 setStop 不再作废在途的渐出（「渐出跑完就真暂停」跨过一次切歌，
+  //     把刚起的新歌按停）
+  check('v47 切歌不作废在途渐出', interruptInvariants({
+    fade: REAL.fade,
+    utils: tamper(REAL.utils, '  cancelPendingFadeOut()\n', ''),
+  }), '没有作废在途的渐出')
+
+  // 【第 63 轮第 2 条】v48 setStop 不作废在途的暂停复核（「按下暂停 → 立刻切歌」的次序里，
+  //     那条 700ms 复核会落在新歌起播之后并把新歌按停）
+  check('v48 切歌不作废暂停复核', interruptInvariants({
+    fade: REAL.fade,
+    utils: tamper(REAL.utils, '  pauseVerifyToken++\n  cancelPendingFadeOut()\n', '  cancelPendingFadeOut()\n'),
+  }), '暂停复核')
+
+  // 【第 63 轮第 2 条】v49 cancelPendingFadeOut 碰了账本（新歌的渐入从错的起点起坡 = 一次跳变）
+  check('v49 作废时改了账本', interruptInvariants({
+    fade: tamper(fade, '  pauseSeq++\n  stopRamp()\n', '  pauseSeq++\n  stopRamp()\n  currentVolume = 0\n'),
+    utils: REAL.utils,
+  }), '改了账本')
+
+  // 【第 63 轮第 2 条】v50 两个渐入渐出设置行的位置违约（插到「将播放的中文歌词转换为繁体」上面）
+  check('v50 设置行位置违约', fadeSettingInvariants({
+    ...settingDeps,
+    playerSettings: tamper(REAL.playerSettings, '      <IsS2T />\n',
+      '      <FadeInDuration />\n      <IsS2T />\n'),
+  }), '顺序不对')
+
+  // 【第 63 轮第 2 条】v51 默认值被改（渐出默认不再是需求点名的 3 秒）
+  check('v51 默认渐出时长被改', fadeSettingInvariants({
+    ...settingDeps,
+    defaultSetting: tamper(REAL.defaultSetting, "'player.fadeOutDuration': 3,", "'player.fadeOutDuration': 5,"),
+  }), 'player.fadeOutDuration')
+
+  // 【第 63 轮第 2 条】v52 默认曲线被改成线性（需求指定默认等功率）
+  check('v52 默认曲线被改成线性', fadeSettingInvariants({
+    ...settingDeps,
+    defaultSetting: tamper(REAL.defaultSetting, "'player.fadeLinearCurve': false,", "'player.fadeLinearCurve': true,"),
+  }), 'player.fadeLinearCurve')
 
   // 【第 51 轮】v21 起播不再预约渐入（点歌 / 换歌又是满音量砸出来）
   check('v21 起播不预约渐入', startFadeChainInvariants({
@@ -1019,11 +1426,12 @@ const runCounterExamples = () => {
   ), '没有作废在途的真暂停')
 
   // 【第 51 轮】v26 渐出途中分支不把斜坡拉回去（掉头没了，音量停在半路）
-  // 【第 61 轮】锚点带上下文：beginFadeInArm 的 'playing' 分支也有一句同形状的
-  // `void rampVolume(targetVolume(), FADE_IN_MS)`（缩进更深）—— 只按裸行匹配会先命中
-  // 那一句，篡改打不到渐出途中的掉头分支（反例就假绿了）。锚到「该行 + 紧邻的 return true」。
+  // 【第 63 轮第 2 条】锚点里的 FADE_IN_MS 跟着换成 fadeInMs()。仍要带上下文：
+  // beginFadeInArm 的 'playing' 分支也有一句同形状的 `void rampVolume(targetVolume(), fadeInMs())`
+  //（缩进 10 格）—— 只按裸行匹配会先命中那一句，篡改打不到渐出途中的掉头分支（反例就假绿了）。
+  // 锚到「该行 + 紧邻的 return true」。
   check('v26 渐出途中不拉回音量', fadeInGuardInvariants(
-    tamper(fade, '    void rampVolume(targetVolume(), FADE_IN_MS)\n    return true\n', '    return true\n'),
+    tamper(fade, '    void rampVolume(targetVolume(), fadeInMs())\n    return true\n', '    return true\n'),
   ), '没有把音量斜坡拉回设定值')
 
   // 【第 51 轮】v27 预约只压一台引擎（另一台带着旧音量起播）
@@ -1112,10 +1520,12 @@ const runCounterExamples = () => {
 console.log('=== sim-remote-command-volume-fade ===')
 console.log('锁屏 / 灵动岛按键不许被音量斜坡吞掉：斜坡取消必放行 + 暂停无条件执行 + 渐出期间让行'
   + ' + 重复 playing 不打断 + 渐入有兜底期限 + 音量账本同步（第 41 轮）')
-console.log('播放 / 暂停的渐入渐出要真的听得见：斜坡够长 + smoothstep 曲线 + 起播也渐入'
+console.log('播放 / 暂停的渐入渐出要真的听得见：斜坡够长 + 起播也渐入'
   + '（含引擎起始增益）+ 在途渐入不被外部直写顶掉 + 渐出途中用户按 ▶ 赢（第 51 轮）')
 console.log('渐出时长回滚 700 → 300（听得见但不拖界面）+ 预约到点先探引擎状态再落地'
   + '（续期 ≤ ARM_RENEW_LIMIT / playing 补渐入 / 代际守卫）（第 61 轮第 1、4 条）')
+console.log('时长 / 曲线可配（默认 2s / 3s + 等功率，0~3 秒，位置在「将播放的中文歌词转换为繁体」'
+  + '下面）+ 可中断（手动音量掐斜坡、切歌作废在途渐出）（第 63 轮第 2 条）')
 console.log()
 
 const checks = [
@@ -1125,9 +1535,19 @@ const checks = [
     + ' + 预约时两台引擎一起压 0 + 到点先探引擎状态（第 61 轮第 4 条：续期 ≤ ARM_RENEW_LIMIT /'
     + ' \'playing\' 补渐入 / 代际守卫）', () => fadeInGuardInvariants(REAL.fade)],
   ['音量账本：斜坡起点取 currentVolume，三处外部直写都同步（音量条 / 换曲重贴 / 打断恢复）'
-    + '且在途渐入期间一律让行', () => volumeLedgerInvariants(REAL.fade, { utils: REAL.utils, core: REAL.core, service: REAL.service })],
-  ['第 51 轮·斜坡时长与感知曲线（渐入 600ms / 渐出 300ms + smoothstep，档距 20ms；渐出 700→300 回滚见第 61 轮第 1 条）',
+    + '；在途渐入期间自动重贴让行、手动调音量则掐斜坡（第 63 轮第 2 条口径反转）',
+    () => volumeLedgerInvariants(REAL.fade, { utils: REAL.utils, core: REAL.core, service: REAL.service })],
+  ['第 51 / 63 轮·斜坡时长与曲线：可配（0 = 关闭、缺省 = 默认 2s/3s、超范围夹到 3s）'
+    + ' + 等功率（默认）/ 线性可选 + 方向感知 + 曲线与方向起坡快照 + 档距 20ms',
     () => fadeShapeInvariants(REAL.fade)],
+  ['第 63 轮第 2 条·三个设置键（默认 2s / 3s / 等功率）在 defaultSetting + 类型声明'
+    + ' + 设置页位置（「将播放的中文歌词转换为繁体」下面，先渐入再渐出最后曲线）+ 文案',
+    () => fadeSettingInvariants({
+      defaultSetting: REAL.defaultSetting, types: REAL.types,
+      playerSettings: REAL.playerSettings, lang: REAL.lang,
+    })],
+  ['第 63 轮第 2 条·可中断：切歌 / 停止（setStop 唯一收口）作废在途渐出 + 暂停复核，'
+    + '手动调音量掐斜坡但不取消暂停', () => interruptInvariants({ fade: REAL.fade, utils: REAL.utils })],
   ['第 51 轮·起播 / 换歌的渐入链（resourceLoader 两条落点 + 引擎起始增益 startVolume）',
     () => startFadeChainInvariants({ resourceLoader: REAL.resourceLoader, nativeFlac: REAL.nativeFlac })],
   ['整条链不许断：锁屏 ⏸/▶ → player → utils → 渐入渐出（controller 三处落点）',
