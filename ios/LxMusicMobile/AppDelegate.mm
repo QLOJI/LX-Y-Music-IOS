@@ -685,6 +685,16 @@ static NSURLSessionDataTask *LXNowPlayingArtworkTask = nil;
 static NSMutableDictionary *LXNowPlayingInfoCache = nil;
 static NSString *LXNowPlayingArtworkPath = nil;
 static NSUInteger LXNowPlayingArtworkRequestId = 0;
+// 【第 67 轮】锁屏 / 灵动岛封面的失败重试账本。
+//   · LXNowPlayingArtworkRetryPath = 正在按退避重试的那个封面 URL（nil = 没有待重试的封面）
+//   · LXNowPlayingArtworkAttempt   = 同一路径的连续失败次数，退避台阶由
+//     LXR67NowPlayingArtworkRetryDelay 折算（3s→6s→…→60s 封顶）
+// 为什么非有不可：用户第 67 轮报「网络不太好时封面没加载出来，换回好网络后封面再也不会
+// 自动加载了」。原生这条链路原本**没有任何重试**，而且下载失败时还不清「在途请求」账本
+// —— 一个已结束的 task 对象非 nil，入口去重门（`hasArtwork || task != nil`）就永久焊死，
+// 同一个封面 URL 此后一律被挡（详见 LXSetNowPlayingArtwork 的完成回调注释）。
+static NSString *LXNowPlayingArtworkRetryPath = nil;
+static NSInteger LXNowPlayingArtworkAttempt = 0;
 static MPNowPlayingPlaybackState LXNowPlayingState = MPNowPlayingPlaybackStateStopped;
 static BOOL LXIsReceivingRemoteControlEvents = NO;
 static NSString * const LXTrackPlayerLifecycleNotificationName = @"LXTrackPlayerLifecycle";
@@ -1125,11 +1135,33 @@ static void LXApplyNowPlayingArtwork(UIImage *image, NSUInteger requestId) {
   });
 }
 
+/// 【第 67 轮】封面下载失败的退避台阶：3s → 6s → 12s → 24s → 48s → 60s，此后恒定 60s。
+/// 不设次数上限 —— 用户报的正是「换了网络之后封面再也不回来」，而这条路唯一的停止条件是
+/// 换歌 / 换封面（requestId 变，见 LXSetNowPlayingArtwork 的完成回调）。一首歌的封面 URL
+/// 真的是死链时，代价只是「每分钟一次很小的图片 GET」，比「封面永远空着」划算得多。
+static NSTimeInterval LXR67NowPlayingArtworkRetryDelay(NSInteger attempt) {
+  NSTimeInterval delay = 3.0;
+  for (NSInteger i = 1; i < attempt && delay < 60.0; i++) delay *= 2.0;
+  return delay > 60.0 ? 60.0 : delay;
+}
+
 static void LXSetNowPlayingArtwork(NSString *artworkPath) {
   NSMutableDictionary *info = LXNowPlayingMutableInfo();
   BOOL hasArtwork = info[MPMediaItemPropertyArtwork] != nil;
   if (!artworkPath.length && LXNowPlayingArtworkPath == nil && !hasArtwork) return;
   if (artworkPath.length && [artworkPath isEqualToString:LXNowPlayingArtworkPath] && (hasArtwork || LXNowPlayingArtworkTask != nil)) return;
+
+  // 【第 67 轮】重试账本的清零时机（必须放在去重门**之后**）：路径变了（换歌 / 换了封面）
+  // 或这次是「清空封面」⇒ 连续失败计数从头算；路径**没变**（= 正按退避重试同一个 URL 的
+  // 那次重入）⇒ 保留计数，否则每次重试都退回第一台阶、退避永远停在 3s。
+  // 放在去重门之后是必须的：门因为「正在下载 / 已有封面」而早退时，不该动这份账本。
+  // 前半段单独判 retryPath 是否为 nil，不把 nil 交给 isEqualToString:（它的参数按文档不该
+  // 为 nil）；语义上「没有待重试路径」本来就等于「路径变了」。
+  if (!artworkPath.length || LXNowPlayingArtworkRetryPath == nil ||
+      ![artworkPath isEqualToString:LXNowPlayingArtworkRetryPath]) {
+    LXNowPlayingArtworkAttempt = 0;
+    LXNowPlayingArtworkRetryPath = nil;
+  }
 
   @synchronized (LXLyricLock()) {
     LXCancelNowPlayingArtworkTask();
@@ -1156,9 +1188,44 @@ static void LXSetNowPlayingArtwork(NSString *artworkPath) {
     NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url];
     [request setValue:@"Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/69.0.3497.100 Safari/537.36" forHTTPHeaderField:@"User-Agent"];
     LXNowPlayingArtworkTask = [[NSURLSession sharedSession] dataTaskWithRequest:request completionHandler:^(NSData * _Nullable data, NSURLResponse * _Nullable response, NSError * _Nullable error) {
-      if (error != nil || data.length == 0) return;
-      UIImage *image = [UIImage imageWithData:data];
-      setArtwork(image);
+      // 【第 67 轮·病根】成败都要回主线程结账。原实现失败时直接
+      // `if (error != nil || data.length == 0) return;`：LXNowPlayingArtworkTask 被永久
+      // 留在「非 nil」，而入口去重门判的是 `(hasArtwork || LXNowPlayingArtworkTask != nil)`
+      // —— 一个**已经结束**的 task 对象照样非 nil，于是同一个封面 URL 之后再也进不来。
+      // 这就是用户报的「网络不好时封面没加载出来，换回好网络后封面再也不自动加载」：
+      // 失败一次即永久。修法两条：① 结账时摘掉在途标记；② 失败后按退避重试。
+      UIImage *image = (error == nil && data.length > 0) ? [UIImage imageWithData:data] : nil;
+      dispatch_async(dispatch_get_main_queue(), ^{
+        // requestId 变了 = 已经换歌 / 换了别的封面：本次结果作废，账本归新请求所有
+        // （新请求失败时会排它自己的重试），这里一个字都不动。
+        if (requestId != LXNowPlayingArtworkRequestId) return;
+        if (image != nil) {
+          LXNowPlayingArtworkAttempt = 0;
+          LXNowPlayingArtworkRetryPath = nil;
+          setArtwork(image);
+          // 摘在途标记放到**下一拍**：setArtwork 内部也是 dispatch_async(main)，
+          // 主队列 FIFO ⇒ 这里排的块一定在「info[artwork] 已写好」之后才跑。
+          // 那时重复请求由去重门的 hasArtwork 挡住；若提前到这一行摘，
+          // 会留出一个「没有封面 + 没有在途标记」的窗口（同路径的元数据发布撞进去
+          // 就会白下一次、并把刚落地的封面挤掉一瞬）。
+          dispatch_async(dispatch_get_main_queue(), ^{
+            if (requestId != LXNowPlayingArtworkRequestId) return;
+            LXNowPlayingArtworkTask = nil;
+          });
+          return;
+        }
+        // 失败：先摘掉在途标记（门必须重新放行同一个 URL），再记账 + 排一次退避重试。
+        // 重试是一次**重入本函数**的调用，会走上面「路径没变 ⇒ 保留计数」那条分支，
+        // 台阶因此一路往上走；换歌时 requestId 变，这个定时器自动作废。
+        LXNowPlayingArtworkTask = nil;
+        LXNowPlayingArtworkRetryPath = artworkPath.length ? [artworkPath copy] : nil;
+        LXNowPlayingArtworkAttempt += 1;
+        NSTimeInterval retryDelay = LXR67NowPlayingArtworkRetryDelay(LXNowPlayingArtworkAttempt);
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(retryDelay * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+          if (requestId != LXNowPlayingArtworkRequestId) return;
+          LXSetNowPlayingArtwork(artworkPath);
+        });
+      });
     }];
     [LXNowPlayingArtworkTask resume];
     return;
@@ -1283,6 +1350,12 @@ static void LXClearNowPlayingInfo(void) {
     LXCancelNowPlayingArtworkTask();
     LXNowPlayingArtworkRequestId += 1;
     LXNowPlayingArtworkPath = nil;
+    // 【第 67 轮】整卡片清空 = 封面这一轮的会话结束：把失败重试账本一起清掉。
+    // 不清的话，同一首歌再次播放（同一个封面 URL）会被当成「同一次重试的重入」而沿用旧台阶
+    // —— 一首歌本来第一拍 3s 就能试，却可能一上来就等 60s；顺带也把那个 URL 字符串放掉。
+    // （清账后仍在途的退避定时器不会乱来：清空时 requestId 已经变了，定时器醒来自会作废。）
+    LXNowPlayingArtworkAttempt = 0;
+    LXNowPlayingArtworkRetryPath = nil;
     LXNowPlayingInfoCache = nil;
     LXNowPlayingState = MPNowPlayingPlaybackStateStopped;
     LXNowPlayingElapsedSnapshotAtMs = 0;
