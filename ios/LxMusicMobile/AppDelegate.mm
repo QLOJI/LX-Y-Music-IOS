@@ -3722,6 +3722,12 @@ RCT_REMAP_METHOD(updateEqualizerConfig, updateEqualizerConfig:(NSDictionary *)co
 @property (nonatomic, assign) double configuredHardwareSampleRate;
 // 【第 31 轮·条五】IO 死检探针的已渲染帧数快照（引擎在跑却一帧都取不走 = IO 已被掐断）
 @property (nonatomic, assign) int64_t renderFramesAtLivenessProbe;
+// 【第 69 轮第 2 条】IO 死检的「连拍数」：见 checkStreamingOutputLivenessLocked ——
+// 一拍没取走不再定罪，连两拍（≈700ms）才重建引擎
+@property (nonatomic, assign) NSInteger livenessMissStreak;
+// 【第 69 轮第 2 条】上一条连拍是**对着哪根基准**数出来的（连拍只算同一根快照上的：
+// 快照被新的探针链换过就重新起算，否则上一根链的连拍会替新链定罪、700ms 门槛缩回 350ms）
+@property (nonatomic, assign) int64_t livenessMissSnapshot;
 @property (nonatomic, assign) NSUInteger readOffset;
 @property (nonatomic, assign) double duration;
 @property (nonatomic, assign) double sampleRate;
@@ -3796,6 +3802,9 @@ static BOOL LXPlayWithOthersEnabled = NO;
   std::atomic<bool> _bufferingNotificationScheduled;
   std::atomic<bool> _endedNotificationScheduled;
   std::atomic<int64_t> _renderPlaybackGeneration;
+  // 【第 69 轮第 2 条】输出恢复调度的代际（见 schedulePlaybackOutputRestoreWithDelays）：
+  // 新调度 ++，在途的旧延迟拍醒来发现代数变了就不再重写音量 / 音效
+  std::atomic<int64_t> _playbackOutputRestoreGeneration;
   std::atomic<float> _pitchPlaybackRate;
   std::shared_ptr<LXRealtimeEqualizerProcessor> _realtimeEqualizerProcessor;
   std::shared_ptr<LXRealtimeDynamicsProcessor> _realtimeDynamicsProcessor;
@@ -3822,6 +3831,7 @@ RCT_EXPORT_MODULE();
     _bufferingNotificationScheduled.store(false, std::memory_order_release);
     _endedNotificationScheduled.store(false, std::memory_order_release);
     _renderPlaybackGeneration.store(0, std::memory_order_release);
+    _playbackOutputRestoreGeneration.store(0, std::memory_order_release);
     _pitchPlaybackRate.store(1.0f, std::memory_order_release);
     _lastRealtimeEqualizerEnabled = NO;
     _streamCondition = [[NSCondition alloc] init];
@@ -3936,6 +3946,45 @@ RCT_EXPORT_MODULE();
   [self emitEventWithType:@"warning" body:payload];
 }
 
+// 【第 69 轮第 2 条】会话「已应用组合」的记忆（用户原话：「当我按下系统截图按键、快速切换软件
+// 画面等，可能会出现声音波动，需要再次加强播放音乐时的稳定性及保证高质量输出」）。
+//
+// 病根是**冗余的 setCategory**：旧实现每次调用都把分类 + 模式 + 路由策略整组重设一遍，而它
+// 被大量调用的场合是「组合根本没变过」的恢复拍 ——
+//   · 截图键 / 电源键 / 系统提示音：走短暂忽略窗口（没停引擎、没让出会话），结束时
+//     restoreOutputAfterIgnoredShortInterruption 重设一次会话；
+//   · 勾选「与其他应用同时播放」时回到前台：JS 的重取阶梯每一拍 play() → 原生 resume
+//     又重设一次（1.0 / 3.5 / 7.5 / 13 / 20 / 29s 各一次）；
+//   · 打断结束的恢复拍、播放中每一次用户恢复（JS 的 scheduleAutoResume 阶梯）。
+// 在**激活态**的会话上重设分类 = 让系统做一次重新协商，本文件 openStream 处的注释记着它的
+// 另一副面孔（LongFormAudio 策略重设失败 = setCategory 报 -50 =「引擎在跑、没有声音」）——
+// 而它轻的那一面正是用户报的「声音波动」。
+//
+// 所以记一笔「会话上现在应用的是哪个组合」：组合没变就只 setActive:YES（已激活时是空操作：
+// 会话没被系统收走时它什么都不做，被收走了它才是真正把输出挂回来的那一步），不再碰分类。
+// 失效口径（宁多设一次，绝不少设）：
+//   · 任何一次 setCategory / setActive 失败 → 记回 Unknown（会话状态已不可信）；
+//   · 媒体服务重置 / 路由变化 / 引擎配置变化 → 清（系统正在重新协商，组合要重新落一遍，
+//     见 recoverStreamingOutputForRouteChange 开头）；
+//   · 我们自己把会话交还系统（打断 Began 的让出、openStream 的强制接管）→ 清（回来时重新落，
+//     第 13/16/33 轮那套「抢回来就是全新的」口径一字不变）。
+// 线程：通知的投递线程不确定、RN 方法队列也未必是主队列，所以用原子量，不假设「都在主线程」。
+typedef NS_ENUM(NSInteger, LXAudioSessionCombination) {
+  LXAudioSessionCombinationUnknown = 0,
+  LXAudioSessionCombinationMixable,   // Playback + ModeDefault + RouteSharingPolicyDefault   + MixWithOthers
+  LXAudioSessionCombinationExclusive, // Playback + ModeDefault + RouteSharingPolicyLongFormAudio
+};
+
+static std::atomic<NSInteger> LXAudioSessionAppliedCombination(LXAudioSessionCombinationUnknown);
+
+static NSInteger LXCurrentAudioSessionCombination(void) {
+  return LXAudioSessionAppliedCombination.load(std::memory_order_acquire);
+}
+
+static void LXRememberAudioSessionCombination(LXAudioSessionCombination combination) {
+  LXAudioSessionAppliedCombination.store((NSInteger)combination, std::memory_order_release);
+}
+
 - (BOOL)prepareAudioSession:(NSError **)error {
   return [self prepareAudioSessionAllowingExclusiveFallback:YES error:error];
 }
@@ -3950,6 +3999,9 @@ RCT_EXPORT_MODULE();
 // 正是第 58 轮记过的「一停一响」。这些路径统一用本函数的 NO 口径（失败即放弃、下拍再来）。
 - (BOOL)prepareAudioSessionAllowingExclusiveFallback:(BOOL)allowExclusiveFallback error:(NSError **)error {
   AVAudioSession *session = [AVAudioSession sharedInstance];
+  // 【第 69 轮第 2 条】只有真的落了 setCategory 才更新组合记忆（见上面的注释）：
+  // 走「组合没变」的快路时这一趟什么都没设，会话上仍是原来那一组，记忆保持不动
+  LXAudioSessionCombination appliedCombination = LXAudioSessionCombinationUnknown;
   if (@available(iOS 13.0, *)) {
     // 【第 33 轮第 4 条】勾选「与其他应用同时播放」= 真·同时出声：改用混音（mixable）会话，
     // 后台不论什么音频在播都压不住本应用（不再触发「会话被系统停用 → 引擎停摆」）。代价
@@ -3958,27 +4010,54 @@ RCT_EXPORT_MODULE();
     // 因此混音分支**不配** LongFormAudio 路由策略（两者互斥，setCategory 报 -50 =
     // 有进度没声音），改用 AVAudioSessionRouteSharingPolicyDefault —— 这是混音的标准组合。
     if (LXPlayWithOthersEnabled) {
+      // 【第 69 轮第 2 条】组合没变：只把会话激活（已激活时是空操作），不重发 setCategory。
+      // 这条快路覆盖的正是用户报的那两类现场（截图键后的轻量自愈、回前台的每一拍重取）。
+      if (LXCurrentAudioSessionCombination() == LXAudioSessionCombinationMixable) {
+        if ([session setActive:YES error:error]) return YES;
+        // 激活失败 = 会话状态已经不可信：记忆作废，下拍重新落组合
+        LXRememberAudioSessionCombination(LXAudioSessionCombinationUnknown);
+        return NO;
+      }
       if ([session setCategory:AVAudioSessionCategoryPlayback
                         mode:AVAudioSessionModeDefault
           routeSharingPolicy:AVAudioSessionRouteSharingPolicyDefault
                      options:AVAudioSessionCategoryOptionMixWithOthers
-                       error:error]) return [session setActive:YES error:error];
+                       error:error]) {
+        LXRememberAudioSessionCombination(LXAudioSessionCombinationMixable);
+        if ([session setActive:YES error:error]) return YES;
+        // 组合落上了、激活没成功（会话被别家占着）：记忆作废 —— 下一次从「重新落组合」走起
+        LXRememberAudioSessionCombination(LXAudioSessionCombinationUnknown);
+        return NO;
+      }
       // 系统拒绝（例如会话正被别家独占）/ 分类不支持：静默退回下面的非混音口径，
       // 至少保住「能出声」，再由 JS 侧的有界重取阶梯去抢会话。
       // 【第 62 轮第 2 条】自愈路径（allowExclusiveFallback = NO）不退回：混音态下
       //「退回独占」= 抢会话，见上面函数头注释。此时分类多半已经落在混音组合上
       //（成败取决于 setActive），保持原样、什么都不改最安全。
+      LXRememberAudioSessionCombination(LXAudioSessionCombinationUnknown);
       if (!allowExclusiveFallback) return NO;
     }
-    if (![session setCategory:AVAudioSessionCategoryPlayback
-                      mode:AVAudioSessionModeDefault
-        routeSharingPolicy:AVAudioSessionRouteSharingPolicyLongFormAudio
-                   options:0
-                     error:error]) return NO;
+    if (LXCurrentAudioSessionCombination() != LXAudioSessionCombinationExclusive) {
+      if (![session setCategory:AVAudioSessionCategoryPlayback
+                        mode:AVAudioSessionModeDefault
+          routeSharingPolicy:AVAudioSessionRouteSharingPolicyLongFormAudio
+                     options:0
+                       error:error]) {
+        LXRememberAudioSessionCombination(LXAudioSessionCombinationUnknown);
+        return NO;
+      }
+      appliedCombination = LXAudioSessionCombinationExclusive;
+    }
   } else {
+    // iOS 12 及以下没有带 routeSharingPolicy 的 setCategory：组合记忆在这条路上没有意义
+    //（老系统的分类是一次性的），保持原写法与原来的语义
     if (![session setCategory:AVAudioSessionCategoryPlayback error:error]) return NO;
   }
-  if (![session setActive:YES error:error]) return NO;
+  if (![session setActive:YES error:error]) {
+    LXRememberAudioSessionCombination(LXAudioSessionCombinationUnknown);
+    return NO;
+  }
+  if (appliedCombination != LXAudioSessionCombinationUnknown) LXRememberAudioSessionCombination(appliedCombination);
   return YES;
 }
 
@@ -4159,7 +4238,18 @@ RCT_EXPORT_MODULE();
   [self applySoundEffectConfigLocked];
 }
 
+// 【第 69 轮第 2 条】恢复调度的**合并**（用户原话：「当我按下系统截图按键、快速切换软件画面等，
+// 可能会出现声音波动」）。
+// 病根是「谁也不撤销谁」：一条前后台通知链（ResignActive → EnterBackground → BecomeActive）
+// 会连着调三次本方法（2+2+3 = 7 拍），快速来回切软件时更是几十条通知叠几十拍。虽然每一拍都是
+// 幂等重贴（音量 / 音效 / rate），但它们全部落在**正在出声**的节点上：设定音量被反复重写、
+// 音效链被反复刷新，密集重写本身就是听感里的「波动」；而且这些拍与 JS 侧同刻的渐入渐出、
+// 混音重取阶梯挤在同一窗口里互相顶。
+// 做法：每次调度 ++ 代际，在途的旧延迟拍醒来发现代数变了就静静退出。**立即那一拍永远保留**
+// （任何一次调度都至少恢复一次，语义不缩水；延迟拍的用途只是「晚一点再确认一次」，最新一代的
+// 拍本身就覆盖了前面所有拍要做的同一件事）。
 - (void)schedulePlaybackOutputRestoreWithDelays:(NSArray<NSNumber *> *)delays {
+  int64_t generation = _playbackOutputRestoreGeneration.fetch_add(1, std::memory_order_acq_rel) + 1;
   dispatch_async(self.renderQueue, ^{
     [self restorePlaybackOutputLocked];
   });
@@ -4167,6 +4257,7 @@ RCT_EXPORT_MODULE();
   for (NSNumber *delay in delays) {
     NSTimeInterval delaySeconds = MAX(delay.doubleValue, 0);
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delaySeconds * NSEC_PER_SEC)), self.renderQueue, ^{
+      if (_playbackOutputRestoreGeneration.load(std::memory_order_acquire) != generation) return;
       [self restorePlaybackOutputLocked];
     });
   }
@@ -4415,7 +4506,9 @@ RCT_EXPORT_MODULE();
 
       NSError *sessionError = nil;
       if (![self prepareAudioSession:&sessionError]) {
-        [self emitErrorMessage:sessionError.localizedDescription ?: @"Failed to reactivate audio session"];
+        // 【第 69 轮第 2 条】见 handleInterruptionResumeFailureWithMessage: 的注释：
+        // 刚结束的打断里拿不回会话是**瞬态**，不再直接冒充 error
+        [self handleInterruptionResumeFailureWithMessage:sessionError.localizedDescription ?: @"Failed to reactivate audio session"];
         return;
       }
 
@@ -4437,7 +4530,8 @@ RCT_EXPORT_MODULE();
         }
       });
       if (engineError != nil) {
-        [self emitErrorMessage:engineError.localizedDescription ?: @"Failed to restart audio engine after interruption"];
+        // 【第 69 轮第 2 条】同上：引擎起不来是瞬态，走 warning + 有界恢复 + 兜底升级
+        [self handleInterruptionResumeFailureWithMessage:engineError.localizedDescription ?: @"Failed to restart audio engine after interruption"];
         return;
       }
       [self schedulePlaybackOutputRestoreWithDelays:@[ @0.15, @0.6 ]];
@@ -4449,6 +4543,36 @@ RCT_EXPORT_MODULE();
     default:
       break;
   }
+}
+
+// 【第 69 轮第 2 条】打断结束时「会话拿不回 / 引擎起不来」的上报口径（用户原话：「当我按下系统
+// 截图按键、快速切换软件画面等，可能会出现声音波动，需要再次加强播放音乐时的稳定性及保证
+// 高质量输出」）。
+//
+// 这两处此前一律 emitErrorMessage。error 在 JS 侧不是「一条日志」，而是**判死刑**：
+//   · nativeFlac.ts 的 error 分支把 playbackState 翻成 'paused'（播放态当场变暂停）；
+//   · controller.ts 的 handleError 随即执行**音质逐级降级 + 重新取链**（getNextTryQuality
+//     → setMusicUrl(…, nextQuality)），两次取链失败还会自动跳歌。
+// ——一次瞬态抖动换来一次降档重取，用户这一条要的「保证高质量输出」正是被这条路径打穿的。
+// 而打断刚结束的那一瞬间拿不到会话本来就是常态（对方刚松手、系统还在收尾）：JS 侧的遥控
+// Duck/Ended 与原生通知谁先谁后并不保证，原生这一刻失败不代表音乐回不来。
+//
+// 三拍（不缩小失败面，只把「一次瞬态抖动」和「真的起不来」分开）：
+//   ① warning 先出去（不翻播放态、不降档）；
+//   ② 走与路由自愈同一套的**有界**重试阶梯（无独占回退口径 = 绝不抢别人的会话，幂等）；
+//   ③ 阶梯跑完仍没恢复（引擎没在跑 / 渲染没开 / 还没出声）才补一次 error。
+- (void)handleInterruptionResumeFailureWithMessage:(NSString *)message {
+  [self emitWarningMessage:message code:nil statusName:nil];
+  [self scheduleStreamingOutputRecoveryWithDelays:@[ @0.25, @0.8, @2.0 ] treatAsDisconnect:NO];
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.9 * NSEC_PER_SEC)), self.renderQueue, ^{
+    // 用户的明确动作已经接管（暂停 / 停止 / 换流）就不算这条失败
+    if (self.manualPause || self.stopRequested || self.currentURL.length == 0) return;
+    if ([self.currentState isEqualToString:@"idle"] || [self.currentState isEqualToString:@"stopped"]) return;
+    // 已经自己恢复（引擎在跑 + 渲染开着 + 已出声）就别再补刀
+    if (self.engine != nil && self.engine.isRunning && self.playbackStarted &&
+        _sourceRenderingEnabled.load(std::memory_order_acquire)) return;
+    [self emitErrorMessage:message];
+  });
 }
 
 // 【第 31 轮·追加】短暂系统音忽略窗口的毫秒数（与 JS 侧 SHORT_INTERRUPTION_IGNORE_MS 同值）：
@@ -4544,6 +4668,11 @@ static const int64_t LXShortInterruptionIgnoreMs = 1500;
     // 与 openStream 接管会话时的对手写法：NotifyOthersOnDeactivation 把会话
     // 干干净净地交还给系统 / 其他音频。
     [[AVAudioSession sharedInstance] setActive:NO withOptions:AVAudioSessionSetActiveOptionNotifyOthersOnDeactivation error:nil];
+    // 【第 69 轮第 2 条】会话交还了：组合记忆一并作废 —— 结束时（Ended 分支）必须重新落一遍
+    // 分类 + 路由策略，第 13/16/33 轮那套「抢回来就是全新的」口径不变。
+    // 注意这条清只落在**真的让出**这一支（canReleaseSession）：勾选态本来就不停引擎、不让出，
+    // 会话一直在我们手里，记忆继续有效（那条路上要省掉的正是每次重取的重设）。
+    LXRememberAudioSessionCombination(LXAudioSessionCombinationUnknown);
   }
   if (!shouldEmitPause) return;
   self.currentState = @"paused";
@@ -4642,6 +4771,10 @@ static const int64_t LXShortInterruptionIgnoreMs = 1500;
 
 - (void)recoverStreamingOutputForRouteChange:(BOOL)treatAsDisconnect {
   if (self.currentURL.length == 0) return;
+  // 【第 69 轮第 2 条】路由 / 硬件格式 / 媒体服务这几类变化意味着系统正在**重新协商**会话，
+  // 组合记忆当场作废：下面那一句 setCategory 照旧每次都落（与改动前逐字一致的行为，
+  // 不多不少），「组合没变就不重设」的快路只服务于 App 自己的恢复拍（截图键、回前台、恢复播放）。
+  LXRememberAudioSessionCombination(LXAudioSessionCombinationUnknown);
   // 【第 62 轮第 2 条】勾选「与其他应用同时播放」时放行 interruptedBySystem。用户现场：
   // 直播类应用开麦 / 关麦（打开、退出）会把我们的输出 IO 悄悄掐断 —— 引擎 isRunning 仍为真、
   // 但一帧都取不走，表现就是「短暂没有声音」，而**这条自愈链是唯一会把 IO 重新挂回去的地方**
@@ -4698,12 +4831,43 @@ static const int64_t LXShortInterruptionIgnoreMs = 1500;
   if (![self shouldRestorePlaybackOutputLocked]) return;
   if (self.engine == nil || !self.engine.isRunning) return;
   if (!self.playbackStarted || !_sourceRenderingEnabled.load(std::memory_order_acquire)) return;
+  // 【第 69 轮第 2 条】前台门：IO 取不走**只在前台才算异常**。按截图键、上滑切应用、拉控制中心
+  // 的那一刻，系统本来就可能短暂压住我们的输出（转场动画 / 提示音 / 会话重排），后台时更是
+  // 理所当然 —— 这些都不是「IO 死了」，不该在用户根本没看屏幕的时候去 stop + start 整条引擎图。
+  // 代价已补偿：回前台的 handleApplicationDidBecomeActive 会重新挂一次死检（见那里），
+  // 所以「后台真被掐断、回前台没声音」照旧会被发现。
+  if ([UIApplication sharedApplication].applicationState != UIApplicationStateActive) {
+    self.livenessMissStreak = 0;
+    return;
+  }
   int64_t queuedFrames = _pcmBuffer != nullptr ? (int64_t)_pcmBuffer->availableToRead() : 0;
   // 环里没数据 = 正在等缓冲，不是 IO 死（别在正常缓冲时误重启引擎）
   if (queuedFrames <= 0) return;
   int64_t renderedFrames = _renderedFrames.load(std::memory_order_acquire);
-  if (renderedFrames != self.renderFramesAtLivenessProbe) return;
-  // 引擎报告在跑、渲染开着、环里还有数据，却整整 350ms 一帧都没取走：IO 已经不在我们这条路由上
+  if (renderedFrames != self.renderFramesAtLivenessProbe) {
+    self.livenessMissStreak = 0;
+    return;
+  }
+  // 【第 69 轮第 2 条】两拍制：一拍没取走**不再定罪**（旧写法 0.35s 直接 stop + start 整条引擎图，
+  // 代价是几百毫秒的静音 + 一次音量重贴 —— 而误判恰恰发生在**正在出声**的时候，正是用户报的
+  //「声音波动」）。连两拍（≈700ms）一帧都没取走才重建。代价是不对称的：真死的 IO 本来就是静音，
+  // 多等 350ms 用户听不出来；错杀的重启却是在出声时凭空造静音。宁可晚修，不可错杀。
+  // 快照**不**刷新：第二拍量的仍是「上一次快照到现在」，两拍合起来才是那 ≈700ms。
+  if (self.livenessMissSnapshot != self.renderFramesAtLivenessProbe) {
+    // 基准换过（新的探针链）：连拍从这一拍重新起算，绝不让上一根链的连拍替新链定罪
+    self.livenessMissSnapshot = self.renderFramesAtLivenessProbe;
+    self.livenessMissStreak = 1;
+  } else {
+    self.livenessMissStreak += 1;
+  }
+  if (self.livenessMissStreak < 2) {
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)), self.renderQueue, ^{
+      [self checkStreamingOutputLivenessLocked];
+    });
+    return;
+  }
+  self.livenessMissStreak = 0;
+  // 引擎报告在跑、渲染开着、环里还有数据，却整整 700ms 一帧都没取走：IO 已经不在我们这条路由上
   [self.engine stop];
   NSError *engineError = nil;
   if (![self ensureAudioEngineRunningLocked:&engineError]) {
@@ -5091,6 +5255,17 @@ static const int64_t LXResumeFadeStepMs = 40;
   LXEnsureKeyWindow();
   if (self.currentURL.length == 0) return;
   [self schedulePlaybackOutputRestoreWithDelays:@[ @0.05, @0.2, @0.8 ]];
+  // 【第 69 轮第 2 条】回前台补挂一次 IO 死检：死检本身加了前台门（后台那条路本来就不该动引擎，
+  // 见 checkStreamingOutputLivenessLocked），而「后台期间 IO 真被掐断」不会有任何通知来提示
+  //（第 62 轮已证），回前台这一拍是唯一能把它发现回来的地方 —— 与路由自愈 / 混音重取同款两行：
+  // 先记渲染帧数快照，0.35s 后比对（连两拍没涨才重建引擎，见两拍制的说明）。
+  // 没在播放时这两句是空的：死检自己会早退，快照值也没有别的读者。
+  dispatch_async(self.renderQueue, ^{
+    self.renderFramesAtLivenessProbe = _renderedFrames.load(std::memory_order_acquire);
+  });
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)), self.renderQueue, ^{
+    [self checkStreamingOutputLivenessLocked];
+  });
 }
 
 - (void)waitForBufferCapacityIfNeeded {
@@ -5328,6 +5503,9 @@ RCT_REMAP_METHOD(openStream, openStream:(NSString *)urlString headers:(NSDiction
     // 策略，导致 AVAudioEngine 运行正常但无音频输出。
     AVAudioSession *session = [AVAudioSession sharedInstance];
     [session setActive:NO withOptions:AVAudioSessionSetActiveOptionNotifyOthersOnDeactivation error:nil];
+    // 【第 69 轮第 2 条】上面这行的语义就是「把会话交还系统再抢回来」：组合记忆一并作废，
+    // 下一句 prepareAudioSession 必须真的重落一遍分类 + 路由策略（这条路径的意义就在于此）
+    LXRememberAudioSessionCombination(LXAudioSessionCombinationUnknown);
 
     NSError *sessionError = nil;
     if (![self prepareAudioSession:&sessionError]) {
@@ -7428,9 +7606,14 @@ static __weak UIScrollView *LXTabBarCollapseDriver = nil;
 // 触发门限【第 65 轮第 2 条】用户原话：「迷你播放器栏和底部tab栏的合并触发设置为容易触发，
 // 目前不容易触发」。第 31 轮定的 48 / 2 对「随手滑一下」太钝：下滑不到 48pt 不合并、回顶
 // 要回到 2pt 以内才展开。降到 16 / 8（中间仍留 8pt 迟滞区，防顶部抖动来回切换）。
+// 【第 69 轮第 4 条】用户原话：「迷你播放器栏的收缩功能，上下滑动时会收缩，当前灵敏度有点低，
+// 很难触发，请增加灵敏度，使其变得容易收缩」。16 / 8 对「快速轻扫一下」仍然偏钝 —— 手指抬起
+// 得早、offset 还没走出 16pt，惯性那一截又因为 pan 判据的门（见下）不一定算数。这一轮两件事
+// 一起做：门限再降到 8 / 4（迟滞区仍留 4pt，防顶部抖动来回切换），以及把「用户主动的滚动」
+// 判据补上惯性那一段（LXGlassIsUserDrivenScroll）。
 // 两个数只在这里出现一次 —— 以后调手感改这两行，状态机的结构一个字不用动。
-static const CGFloat LXTabBarCollapseOffset = 16;
-static const CGFloat LXTabBarExpandOffset = 8;
+static const CGFloat LXTabBarCollapseOffset = 8;
+static const CGFloat LXTabBarExpandOffset = 4;
 
 static void LXSetTabBarCollapsed(BOOL collapsed) {
   if (LXTabBarCollapsedState == collapsed) return;
@@ -7445,6 +7628,13 @@ static void LXSetTabBarCollapsed(BOOL collapsed) {
 // 与「列表滑多快」无关）。声明前置，因为定义在下面的区块。
 static void LXGlassSampleScrollVelocity(UIScrollView *scrollView);
 
+// 【第 69 轮第 3/4 条】这两个也定义在下面那个区块里（要读那里的采样账本：手指有没有参与过
+// 这一串滚动、惯性还在不在、速度多少、衰减比例量到了多少），这里只前置声明。
+//   · LXGlassIsUserDrivenScroll —— 状态机的「用户主动的滚动」判据（补上惯性那一段）；
+//   · LXGlassPredictedRestOffsetY —— 惯性落点（判定用「本来会停在哪」而不是「现在在哪」）。
+static BOOL LXGlassIsUserDrivenScroll(UIScrollView *scrollView);
+static CGFloat LXGlassPredictedRestOffsetY(UIScrollView *scrollView);
+
 static void LX_RCTScrollView_scrollViewDidScroll(id self, SEL _cmd, UIScrollView *scrollView) {
   if (LXOrigRCTScrollViewDidScroll != NULL) {
     ((void (*)(id, SEL, UIScrollView *))LXOrigRCTScrollViewDidScroll)(self, _cmd, scrollView);
@@ -7458,10 +7648,19 @@ static void LX_RCTScrollView_scrollViewDidScroll(id self, SEL _cmd, UIScrollView
   // 上溯找 VC（60~120 次/秒的热路径，第 64 轮的省电口径顺手把这段省掉了）。
   UIView *host = [self isKindOfClass:[UIView class]] ? (UIView *)self : (UIView *)scrollView;
   if (host.window == nil) return;
-  CGPoint offset = scrollView.contentOffset;
-  // 用户主动的滚动（含松手后的惯性）：pan 只要离开 Possible 就说明这一串滚动有手指参与。
-  BOOL userDriven = scrollView.panGestureRecognizer.state != UIGestureRecognizerStatePossible;
-  if (offset.y > LXTabBarCollapseOffset) {
+  // 用户主动的滚动（含松手后的惯性）：判据见 LXGlassIsUserDrivenScroll —— 手指接触期间直接
+  // 放行；手指抬起之后靠「这一串滚动是手指开的头 + 还在惯性里」放行（第 69 轮第 4 条把惯性
+  // 这一段补上：轻扫一下就该合并，不该只有「手指一直按着拖」才算数）。
+  BOOL userDriven = LXGlassIsUserDrivenScroll(scrollView);
+  // 【第 69 轮第 3 条】判定用「惯性落点」而不是「当前点」。用户原话：「迷你播放会收缩和展开，
+  // 会向下向上滑动，会有惯性，所以会导致切换到其他界面时固定的帧和返回后的帧不一致……
+  // 需要在切换到其他界面时就已经算好返回时固定的帧的内容」。玻璃冻的是**未来**那几百毫秒的
+  // 画面：只要收起/展开发生在冻结之后，返回后的几何就和冻结帧对不上（用户看到的那一下刷新）。
+  // 所以这里问的是「这条惯性本来会停在哪」：停车点越过门限 = 现在就把状态定下来，JS 才来得及
+  // 在冻结之前把布局落地。手指按着拖 / 已经停下来时不预测（LXGlassPredictedRestOffsetY
+  // 内部保证返回当前值），与原口径逐字一致。
+  CGFloat judgeY = LXGlassPredictedRestOffsetY(scrollView);
+  if (judgeY > LXTabBarCollapseOffset) {
     // 程序化滚动不许收起（歌词列表挂载自动滚到当前行 = 用户第 63 轮第 1 条报的
     //「突然进入播放详情页就变成合并状态」）
     if (!userDriven) return;
@@ -7469,7 +7668,7 @@ static void LX_RCTScrollView_scrollViewDidScroll(id self, SEL _cmd, UIScrollView
     if (LXTabBarManualExpanded) return;
     LXTabBarCollapseDriver = scrollView;
     LXSetTabBarCollapsed(YES);
-  } else if (offset.y <= LXTabBarExpandOffset) {
+  } else if (judgeY <= LXTabBarExpandOffset) {
     // 展开：驱动者自己（同一列表滚回顶部，含程序化的归位）或用户主动拖的滚动都可以；
     // 别的列表在 Home 被盖住期间程序化滚到顶部不算（见 ②）
     if (!userDriven && LXTabBarCollapseDriver != nil && LXTabBarCollapseDriver != scrollView) return;
@@ -7532,13 +7731,118 @@ static CGFloat LXGlassSettleVelocity = 0;                     // 速度（pt/s�
 static const CFTimeInterval LXGlassSettleSampleMaxAge = 0.5;
 // 落点与当前位置差不到这个距离就不动（「速度为 0 = 静止显示」的判据落在这里）。
 static const CGFloat LXGlassSettleMinDistance = 0.5;
+// 【第 69 轮第 3 条】「这一串滚动是手指开的头」：手指接触期间置 YES，滚动彻底停下来
+//（既没有手指、也不在惯性里）才复位。为什么要它：手指抬起后 panGestureRecognizer 很快
+// 回到 Possible，而列表还在按指数减速往前走 —— 只认 pan 状态的话，惯性这一整段既采不到
+// 速度（老账本停在抬起那一刻）、也算不上「用户主动的滚动」。用户第 69 轮第 3 条原话
+// 「你那列表在冻结之后还在自己往下滑」报的正是惯性这一段没被记账。
+static BOOL LXGlassSettleUserRun = NO;
+// 【第 69 轮第 3 条】实测的衰减比例（每毫秒保留多少）。用户原话：「减速的速度小了点，
+// 还是有偏差」—— 预测落点用的是 scrollView.decelerationRate 这个**名义值**，真实衰减跟它
+// 并不总是一致（同一 rate 在不同刷新率 / 系统版本上还会差一点），差一点就是几百毫秒后
+// 几十 pt 的偏差。惯性期间本来就有连续的速度采样，顺手用相邻两拍把真实比例量出来：
+//   v2 / v1 = rate^(间隔毫秒)  ⇒  rate = exp( ln(v2/v1) / 间隔毫秒 )
+// 量不到（间隔太短、方向变了、比值离谱）就退回名义值。0 = 还没量到。
+static CGFloat LXGlassSettleMeasuredRate = 0;
+// 实测比例是哪个列表量到的（弱引用）：换了列表就作废 —— decelerationRate 是每个列表各自
+// 的属性（RN 的 prop 可以单独改），别人的读数不能拿来用。
+static __weak UIScrollView *LXGlassSettleRateOwner = nil;
+static CGFloat LXGlassSettlePrevVelocity = 0;   // 上一拍速度（量比例用）
+static CFTimeInterval LXGlassSettlePrevVelocityAt = 0;
+// 量比例的两拍间隔下限：太短的比值是两个同帧噪声相除，没意义（120Hz 下相邻两拍只有 8ms）。
+static const CFTimeInterval LXGlassSettleRateMinSpan = 0.012;
+
+// 实测衰减比例：只在「手指已离开 + 还在惯性」时量（手指按着拖是匀速输入，比值恒为 1，
+// 量出来的「比例」是假的）。
+static void LXGlassMeasureDecayRate(UIScrollView *scrollView, CGFloat velocity, CFTimeInterval now) {
+  if (LXGlassSettleRateOwner != scrollView) {
+    LXGlassSettleRateOwner = scrollView;
+    LXGlassSettleMeasuredRate = 0;
+    LXGlassSettlePrevVelocityAt = 0;
+  }
+  if (LXGlassSettlePrevVelocityAt <= 0) {
+    LXGlassSettlePrevVelocity = velocity;
+    LXGlassSettlePrevVelocityAt = now;
+    return;
+  }
+  CFTimeInterval span = now - LXGlassSettlePrevVelocityAt;
+  // 间隔还不够就先留着旧基准（下一拍间隔更大），攒够一次有效测量再滚动基准
+  if (span < LXGlassSettleRateMinSpan) return;
+  LXGlassSettlePrevVelocity = velocity;
+  LXGlassSettlePrevVelocityAt = now;
+  // 惯性里速度只会变小；乘积分正判同方向，> 1 一点点属于采样抖动，直接弃用
+  if (fabs(velocity) <= 40 || velocity * LXGlassSettlePrevVelocity <= 0) return;
+  double ratio = (double)fabs(velocity) / (double)fabs(LXGlassSettlePrevVelocity);
+  if (!(ratio > 0.02 && ratio < 1.02)) return;
+  double rate = exp(log(ratio) / (span * 1000.0));
+  // 合理区间：UIKit 两档（fast 0.99 / normal 0.998）的邻域。明显离谱的读数不留 ——
+  // 一次坏采样会把落点算飞，比不量还糟。
+  if (!(rate > 0.985 && rate < 0.9995)) return;
+  // 指数平滑：单帧比值噪声不小，量到的比例只在每拍往里挪 40%
+  LXGlassSettleMeasuredRate = LXGlassSettleMeasuredRate > 0
+    ? (CGFloat)((double)LXGlassSettleMeasuredRate * 0.6 + rate * 0.4)
+    : (CGFloat)rate;
+}
+
+// 当前该用哪个衰减比例：实测优先（同一个列表量到的才算），没有实测退回名义值
+//（RN 的 decelerationRate prop 可以改，所以运行时读；读不到再退回 normal 档）。
+static CGFloat LXGlassSettleDecayRate(UIScrollView *scrollView) {
+  if (LXGlassSettleMeasuredRate > 0 && LXGlassSettleRateOwner == scrollView) {
+    return LXGlassSettleMeasuredRate;
+  }
+  CGFloat rate = scrollView.decelerationRate;
+  if (!(rate > 0 && rate < 1)) rate = UIScrollViewDecelerationRateNormal;
+  return rate;
+}
+
+// 剩余距离 = v × 1ms / (1 - rate)：v[pt/s] × 0.001s 是这一毫秒走的路，之后每毫秒乘 rate，
+// 等比数列求和 ⇒ v × 0.001 / (1 - rate)。（normal 档下 ≈ v/2000 秒的位移，即速度的一半）
+// 采样点到「此刻」之间隔了 age，速度自己也在按同一个比例衰减：先折算到此刻再求和，
+// 否则落点会算远一截。
+static CGFloat LXGlassRemainingDistance(UIScrollView *scrollView, CFTimeInterval age) {
+  CGFloat rate = LXGlassSettleDecayRate(scrollView);
+  CGFloat velocity = LXGlassSettleVelocity;
+  if (age > 0.001) velocity *= (CGFloat)pow((double)rate, (double)(age * 1000.0));
+  return velocity * 0.001 / (1 - rate);
+}
+
+// 【第 69 轮第 3/4 条】「这一串滚动有手指参与」：手指接触期间直接算；手指抬起后靠
+// 「手指开的头（LXGlassSettleUserRun）+ 还在惯性里」算。程序化滚动两条都不满足
+//（没有手指、也没有用户开的头），第 63 轮那道门原样保住。
+static BOOL LXGlassIsUserDrivenScroll(UIScrollView *scrollView) {
+  if (scrollView.panGestureRecognizer.state != UIGestureRecognizerStatePossible) return YES;
+  return scrollView.isDecelerating && LXGlassSettleScrollView == scrollView && LXGlassSettleUserRun;
+}
+
+// 【第 69 轮第 3 条】惯性落点：当前 offset.y + 剩余距离（与 settle 同一套公式）。
+// 只有「手指开的头 + 还在惯性里 + 账本没过期」才给预测值，其余一律返回当前 offset.y
+//（=「速度为 0 就静止显示」的原口径，逐字保留）。
+static CGFloat LXGlassPredictedRestOffsetY(UIScrollView *scrollView) {
+  CGPoint offset = scrollView.contentOffset;
+  if (!scrollView.isDecelerating) return offset.y;
+  if (LXGlassSettleScrollView != scrollView || !LXGlassSettleUserRun) return offset.y;
+  if (LXGlassSettleLastSampleAt <= 0) return offset.y;
+  CFTimeInterval age = CACurrentMediaTime() - LXGlassSettleLastSampleAt;
+  if (age > LXGlassSettleSampleMaxAge) return offset.y;
+  return offset.y + LXGlassRemainingDistance(scrollView, age);
+}
 
 static void LXGlassSampleScrollVelocity(UIScrollView *scrollView) {
   // 只记**用户主动的滚动**：pan 停在 Possible 说明是程序化滚动（歌词列表挂载时自动滚到当前
   // 行、列表数据变化后的自动归位……），那些的终点是代码定的、不是惯性滑出来的，不参与预测。
-  // 判据与 tab 栏状态机的「主动滚动门」同源（panGestureRecognizer.state）；惯性滑行期间 pan
-  // 一直停在 Ended，照样算主动 —— 用户报的场景正是「正在向下滑动时点进去」。
-  if (scrollView.panGestureRecognizer.state == UIGestureRecognizerStatePossible) return;
+  // 判据与 tab 栏状态机的「主动滚动门」同源（panGestureRecognizer.state）。
+  // 【第 69 轮第 3 条】惯性滑行这一段也要采（判据见 LXGlassIsUserDrivenScroll）：手指抬起后
+  // pan 回到 Possible，而列表还在往前走 —— 老账本停在抬起那一刻的速度/时刻上，等用户过几百
+  // 毫秒才点进去，"冻结前贴落点" 会直接判成「账本过期」而放弃，列表于是继续滑 = 用户报的
+  // 「冻结帧和返回后的画面差着一个时间差」。
+  BOOL fingerOn = scrollView.panGestureRecognizer.state != UIGestureRecognizerStatePossible;
+  // 滚动彻底停了（手指不在、惯性也不在）：这一串到此为止，下一次滚动重新开一串。
+  // 判据必须是「有没有在动」，不能写成「算不算用户主动」—— 手指刚抬起的那一帧 pan 已经回到
+  // Possible 而 isDecelerating 还没翻起来，按后者清标记会把整段惯性丢掉（本轮要修的就是它）。
+  if (!fingerOn && !scrollView.isDecelerating && LXGlassSettleScrollView == scrollView) {
+    LXGlassSettleUserRun = NO;
+  }
+  if (!LXGlassIsUserDrivenScroll(scrollView)) return;
   CGPoint offset = scrollView.contentOffset;
   CFTimeInterval now = CACurrentMediaTime();
   if (LXGlassSettleScrollView == scrollView) {
@@ -7546,13 +7850,23 @@ static void LXGlassSampleScrollVelocity(UIScrollView *scrollView) {
     // dt 太小的重复回调（同一毫秒内两次 scrollViewDidScroll）差分噪声极大（除以接近 0 的
     // dt 会算出荒谬速度）：这一拍不算，沿用上一次的速度。
     if (dt >= 0.004) {
-      LXGlassSettleVelocity = (CGFloat)((offset.y - LXGlassSettleLastOffsetY) / dt);
+      CGFloat velocity = (CGFloat)((offset.y - LXGlassSettleLastOffsetY) / dt);
+      if (!fingerOn) LXGlassMeasureDecayRate(scrollView, velocity, now);
+      LXGlassSettleVelocity = velocity;
     }
   } else {
     // 换了列表（或上一次贴完落点把账本清了）：上一次的速度属于别人，不能拿来用，
-    // 只建立一个基准，下一次回调才算出速度。
+    // 只建立一个基准，下一次回调才算出速度。（实测到的衰减比例跟着它的列表走，见
+    // LXGlassSettleRateOwner —— 同一个列表多量几串更准，换了列表才作废。）
     LXGlassSettleScrollView = scrollView;
     LXGlassSettleVelocity = 0;
+    LXGlassSettlePrevVelocityAt = 0;
+  }
+  if (fingerOn) {
+    // 手指参与的全程都算「用户开的头」；同时把上一串量到的两拍基准作废 —— 手指一上来就是
+    // 新的输入段落，跨段落的速度比值不能拿来量衰减。
+    LXGlassSettleUserRun = YES;
+    LXGlassSettlePrevVelocityAt = 0;
   }
   LXGlassSettleLastOffsetY = offset.y;
   LXGlassSettleLastSampleAt = now;
@@ -7568,23 +7882,19 @@ static BOOL LXGlassSettleDeceleratingScrollView(void) {
   // 速度为 0 / 手指正按着拖 / 已经停下来，一律不动（用户口径：「如果进入页面前列表的滑动
   // 速度为0，这为静止显示即可」）。手指按着拖的那种，松手前不会自己动，本来就该静止。
   if (!scrollView.isDecelerating) return NO;
+  // 【第 69 轮第 3 条】还得是**手指开的头**那一串：程序化动画（代码自己的 setContentOffset）
+  // 不是惯性，把它当成惯性贴到「预测落点」等于替代码改终点。
+  if (!LXGlassSettleUserRun) return NO;
   CFTimeInterval now = CACurrentMediaTime();
   if (LXGlassSettleLastSampleAt <= 0) return NO;
   CFTimeInterval age = now - LXGlassSettleLastSampleAt;
   if (age > LXGlassSettleSampleMaxAge) return NO;
-  // UIScrollView 的减速是指数衰减：decelerationRate = 每毫秒保留的比例
-  //（normal 0.998 / fast 0.99，RN 的 decelerationRate prop 可以改，所以运行时读）。
-  CGFloat rate = scrollView.decelerationRate;
-  if (!(rate > 0 && rate < 1)) rate = UIScrollViewDecelerationRateNormal;
-  CGFloat velocity = LXGlassSettleVelocity;
+  // 衰减比例：实测优先（第 69 轮第 3 条，LXGlassMeasureDecayRate），量不到才用名义值
+  //（UIScrollView 的减速是指数衰减：decelerationRate = 每毫秒保留的比例，normal 0.998 /
+  // fast 0.99）。用户报的「减速的速度小了点，还是有偏差」就出在这两者不一致上。
   // 采样点到冻结之间隔了几十毫秒（点击 → 过桥 → 下发 props → 玻璃暂停），这段时间速度自己
-  // 也在按同一个比例衰减：先折算到「此刻」再算距离，否则落点会算远一截。
-  if (age > 0.001) {
-    velocity *= (CGFloat)pow((double)rate, (double)(age * 1000.0));
-  }
-  // 剩余距离 = v × 1ms / (1 - rate)：v[pt/s] × 0.001s 是这一毫秒走的路，之后每毫秒乘 rate，
-  // 等比数列求和 ⇒ v × 0.001 / (1 - rate)。（normal 档下 ≈ v/2000 秒的位移，即速度的一半）
-  CGFloat distance = velocity * 0.001 / (1 - rate);
+  // 也在按同一个比例衰减 —— 折算到「此刻」再求和，否则落点会算远一截。
+  CGFloat distance = LXGlassRemainingDistance(scrollView, age);
   CGPoint offset = scrollView.contentOffset;
   // 夹到合法滚动范围内：越界会让列表弹回去（那一下同样是「返回后画面不一致」）
   CGFloat minY = -scrollView.adjustedContentInset.top;
@@ -7606,6 +7916,9 @@ static BOOL LXGlassSettleDeceleratingScrollView(void) {
   LXGlassSettleScrollView = nil;
   LXGlassSettleVelocity = 0;
   LXGlassSettleLastSampleAt = 0;
+  // 这一串到此为止（列表已经被贴到落点并停住）：下一次滚动回调重新开一串。
+  // 实测到的衰减比例**留着** —— 它是这个列表（乃至这台设备）的固有属性，多量几串更准。
+  LXGlassSettleUserRun = NO;
   return YES;
 }
 
