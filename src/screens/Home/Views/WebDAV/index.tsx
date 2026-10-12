@@ -165,6 +165,9 @@ const SongItem = memo(
   }) => {
     const theme = useTheme()
     const buttonOpacity = useSettingValue('theme.buttonOpacity')
+    // 【第 68 轮第 1 条】正在播放那张卡片的高亮底色改由「歌曲高亮透明度」单独控制；
+    // 未播放卡片仍跟「按钮透明度」（第 25 轮定的口径：任何状态都受按钮透明度控制）。
+    const songHighlightOpacity = useSettingValue('theme.songHighlightOpacity')
     // 「按钮圆角」：封面与图标按钮的行内覆盖（静态 borderRadius 原样保留作兜底）
     const buttonRadius = useButtonRadius()
     // 行封面：meta.picUrl 优先，为空时按需动态获取（网盘内同名封面 → 本地缓存 → 已下载文件的
@@ -216,14 +219,15 @@ const SongItem = memo(
           // 只改颜色 alpha，不用容器 style.opacity：否则文字与图标会跟着一起淡。
           // 【第 46 轮】播放中行改用专门的歌曲行语义 token（比 c-primary-background-hover
           // 深一档）；未播放行不动。
-          backgroundColor: applyOpacity(
-            isPlaying ? theme['c-list-item-background-selected'] : theme['c-content-background'],
-            buttonOpacity,
-          ),
-          borderColor: applyOpacity(
-            isPlaying ? theme['c-primary-background-active'] : theme['c-border-background'],
-            buttonOpacity,
-          ),
+          // 【第 68 轮第 1 条】播放中那张卡片的底色/边框改由「歌曲高亮透明度」单独控制；
+          // 未播放卡片仍是「按钮透明度」——两个设置互不影响（此前两种状态共用第一参，
+          // 想让播放中的卡片更淡就必然连带把普通卡片一起调淡）。
+          backgroundColor: isPlaying
+            ? applyOpacity(theme['c-list-item-background-selected'], songHighlightOpacity)
+            : applyOpacity(theme['c-content-background'], buttonOpacity),
+          borderColor: isPlaying
+            ? applyOpacity(theme['c-primary-background-active'], songHighlightOpacity)
+            : applyOpacity(theme['c-border-background'], buttonOpacity),
         }}
       >
         <TouchableOpacity style={styles.songItemLeft} onPress={() => { onPress(item) }}>

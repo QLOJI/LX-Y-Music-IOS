@@ -17,13 +17,6 @@ export interface SelectInfo {
 }
 const initSelectInfo = {}
 
-// export interface ListImportExportProps {
-//   // onRename: (listInfo: LX.List.UserListInfo) => void
-//   // onImport: (index: number) => void
-//   // onExport: (listInfo: LX.List.MyListInfo) => void
-//   // onSync: (listInfo: LX.List.UserListInfo) => void
-//   // onRemove: (listInfo: LX.List.MyListInfo) => void
-// }
 export interface ListImportExportType {
   import: (listInfo: LX.List.MyListInfo, index: number) => void
   export: (listInfo: LX.List.MyListInfo, index: number) => void

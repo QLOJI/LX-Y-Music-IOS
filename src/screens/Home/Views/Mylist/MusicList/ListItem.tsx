@@ -79,7 +79,8 @@ const ListItem = memo(
     qualityShowHighest,
   }: ListItemProps & { qualityShowHighest: boolean }) => {
     const theme = useTheme()
-    const buttonOpacity = useSettingValue('theme.buttonOpacity')
+    // 【第 68 轮第 1 条】「我的列表」长按多选选中行的底色改由「歌曲高亮透明度」单独控制
+    const songHighlightOpacity = useSettingValue('theme.songHighlightOpacity')
     // 封面 54×54；点赞/更多图标按钮高度为行高 ITEM_HEIGHT=scaleSizeH(70) 的 80% ≈ 56
     const buttonRadius = useButtonRadius()
     // 【第 22 轮·图三/图四】下载任务转成的播放项（判据 'progress' in item，见 LocalDownload 的
@@ -151,10 +152,11 @@ const ListItem = memo(
           ...styles.listItem,
           width: rowInfo.rowWidth,
           height: ITEM_HEIGHT,
-          // 选中行高亮底色：只改颜色 alpha 随「按钮透明度」淡出，不用容器 opacity——否则文字图标会一起变淡
+          // 选中行高亮底色：只改颜色 alpha，不用容器 opacity——否则文字图标会一起变淡
           // 【第 46 轮】底色改用专门的歌曲行语义 token（比原先的 c-primary-background-hover 深一档），
           // 后者还兼着评论输入框等非行面；见 theme/themes/index.ts。
-          backgroundColor: isSelected ? applyOpacity(theme['c-list-item-background-selected'], buttonOpacity) : 'rgba(0,0,0,0)',
+          // 【第 68 轮第 1 条】透明度来源由「按钮透明度」换成「歌曲高亮透明度」（独立滑杆）。
+          backgroundColor: isSelected ? applyOpacity(theme['c-list-item-background-selected'], songHighlightOpacity) : 'rgba(0,0,0,0)',
           opacity: isSupported ? 1 : 0.5,
         }}
       >

@@ -37,6 +37,9 @@ export default forwardRef<MultipleModeBarType, MultipleModeBarProps>(
     const [visibleBar, setVisibleBar] = useState(true)
     const theme = useTheme()
     const buttonOpacity = useSettingValue('theme.buttonOpacity')
+    // 【第 68 轮第 1 条】条体（本组件的条体只有一条底边框，底色那行早就被注释掉了）
+    // 改由「歌曲高亮透明度」单独控制；条内两颗模式芯片仍跟「按钮透明度」。
+    const songHighlightOpacity = useSettingValue('theme.songHighlightOpacity')
     // 条内按钮无自身高度，按槽位/返回栏行高 44 折算半高（与 ActiveList 行高 44 同源）
     const buttonRadius = useButtonRadius()
 
@@ -96,10 +99,12 @@ export default forwardRef<MultipleModeBarType, MultipleModeBarProps>(
         // 【第 46 轮】底边框同样跟「主题设置 → 按钮透明度」走。这条栏与返回栏/搜索栏共用
         // 顶部同一个槽位、自己不带底色（底色那行本来就被注释掉，这里不动它），所以能受
         // 设置影响的就只有这条分隔线；不接的话整条栏对那个设置毫无反应。
-        borderBottomColor: applyOpacity(theme['c-border-background'], buttonOpacity),
+        // 【第 68 轮第 1 条】这条分隔线改挂「歌曲高亮透明度」，与另一条多选栏、
+        // 与「正在播放/选中行」保持同一个设置来源。
+        borderBottomColor: applyOpacity(theme['c-border-background'], songHighlightOpacity),
         opacity: visibleBar ? animFade : 0, // Bind opacity to animated value
       }),
-      [animFade, theme, visibleBar, buttonOpacity],
+      [animFade, theme, visibleBar, songHighlightOpacity],
     )
 
     const handleSelectAll = useCallback(() => {

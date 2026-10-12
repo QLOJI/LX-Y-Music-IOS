@@ -97,15 +97,6 @@ export interface ListMusicSortType {
 }
 const initSelectInfo = {}
 
-// const getName = (id: string, name: string) => {
-//   switch (id) {
-//     case LIST_IDS.DEFAULT:
-//       return global.i18n.t(name)
-//     case LIST_IDS.LOVE:
-//       return global.i18n.t(name)
-//     default:
-//       return name
-//   }
 // }
 
 export default forwardRef<ListMusicSortType, {}>((props, ref) => {

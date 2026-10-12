@@ -69,7 +69,8 @@ const ListItem = memo(
     onPress: (info: DuplicateMusicItem) => void
   }) => {
     const theme = useTheme()
-    const buttonOpacity = useSettingValue('theme.buttonOpacity')
+    // 【第 68 轮第 1 条】重复歌曲弹窗里多选选中行的底色改由「歌曲高亮透明度」单独控制
+    const songHighlightOpacity = useSettingValue('theme.songHighlightOpacity')
     // 图标按钮：可见高度 = 图标 18 + 上下 padding 8×2 = 34
     const buttonRadius = useButtonRadius()
     const isSelected = selectedList.includes(info)
@@ -79,10 +80,11 @@ const ListItem = memo(
         style={{
           ...styles.listItem,
           height: ITEM_HEIGHT,
-          // 选中态底色随「按钮透明度」淡出：只改颜色 alpha，不用容器 opacity（会把文字一起淡掉）
+          // 选中态底色：只改颜色 alpha，不用容器 opacity（会把文字一起淡掉）
           // 【第 46 轮】改用专门的歌曲行语义 token（比 c-primary-background-hover 深一档）
+          // 【第 68 轮第 1 条】透明度来源由「按钮透明度」换成「歌曲高亮透明度」（独立滑杆）
           backgroundColor: isSelected
-            ? applyOpacity(theme['c-list-item-background-selected'], buttonOpacity)
+            ? applyOpacity(theme['c-list-item-background-selected'], songHighlightOpacity)
             : 'rgba(0,0,0,0)',
         }}
         onStartShouldSetResponder={() => true}
