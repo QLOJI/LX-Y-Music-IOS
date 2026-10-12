@@ -14,53 +14,6 @@ import ImportBtn from './ImportBtn'
 import ScriptImportExport, { type ScriptImportExportType } from './ScriptImportExport'
 import { designRadius, designSpacing, designTypography } from '@/theme/DesignTokens'
 
-// interface UrlInputType {
-//   setText: (text: string) => void
-//   getText: () => string
-//   focus: () => void
-// }
-// const UrlInput = forwardRef<UrlInputType, {}>((props, ref) => {
-//   const theme = useTheme()
-//   const t = useI18n()
-//   const [text, setText] = useState('')
-//   const inputRef = useRef<InputType>(null)
-//   const [height, setHeight] = useState(100)
-
-//   useImperativeHandle(ref, () => ({
-//     getText() {
-//       return text.trim()
-//     },
-//     setText(text) {
-//       setText(text)
-//     },
-//     focus() {
-//       inputRef.current?.focus()
-//     },
-//   }))
-
-//   const handleLayout = useCallback(({ nativeEvent }: LayoutChangeEvent) => {
-//     setHeight(nativeEvent.layout.height)
-//   }, [])
-
-//   return (
-//     <View style={styles.inputContent} onLayout={handleLayout}>
-//       <Input
-//         ref={inputRef}
-//         value={text}
-//         onChangeText={setText}
-//         textAlignVertical="top"
-//         placeholder={t('setting_dislike_list_input_tip')}
-//         size={12}
-//         style={{ ...styles.input, height, backgroundColor: theme['c-primary-input-background'] }}
-//       />
-//     </View>
-//   )
-// })
-
-// export interface UserApiEditModalProps {
-//   onSave: (rules: string) => void
-//   // onSourceChange: SourceSelectorProps['onSourceChange']
-// }
 export interface UserApiEditModalType {
   show: () => void
 }

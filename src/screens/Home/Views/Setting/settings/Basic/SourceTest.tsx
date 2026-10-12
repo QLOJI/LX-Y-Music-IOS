@@ -274,6 +274,16 @@ export default memo(() => {
     }
   }, [])
 
+  // 【第 70 轮第 3 条】卸载即停表。计时的 1s interval 此前只有三条停止路径：测试正常跑完
+  // （handleTest 尾部）、单源测试结束（handleTestSingleSource 尾部）、用户点停止（handleStop）。
+  // **离开页面**这条路没有：测试还在跑时按返回，组件卸载后这个 interval 会一直转下去 ——
+  // 本 App 有后台音频（进程不挂起），退到后台它照转，每秒唤醒一次 JS 线程去 setState
+  // 一个已经没人看的组件。清理挂在卸载上、复用同一个 stopElapsedTimer（不新开一份逻辑），
+  // 引用稳定（useCallback 空依赖），只注册一次。
+  useEffect(() => {
+    return stopElapsedTimer
+  }, [stopElapsedTimer])
+
   const handleStop = useCallback(() => {
     shouldContinueTesting.current = false
     setIsStopRequested(true)
