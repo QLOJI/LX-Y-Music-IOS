@@ -4973,6 +4973,9 @@ static const int64_t LXResumeFadeStepMs = 40;
 // 满音量，用户听到的正是「自动播放很快、声音突然很大」。JS 随后每一拍写音量都会取消本斜坡
 //（setVolume 桥 = 显式写入），所以两层叠加不互顶，终点都收敛到用户设定音量。
 // currentVolume 已经是 0（JS 已经压过）时不开：那说明 JS 自己会渐入，原生保持静音即可。
+//
+// 【第 68 轮第 2 条】本方法只给「**重启前没在出声**」的重启用（冷启动 / 系统打断结束的自动续播 /
+// 用户点恢复）；「播放途中的重启」走下面 shouldFadeInOnEngineRestartLocked 判为 NO，不塌这一次。
 - (void)beginResumeFadeInLocked {
   [self cancelOutputVolumeRampLocked];
   if (self.soundEffectMixerNode == nil) return;
@@ -5008,12 +5011,34 @@ static const int64_t LXResumeFadeStepMs = 40;
   [self scheduleResumeFadeInStepLocked:generation];
 }
 
+// 【第 68 轮第 2 条】引擎**重新启动**时该不该压 0 渐入 —— 这是本轮「声音突然卡顿一下」的主因判据。
+//
+// 第 59/63 轮把「引擎不在跑」一律当成「从静音起步」，条件太宽：那个判据无法区分
+//   ① 冷启动 / 自动续播：重启前确实没有在出声 → 必须渐入（首拍满音量就是第 59 轮那个 bug）。
+//   ② 播放途中的重启：音频本来正在流，只是引擎被我们自己或系统停了一下 ——
+//      · checkStreamingOutputLivenessLocked 的 IO 死检（引擎报在跑、环里有数据，350ms 一帧没被取走）
+//      · 路由变化里的硬件格式变更（扬声器 44.1k ↔ 蓝牙 A2DP 48k，见 handleAVAudioSessionRouteChange）
+//      · 被忽略的短暂系统音结束后的轻量自愈（restoreOutputAfterIgnoredShortInterruption）
+//        —— 电源键 / 提示音 / 灵动岛活动正好落在这个窗口里
+//      这三支都发生在**用户以为音乐一直在正常播放**的时候，此时压 0 再爬 600ms 等于凭空造出
+//      一次音量塌陷并顺着听感变成「卡顿一下 / 声音波动」（第 68 轮第 2 条原话）。
+//
+// 判据：`playbackStarted && 渲染开着` 就是「刚才在流音频」。这一拍不渐入不会爆音 ——
+// 引擎停摆期间渲染回调不再被调用，PCM 环的读指针原地不动，重启后接着取的是**紧邻的下一个采样**，
+// 波形天然连续；音量节点上留着的本来就该是 currentVolume（不是「上一次的输出残留」）。
+- (BOOL)shouldFadeInOnEngineRestartLocked {
+  if (!self.playbackStarted) return YES;
+  if (!_sourceRenderingEnabled.load(std::memory_order_acquire)) return YES;
+  return self.currentVolume <= 0.001f;
+}
+
 - (BOOL)ensureAudioEngineRunningLocked:(NSError **)error {
   if (self.engine != nil && !self.engine.isRunning) {
     // 【第 59 轮第 3 条】引擎是**被重新启动**的（打断让位 / 自动续播 / 路由自愈），不是一直在跑：
     // 从静音渐入。反例：引擎本来就在跑（混音态打断期间引擎不停，见 performInterruptionBeganHandling）
     // → 不动音量，不凭空多出一次音量塌陷。
-    [self beginResumeFadeInLocked];
+    // 【第 68 轮第 2 条】只给「重启前没在出声」的那一半渐入；播放途中的重启不动音量（见上面判据）。
+    if ([self shouldFadeInOnEngineRestartLocked]) [self beginResumeFadeInLocked];
     if (![self.engine startAndReturnError:error]) return NO;
   }
   // 【第 59 轮第 3 条】非显式写入：斜坡在跑时让行（否则渐入的第一拍就被这一句顶回满音量）
