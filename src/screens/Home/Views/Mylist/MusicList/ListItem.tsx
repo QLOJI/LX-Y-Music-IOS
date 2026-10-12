@@ -156,7 +156,12 @@ const ListItem = memo(
           // 【第 46 轮】底色改用专门的歌曲行语义 token（比原先的 c-primary-background-hover 深一档），
           // 后者还兼着评论输入框等非行面；见 theme/themes/index.ts。
           // 【第 68 轮第 1 条】透明度来源由「按钮透明度」换成「歌曲高亮透明度」（独立滑杆）。
-          backgroundColor: isSelected ? applyOpacity(theme['c-list-item-background-selected'], songHighlightOpacity) : 'rgba(0,0,0,0)',
+          // 【第 69 轮第 1 条】用户原话：「播放中的歌曲高亮透明度没有包含上面在配置中」。
+          // 试听列表这一行此前**只有多选选中**才铺高亮底色 —— 正在播放的那一行只有歌名变主题色、
+          // 序号位换成播放图标（见上面的 active 分支），底色始终是透的，于是这根滑杆在这张页面上
+          // 看起来「管不着播放中的歌」。现在播放中（active）与选中（isSelected）同一档底色，
+          // 都随「歌曲高亮透明度」走 —— 与在线列表（OnlineList/ListItem）的口径逐字对齐。
+          backgroundColor: isSelected || active ? applyOpacity(theme['c-list-item-background-selected'], songHighlightOpacity) : 'rgba(0,0,0,0)',
           opacity: isSupported ? 1 : 0.5,
         }}
       >
