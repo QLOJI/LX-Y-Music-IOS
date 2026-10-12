@@ -7818,7 +7818,49 @@ static BOOL LXGlassIsUserDrivenScroll(UIScrollView *scrollView) {
   return scrollView.isDecelerating && LXGlassSettleScrollView == scrollView && LXGlassSettleUserRun;
 }
 
-// 【第 69 轮第 3 条】惯性落点：当前 offset.y + 剩余距离（与 settle 同一套公式）。
+// 【第 71 轮第 1 条】合法滚动范围的**唯一出处**（此前只有「冻结前贴落点」那一处算过它，
+// 惯性落点预测根本没看这个范围 —— 用户本轮报的两个现象都出在这个缺口上）。
+//   minY = 内容顶端（= 顶部 inset 的负值，下拉刷新持位时它会跟着 inset 一起变）
+//   maxY = 内容底端；内容比视口还短时两者取等（那种列表压根滚不动，任何 offset 都算越界）
+static void LXScrollViewLegalRangeY(UIScrollView *scrollView, CGFloat *outMinY, CGFloat *outMaxY) {
+  CGFloat minY = -scrollView.adjustedContentInset.top;
+  CGFloat maxY = scrollView.contentSize.height - scrollView.bounds.size.height
+               + scrollView.adjustedContentInset.bottom;
+  if (maxY < minY) maxY = minY;
+  *outMinY = minY;
+  *outMaxY = maxY;
+}
+
+// 【第 71 轮第 1 条】把「预测落点」修正成列表**真会停的地方**。用户本轮原话：
+//   「迷你播放器栏收缩有问题，主界面向下拉刷新时，回弹跳动幅度过大，上下滑动时存在跳跃卡顿」。
+// 等比外推（LXGlassRemainingDistance 的 v×0.001/(1-rate)）只对**自由滑行**成立。橡皮筋区段
+// （offset 已经跑出合法范围）不是自由滑行 —— 它是被弹簧拉回边界的，在那一段照搬公式会算出一个
+// **方向相反**的落点：
+//   · 下拉刷新松手那一瞬：offset 还在 -80 上下（越界），列表正被弹回顶部（速度为正 = 朝内容
+//     下方），公式给出 -80 + 上百 pt = +几十上百 pt ⇒ 判定值当场越过收起门限 ⇒ 迷你播放器栏
+//     立刻飞向左下角合并，等列表真的弹回顶部又判成展开 ⇒ 用户看到的「回弹跳动幅度过大」；
+//   · 顶/底被甩出边界之后的回弹同理（快速上滑到顶必带一次回弹）⇒ 每次到顶都闪一下 =
+//     用户报的「上下滑动时存在跳跃卡顿」。
+// 所以：当前 offset 已越界 ⇒ 落点就是那个边界本身（弹簧必定把它拉回边界，外推在这里没有
+// 意义）；没越界 ⇒ 外推值也要夹回范围内（列表不可能停在范围外，弹回来的是它自己）。
+// 两个消费方共用这一份口径：① tab 栏状态机的判定值；② 冻结前贴落点 —— 那一处原来只夹「内容
+// 范围」，越界的 -80 会被外推到内容里 +120，冻结帧与返回后的画面都停在错的位置上。
+// 第 69 轮第 3 条「判定用落点而不是当前点」的口径一个字没动，只是落点这回算对了。
+static CGFloat LXGlassLegalRestOffsetY(UIScrollView *scrollView, CGFloat currentY, CGFloat restY) {
+  CGFloat minY = 0;
+  CGFloat maxY = 0;
+  LXScrollViewLegalRangeY(scrollView, &minY, &maxY);
+  // 判据读的是**当前** offset（「我是不是已经在橡皮筋里」），不是落点：写成 restY 就等于只剩
+  // 一个普通的夹取，橡皮筋那一段照旧被外推 —— 本轮要修的就是它。
+  if (currentY < minY) return minY;
+  if (currentY > maxY) return maxY;
+  if (restY < minY) return minY;
+  if (restY > maxY) return maxY;
+  return restY;
+}
+
+// 【第 69 轮第 3 条】惯性落点：当前 offset.y + 剩余距离（与 settle 同一套公式），再经
+// LXGlassLegalRestOffsetY 修正到「真会停的地方」（橡皮筋区段取边界，【第 71 轮第 1 条】）。
 // 只有「手指开的头 + 还在惯性里 + 账本没过期」才给预测值，其余一律返回当前 offset.y
 //（=「速度为 0 就静止显示」的原口径，逐字保留）。
 static CGFloat LXGlassPredictedRestOffsetY(UIScrollView *scrollView) {
@@ -7828,7 +7870,8 @@ static CGFloat LXGlassPredictedRestOffsetY(UIScrollView *scrollView) {
   if (LXGlassSettleLastSampleAt <= 0) return offset.y;
   CFTimeInterval age = CACurrentMediaTime() - LXGlassSettleLastSampleAt;
   if (age > LXGlassSettleSampleMaxAge) return offset.y;
-  return offset.y + LXGlassRemainingDistance(scrollView, age);
+  return LXGlassLegalRestOffsetY(scrollView, offset.y,
+                                 offset.y + LXGlassRemainingDistance(scrollView, age));
 }
 
 static void LXGlassSampleScrollVelocity(UIScrollView *scrollView) {
@@ -7900,14 +7943,12 @@ static BOOL LXGlassSettleDeceleratingScrollView(void) {
   // 也在按同一个比例衰减 —— 折算到「此刻」再求和，否则落点会算远一截。
   CGFloat distance = LXGlassRemainingDistance(scrollView, age);
   CGPoint offset = scrollView.contentOffset;
-  // 夹到合法滚动范围内：越界会让列表弹回去（那一下同样是「返回后画面不一致」）
-  CGFloat minY = -scrollView.adjustedContentInset.top;
-  CGFloat maxY = scrollView.contentSize.height - scrollView.bounds.size.height
-               + scrollView.adjustedContentInset.bottom;
-  if (maxY < minY) maxY = minY;
-  CGFloat targetY = offset.y + distance;
-  if (targetY < minY) targetY = minY;
-  if (targetY > maxY) targetY = maxY;
+  // 落点 = 当前点 + 剩余距离，再修正成「列表真会停的地方」：夹到合法滚动范围内（越界会让列表
+  // 弹回去，那一下同样是「返回后画面不一致」），橡皮筋区段直接取边界 —— 两条口径都在
+  // LXGlassLegalRestOffsetY 里（【第 71 轮第 1 条】把「范围」与「修正」收成一处，与 tab 栏
+  // 状态机的判定值共用同一份；此前这里只夹内容范围，下拉刷新松手那一瞬的越界点会被外推到
+  // 内容里几十上百 pt，冻结帧采到的是那个错位置 = 返回后画面与冻结帧对不上）。
+  CGFloat targetY = LXGlassLegalRestOffsetY(scrollView, offset.y, offset.y + distance);
   if (fabs(targetY - offset.y) < LXGlassSettleMinDistance) return NO;
   // 两步 setContentOffset:animated:NO：第一下按当前位置写一次，把在途的减速动画打断
   //（UIKit 停性的惯用写法），第二下落到预测位置。两次都在主线程同步完成 —— 玻璃紧接着
