@@ -645,6 +645,40 @@ final class LiquidGlassView: MTKView {
     /// 本实例最近一次**被接受的**采景时刻（墙钟秒）。只由 shouldThrottleCapture 读写，
     /// 都在渲染帧内（与 captureBackdrop 同一线程），不需要锁。
     private var lastCaptureAt: TimeInterval = 0
+
+    /// 【第 67 轮·省电】静止帧不重复绘制（去重呈现）。
+    ///
+    /// 本类 shader **没有任何时间分量**（`ShaderUniforms` 只有 resolution / contentsScale /
+    /// touchPoint / 形状与折射参数 / 矩形列表，见文件头部的结构体定义与
+    /// LiquidGlassShaderSource.swift 的 MSL 侧同名结构体），也就是说
+    /// **一帧的输出完全由「背景纹理 + uniformsBuffer」两样输入决定**：
+    /// 输入逐字节相同 ⇒ 输出逐像素相同（kit 自己的注释也写了这一点，见 init 里
+    /// 「输入不变则每帧输出逐帧相同」）。
+    ///
+    /// 而稳态下（列表静止、没有转场、没有手势）采景每 33.3ms 会被 `shouldThrottleCapture`
+    /// 或全局闸门挡下一部分，`commitCapturedTexture` 也常常把「沿用上一张」判出来 ——
+    /// 这些帧里 draw() 仍会跑完整条路径：全屏三角带的片元着色（SDF + 折射采样）
+    /// → present(drawable) → commit()，一秒钟三十次，**输出和上一帧一模一样**。
+    /// 这就是「不播放音乐时也在发热」里属于玻璃的那一份：GPU 与主线程都为同一张图白转。
+    ///
+    /// 两个计数分别记「背景纹理被赋值」与「uniformsBuffer 被重写」的次数：
+    ///   · 纹理只在 `beginLiveCapture`(丢纹理) / `commitCapturedTexture`(提交或沿用) 里赋值，
+    ///     赋值即自增 —— 注意**沿用上一张（把 previous 交给背景纹理）也算**，
+    ///     （这条注释刻意不写出那两行赋值的原文：契约脚本里有以它们为锚点的反例，
+    ///     注释里复现同样的字面量会让不带缩进的锚点先命中文档注释、替换变成空操作）
+    ///     因为「刚才真的采了一帧并且决定了要沿用」这件事本身不必省（保守：宁可多画一帧）；
+    ///   · uniforms 只在 `updateUniforms()` 末尾自增，而它是**唯一**写 uniformsBuffer 的地方，
+    ///     只在 layoutSubviews 里被调用（几何 / 圆角 / 色调 / 融合矩形 / touchPoint 全在里面读）。
+    /// 于是「两次快照相等」= 本帧输出与上一次 present 的那帧逐像素相同 ⇒ 不画、不 present。
+    ///
+    /// 只有「什么都没变」才跳过，所以观感零差异；`hasPresentedFrame` 保证首帧必画；
+    /// 纹理被丢掉 / 重新入窗 / 从暂停恢复这三条路径会把 `hasPresentedFrame` 复位，
+    /// 让恢复后的第一帧仍然强制 present（CAMetalLayer 的内容在这些时刻可能已被系统回收，
+    /// 那种情况下「和上一帧相同」这个前提不再成立）。
+    private var textureRevision: UInt64 = 0
+    private var uniformsRevision: UInt64 = 0
+    private var hasPresentedFrame = false
+
     var touchPoint: CGPoint? = nil
 
     var frames: [CGRect] = []
@@ -689,6 +723,9 @@ final class LiquidGlassView: MTKView {
         // 移出窗口（本屏被压栈页覆盖）不做任何事：暂停与否由 JS 省电门（paused）唯一决定，
         // 第 61 轮起本类没有任何「自行暂停 / 自行恢复」的记账（见 reentryLiveStartedAt 注释）。
         guard window != nil else { return }
+        // 【第 67 轮】重新入层级：CAMetalLayer 上的内容可能随上一次移出窗口一并没掉，
+        // 「与上一帧相同 ⇒ 跳过」这个前提在这里不成立 —— 强制下一帧 present 一次
+        hasPresentedFrame = false
         beginCaptureSettleWindow()
         // 【第 58 轮第 2 条】实时采景窗口：整屏重新入窗口 = 一段转场开始（返回 / 首次挂载），
         // 这一段背景整幅在移动，静止档（30fps）采景会系统性落后 1~3 拍 —— 用户看到的就是
@@ -765,6 +802,10 @@ final class LiquidGlassView: MTKView {
         liveCaptureRequested = true
         consecutiveUniformFrames = 0
         backgroundTexture = nil
+        // 【第 67 轮】新会话：纹理被丢掉（draw 会因 backgroundTexture == nil 整帧不画），
+        // 恢复后第一帧必须真的画出去，所以连同「已 present」标记一起复位
+        textureRevision &+= 1
+        hasPresentedFrame = false
         // 新会话第一帧必须立刻采到（全局闸门也要复位，别卡在上一段的格子里）
         lastCaptureAt = 0
         Self.resetGlobalCaptureGate()
@@ -887,6 +928,11 @@ final class LiquidGlassView: MTKView {
         let resumeNow = CACurrentMediaTime()
         lastCommitAcceptedAt = resumeNow
         resumeQuietUntil = resumeNow + Self.resumeQuietDuration
+        // 【第 67 轮】暂停期间 CAMetalLayer 的内容可能已被系统回收（App 挂后台再回来、
+        // 图层被移出层级又移回）：此时「本帧输入没变 ⇒ 输出与上一帧相同」不成立，
+        // 强制复位「已 present」，让恢复后的第一帧一定画出去（本函数末尾的 draw(bounds)
+        // 就是为此存在的那一脚）
+        hasPresentedFrame = false
         beginCaptureSettleWindow()
         captureBackground()
         // 复位之后还差最后一脚（2026-10-02，用户第 11 轮第 10 条：
@@ -941,6 +987,11 @@ final class LiquidGlassView: MTKView {
     func handlePauseForFreeze() {
         lastCaptureAt = 0
         Self.resetGlobalCaptureGate()
+        // 【第 67 轮】定格这一脚要的就是「真正改写 CAMetalLayer」（第 66 轮第 1 条：冻结帧
+        // 必须等于贴完落点之后的画面）。正常路径上 captureBackground 会赋值一次纹理、
+        // 去重呈现自然放行；但万一本帧采景被全局闸门挡掉，也要在这一脚强制 present 一次
+        // （代价最多是多画一帧与上一帧相同的画面，不会少画）
+        hasPresentedFrame = false
         captureBackground()
         draw(bounds)
     }
@@ -1423,9 +1474,13 @@ final class LiquidGlassView: MTKView {
         }
         if shouldHold {
             backgroundTexture = previous
+            // 【第 67 轮】沿用也是「本帧真的采了一帧、并有结论」：同样自增纹理修订号，
+            // 让 draw() 照常画这一帧（去重只省「什么都没做」的帧，不省「刚做了什么」的帧）
+            textureRevision &+= 1
             return
         }
         backgroundTexture = texture
+        textureRevision &+= 1
         lastCommitAcceptedAt = now
     }
 
@@ -1513,6 +1568,9 @@ final class LiquidGlassView: MTKView {
         }
 
         uniformsBuffer.contents().assumingMemoryBound(to: LiquidGlass.ShaderUniforms.self).pointee = uniforms
+        // 【第 67 轮】本函数是**唯一**向 uniformsBuffer 写内容的地方（只在 layoutSubviews
+        // 里被调用）⇒ 在这里自增修订号，「uniforms 有没有变」就有一个可靠且廉价的判据
+        uniformsRevision &+= 1
     }
 
     override func layoutSubviews() {
@@ -1530,6 +1588,10 @@ final class LiquidGlassView: MTKView {
     }
 
     override func draw(_ rect: CGRect) {
+        // 本帧开始时的两份修订号：采景 / 布局若改动了输入，下面会与它们不等
+        let textureRevisionAtFrameStart = textureRevision
+        let uniformsRevisionAtFrameStart = uniformsRevision
+
         // Auto-capture background from superview if enabled（上游一致：连续渲染 +
         // 每帧捕获，实时折射；多玻璃实例互拍的黑影排除见 captureRootView）
         if autoCapture {
@@ -1539,6 +1601,19 @@ final class LiquidGlassView: MTKView {
         // 背景纹理未就绪（刚挂载/缓冲尺寸未定，setupBuffer 尚未跑出有效像素缓冲）
         // 时跳过本帧：视图保持透明，等下一帧再画，避免闪黑
         guard backgroundTexture != nil else { return }
+
+        // 【第 67 轮·省电】去重呈现：本帧既没采到/换过背景纹理，也没有任何 uniforms 变化
+        // （resize / 圆角 / 色调 / 融合矩形 / touchPoint 全都只在 updateUniforms 里落到
+        // uniformsBuffer），而 shader 不含时间分量 ⇒ 这帧输出与上一次 present 的逐像素相同。
+        // 那就别画：省下一次全屏片元着色 + 一次 drawable 获取 + 一次 CAMetalLayer 提交
+        //（稳态 30fps 下每秒 30 次，多块玻璃各算一份）。
+        // 采样**放在 captureBackground 之后**、且只在「零变化」时命中：采景节流挡掉的那些帧
+        // 是本条唯一要省的目标，凡是真采了一帧（含判为沿用）或布局动过的帧一律照画。
+        if hasPresentedFrame,
+           textureRevision == textureRevisionAtFrameStart,
+           uniformsRevision == uniformsRevisionAtFrameStart {
+            return
+        }
 
         // shader/pipeline 构建失败时玻璃降级为透明（iOS 26 兼容兜底），不崩溃
         guard let pipeline = LiquidGlassRenderer.shared.pipelineState else { return }
@@ -1561,6 +1636,9 @@ final class LiquidGlassView: MTKView {
 
         commandBuffer.present(drawable)
         commandBuffer.commit()
+        // 【第 67 轮】到这一帧为止 CAMetalLayer 上有内容了，之后再遇到「输入零变化」的帧
+        // 才允许跳过（见上面那段去重呈现的说明）
+        hasPresentedFrame = true
     }
 }
 

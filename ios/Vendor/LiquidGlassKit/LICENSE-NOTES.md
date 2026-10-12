@@ -44,6 +44,10 @@ changes:
   the app's will-freeze handler first lands a still-decelerating list on its
   predicted rest offset, then the glass captures and presents that state.
   With no handler registered (the hook's default) nothing extra runs.
+  Since 2026-10-12 (round 67) the continuous loop no longer RE-PRESENTS a frame
+  whose inputs did not change (see "Frame-present dedup" below): an idle glass
+  widget stops re-drawing identical pixels at 30/60fps. Visible output is
+  unchanged — the skipped frames were byte-identical to the one on screen.
 - `MPSImageGaussianBlur` is unavailable on the iOS simulator — run on a real
   device.
 - Uses the private `CABackdropLayer` (via `NSClassFromString`) on iOS < 26.2,
@@ -140,4 +144,30 @@ transparency) is kept until a non-uniform capture arrives. Dark mode is
 unaffected: a real background with content is non-uniform, and discarding a
 uniform frame is visually a no-op (blur/refraction of a uniform field is
 uniform).
+
+## Frame-present dedup: skip re-presenting identical frames (vendored)
+
+Upstream presents on every drawable callback of the continuous `MTKView` loop
+(idle 30fps / live 60fps) even when nothing in the frame changed. The shader is
+a pure function of its inputs — `ShaderUniforms` carries no time field, so a
+frame's output depends only on (`backgroundTexture`, `uniformsBuffer`) — and
+re-presenting an unchanged pair just rewrites the same pixels: pure GPU work
+with no visible effect, paid for as heat and battery.
+
+Vendored change (2026-10-12, round 67): two monotonic counters,
+`textureRevision` and `uniformsRevision`, are bumped on every write to the
+background texture (capture accepted, held frame re-attached, new live session)
+and to the uniforms buffer (`updateUniforms`). `draw(_:)` snapshots both before
+encoding and presents only when a revision moved, or when `hasPresentedFrame`
+is false. That flag is cleared on the paths where the CAMetalLayer's contents
+cannot be trusted to still be ours — first mount / re-entry into a window
+(`didMoveToWindow`), `beginLiveCapture`, resume from pause
+(`handleResumeFromPause`) and the freeze settle (`handlePauseForFreeze`) — each
+of those forces exactly one present.
+
+What is skipped is only frames in which **nothing happened**. Every path that
+reaches a conclusion about the capture (accept or hold) bumps `textureRevision`,
+so a conclusion is always presented; transparent-from-cold-start (no texture
+yet) is caught by the pre-existing `backgroundTexture != nil` guard.
+
 
