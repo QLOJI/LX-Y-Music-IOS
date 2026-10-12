@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react'
 import { Animated, View } from 'react-native'
 import { createStyle } from '@/utils/tools'
 import { useIsPlay } from '@/store/player/hook'
-import { useHomeCovered } from '@/store/common/hook'
+import { useAppActive, useHomeCovered } from '@/store/common/hook'
 
 export default ({ color = '#1cd0a6' }: { color?: string }) => {
   const isPlay = useIsPlay()
@@ -10,7 +10,13 @@ export default ({ color = '#1cd0a6' }: { color?: string }) => {
   // （播放详情等）覆盖时整棵列表不可见，循环动画仍在每帧驱动 —— 不可见即停，
   // 返回 Home 后 effect 依 isPlay/covered 变化自动重启，无观感差异。
   const homeCovered = useHomeCovered()
-  const active = isPlay && !homeCovered
+  // 【第 70 轮第 3 条】补一层前台门。上面那次覆盖门只管「Home 被压栈页盖住」，
+  // 退后台 / 锁屏 / 控制中心时 Home 仍是栈顶 ⇒ 覆盖门是开的，4 条 loop 继续每帧驱动
+  // （本 App 有后台音频、进程常驻，锁屏后这一转就是整夜）。不可见即停，口径与
+  // 两块玻璃 / 跑马灯一致；回前台由 active 翻转自动重启，走的是**已有的那条**路径
+  // （同一段 else 收势 + 重新起表），不新增收尾动画，观感与现在从压栈页返回时相同。
+  const appActive = useAppActive()
+  const active = isPlay && !homeCovered && appActive
   const anim1 = useRef(new Animated.Value(0.3)).current
   const anim2 = useRef(new Animated.Value(0.8)).current
   const anim3 = useRef(new Animated.Value(0.5)).current

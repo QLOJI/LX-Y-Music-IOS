@@ -71,13 +71,20 @@ const LoadingSpinner = () => {
   const theme = useTheme()
 
   useEffect(() => {
-    Animated.loop(
+    // 【第 70 轮第 3 条】循环必须留一个停止路径。原实现 `Animated.loop(...).start()`
+    // 起来之后没有任何引用、也没有清理：弹窗在「加载中」被关掉（网页加载卡住时用户
+    // 直接返回）会让这个 1s 循环留在原生动画模块里空转 —— 视图已经卸载，它每帧照样
+    // 更新一个没人看的值，而且**不会再有任何时机停它**。持有引用 + 卸载即停，
+    // 生命周期与 <LoadingSpinner> 的挂载严格一致（它只在 isLoading 时渲染）。
+    const animation = Animated.loop(
       Animated.timing(spinAnim, {
         toValue: 1,
         duration: 1000,
         useNativeDriver: true,
       }),
-    ).start()
+    )
+    animation.start()
+    return () => { animation.stop() }
   }, [spinAnim])
 
   const spin = spinAnim.interpolate({

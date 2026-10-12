@@ -9,6 +9,7 @@ import {
   type ViewStyle,
 } from 'react-native'
 import Text, { type TextProps } from '@/components/common/Text'
+import { useAppActive } from '@/store/common/hook'
 
 /**
  * 超出一行宽度的文本 → 从右到左滚动（跑马灯）；放得下就是静态文本，不花任何动画开销。
@@ -31,6 +32,24 @@ import Text, { type TextProps } from '@/components/common/Text'
  *   · 文本变化时把位置复位（否则新歌名会带着上一首的偏移出现），宽度由 onLayout 重新量；
  *   · 单一 Animated.Value + useNativeDriver，delay 节点自己带独立的 Value，不存在
  *     「JS 驱动动画跑在已转 native 的节点上」那种 Fatal（见 common/Text.tsx 的长注释）。
+ *
+ * 【第 70 轮第 3 条·省电门】用户原话：「目前软件使用过程中，发热还是比较严重的，在不影响
+ * 功能和样式的情况下……减少使用过程中和后台时的发热问题。」
+ * 本组件是全仓**实例最多**的连续动画源：歌单/在线列表/WebDAV/本地下载的每一行歌名都挂一个，
+ * FlatList 的渲染窗口会同时挂住几十行，放不下的那些全部在跑（歌曲名普遍溢出，等于几十条
+ * 原生驱动的 loop 一起转）。而它们**没有任何门控** —— 之前只有一个 `if (!distance) return`
+ * （放得下就不跑），那管的是「这条要不要跑」，不是「现在该不该跑」。
+ *
+ * 本轮接**前台门**（useAppActive，与迷你播放器 / Tab 栏两块玻璃同一口径）：App 不在前台
+ * （后台 / 锁屏 / 切换器 / 系统打断）时停表。这不是「外观取舍」——那两态下这些文字本来
+ * 就不可见，停表只是不再为看不见的东西逐帧计算。
+ *
+ * 为什么**不**再接一层「被压栈页盖住」的门：本组件是**多场景复用**的。歌名行同时出现在
+ * 首页列表（OnlineList / MusicList / WebDAV / LocalDownload，都在 Home 域内）和播放器的
+ * 播放列表弹窗（components/player/PlayerPlaylist.tsx，它属于播放详情这类**被压栈**的屏）。
+ * 按 Home 域的覆盖门（useHomeCovered）去停，会让「打开详情页的播放列表弹窗」里那些**明明
+ * 看得见**的跑马灯一起冻住 —— 那是真的外观回归。要按行正确门控就得把所在屏的 componentId
+ * 一路穿过列表容器传到每一行（两个消费点的屏不同），收益与风险不成比例，本轮不做。
  */
 export const MARQUEE_SPEED_PX_PER_S = 30
 /** 滚到末尾后留出的间隔（第二份副本贴在第一份后面，间隔即首尾之间的空隙） */
@@ -56,6 +75,8 @@ export default memo(({ text, children, containerStyle, ...props }: MarqueeTextPr
   // >0 表示「放不下，需要滚动」，值就是一次循环要走的距离（文本宽 + 间隔）
   const [distance, setDistance] = useState(0)
   const translateX = useRef(new Animated.Value(0)).current
+  // 【第 70 轮第 3 条】前台门：App 不在前台就没有「看得见的滚动」可言，停表（见文件头注释）。
+  const appActive = useAppActive()
 
   const measure = useCallback(() => {
     const textWidth = textWidthRef.current
@@ -84,7 +105,13 @@ export default memo(({ text, children, containerStyle, ...props }: MarqueeTextPr
   }, [text, translateX])
 
   useEffect(() => {
-    if (!distance) {
+    // 【第 70 轮第 3 条】两个早退条件同一种处理：复位 + 不起表。
+    // · `!distance`（放得下）是原有口径；
+    // · `!appActive`（App 不在前台）是本轮加的 —— 回前台时 effect 重新执行，从表头
+    //   重新起步（`translateX.setValue(0)` + 起点那一拍 MARQUEE_PAUSE_MS）。复位发生在
+    //   界面不可见时，看不到；回来看到的是「从头滚」，不是一个半路速度不对的循环
+    //   （Animated.loop 从中间值重启时会用整段 duration 走完剩下的距离）。
+    if (!distance || !appActive) {
       translateX.setValue(0)
       return
     }
@@ -111,7 +138,7 @@ export default memo(({ text, children, containerStyle, ...props }: MarqueeTextPr
     )
     animation.start()
     return () => { animation.stop() }
-  }, [distance, translateX])
+  }, [distance, translateX, appActive])
 
   return (
     <View
