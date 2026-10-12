@@ -126,8 +126,11 @@ export const filterList = async({ playedList, listId, list, playerMusicInfo, isN
 
   if (!filteredList.length && playedList.length) {
     clearPlayedList()
-    return { filteredList: canPlayList, playerIndex }
+    return { filteredList: canPlayList, canPlayList, playerIndex }
   }
-  return { filteredList, playerIndex }
+  // 【第 69 轮第 5 条】`canPlayList`（可播全集：剔掉未下完 / 不喜欢的，**不**按已播过滤）
+  // 一并交出去 —— 随机播放的洗牌袋要在它上面洗牌（袋自己保证一轮不重复），不能再叠一层
+  // 「已播过滤」，否则袋里剩下的歌和过滤后的池子对不上，抽出来就是空。
+  return { filteredList, canPlayList, playerIndex }
 }
 

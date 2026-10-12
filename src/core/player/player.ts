@@ -282,7 +282,12 @@ const handleRestorePlay = async(restorePlayInfo: LX.Player.SavedPlayInfo) => {
     setStatusText(global.i18n.t('lyric__load_error'))
   })
 
-  if (settingState.setting['player.togglePlayMethod'] == 'random' && !playMusicInfo.isTempPlay) addPlayedList(playMusicInfo as LX.Player.PlayMusicInfo)
+  if (settingState.setting['player.togglePlayMethod'] == 'random' && !playMusicInfo.isTempPlay) {
+    addPlayedList(playMusicInfo as LX.Player.PlayMusicInfo)
+    // 【第 69 轮第 5 条】恢复上次播放也是「这首歌已经开播」：同样记进洗牌袋（不多做重洗 ——
+    // 启动时袋子本来就是空的，记一笔只为了让新一轮的第一首避开它）。
+    noteShufflePlayed(playMusicInfo.listId, playMusicInfo.musicInfo!.id)
+  }
 }
 
 
@@ -350,7 +355,12 @@ const handlePlay = async() => {
   clearLoadTimeout()
 
 
-  if (settingState.setting['player.togglePlayMethod'] == 'random' && !playMusicInfo.isTempPlay) addPlayedList(playMusicInfo as LX.Player.PlayMusicInfo)
+  if (settingState.setting['player.togglePlayMethod'] == 'random' && !playMusicInfo.isTempPlay) {
+    addPlayedList(playMusicInfo as LX.Player.PlayMusicInfo)
+    // 【第 69 轮第 5 条】洗牌袋同步：这首歌已经开播 —— 不管它是点歌、自动切歌还是上一曲
+    // 跳过来的，都从本轮待播里剔掉。「一轮之内不重复」这条不变量收口在这里。
+    noteShufflePlayed(playMusicInfo.listId, playMusicInfo.musicInfo!.id)
+  }
 
   debouncePlay(musicInfo)
 }
@@ -363,6 +373,9 @@ const handlePlay = async() => {
 export const playListById = async(listId: string, id: string) => {
   const prevListId = playerState.playInfo.playerListId
   setPlayListId(listId)
+  // 【第 69 轮第 5 条】手动点歌 = 刷新随机规则（用户原话：「手动点击播放时刷新列表随机规则」）：
+  // 丢掉洗牌袋，剩下的歌按新顺序重洗一轮。
+  resetShufflePass(listId)
   const musicInfo = getList(listId).find(m => m.id == id)
   if (!musicInfo) return
   setPlayMusicInfo(listId, musicInfo)
@@ -379,6 +392,8 @@ export const playListById = async(listId: string, id: string) => {
 export const playList = async(listId: string, index: number) => {
   const prevListId = playerState.playInfo.playerListId
   setPlayListId(listId)
+  // 【第 69 轮第 5 条】手动点歌 = 刷新随机规则（同 playListById）
+  resetShufflePass(listId)
   setPlayMusicInfo(listId, getList(listId)[index])
   if (settingState.setting['player.isAutoCleanPlayedList'] || prevListId != listId) clearPlayedList()
   clearTempPlayeList()
@@ -421,6 +436,116 @@ export const resetRandomNextMusicInfo = () => {
   }
 }
 
+// ============================================================================
+// 随机播放（洗牌袋）：一轮之内不重复，手动点歌刷新一轮
+// ============================================================================
+// 【第 69 轮第 5 条】用户原话：「目前选择随机播放模式，列表中共有280首歌，但是随机播放
+// 不随机，始终偏重于其中几首或者几十首，请优化随机算法，使得列表随机可以不重复播放，
+// 手动点击播放时刷新列表随机规则，自动播放时遵循随机规则。」
+//
+// 旧实现是「每次从**未播集合**里均匀取一个下标」（getRandom(0, filteredList.length)），
+// 单看这一步没问题，真正的偏重在它前面那道闸门：getNextPlayMusicInfo / playNext 开头都有
+// 一段「已播放列表里当前歌的下一条」。那段是**历史导航**（上一曲 / 下一曲往回走用），
+// 判据只有「当前歌在 playedList 里的下标 + 1」。于是只要当前歌曾经播过 —— 用户手动点一首
+// 播过的歌就是这种情况 —— 下一首就顺着旧历史下去，而不是随机；走完才轮到随机。听感上
+// 就成了「总是那几首 / 那几十首」。旧实现的「不重复」也不硬：过滤已播靠 playedList，
+// 而 playedList 会被 clearPlayedList 清掉（勾选「自动清空已播放列表」时每次点歌都清、
+// 跨列表播放也清），一清就退回「从全量列表里均匀抽」，生日悖论下重复自然多。
+//
+// 现在改成**洗牌袋**（Fisher–Yates 洗一份顺序，按顺序播，播完一轮再洗）：
+//   · queue  —— 本轮还没播的歌，直接就是洗好的顺序（取一首 = shift 一首）；
+//   · played —— 本轮已播（只用来判断「哪些是列表里新加进来、本轮还没排过的歌」；
+//               一轮开始时只保留上一首，不越积越多）；
+//   · lastId —— 上一首，保证新一轮的第一首不会又是它；
+//   · listId —— 袋子属于哪个列表，换列表 / 列表内容变了自动对齐。
+// 一轮之内**不会重复**（用户第 1 条要求）；手动点歌（playList / playListById）把袋子丢掉
+// 重洗（用户第 2 条要求「手动点击播放时刷新列表随机规则」）；自动切歌与「下一曲」都只从袋子里
+// 顺序取（用户第 3 条要求「自动播放时遵循随机规则」），不再走历史回放。
+// 历史回放本身没删：**上一曲**照旧按 playedList 往回走（那是它的本职），随机模式下按下
+// 上一曲仍然有效。
+const shufflePass = {
+  listId: null as string | null,
+  queue: [] as string[],
+  played: new Set<string>(),
+  lastId: null as string | null,
+}
+
+/** Fisher–Yates 洗牌（不改原数组） */
+const shuffleIds = (ids: readonly string[]): string[] => {
+  const next = ids.slice()
+  for (let i = next.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1))
+    const tmp = next[i]
+    next[i] = next[j]
+    next[j] = tmp
+  }
+  return next
+}
+
+/**
+ * 丢掉袋子：下一次取歌时按当前列表重洗一轮。手动点歌刷新随机规则就靠它。
+ * @param listId 目标列表（点歌时就是这首歌要播的那个列表）
+ */
+export const resetShufflePass = (listId?: string | null) => {
+  shufflePass.listId = listId ?? null
+  shufflePass.queue = []
+  shufflePass.played = new Set()
+  shufflePass.lastId = null
+}
+
+/**
+ * 把袋子对齐到当前列表：换列表重洗、删掉的歌剔掉、新加的歌随机插进来、取空重洗一轮。
+ */
+const syncShufflePass = (listId: string, poolIds: readonly string[]) => {
+  if (shufflePass.listId !== listId) resetShufflePass(listId)
+  const poolSet = new Set(poolIds)
+  shufflePass.queue = shufflePass.queue.filter(id => poolSet.has(id) && !shufflePass.played.has(id))
+  if (!shufflePass.queue.length) { // 这一轮播完了（或刚开局 / 刚被手动点歌刷新）⇒ 重洗一轮
+    const lastId = shufflePass.lastId
+    shufflePass.played = new Set(lastId ? [lastId] : [])
+    shufflePass.queue = shuffleIds(poolIds.filter(id => id !== lastId))
+    // 列表只有一首歌（或上一首已不在列表里）时上面会洗出空袋，兜底按全量重洗
+    if (!shufflePass.queue.length) shufflePass.queue = shuffleIds(poolIds)
+    return
+  }
+  // 队列里还有歌：把「列表里新加进来、本轮既没播也没排过」的歌随机插到队列中间，
+  // 别让刚加进列表的歌干等一整轮。
+  const queued = new Set(shufflePass.queue)
+  const fresh = poolIds.filter(id => !queued.has(id) && !shufflePass.played.has(id) && id !== shufflePass.lastId)
+  if (fresh.length) {
+    for (const id of shuffleIds(fresh)) {
+      shufflePass.queue.splice(Math.floor(Math.random() * (shufflePass.queue.length + 1)), 0, id)
+    }
+  }
+}
+
+/**
+ * 从袋子里取下一首（取到就出队）。返回 null = 列表里一首可播的都没有。
+ */
+const takeShuffleNext = (listId: string, pool: Array<LX.Music.MusicInfo | LX.Download.ListItem>) => {
+  if (!pool.length) return null
+  syncShufflePass(listId, pool.map(m => m.id))
+  const id = shufflePass.queue.shift()
+  if (!id) return null
+  const musicInfo = pool.find(m => m.id === id)
+  if (!musicInfo) return null
+  shufflePass.lastId = id
+  return musicInfo
+}
+
+/**
+ * 记一笔「这首歌正在播」：从本轮待播里剔掉并记为已播。
+ * 点歌 / 自动切歌 / 上一曲跳过来的都走这里 —— 「一轮之内不重复」这条不变量收口在这一处。
+ */
+export const noteShufflePlayed = (listId: string | null, id: string) => {
+  const queued = shufflePass.queue.indexOf(id)
+  if (queued > -1) shufflePass.queue.splice(queued, 1)
+  if (shufflePass.listId == null) shufflePass.listId = listId
+  if (shufflePass.listId !== listId) return
+  shufflePass.played.add(id)
+  shufflePass.lastId = id
+}
+
 export const getNextPlayMusicInfo = async(): Promise<LX.Player.PlayMusicInfo | null> => {
   if (playerState.tempPlayList.length) { // 如果稍后播放列表存在歌曲则直接播放改列表的歌曲
     const playMusicInfo = playerState.tempPlayList[0]
@@ -438,8 +563,13 @@ export const getNextPlayMusicInfo = async(): Promise<LX.Player.PlayMusicInfo | n
   if (!currentListId) return null
   const currentList = getList(currentListId)
 
+  // 【第 69 轮第 5 条】随机模式走洗牌袋（见上面「随机播放（洗牌袋）」区块）：既不参与下面的
+  // 历史回放，也不按「已播」过滤池子 —— 袋自己保证一轮不重复，再叠一层已播过滤只会把袋子
+  // 和池子错开。
+  const isRandom = settingState.setting['player.togglePlayMethod'] == 'random'
+
   const playedList = playerState.playedList
-  if (playedList.length) { // 移除已播放列表内不存在原列表的歌曲
+  if (!isRandom && playedList.length) { // 移除已播放列表内不存在原列表的歌曲
     let currentId: string
     if (playMusicInfo.isTempPlay) {
       const musicInfo = currentList[playInfo.playerPlayIndex]
@@ -462,13 +592,25 @@ export const getNextPlayMusicInfo = async(): Promise<LX.Player.PlayMusicInfo | n
     if (index < playedList.length) return playedList[index]
   }
   // const isCheckFile = findNum > 2 // 针对下载列表，如果超过两次都碰到无效歌曲，则过滤整个列表内的无效歌曲
-  let { filteredList, playerIndex } = await filterList({ // 过滤已播放歌曲
+  let { filteredList, canPlayList, playerIndex } = await filterList({ // 过滤已播放歌曲
     listId: currentListId,
     list: currentList,
     playedList,
     playerMusicInfo: currentList[playInfo.playerPlayIndex],
     isNext: true,
   })
+
+  if (isRandom) {
+    const musicInfo = takeShuffleNext(currentListId, canPlayList.length ? canPlayList : filteredList)
+    if (!musicInfo) return null
+    const nextPlayMusicInfo = {
+      musicInfo,
+      listId: currentListId,
+      isTempPlay: false,
+    }
+    randomNextMusicInfo.info = nextPlayMusicInfo
+    return nextPlayMusicInfo
+  }
 
   if (!filteredList.length) return null
   // let currentIndex: number = filteredList.indexOf(currentList[playInfo.playerPlayIndex])
@@ -480,9 +622,6 @@ export const getNextPlayMusicInfo = async(): Promise<LX.Player.PlayMusicInfo | n
     case 'listLoop':
       nextIndex = playerIndex === filteredList.length - 1 ? 0 : playerIndex + 1
       break
-    case 'random':
-      nextIndex = getRandom(0, filteredList.length)
-      break
     case 'list':
       nextIndex = playerIndex === filteredList.length - 1 ? -1 : playerIndex + 1
       break
@@ -493,17 +632,12 @@ export const getNextPlayMusicInfo = async(): Promise<LX.Player.PlayMusicInfo | n
   }
   if (nextIndex < 0) return null
 
-  const nextPlayMusicInfo = {
+  // 随机模式上面已经提前返回（洗牌袋），这里只剩列表循环 / 顺序播放两条
+  return {
     musicInfo: filteredList[nextIndex],
     listId: currentListId,
     isTempPlay: false,
   }
-
-  if (togglePlayMethod == 'random') {
-    randomNextMusicInfo.info = nextPlayMusicInfo
-    // randomNextMusicInfo.index = nextIndex
-  }
-  return nextPlayMusicInfo
 }
 
 const handlePlayNext = async(playMusicInfo: LX.Player.PlayMusicInfo) => {
@@ -535,7 +669,12 @@ export const playNext = async(isAutoToggle = false): Promise<void> => {
 
   const playedList = playerState.playedList
 
-  if (playedList.length) { // 移除已播放列表内不存在原列表的歌曲
+  // 【第 69 轮第 5 条】随机模式走洗牌袋（见上面「随机播放（洗牌袋）」区块）：不参与下面的
+  // 历史回放，也不按「已播」过滤池子 —— 用户第 3 条要求「自动播放时遵循随机规则」，
+  // 而历史回放恰恰就是「随机播放总是偏重那几首」的病根（见区块注释）。
+  const isRandom = settingState.setting['player.togglePlayMethod'] == 'random'
+
+  if (!isRandom && playedList.length) { // 移除已播放列表内不存在原列表的歌曲
     let currentId: string
     if (playMusicInfo.isTempPlay) {
       const musicInfo = currentList[playInfo.playerPlayIndex]
@@ -565,13 +704,24 @@ export const playNext = async(isAutoToggle = false): Promise<void> => {
     return
   }
   // const isCheckFile = findNum > 2 // 针对下载列表，如果超过两次都碰到无效歌曲，则过滤整个列表内的无效歌曲
-  let { filteredList, playerIndex } = await filterList({ // 过滤已播放歌曲
+  let { filteredList, canPlayList, playerIndex } = await filterList({ // 过滤已播放歌曲
     listId: currentListId,
     list: currentList,
     playedList,
     playerMusicInfo: currentList[playInfo.playerPlayIndex],
     isNext: true,
   })
+
+  if (isRandom) {
+    const musicInfo = takeShuffleNext(currentListId, canPlayList.length ? canPlayList : filteredList)
+    if (!musicInfo) return handleToggleStop()
+    await handlePlayNext({
+      musicInfo,
+      listId: currentListId,
+      isTempPlay: false,
+    })
+    return
+  }
 
   if (!filteredList.length) return handleToggleStop()
   // let currentIndex: number = filteredList.indexOf(currentList[playInfo.playerPlayIndex])
@@ -590,9 +740,6 @@ export const playNext = async(isAutoToggle = false): Promise<void> => {
   switch (togglePlayMethod) {
     case 'listLoop':
       nextIndex = playerIndex === filteredList.length - 1 ? 0 : playerIndex + 1
-      break
-    case 'random':
-      nextIndex = getRandom(0, filteredList.length)
       break
     case 'list':
       nextIndex = playerIndex === filteredList.length - 1 ? -1 : playerIndex + 1
