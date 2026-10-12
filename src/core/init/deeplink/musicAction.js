@@ -6,39 +6,13 @@ import { playNext } from '@/core/player/player'
 import { getOtherSource } from '@/core/music/utils'
 import { addTempPlayList } from '@/core/player/tempPlayList'
 
-// const handleSearchMusic = ({ paths, data: params }) => {
-//   let text
-//   let source
-//   if (params) {
-//     text = dataVerify([
-//       { key: 'keywords', types: ['string', 'number'], max: 128, required: true },
-//     ], params).keywords
-//     source = params.source
-//   } else {
 //     if (!paths.length) throw new Error('Keyword missing')
 
-//     if (paths.length > 1) {
-//       text = paths[1]
-//       source = paths[0]
-//     } else {
-//       text = paths[0]
 //     }
 
 //     if (text.length > 128) text = text.substring(0, 128)
 //   }
 
-//   if (isShowPlayerDetail.value) setShowPlayerDetail(false)
-//   const sourceList = [...sources, 'all']
-//   source = sourceList.includes(source) ? source : null
-//   setTimeout(() => {
-//     router.replace({
-//       path: '/search',
-//       query: {
-//         text,
-//         source,
-//       },
-//     })
-//   }, 500)
 // }
 
 const filterInfoByPlayMusic = (musicInfo) => {

@@ -30,12 +30,6 @@ export default () => {
       void syncNowPlayingState('pause')
     }
   }
-  // const updateCollectStatus = async() => {
-  //   // let status = !!playMusicInfo.musicInfo && await checkListExistMusic(LIST_ID_LOVE, playerState.playMusicInfo.musicInfo.id)
-  //   // if (buttons.collect == status) return false
-  //   // buttons.collect = status
-  //   return true
-  // }
 
   const handlePlay = () => {
     void (async() => {
@@ -60,12 +54,6 @@ export default () => {
     buttons.play = false
     setButtons()
   }
-  // const handleStop = () => {
-  //   // if (playerState.playMusicInfo.musicInfo != null) return
-  //   // if (buttons.collect) buttons.collect = false
-  //   // buttons.empty = true
-  //   setButtons()
-  // }
   const handleSetPlayInfo = () => {
     if (!playerState.playMusicInfo.musicInfo) return
     syncedDurationMusicId = null
@@ -82,19 +70,6 @@ export default () => {
     if (!keys.includes('player.playbackRate')) return
     syncPlaybackRate()
   }
-  // const handleSetTaskbarThumbnailClip = (clip) => {
-  //   setTaskbarThumbnailClip(clip)
-  // }
-  // const throttleListChange = throttle(async listIds => {
-  //   if (!listIds.includes(loveList.id)) return
-  //   if (await updateCollectStatus()) setButtons()
-  // })
-  // const updateSetting = () => {
-  //   const setting = store.getters.setting
-  //   buttons.lrc = setting.desktopLyric.enable
-  //   buttons.lockLrc = setting.desktopLyric.isLock
-  //   setButtons()
-  // }
   global.app_event.on('play', handlePlay)
   global.app_event.on('pause', handlePause)
   global.app_event.on('error', handlePause)
@@ -106,11 +81,6 @@ export default () => {
   // window.app_event.on('myListMusicUpdate', throttleListChange)
 
   return async() => {
-    // const setting = store.getters.setting
-    // buttons.lrc = setting.desktopLyric.enable
-    // buttons.lockLrc = setting.desktopLyric.isLock
-    // await updateCollectStatus()
-    // if (playMusicInfo.musicInfo != null) buttons.empty = false
     setButtons()
   }
 }

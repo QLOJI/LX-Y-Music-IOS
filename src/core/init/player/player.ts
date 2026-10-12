@@ -10,6 +10,7 @@ import settingState from '@/store/setting/state'
 import { onBluetoothDeviceChanged, onHeadphonesDisconnected } from '@/utils/nativeModules/utils'
 import { markManualPause } from '@/core/player/manualPause'
 import { enforceCacheLimit } from '@/utils/nativeModules/cache'
+import { initCoverRetry } from '@/core/player/coverRetry'
 import { Platform } from 'react-native'
 
 
@@ -75,6 +76,9 @@ export default async(setting: LX.AppSetting) => {
   global.app_event.on('musicToggled', refreshNowPlaying)
   global.app_event.on('lyricUpdated', refreshNowPlaying)
   global.state_event.on('configUpdated', handleConfigUpdated)
+  // 【第 67 轮】封面自愈：切歌 / 回前台这两个触发点在这里注册（第三个触发点是
+  // PlayerBar 封面的 onError，见 core/player/coverRetry.ts 的文档头）。
+  initCoverRetry()
   void soundEffectController.applyCurrentConfig()
 
   if (Platform.OS == 'ios') {

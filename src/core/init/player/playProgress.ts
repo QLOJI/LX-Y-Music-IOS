@@ -653,25 +653,6 @@ export default () => {
     }
   }
 
-  // watch(() => playerState.progress.nowPlayTime, (newValue, oldValue) => {
-  //   if (settingState.setting['player.isSavePlayTime'] && !playMusicInfo.isTempPlay) {
-  //     delaySavePlayInfo({
-  //       time: newValue,
-  //       maxTime: playerState.progress.maxPlayTime,
-  //       listId: playMusicInfo.listId as string,
-  //       index: playInfo.playIndex,
-  //     })
-  //   }
-  // })
-  // watch(() => playerState.progress.maxPlayTime, maxPlayTime => {
-  //   if (!playMusicInfo.isTempPlay) {
-  //     delaySavePlayInfo({
-  //       time: playerState.progress.nowPlayTime,
-  //       maxTime: maxPlayTime,
-  //       listId: playMusicInfo.listId as string,
-  //       index: playInfo.playIndex,
-  //     })
-  //   }
   // })
 
   const handleConfigUpdated: typeof global.state_event.configUpdated = (keys, _settings) => {
@@ -780,11 +761,6 @@ export default () => {
   global.app_event.on('progressDragState', (dragging: boolean) => {
     isProgressDragging = dragging
   })
-  // global.app_event.on(eventPlayerNames.restorePlay, handleRestorePlay)
-  // global.app_event.on('playerLoadeddata', handleLoadeddata)
-  // global.app_event.on('playerCanplay', handleCanplay)
-  // global.app_event.on('playerWaiting', handleWating)
-  // global.app_event.on('playerEmptied', handleEmpied)
   global.app_event.on('musicToggled', handleSetPlayInfo)
   global.state_event.on('configUpdated', handleConfigUpdated)
 

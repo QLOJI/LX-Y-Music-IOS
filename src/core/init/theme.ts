@@ -36,18 +36,4 @@ export default async(_setting: LX.AppSetting) => {
 
   global.state_event.on('themeUpdated', syncStatusBar)
   applyTheme(await getTheme())
-  // onDimensionChange(({ window }) => {
-  //   let screenW = window.width
-  //   let screenH = window.height
-  //   if (screenW > screenH) {
-  //     const temp = screenW
-  //     screenW = screenH
-  //     screenH = temp
-  //   }
-  //   global.lx.windowInfo.screenW = screenW
-  //   global.lx.windowInfo.screenH = screenH
-  //   global.lx.windowInfo.screenPxW = PixelRatio.getPixelSizeForLayoutSize(screenW)
-  //   global.lx.windowInfo.screenPxH = PixelRatio.getPixelSizeForLayoutSize(screenH)
-  //   console.log('change', global.lx.windowInfo)
-  // })
 }

@@ -1,37 +1,6 @@
 import { playSonglist } from './playSonglist'
 import { dataVerify, sourceVerify } from './utils'
 
-// const handleOpenSonglist = params => {
-//   if (params.id) {
-//     router[route.path == '/songList/detail' ? 'replace' : 'push']({
-//       path: '/songList/detail',
-//       query: {
-//         source: params.source,
-//         id: params.id,
-//       },
-//     })
-//   } else if (params.url) {
-//     router[route.path == '/songList/detail' ? 'replace' : 'push']({
-//       path: '/songList/detail',
-//       query: {
-//         source: params.source,
-//         id: params.url,
-//       },
-//     })
-//   }
-// }
-// const openSonglist = () => {
-//   return ({ paths, data }) => {
-//     let songlistInfo = {
-//       source: null,
-//       id: null,
-//       url: null,
-//     }
-//     if (data) {
-//       songlistInfo = data
-//     } else {
-//       songlistInfo.source = paths[0]
-//       songlistInfo.url = paths[1]
 //     }
 
 //     sourceVerify(songlistInfo.source)
@@ -42,11 +11,6 @@ import { dataVerify, sourceVerify } from './utils'
 //       { key: 'url', types: ['string'], max: 500 },
 //     ], songlistInfo)
 
-//     if (!songlistInfo.id && !songlistInfo.url) throw new Error('id or url missing')
-//     if (isShowPlayerDetail.value) setShowPlayerDetail(false)
-//     handleOpenSonglist(songlistInfo)
-//     focusWindow()
-//   }
 // }
 
 const handlePlaySonglist = async({ paths, data }) => {

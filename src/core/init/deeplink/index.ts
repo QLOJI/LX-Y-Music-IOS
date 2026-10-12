@@ -119,14 +119,6 @@ const runLinkAction = async(link: string) => {
       // focusWindow()
     }
   }
-  //  else if (/^https?:\/\//.test(link)) {
-  //   try {
-  //     await handleHttpAction(link)
-  //   } catch (err: any) {
-  //     errorDialog(err.message)
-  //     // focusWindow()
-  //   }
-  // }
 }
 
 export const initDeeplink = async() => {
