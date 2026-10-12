@@ -7611,9 +7611,13 @@ static __weak UIScrollView *LXTabBarCollapseDriver = nil;
 // 得早、offset 还没走出 16pt，惯性那一截又因为 pan 判据的门（见下）不一定算数。这一轮两件事
 // 一起做：门限再降到 8 / 4（迟滞区仍留 4pt，防顶部抖动来回切换），以及把「用户主动的滚动」
 // 判据补上惯性那一段（LXGlassIsUserDrivenScroll）。
+// 【第 70 轮第 1 条】用户原话：「迷你播放器栏的收缩功能，太灵敏了，恢复一点」。第 69 轮降到
+// 8 / 4 又滑到了另一头：8pt 差不多是手指抖一下就走过的距离，加上判据刚补了惯性（轻扫也算数），
+// 整条手感偏过敏。本轮**只把门限收回来、判据一个字不动**（轻扫仍然算数，第 69 轮第 4 条的口径
+// 保住）：8 / 4 → 12 / 6，迟滞区仍留 6pt（防顶部抖动来回切换）。
 // 两个数只在这里出现一次 —— 以后调手感改这两行，状态机的结构一个字不用动。
-static const CGFloat LXTabBarCollapseOffset = 8;
-static const CGFloat LXTabBarExpandOffset = 4;
+static const CGFloat LXTabBarCollapseOffset = 12;
+static const CGFloat LXTabBarExpandOffset = 6;
 
 static void LXSetTabBarCollapsed(BOOL collapsed) {
   if (LXTabBarCollapsedState == collapsed) return;
