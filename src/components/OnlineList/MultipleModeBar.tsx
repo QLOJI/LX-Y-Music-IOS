@@ -41,6 +41,9 @@ export default forwardRef<MultipleModeBarType, MultipleModeBarProps>(
     const [isSelectAll, setIsSelectAll] = useState(false)
     const theme = useTheme()
     const buttonOpacity = useSettingValue('theme.buttonOpacity')
+    // 【第 68 轮第 1 条】条体（整条栏的底色/边框）改由「歌曲高亮透明度」单独控制；
+    // 条内两颗模式芯片的选中态底色仍跟「按钮透明度」（它们属于按钮族）。
+    const songHighlightOpacity = useSettingValue('theme.songHighlightOpacity')
     // 条内按钮没有写死高度，统一按多选浮动条的高度 40（MULTI_SELECT_BAR_HEIGHT 的设计值）折算半高
     const buttonRadius = useButtonRadius()
     // 【第 31 轮】多选浮动条的落点 = 迷你播放器顶边（与 LocalDownload 批量管理框同一来源，
@@ -117,12 +120,14 @@ export default forwardRef<MultipleModeBarType, MultipleModeBarProps>(
         // 绕过了「主题设置 → 按钮透明度」——用户第 46 轮第 2 条要的正是这条栏能跟着那个设置走。
         // 只改颜色 alpha，不用容器 style.opacity：容器 opacity 已经被下面的入场动画
         // （animFade 0→0.92，native driver）占着，再叠一个会互相抢同一个属性。
-        backgroundColor: applyOpacity(theme['c-content-background'], buttonOpacity),
-        borderColor: applyOpacity(theme['c-border-background'], buttonOpacity),
+        // 【第 68 轮第 1 条】第 46 轮挂的是「按钮透明度」，本轮改挂紧挨它的
+        // 「歌曲高亮透明度」——这条栏与「正在播放/选中行」同属一类高亮面，用户要它们一起单独调。
+        backgroundColor: applyOpacity(theme['c-content-background'], songHighlightOpacity),
+        borderColor: applyOpacity(theme['c-border-background'], songHighlightOpacity),
         opacity: animFade, // Bind opacity to animated value
         transform: [{ translateY: animTranslateY }],
       }),
-      [animFade, animTranslateY, theme, aboveMiniPlayerBottom, buttonOpacity],
+      [animFade, animTranslateY, theme, aboveMiniPlayerBottom, songHighlightOpacity],
     )
 
     const handleSelectAll = useCallback(() => {

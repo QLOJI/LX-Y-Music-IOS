@@ -80,7 +80,9 @@ const ListItem = memo(
     qualityShowHighest,
   }: ListItemProps & { qualityShowHighest: boolean }) => {
     const theme = useTheme()
-    const buttonOpacity = useSettingValue('theme.buttonOpacity')
+    // 【第 68 轮第 1 条】播放中/选中行的高亮底色不再搭「按钮透明度」，改由紧挨它的
+    // 「歌曲高亮透明度」单独控制（两者互相独立：按钮实、行高亮淡是常见组合）。
+    const songHighlightOpacity = useSettingValue('theme.songHighlightOpacity')
     // 封面 54、图标按钮 40 都取各自静态样式里写死的高度，由 buttonRadius 折算半高
     const buttonRadius = useButtonRadius()
     const isPlaying = playingId === item.id
@@ -136,10 +138,11 @@ const ListItem = memo(
           ...styles.listItem,
           width: rowInfo.rowWidth,
           height: ITEM_HEIGHT,
-          // 播放中/选中的行高亮底色：只改颜色 alpha 随「按钮透明度」淡出，不用容器 opacity——否则文字图标会一起变淡
+          // 播放中/选中的行高亮底色：只改颜色 alpha，不用容器 opacity——否则文字图标会一起变淡
           // 【第 46 轮】底色改用专门的歌曲行语义 token（比原先的 c-primary-background-hover 深一档），
           // 后者还兼着评论输入框等非行面；见 theme/themes/index.ts。
-          backgroundColor: isPlaying || isSelected ? applyOpacity(theme['c-list-item-background-selected'], buttonOpacity) : 'rgba(0,0,0,0)',
+          // 【第 68 轮第 1 条】透明度来源由「按钮透明度」换成「歌曲高亮透明度」（独立滑杆）。
+          backgroundColor: isPlaying || isSelected ? applyOpacity(theme['c-list-item-background-selected'], songHighlightOpacity) : 'rgba(0,0,0,0)',
         }}
       >
         <TouchableOpacity
