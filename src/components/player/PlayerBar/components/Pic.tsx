@@ -4,7 +4,8 @@ import { scaleSizeH } from '@/utils/pixelRatio'
 import { designRadius } from '@/theme/DesignTokens'
 import Image from '@/components/common/Image'
 import { useCallback } from 'react'
-import { setLoadErrorPicUrl, setMusicInfo } from '@/core/player/playInfo'
+import { setMusicInfo } from '@/core/player/playInfo'
+import { notifyCoverLoadError } from '@/core/player/coverRetry'
 
 // 胶囊瘦身：封面从 46 收到 40，配合容器 paddingVertical 7 把胶囊整体高度
 // 从 ~64 降到 ~54（封面仍略大于 40pt 控制钮热区，视觉主体不变）
@@ -25,7 +26,14 @@ export default () => {
   const musicInfo = usePlayerMusicInfo()
 
   const handleError = useCallback((url: string | number) => {
-    setLoadErrorPicUrl(url as string)
+    // 【第 67 轮】改走 notifyCoverLoadError：它内部就是原来的 setLoadErrorPicUrl
+    //（记账口径一字未变），只是顺手把「封面自愈」那一轮重试排上（core/player/coverRetry.ts）——
+    // 之前这里只记账、没有任何地方重试，于是这个账本成了永久焊点：
+    // core/player/player.ts 里 `playerState.loadErrorPicUrl == url` 那道门从此永远挡着，
+    // 网络恢复后封面再也回不来（用户 2026-10-12 报的就是这个）。
+    notifyCoverLoadError(url as string)
+    // 保留原有行为：清掉 URL，迷你播放器先显示 LX 占位图；
+    // 重试成功后由 coverRetry 把 URL 放回来（并 picUpdated 重新发布给原生）。
     setMusicInfo({
       pic: null,
     })

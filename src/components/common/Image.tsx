@@ -19,6 +19,14 @@ export const defaultHeaders = {
   'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/69.0.3497.100 Safari/537.36',
 }
 
+// 【第 67 轮】封面自动重试的两个节流参数（详见 Image 组件里那个重试 effect 的注释）
+const RETRY_BASE_MS = 8000
+const RETRY_STEP = 3
+const RETRY_MAX_MS = 300000
+// 同时最多允许几张图在重试链上跑（整屏封面一起失败时的请求风暴闸门）
+const RETRY_MAX_CONCURRENT = 6
+let retryingCount = 0
+
 const EmptyPic = memo(({ style, nativeID }: { style: ImageProps['style'], nativeID: ImageProps['nativeID'] }) => {
   const theme = useTheme()
   const { onLayout, width } = useLayout()
@@ -37,6 +45,9 @@ const Image = memo(({ url, resizeMode = 'cover', style, onError, nativeID }: Ima
   const [isError, setError] = useState(false)
   const urlRef = useRef(url)
   urlRef.current = url
+  // 【第 67 轮】封面自动重试的账本
+  const retryAttemptRef = useRef(0)
+  const retryUrlRef = useRef(url)
 
   const handleError = useCallback(() => {
     setError(true)
@@ -56,6 +67,40 @@ const Image = memo(({ url, resizeMode = 'cover', style, onError, nativeID }: Ima
     })
     return () => { subscription.remove() }
   }, [isError])
+
+  // 【第 67 轮】封面自动重试。原来重试的触发点只有一个：上面那个 AppState effect（回前台时
+  // 把 isError 打回 false）。用户 2026-10-12 报的却是「一直在前台、只是那阵子网络不好，换了
+  // 好网络后封面也不回来」——中途网络恢复不会触发任何重试；而 Image 是 memo 的（url 不变就
+  // 不重渲染），于是它一直挂在错误态，直到用户滚动列表 / 重进页面把它重新挂载。
+  // 这里补一条退避重试链：把 isError 打回 false，组件就会重新挂载 FastImage/Image 带着同一个
+  // URL 再拉一次（FastImage 底层 SDWebImage 不缓存失败结果、也不做负缓存，确实是重拉）。
+  // 节奏 8s → 24s → 72s → 216s → 300s 封顶。两层节流，免得「整屏封面一起失败」时反而制造
+  // 请求风暴（那比不重试更费电）：
+  //   ① 单实例退避：同一张图失败次数越多，下次试得越晚；
+  //   ② 全局并发上限 RETRY_MAX_CONCURRENT：同时在重试链上的图最多几张，超出的这一轮不排
+  //      （它们会在下次重渲染 / 重进页面时自然自愈，不会因此永远坏着）。
+  // 只对 http(s) 远程图重试：file:// 与 require 资源不存在「网络恢复」这回事，重排只是白画。
+  // 后台不重排（RN 的主线程定时器在后台本就停摆），回前台由上面那条立即补一次。
+  useEffect(() => {
+    if (retryUrlRef.current != url) {
+      // 换了 URL（换歌、列表复用同一位置的 Image）：台阶从头走
+      retryUrlRef.current = url
+      retryAttemptRef.current = 0
+    }
+    if (!isError) return
+    if (typeof urlRef.current != 'string' || !/^https?:\/\//i.test(urlRef.current)) return
+    if (retryingCount >= RETRY_MAX_CONCURRENT) return
+    retryingCount += 1
+    const delay = Math.min(RETRY_BASE_MS * RETRY_STEP ** retryAttemptRef.current, RETRY_MAX_MS)
+    const timer = setTimeout(() => {
+      retryAttemptRef.current += 1
+      setError(false)
+    }, delay)
+    return () => {
+      clearTimeout(timer)
+      retryingCount -= 1
+    }
+  }, [isError, url])
 
   // url 的合法形状只有三种：require 进来的资源 id（number）、URL 字符串、空（null/undefined）。
   // 之前这里写的是 `url?.startsWith('/')`：可选链只在 url 为 null/undefined 时短路，
