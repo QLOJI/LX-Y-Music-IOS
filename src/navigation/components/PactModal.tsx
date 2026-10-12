@@ -275,16 +275,24 @@ const Footer = ({ componentId }: { componentId: string }) => {
     return time ? { disabled: true, text: `接受（${time}）` } : { disabled: false, text: '接受' }
   }, [isAgreePact, time])
 
+  // 【第 70 轮第 3 条】「还在倒计时」提成独立布尔量当 effect 依赖。原实现的门只有
+  // `isAgreePact`：5→0 归零之后 interval 照旧每秒醒一次，一直转到用户点「接受」为止
+  //（本弹窗是签协议前的全屏门，用户晾着它就一直在）。归零后 time 已经不再变化，
+  // 那次唤醒是纯空转。改为 counting 翻转时清理函数收表：显示与按钮可用性一帧不差
+  //（time 归零后 confirmBtn 本来就不再读 time），只把没人要的那一段 Wake 去掉。
+  const counting = !isAgreePact && time > 0
+
   useEffect(() => {
-    if (isAgreePact) return
+    if (!counting) return
     // 倒计时用 interval 递减。旧实现把「排下一个 timeout」写在 setTime 的 updater 里，
     // 而 updater 必须是纯函数：React 在并发渲染/严格模式下可能重复调用它，
     // 会导致倒计时双倍速或重复排期（当前老架构且未使用 StrictMode 才没暴露）。
+    // 同一条约束也适用于本轮：**不能**把 clearInterval 写进 updater 里图省事。
     const timer = setInterval(() => {
       setTime(t => (t > 0 ? t - 1 : 0))
     }, 1000)
     return () => { clearInterval(timer) }
-  }, [isAgreePact])
+  }, [counting])
 
   return (
     <>
