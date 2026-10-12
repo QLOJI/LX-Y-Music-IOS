@@ -573,6 +573,36 @@ export const armVolumeStartFadeIn = () => {
 }
 
 /**
+ * 【第 68 轮第 2 条】立刻做一次「由**当前**音量平滑升到设定音量」的渐入，**不**预先把音量压到 0。
+ *
+ * 为什么需要它（用 armVolumeFadeIn 不行的现场）：声音已经在放 / 引擎马上要出声的**重取**落点。
+ * 那种现场立「预约 + 压 0」是纯亏：
+ *   · `armFadeIn` 见 `fadeTimer == null` 就 `stopRamp + silenceBothEngines()` —— 引擎正在出声，
+ *     音量当场被压到 0，用户听到的是**硬静音**，不是渐入；
+ *   · 重取（`play()` 落在「引擎已在跑」上）**不会**再发 'playing' 事件，`applyVolumeOnPlayStart`
+ *     于是没有机会放行这条预约；
+ *   · 音量只能在 0 上干等到预约的兜底期限（ARM_TIMEOUT_MS = 1.5s），到点复核看到 state='playing'
+ *     又只肯**斜坡**升回来（`fadeInMs()`，默认 2 秒）—— 合计 3.5 秒的静音→弱声爬升。
+ * 这正是用户第 68 轮第 2 条报的「正常播放时声音突然卡顿一下，有时进入一个软件、有时退出一些
+ * 画面、有时灵动岛闪一下都会出现声音波动」里最刺耳的一类（对方音频一松手就被自己压 0）。
+ *
+ * 与 `applyVolumeOnPlayStart` 的未预约分支同一条路：`rampVolume(target, fadeInMs())`。
+ * 账本本来就在目标值上（绝大多数重取）→ `rampVolume` 内部按 MIN_RAMP_DELTA 短路成一次直写，
+ * 与不调用逐字节一致；账本在低处（真被自动暂停压过）→ 才是真正的「由小变大」。
+ *
+ * @returns 是否真的起了斜坡（已有斜坡在跑 / 正在渐出时返回 false，不叠第二层）
+ */
+export const fadeInFromCurrentLevel = (): boolean => {
+  if (Platform.OS != 'ios') return false
+  // 渐出在途：用户要的是「停 / 换曲」，不许被一次重取反手拉回来（与 applyVolumeOnPlayStart 同一口径）
+  if (fadingOut) return false
+  // 已有斜坡在跑（在途渐入 / 上一次重取的渐入）→ 不叠，避免两层斜坡互顶
+  if (fadeTimer != null) return false
+  void rampVolume(targetVolume(), fadeInMs())
+  return true
+}
+
+/**
  * 播放真正开始（controller.ts 的 'playing' 分支 / 换曲分支）时调用：
  *   · 有渐入预约 → 从当前音量斜坡升到用户设定音量（渐入）；
  *   · 没有 → 直接写用户设定音量（与改动前完全一致的那句 setVolume）。

@@ -231,6 +231,11 @@ const defaultSetting: LX.AppSetting = {
   // 100 = 完全不透明（默认，视觉与既有版本一致）；0 = 底色/边框全透明，只剩文字。
   // 作用于底色/边框的颜色 alpha，**不是**容器 style.opacity（否则文字会一起淡出）。
   'theme.buttonOpacity': 100,
+  // 【第 68 轮】歌曲高亮（正在播放那一行 + 长按多选选中的行 + 底部多选操作栏）的底色不透明度，0-100。
+  // 100 = 与主题原色一致（默认，视觉与既有版本相同）；0 = 高亮底色完全消失（文字/图标/按钮不受影响）。
+  // 与上面「按钮透明度」**互相独立**：此前这几处高亮是搭在按钮透明度上的（第 46 轮），
+  // 用户要的是单独一根滑杆。同样只作用于颜色的 alpha，不用容器 style.opacity。
+  'theme.songHighlightOpacity': 100,
   // 按钮族圆角：0 = 直角（默认），100 = 半圆，中间值按各按钮自身高度的一半线性换算。
   // 生效值来自 useButtonRadius() 的行内覆盖（createStyle 会把圆角在加载时固化，必须在调用点覆盖），见 utils/buttonRadius.ts。
   'theme.buttonRadius': 0,

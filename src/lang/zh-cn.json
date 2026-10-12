@@ -386,6 +386,8 @@
   "setting_basic_theme_tab_bar_distance_desc": "播放器底边与底部菜单栏之间的间距。100 = 默认距离，数值越小播放器越贴近菜单栏，0 为完全贴合。该间距不随字体大小变化。",
   "setting_basic_theme_button_opacity": "按钮透明度",
   "setting_basic_theme_button_opacity_desc": "影响推荐、歌单、搜索、我的、设置里按钮的底色与边框。100 = 不透明，数值越小越透明，0 时按钮底色与边框完全消失、只剩文字。",
+  "setting_basic_theme_song_highlight_opacity": "歌曲高亮透明度",
+  "setting_basic_theme_song_highlight_opacity_desc": "影响歌曲列表里三类高亮面的底色：①正在播放的那一行；②长按多选后被选中的行；③长按后浮出来的多选操作栏（单选 / 区间 / 下载 / 全选 / 取消）。100 = 与主题原色一致，数值越小越透明，0 时高亮底色完全消失、只剩文字与图标。与上面的「按钮透明度」互相独立。",
   "setting_basic_theme_button_radius": "按钮圆角",
   "setting_basic_theme_button_radius_desc": "影响推荐、歌单、搜索、我的、设置里按钮的圆角。0 = 直角，100 = 半圆，数值越大越圆；中间值按各按钮自身高度的一半换算。",
   "setting_basic_theme_more_btn_show": "更多主题",

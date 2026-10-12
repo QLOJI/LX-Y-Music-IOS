@@ -19,7 +19,9 @@ import playerState from '@/store/player/state'
 import settingState from '@/store/setting/state'
 // 【第 41 轮】打断恢复后的音量重贴也是一次「外部直写」：同步渐入渐出模块的当前音量账本
 // 【第 56 轮·追加】自动续播前先立渐入预约（独占 Ended 分支，见那里的说明）
-import { armVolumeFadeIn, isVolumeFadeActive, syncVolumeFadeState } from './volumeFade'
+// 【第 68 轮·修正】重取输出（系统把被压制的声音还给我们）那一支改走 fadeInFromCurrentLevel：
+// 直接在当前音量上斜坡，不再「预约 + 压 0」——后者会留下 1.5s 硬静音 + 2s 弱声爬升的听感波动
+import { armVolumeFadeIn, fadeInFromCurrentLevel, isVolumeFadeActive, syncVolumeFadeState } from './volumeFade'
 
 let isInitialized = false
 let shouldResumeAfterDuck = false
@@ -427,15 +429,24 @@ const registerPlaybackService = async() => {
         // 现场拉回；四道闸门与阶梯逐条对齐：停止 / 已不在播 / 手动暂停一律不抢，
         // 取消勾选（isPlayWithOthers 变假）时本分支压根不会走到。
         if (!global.lx.isPlayedStop && playerState.isPlay && !isManualPause()) {
-          // 【第 61 轮第 4 条】重取输出之前先立渐入预约（用户原话「自动播放没有渐出效果」）。
+          // 【第 61 轮第 4 条】重取输出之前先给一次渐入（用户原话「自动播放没有渐出效果」）。
           // 这一支是勾选态下**唯一**能出声的重取落点，而它此前没有任何渐入：音量账本从没被
           // 压低（勾选态不暂停、不渐出），紧接着的 'playing' 走 applyVolumeOnPlayStart 的
           // 未预约分支，斜坡被 MIN_RAMP_DELTA 短路成直写 —— 对方一松手，我们的声音就是一记
           // 满音量砸回来，正是用户第 56 轮报的「自动播放很快，声音突然很大」。
-          // 此刻按下 0 不会有听感损失：打断期间系统本来就压着我们的输出，而预约的到点复核
-          // （beginFadeInArm → probeEngineState）保证「引擎已出声 / 已停摆 / 探针失败」都会
-          // 在 1.5s 内无条件把音量放回设定值 —— 只可能少一次渐入，绝不留静音洞。
-          armVolumeFadeIn()
+          //
+          // 【第 68 轮第 2 条】**改法换了**：第 61 轮这里用的是 armVolumeFadeIn()（预约 + 压 0），
+          // 认为「打断期间系统本来就压着我们的输出，压 0 不会有听感损失，到点复核最多少一次渐入」。
+          // 实测这条推理有两处错：
+          //   ① 到达本分支时系统**已经放开**压制的输出（Ended 就是「对方已释放」唯一信号），
+          //      压 0 是当场硬静音，不是无声无息；
+          //   ② 到点复核（beginFadeInArm → probeEngineState）看到 state='playing' 走的是
+          //      `rampVolume(target, fadeInMs)` —— 那是**从 0 起的渐入**，不是「无条件把音量放回
+          //      设定值」。于是链路变成「1.5s 硬静音 + 最多 2s 弱声爬升」，正是用户第 68 轮第 2 条
+          //      报的「声音突然卡顿一下 / 声音波动」。
+          // 现在改用 fadeInFromCurrentLevel()：直接从**当前**音量斜坡升上去，账本本就在设定值
+          // 上时退化成一次直写（与不调用等价），账本在低处时才是真正的「由小变大」。没有静音洞。
+          fadeInFromCurrentLevel()
           play()
         }
         return
