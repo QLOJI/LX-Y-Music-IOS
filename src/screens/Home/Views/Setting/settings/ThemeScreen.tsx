@@ -13,6 +13,7 @@ import PicOpacity from './Theme/PicOpacity'
 import SubContainerOpacity from './Theme/SubContainerOpacity'
 import TabBarDistance from './Theme/TabBarDistance'
 import ButtonOpacity from './Theme/ButtonOpacity'
+import SongHighlightOpacity from './Theme/SongHighlightOpacity'
 import ButtonRadius from './Theme/ButtonRadius'
 import { useSettingValue } from '@/store/setting/hook'
 import { isIOS26_2OrAbove } from '@/utils/tools'
@@ -45,6 +46,8 @@ export default memo(() => {
       <TabBarDistance />
       {/* 按钮底色/边框不透明度（100=现状，0=只剩文字） */}
       <ButtonOpacity />
+      {/* 【第 68 轮】歌曲高亮（正在播放行 / 多选选中行 / 多选操作栏）底色不透明度，紧跟按钮透明度下面 */}
+      <SongHighlightOpacity />
       {/* 按钮圆角（绝对比例：0=直角，100=半圆），紧跟在按钮透明度下面 */}
       <ButtonRadius />
     </Section>
