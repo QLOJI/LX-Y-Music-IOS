@@ -72,7 +72,19 @@
 // 省电门（2026-09-30）：暂停/恢复 Metal 渲染循环（MTKView.isPaused）。仅 Metal
 // 液态档实现——JS 在玻璃组件被压栈页完全覆盖（不可见）时置 true，期间停止逐帧
 // draw；恢复后下一帧自动重捕获背景，无残帧。磨砂档不实现（respondsToSelector 分流）。
+//
+// 【第 72 轮】这一档 = **覆盖冻结档**（覆盖 / 转场按住 / App 退后台）：冻结时它还会
+// 通知 App 把「冻结后还会自己动一下」的内容贴到落点 + 重采定格帧（见
+// LiquidGlassEffectView.setPaused）。玻璃只是**自己不可见**（Tab 栏收起/展开时另一块
+// 玻璃）是另一档，走下面的 setHiddenPaused: —— 两者绝不能合并：收起/展开是列表滚动
+// 顺手触发的，并进本档 = 每滚一次就把正在惯性滑行的列表掐停一次（第 72 轮用户报的
+// 「上下滑动跳动」）。
 - (void)setPaused:(BOOL)paused;
+// 省电「可见性」档（2026-10-13 第 72 轮）：RN prop `hiddenPaused`，玻璃只是自己不可见
+// 时置 true。只停 Metal 逐帧渲染，**不做**冻结那两步（不通知 App 贴落点、不重采定格帧），
+// 重新可见时做一次性复位重采（避免露出旧画面）。同样仅 Metal 液态档实现，磨砂档
+// respondsToSelector 分流为 no-op。
+- (void)setHiddenPaused:(BOOL)hiddenPaused;
 // 实时采景会话（2026-10-02 用户第 2/9 条）：RN prop `live`，横向滑动 PagerView 的
 // 手势会话期间置 true —— 采景从 30fps 基线放宽到 60fps，渲染档同步到 60fps
 //（第 20 轮起两档同速，见 LiquidGlassView.syncRenderFrameRate），解决
@@ -142,6 +154,9 @@
   BOOL _liquid;
   BOOL _dark;
   BOOL _paused;
+  // 省电「可见性」档缓存（第 72 轮）：与 _paused 同因——MTKView 属性随背衬重建重置，
+  // 覆盖状态下切液态开关重建背衬后由 reapplyCachedPropsToBacking 重放。
+  BOOL _hiddenPaused;
   BOOL _realtime;
   CGFloat _glassOpacity;
   UIColor *_tint;
@@ -224,6 +239,10 @@
   // 省电门不是 backing 持有的持久语义（MTKView 属性随背衬重建重置）：
   // 覆盖状态下切液态开关重建背衬，重放 _paused 让新背衬立即回到暂停态。
   [self applyPaused:_paused];
+  // 同理重放可见性档（第 72 轮）：两块玻璃轮换可见，收起状态下切液态开关重建背衬时
+  // 漏了这一步，不可见的那块会恢复逐帧渲染（纯白烧的电）。顺序在 applyPaused 之后：
+  // 两个 apply 各自落一份状态，新背衬最终停在「两档相或」上。
+  [self applyHiddenPaused:_hiddenPaused];
   // 同理：实时采景会话（横滑进行中恰好切换液态开关重建背衬）也要重放，否则新背衬
   // 会掉回 30fps 档、玻璃在剩余滑动里又是慢一拍（用户第 9 条）。
   [self applyRealtimeCapture:_realtime];
@@ -273,6 +292,17 @@
 // 实时采景会话（RN prop `live`）。仅 Metal 液态档实现 setRealtimeCapture:（磨砂档 /
 // 26.2+ 液态档是系统材质视图，respondsToSelector 分流后 no-op —— 系统材质的背景
 // 由系统自己实时处理，本就没有采景节流这回事）。
+// 省电「可见性」档（RN prop `hiddenPaused`，第 72 轮）：玻璃只是自己不可见时停渲染。
+// 与 applyPaused: 同构（缓存 + respondsToSelector 分流），但落到背衬上的入口不同：
+// setHiddenPaused: 不做冻结那两步（贴落点 + 定格帧），那是覆盖冻结档的代价。
+- (void)applyHiddenPaused:(BOOL)hiddenPaused {
+  _hiddenPaused = hiddenPaused;
+  id<LGGlassBackingCustomizations> backing = (id<LGGlassBackingCustomizations>)_glassBacking;
+  if ([backing respondsToSelector:@selector(setHiddenPaused:)]) {
+    [backing setHiddenPaused:_hiddenPaused];
+  }
+}
+
 - (void)applyRealtimeCapture:(BOOL)realtime {
   _realtime = realtime;
   id<LGGlassBackingCustomizations> backing = (id<LGGlassBackingCustomizations>)_glassBacking;
@@ -398,6 +428,14 @@ RCT_CUSTOM_VIEW_PROPERTY(liquid, NSNumber, LGLiquidGlassHostView) {
 // json 为 nil（prop 未传/重置）时回 NO（渲染）。
 RCT_CUSTOM_VIEW_PROPERTY(paused, NSNumber, LGLiquidGlassHostView) {
   [view applyPaused:(json != nil ? [json boolValue] : NO)];
+}
+
+// 省电「可见性」档（JS 传「本块玻璃当前是否完全不可见」，第 72 轮）：Tab 栏收起/展开时
+// 两块玻璃轮换可见，不可见的那块只停渲染 —— 触发覆盖冻结档那两步（贴落点 + 定格帧）会把
+// 正在惯性滑行的列表掐断。见 LiquidGlassEffectView.setHiddenPaused 的长注释。磨砂档 no-op。
+// json 为 nil（prop 未传/重置）时回 NO（渲染）。
+RCT_CUSTOM_VIEW_PROPERTY(hiddenPaused, NSNumber, LGLiquidGlassHostView) {
+  [view applyHiddenPaused:(json != nil ? [json boolValue] : NO)];
 }
 
 // 实时采景（JS 传「横向滑动 PagerView 的手势会话是否进行中」，2026-10-02 用户第 2/9 条）：

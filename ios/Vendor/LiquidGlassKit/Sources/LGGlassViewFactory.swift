@@ -21,10 +21,15 @@
 //    - 渲染：MTKView 连续渲染（isPaused=false），与上游一致；26.2+ 整树截图路径
 //      有 33ms 全局捕获节流（LiquidGlassView.globalLastCaptureAt），14~26.1 走
 //      CABackdropLayer 系统合成、无逐帧截图成本；
-//    - 省电门（2026-09-30 新增，本 fork 定制）：宿主 paused prop → MTKView.isPaused，
-//      JS 在玻璃组件被压栈页完全覆盖（不可见）时暂停、返回即恢复——不改变任何
-//      可见观感，见 LiquidGlassEffectView.setPaused 与 LiquidGlassViewManager 的
-//      paused prop（宿主缓存重放，覆盖状态下切开关不丢暂停态）；
+//    - 省电门（2026-09-30 新增，本 fork 定制；2026-10-13 第 72 轮拆成两档）：宿主
+//      paused / hiddenPaused 两个 prop → MTKView.isPaused（两档相或）。paused 是
+//      **覆盖冻结档**（被压栈页完全覆盖 / 转场按住 / 退后台），冻结前会通知 App 把
+//      还在惯性滑行的列表贴到落点 + 重采定格帧（第 66 轮第 1 条）；hiddenPaused 是
+//      **可见性档**（本块玻璃只是自己不可见：Tab 栏收起/展开时另一块），只停渲染、
+//      绝不触发定格 —— 收起/展开是列表滚动顺手触发的，合并成一档会把正在滑行的
+//      列表掐断（第 72 轮用户报的「上下滑动跳动」）。见 LiquidGlassEffectView 的
+//      setPaused / setHiddenPaused 与 LiquidGlassViewManager 的两个 prop（宿主
+//      缓存重放，覆盖状态下切开关不丢暂停态）；
 //    - 仍在的修复：玻璃互捕黑影排除（captureExclusionView）、CABackdropLayer
 //      缺失降级。
 //

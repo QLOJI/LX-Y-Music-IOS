@@ -124,12 +124,29 @@ public class LiquidGlassEffectView: UIView, AnyVisualEffectView {
     /// Metal band carries a render loop; the frosted backing has no such selector
     /// and the manager skips it via respondsToSelector.
     ///
+    /// 覆盖冻结档的当前值（RN prop `paused`）。与下面的 hiddenPaused 合成
+    /// `MTKView.isPaused`：两档任一为真就停渲染，但**只有这一档**会触发冻结那两步。
+    private var freezePaused = false
+
+    /// 可见性档的当前值（RN prop `hiddenPaused`，【第 72 轮】）。玻璃只是**自己不可见**
+    /// （Tab 栏收起/展开时另一块玻璃完全不可见）时置 true。
+    private var hiddenPaused = false
+
     /// 【第 61 轮第 3 条】这条 prop 现在是暂停态的**唯一**来源（原来的覆盖期 ∨ 转场按住期，
     /// 见 navigation/transitionWindow.ts）：第 58～60 轮 LiquidGlassView 还会在重新入窗口时
     /// 无视本值自行恢复渲染（pauseRequested 那条通道），已整体删除——它正是「返回时透过的
     /// 画面反向流」的成因。本方法负责三件事：冻结前定格一帧（【第 66 轮第 1 条】）、恢复时
     /// 做一次性复位，然后把 isPaused 落下去。
+    ///
+    /// 【第 72 轮】本方法只承载**覆盖冻结档**（玻璃被压栈页完全覆盖 / 转场按住 / App 退后台）：
+    /// 这一档的暂停是要付代价的 —— 冻结时那两步会「让 App 把还会自己动一下的内容贴到落点 +
+    /// 重采定格帧」，而它们只在「冻结前后用户看到的是同一块画面」时成立。玻璃**自己不透明地
+    /// 藏起来**（收起/展开时另一块玻璃不可见）是另一档语义，走 setHiddenPaused，绝不触发定格。
+    /// 两档合并（旧形态：paused 里或上 collapsed）的后果 = 列表每次滚过收起门限、或每次展开
+    /// 都会把正在惯性滑行的列表贴到预测落点，惯性被当场掐断 —— 用户第 72 轮原话：
+    /// 「还原上下滑动速度，现在配置后，存在滑动跳动，使用体验很差」。
     @objc public func setPaused(_ paused: Bool) {
+        freezePaused = paused
         // 恢复（true → false）时先做一次性复位再解除暂停（2026-10-02 用户第 2 条）：
         // 暂停只是停 draw，CAMetalLayer 上仍留着暂停前那帧（折射的是上一次可见时刻的
         // 背景）。不复位的话，恢复后第一次采景若被判「未就绪」就会把那一帧原样画出去
@@ -150,11 +167,40 @@ public class LiquidGlassEffectView: UIView, AnyVisualEffectView {
         //      等于返回后第一帧的画面，用户看不到新旧两帧的差（闪一下消失）。
         // 幂等：重复置 true（RN 重放缓存 prop / 液态开关导致背衬重建）不再触发；
         // 漏掉 ② 的话 App 侧那一贴会把冻结帧与新画面拉得更开，画面只会更花。
+        // 【第 72 轮】判据是 isPaused 本身（= 两档的合成）：可见性档已经把这块玻璃停住时，
+        // 覆盖冻结档再翻过来不必重复定格 —— 那一步正是「列表被掐停」的来源，而这块玻璃
+        // 此刻根本不可见，定格帧没有意义（重新可见时 setHiddenPaused 会做一次性复位重采）。
         if paused, liquidGlassView?.isPaused == false {
             _ = LXGlassNotifyWillFreeze()
             liquidGlassView?.handlePauseForFreeze()
         }
-        liquidGlassView?.isPaused = paused
+        // 两档合成：可见性档为真时，覆盖冻结档解除（回到前台 / 转场结束 / 回到 Home）
+        // 不得把这块不可见的玻璃又叫醒逐帧渲染（那是纯白烧的电，第 70 轮第 3 条的发热面）。
+        liquidGlassView?.isPaused = paused || hiddenPaused
+    }
+
+    /// RN bridge entry（RN prop `hiddenPaused`）: power-saving gate for the **visibility**
+    /// axis（【第 72 轮】），与 setPaused 的覆盖冻结档分开。
+    ///
+    /// 为什么必须分开：本工程唯一注册了 LXGlassNotifyWillFreeze 的消费方是 App 侧，它会把
+    /// 正在惯性滑行的 Home 列表**贴到预测落点**（LXGlassSettleDeceleratingScrollView）——
+    /// 这是为「冻结帧要和返回后第一帧重合」服务的。而 Tab 栏的收起/展开是**列表滚动顺手**
+    /// 触发的（滚过收起门限就翻一次），把它并进 paused 就等于：用户每滚一次，列表惯性被
+    /// 贴落点当场掐断一次，观感是「上下滑动跳动、速度被改动」。可见性档只做一件事：停渲染。
+    /// 冻结那两步（通知 App 贴落点 + 重采定格帧）在本方法里**一次都不许出现** —— 契约
+    /// scripts/sim-r66-glass-freeze-settle.js 正反两侧都钉住这一条。
+    @objc public func setHiddenPaused(_ paused: Bool) {
+        if hiddenPaused == paused { return }
+        hiddenPaused = paused
+        // 重新可见（true → false）时做与 setPaused 恢复路径相同的**一次性复位**：
+        // 隐藏期间玻璃可能停了几十秒（收起态是长时间驻留状态），缓存纹理与沿用痕迹
+        // 早已过期，不复位就是「露出来第一眼是旧画面、过一会儿才跳回当前画面」。
+        // 条件是「确实由本档停着」（freezePaused == false）且此前真的处于暂停态；
+        // 覆盖冻结档也停着的时候（freezePaused == true）交给 setPaused 的恢复分支。
+        if !paused, freezePaused == false, liquidGlassView?.isPaused == true {
+            liquidGlassView?.handleResumeFromPause()
+        }
+        liquidGlassView?.isPaused = freezePaused || paused
     }
 
     /// RN bridge entry: realtime capture session (RN prop `live`), see
