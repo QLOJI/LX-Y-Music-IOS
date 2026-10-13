@@ -302,6 +302,75 @@ private final class GlassInstanceRegistry {
     static let shared = GlassInstanceRegistry()
     let instances = NSHashTable<AnyObject>.weakObjects()
 
+    private init() {
+        // 【第 73 轮】滚动实时档的入口 —— 与冻结钩子**方向相反**的那条桥（那条是 Kit 调 App，
+        // 这条是 App 调 Kit，见 LXGlassFreezeHook.h）。注册一次、之后只读，缺席时（本行没跑到）
+        // App 侧的调用是空操作，玻璃行为与上游一致。
+        // 非捕获闭包才能变成 C 函数指针：这里只引用注册表自己这个静态单例。
+        LXGlassSetScrollActivityFn { GlassInstanceRegistry.shared.noteScrollActivity() }
+    }
+
+    // MARK: - 【第 73 轮】滚动实时档
+
+    /// 滚动窗口的期限（墙钟秒）：现在 < 它 = 用户刚滚过。全局一份 —— 「用户正在滚动」本来
+    /// 就是全局状态（同一时刻只有一根手指在一个列表上），在屏的每块玻璃读的都是同一个期限。
+    private var scrollActiveUntil: TimeInterval = 0
+
+    /// 现在是否处于「用户正在上下滚动」的窗口内。
+    /// 与 isReentryLiveActive 同式：墙钟现算 —— 到期不需要谁来清，读的时候自己就过期了。
+    /// 主线程读写（滚动事件在主线程；本类的到期定时器也挂主线程）。
+    var isScrollActive: Bool { CACurrentMediaTime() < scrollActiveUntil }
+
+    /// 滚动窗口时长：覆盖「相邻两拍滚动事件之间的间隔」并留出收尾余量。
+    /// 必须比一帧长得多（手指按着不动时事件也会停，取一帧会在慢速拖动里反复掉档），
+    /// 也不能长过手感本身的意义 —— 停手后最多再多花这 0.3s 的实时档代价（60fps 采景是
+    /// 这条路径上手调过的上限，见 liveCaptureMinInterval 的注释）。
+    private static let scrollLiveHoldDuration: TimeInterval = 0.3
+
+    /// 到期回落定时器是否已经挂上（同时最多一个，见 scheduleScrollExpiry）
+    private var scrollExpiryScheduled = false
+
+    /// App 侧的用户滚动每帧回调一次（AppDelegate 的 scrollViewDidScroll swizzle →
+    /// LXGlassNotifyScrollActivity → 本方法；同步、主线程，60~120 次/秒）。
+    ///
+    /// **热路径**：窗口内的续期只写一个时刻就返回 —— 不碰玻璃、不挂定时器、不做任何分配。
+    /// 只有「从静止进入滚动」的那一脚要动手：把在屏玻璃提到实时档，并挂上到期回落。
+    func noteScrollActivity() {
+        let now = CACurrentMediaTime()
+        let wasActive = now < scrollActiveUntil
+        scrollActiveUntil = now + Self.scrollLiveHoldDuration
+        guard !wasActive else { return }
+        syncScrollLiveFrameRate()
+        scheduleScrollExpiry()
+    }
+
+    /// 窗口到期后把在屏玻璃落回静止档。与 reentry 窗口同形态（见 LiquidGlassView 的
+    /// scheduleReentryLiveExpiry）：一次性定时器、到点现算，不做每帧检查。
+    /// 窗口在这期间被续期（用户还在滚）就再等一拍 —— 别把正在滑动的玻璃打回静止档。
+    private func scheduleScrollExpiry() {
+        guard !scrollExpiryScheduled else { return }
+        scrollExpiryScheduled = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.scrollLiveHoldDuration) { [weak self] in
+            guard let self else { return }
+            self.scrollExpiryScheduled = false
+            if CACurrentMediaTime() < self.scrollActiveUntil {
+                self.scheduleScrollExpiry()
+                return
+            }
+            self.syncScrollLiveFrameRate()
+        }
+    }
+
+    /// 把当前档位重新算一遍（进入滚动 / 窗口到期两个方向共用这一处）。
+    /// 提档还是落档不在这里判断：各实例按 isScrollActive 现算（全类唯一的赋值点仍是
+    /// LiquidGlassView.syncRenderFrameRate）—— 两处各判一次的话，两个方向迟早会漂移。
+    private func syncScrollLiveFrameRate() {
+        for instance in instances.allObjects {
+            guard let glass = instance as? LiquidGlassView else { continue }
+            glass.syncScrollLiveFrameRate()
+        }
+    }
+
     func add(_ view: LiquidGlassView) {
         instances.add(view)
     }
@@ -562,7 +631,8 @@ final class LiquidGlassView: MTKView {
     /// 实时档 60fps：与 liveCaptureMinInterval(16.7ms) **同速**（透镜抬起 / 横滑会话）。
     private static let liveFramesPerSecond = 60
     /// 把渲染帧率同步到当前采景档。**全类唯一给 preferredFramesPerSecond 赋值的地方** ——
-    /// 档位由 isLiveCaptureActive 两个标志唯一决定，任何会话开始/结束都走这里，
+    /// 档位由 isLiveCaptureActive 四路会话唯一决定（透镜抬起 / RN live / 重新入窗口实时窗口 /
+    /// 用户正在滚动，见其定义），任何会话开始/结束都走这里，
     /// 不会再出现「标志已落、帧率还挂在旧档」的中间态。
     private func syncRenderFrameRate() {
         preferredFramesPerSecond = isLiveCaptureActive ? Self.liveFramesPerSecond : Self.idleFramesPerSecond
@@ -600,9 +670,31 @@ final class LiquidGlassView: MTKView {
         reentryLiveStartedAt > 0 && CACurrentMediaTime() - reentryLiveStartedAt < Self.reentryLiveDuration
     }
 
+    /// 【第 73 轮】用户正在上下滚动（滚动实时档的窗口，期限在 GlassInstanceRegistry 上）。
+    /// 读的是全局窗口：在屏的每块玻璃都跟着同一次滚动一起进 / 出实时档。
+    private var isScrollLiveActive: Bool { GlassInstanceRegistry.shared.isScrollActive }
+
     /// 当前是否处于「实时采景」档：采景间隔用 liveCaptureMinInterval(60fps)，
     /// 渲染帧率同档提到 liveFramesPerSecond(60fps)（见 syncRenderFrameRate）。
-    private var isLiveCaptureActive: Bool { liveCaptureRequested || realtimeCaptureRequested || isReentryLiveActive }
+    private var isLiveCaptureActive: Bool { liveCaptureRequested || realtimeCaptureRequested || isReentryLiveActive || isScrollLiveActive }
+
+    /// 【第 73 轮】滚动实时档的档位重算入口 —— 由 GlassInstanceRegistry 在「进入滚动」与
+    /// 「窗口到期」两个方向各调一次（它拿不到本类的私有成员，故留这一个 fileprivate 转发）。
+    ///
+    /// 现象（用户第 73 轮第 4 条）：「上下滑动过程优化，目前感觉画面有点抖动，不平滑流畅」。
+    /// 成因与第 9 条的横滑一字不差（见 setRealtimeCapture 的长注释）：背景每一帧都在动，
+    /// 而采景被限在静止态基线 30fps（shouldThrottleCapture），前景（列表）以 60~120fps 在动
+    /// —— 玻璃里透过的画面系统性落后 1~3 拍，与玻璃周围擦身而过的内容对不上、且自身以 30Hz
+    /// 跳动，观感就是「抖」。第 20 轮「降到 30fps 与采景同速、画面无可见差异」的前提
+    /// **只对静止背景成立**（那一档本来就是为静止画面定的）。
+    ///
+    /// 与横滑（realtimeCaptureRequested）分开记的理由同 liveCaptureRequested（见其注释）：
+    /// 来源不同、且会同时为真（滚动窗口有 0.3s 尾巴，横滑手势必然与之重叠），共用一个标志
+    /// 会让先结束的一方把另一方关掉。
+    /// 档位仍然只由 syncRenderFrameRate 按 isLiveCaptureActive 现算 —— 这里不做方向判断。
+    fileprivate func syncScrollLiveFrameRate() {
+        syncRenderFrameRate()
+    }
 
     /// Whether to automatically capture superview on each frame.
     /// Set to false for manual control via `captureBackground()`.
@@ -1014,7 +1106,11 @@ final class LiquidGlassView: MTKView {
     /// ObjC 异常）→ ObjC @try 沙盒（LXGlassTryRenderLayer）：异常时本次降级
     /// drawHierarchy（闪烁但不崩），累计 2 次异常本实例停用 layer.render 路径。
     func captureRootView() {
-        guard let rootView = findRootView() else { return }
+        // 【第 73 轮第 5 条】采景源不再是「整个 App 的根视图」，而是「包含本玻璃的那一屏」
+        //（findCaptureSourceView，现象与理由见该方法的注释）。下面几何 / 排除 / 闸门 / 渲染
+        // 一行不动：它们本来就都以 rootView 为基准，把基准换成同一屏的更近祖先正是这条修复
+        // 的全部——采样矩形与所渲染的那棵树仍然同源（第 60 轮第 1 条）。
+        guard let rootView = findCaptureSourceView() else { return }
 
         let sizeCoefficient = liquidGlass.backgroundTextureSizeCoefficient
         let scaleCoefficient = layer.contentsScale * liquidGlass.backgroundTextureScaleCoefficient
@@ -1656,6 +1752,43 @@ extension UIColor {
 //}
 
 extension UIView {
+    /// 【第 73 轮第 5 条】采景源：**包含本玻璃的那一屏**，不是整个 App 的根视图。
+    ///
+    /// 用户原话（第 73 轮第 5 条）：「静态情况下，液态播放透过的画面在切入切回时可以实时
+    /// 显示，当我上下左右滑动界面再切入切回时，透过的画面会显示在移动前的画面，而此时画面
+    /// 已移动后了……使透过的画面在切回过程中能保证画面真实」。
+    ///
+    /// 关键就在 findRootView() 给的是 window.rootViewController.view —— **整棵 App 树**：
+    /// 转场中间根视图里同时挂着两屏（压栈进来的新屏 model 位置就是最终位置，位移只在
+    /// render 树上），而本类一律按 model 取几何、按 model 渲染（见 captureRootView 的第 60
+    /// 轮第 1 条注释）⇒ 贴着本玻璃的那块矩形采到的是**别的屏**的内容。玻璃把别的屏的画面
+    /// 贴在自己身后，切回时露出来的就是一张与本屏当前内容对不上的画面（第 60/61 轮那条
+    /// 「透过的画面是由右向左滑入的，方向是反的」正是同一件事的另一面）。
+    ///
+    /// 收窄到「响应链上最近的、其视图确实包含本玻璃的那个 UIViewController 的视图」之后，
+    /// 采景恒等于**本屏自己的静止态内容**：玻璃挂在哪一屏就只可能采到那一屏，跨屏污染
+    /// 结构上不可能发生；本屏自己的行进位移也不会跟进来（几何与内容同源、同屏）。
+    /// 三条判据：控制器要有**已加载**的视图（viewIfLoaded —— 不为了采景把没加载的视图
+    /// 拉起来）、视图确实包含本玻璃（isDescendant(of:) —— 防响应链上挂着别的控制器）、
+    /// 视图比本玻璃宽出一圈余量（采景矩形 = 玻璃矩形 × backgroundTextureSizeCoefficient，
+    /// 最大档 1.1 —— 候选视图太小的话矩形会伸到视图外，缓冲边缘没画到的黑带会被折射进
+    /// 玻璃边缘）。都不满足就继续往上找；整条响应链上没有 ⇒ 逐字回退 findRootView()
+    /// （宿主被直接塞进窗口、还没有任何控制器接手这类形态）。
+    func findCaptureSourceView() -> UIView? {
+        var responder: UIResponder? = self
+        while let current = responder {
+            if let controller = current as? UIViewController,
+               let sourceView = controller.viewIfLoaded,
+               isDescendant(of: sourceView),
+               sourceView.bounds.width >= bounds.width + 24,
+               sourceView.bounds.height >= bounds.height + 24 {
+                return sourceView
+            }
+            responder = current.next
+        }
+        return findRootView()
+    }
+
     /// Finds the topmost content view owning our window.
     /// 直接对 `UIWindow.layer` 调 render/drawHierarchy 在 iOS 26 上易因私有状态栏/
     /// 键盘/RNN 容器图层抛异常崩溃；优先返回 window.rootViewController.view。

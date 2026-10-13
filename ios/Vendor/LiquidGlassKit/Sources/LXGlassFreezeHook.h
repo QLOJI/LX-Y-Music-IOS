@@ -36,6 +36,32 @@ void LXGlassSetWillFreezeFn(LXGlassWillFreezeFn fn);
 /// 由玻璃在冻结前同步调用：跑一遍已注册的处理。没注册返回 false。
 BOOL LXGlassNotifyWillFreeze(void);
 
+//! Vendored addition（第 73 轮第 4 条）: 滚动实时档 —— 与上面那条**方向相反**的桥
+//!（上面是 Kit 叫 App 冻结前贴落点，这条是 App 告诉 Kit「用户正在滚动」）。
+//!
+//! 背景：「用户正在上下滚动」这件事只有 App 侧知道（滚动回调在 App 的 swizzle 里，
+//! 见 AppDelegate.mm 的 LX_RCTScrollView_scrollViewDidScroll），而玻璃的采景 / 渲染默认
+//! 压在静止档 30fps（LiquidGlassView.idleFramesPerSecond，为**静止背景**定的档）。
+//! 列表以 60~120fps 在动、玻璃里透过的画面停在 30fps ⇒ 系统性落后 1~3 拍，用户看到的就是
+//! 「上下滑动时画面有点抖动，不平滑流畅」。收到本回调后玻璃在「滚动窗口」（0.3s，
+//! 到期自动落回静止档）内走实时档：60fps 采景 + 60fps 渲染 —— 与横滑的 `live` prop、
+//! 透镜抬起同一档（同一套 isLiveCaptureActive / syncRenderFrameRate）。
+//!
+//! 契约：
+//!   · App 侧在**每个用户主动的滚动事件**里同步调用（主线程，60~120 次/秒）：判据与
+//!     tab 栏收起状态机同一道门（LXGlassIsUserDrivenScroll：手指接触期间 + 松手后的惯性），
+//!     程序化滚动（歌词自动跟随那类）不算 —— 不为了看不见的手势把全屏玻璃提到 60fps；
+//!   · Kit 侧在 GlassInstanceRegistry 初始化时用 LXGlassSetScrollActivityFn 登记实现，
+//!     实现必须便宜：只有「从静止进入滚动」的那一脚会去碰玻璃，窗口内的续期只写一个时刻；
+//!   · 没登记就什么都不做 —— 与冻结钩子同口径（可选增强，缺席时玻璃行为与上游一致）。
+typedef void (*LXGlassScrollActivityFn)(void);
+
+/// 注册（传 NULL 注销）。Kit 只在注册表初始化时注册一次。
+void LXGlassSetScrollActivityFn(LXGlassScrollActivityFn fn);
+
+/// 由 App 在用户主动的滚动事件里同步调用：把这一脚的时刻记成「滚动窗口」。
+void LXGlassNotifyScrollActivity(void);
+
 #ifdef __cplusplus
 }
 #endif

@@ -23,3 +23,18 @@ BOOL LXGlassNotifyWillFreeze(void) {
   if (handler == NULL) return NO;
   return handler();
 }
+
+// 【第 73 轮第 4 条】反方向的桥（App → Kit 的滚动活动）的存储侧，口径与上面完全一致：
+// 单写者（Kit 侧 GlassInstanceRegistry 初始化时写一次）、之后只读；读取发生在主线程的
+// 滚动事件里（60~120 次/秒），同样不需要锁、不需要派发。
+static LXGlassScrollActivityFn LXGlassScrollActivityHandler = NULL;
+
+void LXGlassSetScrollActivityFn(LXGlassScrollActivityFn fn) {
+  LXGlassScrollActivityHandler = fn;
+}
+
+void LXGlassNotifyScrollActivity(void) {
+  LXGlassScrollActivityFn handler = LXGlassScrollActivityHandler;
+  if (handler == NULL) return;
+  handler();
+}
