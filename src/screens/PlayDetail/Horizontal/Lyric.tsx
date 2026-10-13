@@ -38,6 +38,12 @@ type FlatListType = FlatListProps<Line>
 // 不该为此闪一个空浮层出来。（与小歌词 MiniLyric、竖屏大歌词同值同义。）
 const OVERLAY_SHOW_MOVE = 2
 
+// 手动定位期间，浮层的几何快照（逐行行高）多久重推一次（2026-10-13 第 73 轮，与竖屏同值）。
+// 横屏这一侧尤其需要：已播放行是 bold、高度与未播放行不同，随着播放推进每换一行都会经
+// updateLineHeight 的 isBold 分支改写 lineHeights 并清空累计偏移缓存 —— 按下那一刻的快照
+// 很快就会与列表的真实行高脱钩，浮层选出的行随之偏掉。详见 handleScroll 里的重推点。
+const PLAY_LINE_LAYOUT_REFRESH_MS = 100
+
 interface LineProps {
   line: Line
   lineNum: number
@@ -258,8 +264,9 @@ export default () => {
   // 横屏的定位档位是 usePlayed=true（已播放行更粗），而 getLineHeights 走的是 lineHeights——
   // 这不是偏差：updateLineHeight 会把 bold 行的实测高度同步写进 lineHeights（见该方法内注释），
   // 且本列表 initialNumToRender = 整首行数，所有行初次挂载即完成实测，估算分支实际不参与。
-  // 只在进入手动定位态时快照一次：行高会随字号设置、翻译行出现而变，拖动开始这一刻的值
-  // 才是用户眼里看到的那一份。
+  // 调用时机：进入手动定位态（handleScrollBeginDrag）推一次，之后**拖动期间**由
+  // handleScroll 按 PLAY_LINE_LAYOUT_REFRESH_MS 节流续推（后半段是 2026-10-13 第 73 轮
+  // 补的，横屏这里尤其必要 —— 见那里的注释）；浮层隐藏期间不推。
   const pushPlayLineLayout = useCallback(() => {
     if (!isShowLyricProgress) return
     const listH = listHeightRef.current > 0 ? listHeightRef.current : listHeight
@@ -270,6 +277,10 @@ export default () => {
     })
     playLineRef.current?.updateLyricLines(lyricLines)
   }, [isShowLyricProgress, lyricLines, listHeight])
+  // 上一次续推浮层几何快照的时间戳（节流基准，见 handleScroll）。
+  // handleScroll 是每帧重建的普通函数（不是 [] 依赖的 useCallback），能直接拿到最新一版
+  // pushPlayLineLayout，不需要像竖屏那样再绕一层 ref。
+  const lastPlayLineLayoutTsRef = useRef(0)
 
   const initialDistanceRef = useRef(0)
   const initialFontSizeRef = useRef(0)
@@ -340,11 +351,6 @@ export default () => {
   // const theme = useGetter('common', 'theme')
   // const { onLayout, ...layout } = useLayout()
 
-  // useEffect(() => {
-  //   const url = playMusicInfo ? playMusicInfo.musicInfo.img : null
-  //   if (imgUrl == url) return
-  //   setImgUrl(url)
-  //
   // }, [playMusicInfo])
 
   // const imgWidth = useMemo(() => layout.width * 0.75, [layout.width])
@@ -522,6 +528,19 @@ export default () => {
       playLineRef.current?.setVisible(true)
     }
     playLineRef.current?.updateScrollInfo(nativeEvent)
+    // 拖动期间按节流重推浮层的几何快照（2026-10-13 第 73 轮，与竖屏同构）。
+    // 此前 pushPlayLineLayout 只在 handleScrollBeginDrag 里跑一次 = 「按下那一刻的行高快照」。
+    // 横屏这一侧的快照是真的会过期的：已播放行是 bold，播放推进每换一行都会经
+    // LyricScrollLayout.updateLineHeight 的 isBold 分支改写 lineHeights、并清空累计偏移缓存
+    //（译文行异步到达走的是另一条改写分支）。快照与缓存脱钩后，浮层下面那段线性扫描就会按
+    // 旧行高选中错误的行：时间标签与虚线压着的行对不上，用户看到的就是「辅助线卡着」。
+    // 现在拖动期间持续刷新，浮层与列表始终同源。节流而非每帧：getLineHeights 是 O(行数) 的
+    // 数组构造 + 一次 setState，而浮层本来就在每个滚动帧重渲染，10Hz 的增量可忽略。
+    const now = Date.now()
+    if (now - lastPlayLineLayoutTsRef.current >= PLAY_LINE_LAYOUT_REFRESH_MS) {
+      lastPlayLineLayoutTsRef.current = now
+      pushPlayLineLayout()
+    }
   }
   const handleScrollBeginDrag = () => {
     isPauseScrollRef.current = true
@@ -533,6 +552,8 @@ export default () => {
     // 每次进入手动定位态都重算一次浮层几何：行高会随字号设置、翻译行出现而变化，
     // 只有拖动开始这一刻的快照才与用户眼前看到的列表一致。
     pushPlayLineLayout()
+    // 节流基准一并重置：本次快照就是「刚刚推过」，不用在紧接着的第一帧再推一遍。
+    lastPlayLineLayoutTsRef.current = Date.now()
     if (delayScrollTimeout.current) {
       clearTimeout(delayScrollTimeout.current)
       delayScrollTimeout.current = null
@@ -555,6 +576,16 @@ export default () => {
       // 直接解除定位态，既不显示浮层也不启动回位倒计时，避免列表白冻 IDLE_RETURN_MS。
       isPauseScrollRef.current = false
       dragStartOffsetRef.current = null
+      // 浮层的**视觉状态**也要一起收（2026-10-13 第 73 轮，与竖屏同一条）。
+      // isOverlayShownRef 只是本组件内部的记账，真正挂在屏幕上的是浮层自己：用户在
+      //「上一次拖动的收起倒计时还没到点」（IDLE_RETURN_MS 之内）就回手再按一下、且这次
+      // 位移不足 OVERLAY_SHOW_MOVE 时走的正是本条支路 —— 倒计时已在 handleScrollBeginDrag
+      // 里被清掉、这里此前又不收浮层，那块虚线+时间就会一直停在屏幕上，而它此刻又已被
+      // 上面这行清空挡在 handleScroll 门外不再更新，于是整块浮层冻在最后一次的位置上
+      //（用户第 73 轮报的「滑动大歌词时旁边的跳转辅助线卡着」），真的拖一下才恢复
+      //（新的拖动会把 isOverlayShownRef 置真、重新喂它）——「再滑一下就好了」。
+      // 收起是幂等的（本来就隐藏时只是再起一段 0 → 0 的淡出），不会与倒计时那条路冲突。
+      playLineRef.current?.setVisible(false)
       return
     }
     if (scrollTimoutRef.current) clearTimeout(scrollTimoutRef.current)

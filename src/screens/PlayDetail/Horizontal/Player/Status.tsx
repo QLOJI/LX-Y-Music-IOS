@@ -17,8 +17,4 @@ export default () => {
   )
 }
 
-// const styles = createStyle({
-//   text: {
-//     fontSize: 10,
-//   },
 // })

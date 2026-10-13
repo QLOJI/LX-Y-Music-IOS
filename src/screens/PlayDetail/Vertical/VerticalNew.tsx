@@ -42,10 +42,13 @@ const MIN_COVER_KEEP_RATIO = 0.4
  *   + 歌手行 round(setSpText(16)×1.15) + marginBottom 4
  *   + 专辑行 round(setSpText(14)×1.15)
  * 三处文本都是 numberOfLines={1} ⇒ 各占一行、上限确定；Text 的默认行高 = round(setSpText(size)×1.15)
- * 见 components/common/Text.tsx。这是**上界**（徽标行 / 专辑行缺数据时只会更矮）。
- * 唯一会突破它的情形：歌手多到 artistRow 折行（flexWrap:'wrap'）—— 那种歌首帧封面会略大一两帧，
- * 实测一到立即回落，属于可接受的取舍（宁可首帧略大，也不要首帧偏小再「长出来」）。
- * 这些组件的字号 / 行高 / margin 任一改动，必须回来同步这里。
+ * 见 components/common/Text.tsx。
+ *
+ * 【第 73 轮起它不再是「上界」而是「等号」】SongInfo 自己已把这个式子导出的
+ * SONG_INFO_CONTENT_HEIGHT 当作容器的**定高**（徽标行给空槽、artistRow 禁折行，
+ * 见 SongInfo.tsx 顶部那段注释），所以实测高恒等于这里算出的值 —— 首帧估算与稳态
+ * 严丝合缝，且封面/歌名/小歌词的位置不再随歌曲数据漂移（用户报的第 2 条）。
+ * 这些组件的字号 / 行高 / margin 任一改动，必须回来同步这里**和** SongInfo 的常量。
  */
 const estimateSongInfoContentHeight = () => {
   const row = (size: number) => Math.round(setSpText(size) * designTypography.lineHeightRatio)
@@ -276,7 +279,9 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
   // 估算 ≤ 0（窗口尺寸未就绪的极端首帧）时返回 0：Pic 视为「未实测」回落旧口径，
   // 绝不把封面先算成 0 或极小再撑大。
   const estimatedPageHeight = useMemo(() => {
-    const featureBtnsHeight = scaleSizeH(scaleSizeW(42)) + (isSmallWindow ? 6 : scaleSizeH(16)) * 2
+    // FeatureBtns 的 `paddingVertical: 8`（第 73 轮由 16 减半，用户要求缩小
+    // 「小歌词 ↔ 功能按钮」的间距）：大屏走 createStyle 的 scaleSizeH(8)，小屏是内联覆盖 6、不缩放。
+    const featureBtnsHeight = scaleSizeH(scaleSizeW(42)) + (isSmallWindow ? 6 : scaleSizeH(8)) * 2
     const progressHeight = scaleSizeH(6 * 2 + 7)
     const infoRowHeight = Math.max(
       Math.round(setSpText(15) * designTypography.lineHeightRatio),

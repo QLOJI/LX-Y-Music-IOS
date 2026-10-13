@@ -12,6 +12,55 @@ import { useIsWyLiked, useIsTxLiked, useIsKgLiked } from '@/store/user/hook'
 import { useWindowSize } from '@/utils/hooks'
 import SourceQualityBadge from '../../components/SourceQualityBadge'
 import { useButtonRadius } from '@/utils/buttonRadius'
+import { setSpText } from '@/utils/pixelRatio'
+import { designTypography } from '@/theme/DesignTokens'
+
+// ---- 信息块的固定高度（2026-10-13 第 73 轮）------------------------------------------
+//
+// 用户报：「封面大小、歌曲标题、小歌词部分、下面的功能按钮等，有时会因为歌曲名称长度
+// 使得位置发生变化，请把位置固定，只能通过封面显示大小调节」。
+//
+// 根因：本块的高度**随歌曲数据变化** —— 徽标行有/无达成档差一整个行高、专辑名有/无差一整行、
+// 歌手多到 artistRow 折行再多一行。而这个实测高会进 VerticalNew 的
+//   M = R − 2·containerPaddingH − paddingBottom − (SongInfo 内容高 + marginBottom)
+// ⇒ M 变 ⇒ 封面可用区间 band 变 ⇒ 实际封面直径变 ⇒ 歌名栏 / 小歌词 / 功能按钮的位置全跟着漂。
+//
+// 修法：把整块的高度钉死在最坏配置上（SONG_INFO_CONTENT_HEIGHT），并让块内每一行的
+// 纵向位置也不随数据变：
+//   · 徽标行给一个定高空槽（没有达成档时也占位）—— 它下面的行不再跟着上移；
+//   · artistRow 禁折行（超长歌手名收缩，不换行）—— 行数恒为 1；
+//   · 歌名行 / 专辑行本来就 numberOfLines={1}，各自恒为一行。
+// 于是 onLayout 回来的 height 是常量 ⇒ M 是常量 ⇒ 封面只受「封面显示大小」设置调节。
+//
+// 逐项镜像 VerticalNew 的 estimateSongInfoContentHeight()（首帧兜底用）——**两处必须同改**：
+//   row(28) + 8 + (4 + row(9)) + (row(16) + 4) + row(14)
+// row() 与 components/common/Text.tsx 的默认行高同式：round(setSpText(size) × lineHeightRatio)。
+const row = (size: number) => Math.round(setSpText(size) * designTypography.lineHeightRatio)
+/** 歌名行：Text size 28（numberOfLines=1）。心形图标 28 ≤ 行高，不参与定高。 */
+const SONG_NAME_ROW = row(28)
+/** 歌名行 → 徽标行的间距：styles.songNameRow.marginBottom（经 createStyle 的 scaleSizeH） */
+const SONG_NAME_GAP = 8
+/** 徽标行：SourceQualityBadge 自带 marginTop 4，行内是 size 9 的 Badge ⇒ 4 + row(9) */
+const BADGE_ROW = 4 + row(9)
+/** 歌手行：Text size 16，禁折行后恒为一行 */
+const ARTIST_ROW = row(16)
+/** 歌手行 → 专辑行的间距：styles.artistWrapper.marginBottom（经 createStyle 的 scaleSizeH） */
+const ARTIST_GAP = 4
+/** 专辑行：Text size 14（numberOfLines=1） */
+const ALBUM_ROW = row(14)
+
+/**
+ * 信息块内容高（**不含** styles.container 自己的上下 margin —— onLayout 报的就是它）。
+ * 与 VerticalNew 的 estimateSongInfoContentHeight() 逐项一致；那边是首帧兜底，这里是实测口径。
+ */
+export const SONG_INFO_CONTENT_HEIGHT =
+  SONG_NAME_ROW + SONG_NAME_GAP + BADGE_ROW + (ARTIST_ROW + ARTIST_GAP) + ALBUM_ROW
+
+// 两个定高样式必须是**未缩放**的值：SONG_INFO_CONTENT_HEIGHT 是按 Text 的真实行高
+//（setSpText × lineHeightRatio）算出来的，若交给 createStyle 会被 scaleSizeH 再缩一次，
+// 与上面那个式子对不上。所以放模块级常量里、以普通对象传下去（引用稳定，不触发重渲染）。
+const containerFixedSize = { height: SONG_INFO_CONTENT_HEIGHT }
+const badgeSlotFixedSize = { height: BADGE_ROW, justifyContent: 'center' as const }
 
 export default memo(({ componentId, onLayout }: {
   componentId: string
@@ -104,7 +153,7 @@ export default memo(({ componentId, onLayout }: {
   }, [songName, artistText])
 
   return (
-    <View onLayout={onLayout} style={[styles.container, isSmallWindow && { marginTop: 8, marginBottom: 4 }]}>
+    <View onLayout={onLayout} style={[styles.container, containerFixedSize, isSmallWindow && { marginTop: 8, marginBottom: 4 }]}>
       <View style={styles.songNameRow}>
         <TouchableOpacity onPress={handleSongNamePress} activeOpacity={0.6} style={styles.songNameTouch}>
           <Text
@@ -123,13 +172,19 @@ export default memo(({ componentId, onLayout }: {
         )}
       </View>
 
-      <SourceQualityBadge />
+      {/* 徽标行是一个定高空槽：SourceQualityBadge 在「还没拿到实际达成档 / 本地文件」时
+          只渲染一个 marginTop:4 的空 View（高度 4），拿到档位才到 4 + row(9)。不定高的话
+          它下面的歌手行 / 专辑行会跟着上下跳一整个行高 —— 正是用户报的「位置会发生变化」。
+          空槽的内容高度恒为 BADGE_ROW，里面有没有徽标都不改布局。 */}
+      <View style={badgeSlotFixedSize}>
+        <SourceQualityBadge />
+      </View>
 
       <View style={styles.artistWrapper}>
         {artists.length > 0 ? (
           <View style={styles.artistRow}>
             {artists.map((artist, index) => (
-              <TouchableOpacity key={artist.id || index} onPress={() => { handleArtistPress(artist) }}>
+              <TouchableOpacity key={artist.id || index} style={styles.artistItem} onPress={() => { handleArtistPress(artist) }}>
                 <Text numberOfLines={1} size={16} color={(theme as unknown as Record<string, string>)['c-font-secondary']}>
                   {artist.name}
                   {index < artists.length - 1 ? '、' : ''}
@@ -138,7 +193,7 @@ export default memo(({ componentId, onLayout }: {
             ))}
           </View>
         ) : (
-          <TouchableOpacity onPress={() => { void handleShowArtistDetail(componentId, musicInfo as LX.Music.MusicInfoOnline) }}>
+          <TouchableOpacity style={styles.artistItem} onPress={() => { void handleShowArtistDetail(componentId, musicInfo as LX.Music.MusicInfoOnline) }}>
             <Text numberOfLines={1} size={16} color={(theme as unknown as Record<string, string>)['c-font-secondary']}>
               {artistText}
             </Text>
@@ -186,9 +241,14 @@ const styles = createStyle({
   artistWrapper: {
     marginBottom: 4,
   },
+  // 禁折行（2026-10-13 第 73 轮）：flexWrap:'wrap' 时歌手越多行数越多，块高随之变，
+  // 封面与小歌词跟着漂（用户报的「位置会发生变化」）。改成单行 + 允许收缩后，
+  // 歌手行恒为 ARTIST_ROW 高；歌手名过长时由 numberOfLines={1} 省略号截断。
   artistRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    flexWrap: 'wrap',
+  },
+  artistItem: {
+    flexShrink: 1,
   },
 })

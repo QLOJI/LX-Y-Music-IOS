@@ -45,42 +45,12 @@ type FlatListType = FlatListProps<Line>
 // 不该为此闪一个空浮层出来。（与小歌词 MiniLyric 的 OVERLAY_SHOW_MOVE 同值同义。）
 const OVERLAY_SHOW_MOVE = 2
 
-// const useLock = () => {
-//   const showCommentRef = useRef(false)
+// 手动定位期间，浮层的几何快照（逐行行高）多久重推一次（2026-10-13 第 73 轮）。
+// 取 100ms：≈10Hz，比拖动中「新行被渲染并测量」的节奏快得多（一屏就能渲染完一批），
+// 又远低于一帧的预算（getLineHeights 是 O(行数) 的数组构造 + 一次 setState）。
+// 详见 handleScroll 里的重推点。
+const PLAY_LINE_LAYOUT_REFRESH_MS = 100
 
-//   useEffect(() => {
-//     let appstateListener = AppState.addEventListener('change', (state) => {
-//       switch (state) {
-//         case 'active':
-//           if (showLyricRef.current && !showCommentRef.current) screenkeepAwake()
-//           break
-//         case 'background':
-//           screenUnkeepAwake()
-//           break
-//       }
-//     })
-//     return () => {
-//       appstateListener.remove()
-//     }
-//   }, [])
-//   useEffect(() => {
-//     let listener: ReturnType<typeof onNavigationComponentDidDisappearEvent>
-//     showCommentRef.current = !!componentIds.comment
-//     if (showCommentRef.current) {
-//       if (showLyricRef.current) screenUnkeepAwake()
-//       listener = onNavigationComponentDidDisappearEvent(componentIds.comment as string, () => {
-//         if (showLyricRef.current && AppState.currentState == 'active') screenkeepAwake()
-//       })
-//     }
-
-//     const rm = global.state_event.on('componentIdsUpdated', (ids) => {
-
-//     })
-
-//     return () => {
-//       if (listener) listener.remove()
-//     }
-//   }, [])
 // }
 
 interface LineProps {
@@ -286,8 +256,9 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
   // 必须与 handleScrollToActive 的定位计算同源：留白 = 视高的 50%（与 contentContainerStyle
   // 的 paddingTop、与定位用的 paddingV 同值），行高取 LyricScrollLayout 的缓存
   //（已测行实测值 / 未测行分桶估算，与 getTargetOffsetPrecise 完全一致）。
-  // 只在进入手动定位态时快照一次：行高会随字号设置、翻译行出现而变，拖动开始这一刻的值
-  // 才是用户眼里看到的那一份；浮层隐藏期间不需要保持同步。
+  // 调用时机：进入手动定位态（handleScrollBeginDrag）推一次，之后**拖动期间**由
+  // handleScroll 按 PLAY_LINE_LAYOUT_REFRESH_MS 节流续推（后半段是 2026-10-13 第 73 轮
+  // 补的，原因见那里的注释）；浮层隐藏期间不推。
   const pushPlayLineLayout = useCallback(() => {
     if (!isShowLyricProgress) return
     const listHeight = pageHeightRef.current > 0 ? pageHeightRef.current : pagerHeight
@@ -298,6 +269,12 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
     })
     playLineRef.current?.updateLyricLines(lyricLines)
   }, [isShowLyricProgress, lyricLines, pagerHeight])
+  // handleScroll 的依赖是 []（拖动每帧都要跑，不能每次重绑），拿不到最新一版
+  // pushPlayLineLayout（它随 lyricLines / pagerHeight 变化），用 ref 转发。
+  const pushPlayLineLayoutRef = useRef(pushPlayLineLayout)
+  pushPlayLineLayoutRef.current = pushPlayLineLayout
+  // 上一次续推浮层几何快照的时间戳（节流基准，见 handleScroll）
+  const lastPlayLineLayoutTsRef = useRef(0)
 
   // 用户动作（拖动进度条 / 跳转 / 恢复播放）期间强制让歌词列表立即滚动到高亮行，
   // 使高亮行与进度条（及音频）绝对同步；被动逐秒重锚时仍用舒适区节流，避免逐行微滚动卡顿。
@@ -390,11 +367,6 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
   // const theme = useGetter('common', 'theme')
   // const { onLayout, ...layout } = useLayout()
 
-  // useEffect(() => {
-  //   const url = playMusicInfo ? playMusicInfo.musicInfo.img : null
-  //   if (imgUrl == url) return
-  //   setImgUrl(url)
-  //
   // }, [playMusicInfo])
 
   // const imgWidth = useMemo(() => layout.width * 0.75, [layout.width])
@@ -649,6 +621,8 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
     // 每次进入手动定位态都重算一次浮层几何：行高会随字号设置、翻译行出现而变化，
     // 只有拖动开始这一刻的快照才与用户眼前看到的列表一致。
     pushPlayLineLayout()
+    // 节流基准一并重置：本次快照就是「刚刚推过」，不用在紧接着的第一帧再推一遍。
+    lastPlayLineLayoutTsRef.current = Date.now()
     if (delayScrollTimeout.current) {
       clearTimeout(delayScrollTimeout.current)
       delayScrollTimeout.current = null
@@ -696,6 +670,16 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
       // 必须一并清空：handleScroll 用「dragStartOffsetRef 非空」判断是否处于手动定位态，
       // 留着一个过期的起点，后续自动跟随的滚动事件就会被当成用户在拖、把浮层弹出来。
       dragStartOffsetRef.current = null
+      // 浮层的**视觉状态**也要一起收（2026-10-13 第 73 轮）。
+      // isOverlayShownRef 只是本组件内部的记账，真正挂在屏幕上的是浮层自己：用户在
+      // 「上一次拖动的收起倒计时还没到点」（IDLE_RETURN_MS 之内）就回手再按一下、且这次
+      // 位移不足 OVERLAY_SHOW_MOVE 时走的正是本条支路 —— 倒计时已在 handleScrollBeginDrag
+      // 里被清掉、这里此前又不收浮层，那块虚线+时间就会一直停在屏幕上；而它此刻又已被
+      // 上面这行清空挡在 handleScroll 门外不再更新，于是整块浮层冻在最后一次的位置上，
+      // 就是用户第 73 轮报的「滑动大歌词时旁边的跳转辅助线卡着」，再真的拖一下才恢复
+      //（新的拖动会把 isOverlayShownRef 置真、重新喂它）——「再滑一下就好了」。
+      // 收起是幂等的（本来就隐藏时只是再起一段 0 → 0 的淡出），不会与倒计时那条路冲突。
+      playLineRef.current?.setVisible(false)
       return
     }
     armIdleReturn()
@@ -1010,7 +994,8 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pageHeight, active])
 
-  // 记录当前滚动偏移（供“舒适区感知滚动”判断）＋手动定位期间喂浮层；均不触发重渲染。
+  // 记录当前滚动偏移（供“舒适区感知滚动”判断）＋手动定位期间喂浮层。
+  // 偏移那一支只写 ref，不触发重渲染；浮层那一支只会让浮层自身重渲染（列表与歌名块不动）。
   const handleScroll = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
     const nativeEvent = e.nativeEvent
     scrollYRef.current = nativeEvent.contentOffset.y
@@ -1027,6 +1012,20 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
       playLineRef.current?.setVisible(true)
     }
     playLineRef.current?.updateScrollInfo(nativeEvent)
+    // 拖动期间按节流重推浮层的几何快照（2026-10-13 第 73 轮）。
+    // 此前 pushPlayLineLayout 只在 handleScrollBeginDrag 里跑一次 = 「按下那一刻的行高快照」。
+    // 行高在首屏全渲染完成后本已稳定（removeClippedSubviews=false + initialNumToRender
+    // = 整首行数），但 LyricScrollLayout.updateLineHeight 有两条**改写行高**的分支
+    //（译文行异步到达、横屏已播放行 bold 化），它们会同时清空累计偏移缓存 ——
+    // 快照一旦与缓存脱钩，浮层下面那段线性扫描就会按旧行高选中错误的行：时间标签与虚线
+    // 压着的行对不上，用户看到的就是「辅助线卡着（内容不再跟着手指走）」。
+    // 现在拖动期间持续刷新，浮层与列表始终同源。用节流而非每帧：getLineHeights 是
+    // O(行数) 的数组构造 + 一次 setState，而浮层本来就在每个滚动帧重渲染，10Hz 的增量可忽略。
+    const now = Date.now()
+    if (now - lastPlayLineLayoutTsRef.current >= PLAY_LINE_LAYOUT_REFRESH_MS) {
+      lastPlayLineLayoutTsRef.current = now
+      pushPlayLineLayoutRef.current()
+    }
   }, [])
 
   const handleLineLayout = useCallback<LineProps['onLayout']>((lineNum, height, _width, isActive) => {

@@ -6,6 +6,8 @@
 // 导致「按大歌词的速率」这类要求无处落地，全局调速也要逐文件改。现统一收口到这里，
 // 实际数值一律取自 designMotion.quick（2026-10-01：150 → 200，全局放慢）。
 // 新增歌词相关动画请引用本文件，不要再内联数字。
+// 例外一处：LINE_CHANGE_HOLD_MS（大歌词换行停留）2026-10-13 第 73 轮起不再等于
+// designMotion.quick，改为它的一半 —— 原因见其定义处的【第 73 轮】说明。
 
 import { designMotion } from '@/theme/DesignTokens'
 
@@ -20,8 +22,19 @@ export const LINE_CHANGE_GLIDE_MS = designMotion.quick
  * （滑动本身是 easeInOutQuad，是顺滑的）。现在收口到 designMotion.quick(200)：
  * 停留 200 + 滑动 RETURN_TO_ACTIVE_MS(600)，换行节奏由 1.2s 缩短到 0.8s，观感不再是
  * 「停一下再走」。停留窗口的语义不变（锚定在一串连续换行的第一行、串内不重置）。
+ *
+ * 【第 73 轮】用户再次报「歌词换行响应再快点」，200 → 100（不再是 designMotion.quick）。
+ * 换行的「响应」延迟就是这个停留窗口本身：换行当帧列表纹丝不动（这是停留窗口的定义，
+ * 见 Vertical/Lyric.tsx 的 holdElapsed 分支），要等窗口到点才起滑。滑动时长
+ * RETURN_TO_ACTIVE_MS(600) 是参考工程的定案值、且与小歌词回位同源（契约钉死值），
+ * 不能动 —— 所以「响应更快」只能从停留这一段里挤，这也是第 30 轮把 600 砍到 200 的同一个旋钮。
+ * 100 仍高于 60Hz 下的两帧（起滑时刻不会被同一帧吞掉），REF「先停留、再起滑」的节奏
+ * 也还在（观感仍是一顿一滑，不是立刻滑），只是起滑比原来提前一半：停留 100 + 滑动 600，
+ * 整周期 0.8s → 0.7s，快歌里「唱到下一行」与「列表开始动」之间的空档几乎察觉不到。
+ * 横竖屏两个大歌词共用本值（同源口径不变）；小歌词换行跟随走的是 LINE_CHANGE_GLIDE_MS，
+ * 它的「换行响应」没有停留段，本值不影响它。
  */
-export const LINE_CHANGE_HOLD_MS = designMotion.quick
+export const LINE_CHANGE_HOLD_MS = 100
 
 /** 手动拖动歌词结束、停手多久后自动回位并隐藏定位浮层。用户要求「未滑动响应时间缩短一半」，故由 3000 改为 1500。 */
 export const IDLE_RETURN_MS = 1500

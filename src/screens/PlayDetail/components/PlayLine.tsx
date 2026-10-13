@@ -106,8 +106,17 @@ export default forwardRef<PlayLineType, PlayLineProps>(({ onPlayLine, topPercent
       toValue: visible ? 1 : 0,
       duration: OVERLAY_FADE_MS,
       useNativeDriver: true,
-    }).start(() => {
+    }).start(({ finished }) => {
       // 淡出结束后才真正卸载：否则透明度还在过渡时浮层就被摘掉，观感是「闪一下消失」
+      //
+      // finished 守卫（2026-10-13 第 73 轮）：同一个 opsAnim 上起新动画会**中止**上一段，
+      // 被中止的回调照样会跑，只不过带 finished=false。不加这道守卫时，下面这行会替
+      // 「上一段是被谁中止的」做错决定：淡出（visible=false）还没走完、用户又按下拖动
+      // 触发淡入时，被中止的淡出回调仍会 setIsMounted(false)，把正在淡入的浮层整个卸载 ——
+      // 而调用方的 isOverlayShownRef 已经是 true、本次拖动内不会再调 setVisible(true)，
+      // 于是整块浮层（虚线+时间+三角）消失到本次拖动结束，**要等下一次按下才回来**
+      // （「再滑一下就好了」）。中止时直接返回，让当前这段动画的回调说了算。
+      if (!finished) return
       if (!visible) setIsMounted(false)
     })
   }
@@ -143,19 +152,26 @@ export default forwardRef<PlayLineType, PlayLineProps>(({ onPlayLine, topPercent
     setButtonWidth((prevWidth: number) => (prevWidth == width ? prevWidth : width))
   }
 
-  if (!scrollInfo || !isMounted) return null
+  // 行高数组与歌词行是同一次 pushPlayLineLayout 一起喂进来的（见调用方注释），正常等长；
+  // 万一不等长（切歌 / 换歌词源的那一帧可能错位），按短的算 —— 关键是**绝不能让
+  // targetLineNum 落到 -1**：那时下面会读到 lyricLines[-1] === undefined、时间退化成 0，
+  // 浮层时间标签就一直显示 00:00 不再跟随拖动（用户第 73 轮报的「辅助线卡着」）。
+  // 真正没有歌词可指（本列表为空）时干脆不显示浮层 —— 显示一个恒为 00:00 的假目标，
+  // 比不显示更容易被当成「卡住」。
+  const lineCount = Math.min(listLayoutInfo.lineHeights.length, lyricLines.length)
+  if (!scrollInfo || !isMounted || lineCount <= 0) return null
   // 定位基准线上方的「累计行高」：虚线指向包含基准线的那一行，而调用方保证
   // 「把定位行对齐到基准线」（行垂直中心 == 基准线），故虚线必然压在该行中心上。
   const offset = scrollInfo.contentOffset.y + scrollInfo.layoutMeasurement.height * topPercent
   let lineOffset = listLayoutInfo.spaceHeight
   let targetLineNum = -1
-  for (let line = 0; line < listLayoutInfo.lineHeights.length; line++) {
+  for (let line = 0; line < lineCount; line++) {
     lineOffset += listLayoutInfo.lineHeights[line]
     if (lineOffset < offset) continue
     targetLineNum = line
     break
   }
-  if (targetLineNum == -1) targetLineNum = listLayoutInfo.lineHeights.length - 1
+  if (targetLineNum == -1) targetLineNum = lineCount - 1
   const time = lyricLines[targetLineNum]?.time ?? 0
   const timeLabel = formatPlayTime2(time / 1000)
 

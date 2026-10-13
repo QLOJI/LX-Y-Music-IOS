@@ -154,7 +154,14 @@ const styles = createStyle({
     alignItems: 'center',
     justifyContent: 'space-around',
     paddingHorizontal: 8,
-    paddingVertical: 16,
+    // 上下内边距 16 → 8（2026-10-13 第 73 轮）：用户要求「小歌词与下面的功能按钮
+    // 还有一部分距离可以缩小」。这一行按钮夹在小歌词与进度条之间，它的 paddingTop
+    // 就是小歌词底边到按钮块顶边那段空白的主要成分（另一半是 songInfo 的 marginBottom
+    // 与 PAGE_BOTTOM_PADDING，两者都另有契约钉着，不能动）。减半后按钮上行 8pt、
+    // 与进度条仍留 8pt。
+    // ⚠ VerticalNew 的 estimatedPageHeight 里逐项镜像了这个值（scaleSizeH(8) × 2），
+    //   两边必须同时改，否则首帧封面尺寸估算会失准。
+    paddingVertical: 8,
   },
   btnItem: {
     width: BTN_SIZE,
