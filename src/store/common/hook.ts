@@ -100,6 +100,26 @@ export const useNavTransitioning = () => {
   return value
 }
 
+/**
+ * 【第 74 轮第 3 条】本次转场是不是**返回**（pop）：由 navigation 在开窗时随方向一起落
+ * （见 navigation/transitionWindow.ts），玻璃专用门 useGlassNavHold 消费它。
+ *
+ * 与 useNavTransitioning 分开订阅、不做合并：两者语义不同（「有没有转场」是门本身，
+ * 「往哪个方向」决定这道门要不要落闸），分开订阅也就不必给任何消费点改口径。
+ */
+export const useNavReturning = () => {
+  const [value, update] = useState(state.navReturning)
+
+  useEffect(() => {
+    global.state_event.on('navReturningUpdated', update)
+    return () => {
+      global.state_event.off('navReturningUpdated', update)
+    }
+  }, [])
+
+  return value
+}
+
 // 底部悬浮层（悬浮迷你播放器 + 底部 Tab）的固定部分总高（pt），
 // 实际避让高度还需叠加底部安全区（useBottomOverlayInset）。
 export const BOTTOM_OVERLAY_BASE_HEIGHT = 180
@@ -175,16 +195,26 @@ export const usePagerDragging = () => {
 }
 
 /**
- * **玻璃专用**「转场按住门」（第 61 轮第 3 条）：导航转场窗口 ∧ 用户没有在拖首页 Pager。
+ * **玻璃专用**「转场按住门」（第 61 轮第 3 条；第 74 轮第 3 条拆方向）。
  *
- * 为什么返回方向也要按住：转场期间玻璃背后那一块屏幕正在变，返回时玻璃背后其实还是
- * **正在滑走的那一页**（页面向右走、玻璃不动），采进胶囊就是「透过的画面由右向左滑入」
- * （用户第 61 轮原话「这个方向是反的」）。整段按住则显示的是转场前那一帧——对返回来说
- * 就是底层页面自己的画面，它本来就是静止的，看起来才是「贴着玻璃一起滑进来」。
+ * 门 = 「有转场」∧ **不是返回** ∧ 用户没有在拖首页 Pager。
  *
- * 为什么要 `!dragging` 兜底：窗口在 screenPopped（系统边缘返回手势的唯一 JS 锚点）那里
- * 会续期 420ms，而用户返回后常常立刻横向拖 Pager —— 那时玻璃必须立刻恢复实时采景，
- * 否则底层在横向移动、玻璃却钉着旧画面。拖页本身就是「用户已上手」的信号，优先级最高。
+ * push 方向按住：玻璃正被新页盖住，按住显示的是转场前那一帧，代价不可见，也最省电。
+ * 返回方向**放行**（`!returning`）：按住门只能保证「转场里不出现**新的**错帧」，
+ * 它没法保证留下那一帧**是当前的**——而返回恰恰是「用户刚动过界面再切回来」的场景：
+ * 玻璃暂停期间 CAMetalLayer 上留的是冻结那一刻的画面，只要它与「返回后第一帧」有任何差
+ * （被系统回收 / 被重新可见的一次性复位丢掉 / 列表在冻结前后又贴过一次落点），整段返回
+ * 展示的都是那张旧画面 —— 用户第 73、74 两轮报的同一句话：「透过的画面会显示在移动前的
+ * 画面，而此时画面已移动后了……能否在切回刚开始就确认主界面移动后画面，然后快速实时更新」。
+ * 放行之后：门一翻（返回命令派发的那一帧 / screenPopped 到达的那一帧）玻璃立刻走
+ * handleResumeFromPause —— 丢旧纹理 + **同步**采一帧当前背景 + 立刻画，随后整段返回转场
+ * 继续实时采景。第 61 轮不敢这么做是因为当时采景源是整个 App 根视图（转场里同时挂着两屏，
+ * 一放行就把「正在滑走的那一页」逐帧采进胶囊 = 反向流）；第 73 轮把采景源收窄成「包含本
+ * 玻璃的那一屏」之后这个成因已经从结构上消失（本屏静止，采到的就是正确的一帧）。
+ *
+ * 为什么要 `!dragging` 兜底：窗口在 screenPopped 那里会续期 420ms，而用户返回后常常立刻
+ * 横向拖 Pager —— 那时玻璃必须立刻恢复实时采景，否则底层在横向移动、玻璃却钉着旧画面。
+ * 拖页本身就是「用户已上手」的信号，优先级最高。
  *
  * ⚠️ 只给玻璃省电门用（useGlassCovered / useGlassHomeCovered），不要替换账本类
  * hook：useHomeCovered / useScreenCovered 还有非玻璃消费点（useAboveMiniPlayerBottom
@@ -192,8 +222,9 @@ export const usePagerDragging = () => {
  */
 export const useGlassNavHold = () => {
   const transitioning = useNavTransitioning()
+  const returning = useNavReturning()
   const dragging = usePagerDragging()
-  return transitioning && !dragging
+  return transitioning && !returning && !dragging
 }
 
 export const useComponentIds = () => {

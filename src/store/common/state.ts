@@ -11,12 +11,20 @@ export interface InitState {
   // 它俩的 bottom 完全由 safeAreaBottom 决定，先用 0 画出来、几十毫秒后拿到真实的
   // 34pt（iPhone）再整体上跳一次，就是用户看到的「启动时底部抽动」。
   safeAreaReady: boolean
-  // 导航转场窗口：**push 与 pop 两侧共用**，转场期间底部玻璃暂停渲染（按住转场前
-  // 那一帧，不在转场中途采景）。写/清全在 navigation 内（startPush / pop 三入口 /
-  // handleScreenPopped），见 navigation/transitionWindow.ts。
+  // 导航转场窗口：**push 与 pop 两侧共用**。写/清全在 navigation 内（startPush /
+  // pop 三入口 / handleScreenPopped），见 navigation/transitionWindow.ts。
   // 第 61 轮第 3 条之前 pop 侧是「立即释放」，另有一道 navRevealing「露出门」——
   // 两者都已删除，原因写在那份文件的历史段里。
   navTransitioning: boolean
+  // 【第 74 轮第 3 条】**本次转场是返回（pop）**：`useGlassNavHold` 据此在返回侧
+  // **放行**玻璃 —— 返回转场的第一帧就重采当前画面，整段转场实时跟到底。
+  // 与上面那条「是否有转场」分开记（不是第二个窗口）：窗口时长、续期、单一出口
+  // 全都还是 navTransitioning 那一套，这里只补一个方向。
+  // 为什么不沿用第 61 轮之前那个同名机制：那一版的玻璃是**活的**、逐帧采正在滑走的
+  // 那一页（采景源当时是整个 App 根视图，转场里根视图同时挂着两屏）；第 73 轮把采景源
+  // 收窄成「包含本玻璃的那一屏」之后，返回转场里采到的就是本屏自己（静止的、正确的那一
+  // 帧），那个成因已经从结构上消失 —— 所以这里给的是「返回侧不按住」，不是旧机制回来。
+  navReturning: boolean
   componentIds: Array<{ name: COMPONENT_IDS, id: string }>
   navActiveId: NAV_ID_Type
   lastNavActiveId: NAV_ID_Type
@@ -32,6 +40,7 @@ const state: InitState = {
   safeAreaBottom: 0,
   safeAreaReady: false,
   navTransitioning: false,
+  navReturning: false,
   componentIds: [],
   navActiveId: 'nav_discovery',
   lastNavActiveId: 'nav_discovery',

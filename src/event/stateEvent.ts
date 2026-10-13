@@ -82,6 +82,11 @@ export class StateEvent extends Event {
     this.emit('navTransitioningUpdated', transitioning)
   }
 
+  // 【第 74 轮第 3 条】本次转场是不是「返回」：玻璃在返回侧不按住（见 state.navReturning）
+  navReturningUpdated(returning: boolean) {
+    this.emit('navReturningUpdated', returning)
+  }
+
   apiSourceUpdated(source: LX.AppSetting['common.apiSource']) {
     this.emit('apiSourceUpdated', source)
   }

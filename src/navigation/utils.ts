@@ -54,10 +54,15 @@ export const dismissOverlay = async(compId: string) => {
 // 不在派发前开窗，返回转场里玻璃就会逐帧采到「正在滑走的那一页」，透过的画面反向流。
 //
 // 第 52 轮在这里加过一道「让出一帧（32ms）」——那是为了赶在 pop 之前把**复位重采**
-// 推给原生（露出门时代的做法）。现在返回方向要的是**按住**（不采景），JS 状态晚一两帧
-// 落下去也仍然盖得住整段转场，所以这道延时连同露出门一起删掉，返回按钮少 2 帧延迟。
+// 推给原生（露出门时代的做法）。现在这个方向要的是「转场一开始就让玻璃按当前画面重采」，
+// JS 状态晚一两帧落下去也仍然盖得住整段转场，所以这道延时连同露出门一起删掉，返回按钮少 2 帧延迟。
+//
+// 【第 74 轮第 3 条】方向参数 'pop'：返回侧**不再按住玻璃**，采景门在派发命令的**同一帧**
+// 就翻（这就是用户要的「切回刚开始就确认主界面移动后画面」），随后整段返回转场实时采景。
+// 反过来只传默认的 'push' 会把返回也按停 —— 那正是第 74 轮第 3 条那个「透过的画面停留在
+// 移动前的画面」的成因。详见 navigation/transitionWindow.ts 的【第 74 轮第 3 条】段。
 const holdTransitionBeforePop = <T>(run: () => Promise<T>): Promise<T> => {
-  beginNavTransitionWindow()
+  beginNavTransitionWindow('pop')
   return run()
 }
 export const pop = (compId: string) => holdTransitionBeforePop(() => Navigation.pop(compId))

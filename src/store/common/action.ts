@@ -32,6 +32,13 @@ export default {
     state.navTransitioning = transitioning
     global.state_event.navTransitioningUpdated(transitioning)
   },
+  // 【第 74 轮第 3 条】本次转场的方向（true = 返回）：`useGlassNavHold` 据此在返回侧
+  // 放行玻璃。与上面那条一样是布尔边沿 + 同值短路；关窗时两条一起清（见 transitionWindow.ts）。
+  setNavReturning(returning: boolean) {
+    if (state.navReturning == returning) return
+    state.navReturning = returning
+    global.state_event.navReturningUpdated(returning)
+  },
   setComponentId(name: COMPONENT_IDS, id: string) {
     state.componentIds.push({ name, id })
     global.state_event.componentIdsUpdated([...state.componentIds])

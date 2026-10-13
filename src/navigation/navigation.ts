@@ -55,6 +55,11 @@ interface StartPushOptions {
 // 就复位重采。**第 61 轮整体反转**（用户原话「当我右滑时，底部 tab 栏和迷你播放器栏
 // 透过的画面是由右向左滑入的，这个方向是反的，需要改」）：pop 侧改成**与 push 一样
 // 按住整段转场**，露出门整条删除。理由与历史写在 navigation/transitionWindow.ts。
+//
+// 【第 74 轮第 3 条】按 61 轮那样两侧都按住之后，用户仍然两轮报同一件事：「透过的画面
+// 会显示在移动前的画面」。按住只挡「新错帧」，挡不住「旧帧被展示」——第 73 轮修掉采景源
+// 之后（采到的是本屏自己、静止的），返回侧已经可以放行，于是 pop 侧改成**放行**：
+// 采景门在转场第一帧翻、玻璃立刻按当前画面重采并整段实时跟。push 侧不动。
 const startPush = (id: COMPONENT_IDS, options: StartPushOptions = {}) => {
   if (pendingPushes.has(id)) return false
   if (isTopScreen(id)) {
@@ -78,11 +83,16 @@ const endPush = (id: COMPONENT_IDS) => { pendingPushes.delete(id) }
 export const handleScreenPopped = (componentId: string) => {
   const target = commonState.componentIds.find(item => item.id === componentId)
   commonActions.removeComponentId(componentId)
-  // 【第 61 轮第 3 条】返回侧改为**续期按住**（原先是「立即释放」，见文件头的历史）。
   // 本事件是「系统边缘返回手势」唯一的 JS 锚点（那条路径不经过 utils 的三个 pop
-  // 入口，开不出窗口），而它可能落在转场开头也可能落在结尾 ⇒ 在这里统一续期一整段
-  // 转场，保证整个返回过程中玻璃都保持返回前那一帧、绝不在转场中采到正在滑走的那一页。
-  beginNavTransitionWindow()
+  // 入口，开不出窗口），而它可能落在转场开头也可能落在结尾 ⇒ 在这里统一续期一整段转场。
+  //
+  // 历史上这里按过也放过，两个方向都不对：
+  //   · 第 60 轮及以前「到达即立即释放」——释放后玻璃逐帧采到正在滑走的那一页（反向流）；
+  //   · 第 61 轮第 3 条起「续期按住」——按住门只保证转场里不出现**新的**错帧，不保证那帧
+  //     是**当前的**：冻结帧与「返回后第一帧」的任何差值都会在整段返回里被展示（第 74 轮第 3 条）。
+  // 【第 74 轮第 3 条】方向改成 'pop'：采景门在本事件到达的同一帧翻掉、玻璃按当前画面重采，
+  // 之后整段返回转场实时跟到底。理由与「为什么现在可以这么改」见 transitionWindow.ts。
+  beginNavTransitionWindow('pop')
   if (target) endPush(target.name)
 }
 
