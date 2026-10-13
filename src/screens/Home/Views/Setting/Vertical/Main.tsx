@@ -11,7 +11,7 @@ import commonState from '@/store/common/state'
 import { COMPONENT_IDS } from '@/config/constant'
 import { navigations } from '@/navigation'
 import { SETTING_SCREENS, type SettingScreenIds } from '../Main'
-import { useAboveMiniPlayerBottom } from '@/utils/tabBarCollapse'
+import { useListBottomClearance } from '@/utils/tabBarCollapse'
 import Text from '@/components/common/Text'
 import PageHeader from '@/components/common/PageHeader'
 import { Icon } from '@/components/common/Icon'
@@ -22,7 +22,7 @@ export default memo(() => {
   const t = useI18n()
   // 底部悬浮层顶边（迷你播放器胶囊上边缘）距屏底的距离：本页列表末尾的避让高度。
   // 与播放器落点共用同一条算式，改「Tab 栏距离」/字号/机型都会自动跟上。
-  const aboveMiniPlayerBottom = useAboveMiniPlayerBottom()
+  const listClearance = useListBottomClearance()
   const buttonOpacity = useSettingValue('theme.buttonOpacity')
   // 「按钮圆角」：分类按钮行内覆盖；高度取 styles.categoryItem.minHeight 的源值 56
   const buttonRadius = useButtonRadius()
@@ -38,17 +38,20 @@ export default memo(() => {
   // 而推荐页的「推荐」仍在 lg(24) 处 —— 两者相差正好是外层那层内边距
   // （历史上这里是 xl(32)，表现为「设置」比「推荐」右缩进 32pt，左右切 Tab 时标题横向跳一下）。
   const contentContainer = useMemo(() => ({
-    // 底部留白改成**实测的单源落点**（2026-10-13 第 73 轮）。
+    // 底部留白 = useListBottomClearance()（播放器**展开态**顶边 + 一道呼吸缝，2026-10-14 第 74 轮）。
     //
-    // 旧值是一个写死的 `180 + safeAreaBottom`，本意是「按最高形态的悬浮层留余量」——
-    // 但最高形态（展开态 tab 栏 56 + 滑块 20 + 胶囊 ≈54）只出现在首页；本页是被压栈的，
-    // tab 栏走收起态，悬浮层顶边其实只到 `safeAreaBottom + 底缝 4 + 胶囊高 ≈ 54`。
-    // 两边差了 120pt 上下，全变成列表末尾下面那块看得见的空白（用户第 3 条）。
-    // useAboveMiniPlayerBottom() 就是「迷你播放器顶边距屏底」的单源算式（与 PlayerBar 的
-    // 展开态逐字同式、含首页/横屏/滑块/收起态/实测高度四路输入），底部悬浮层所有避让都用它。
-    // 留白 = 它 ⇒ 最后一项滚到底后下边缘正好贴到胶囊上边缘，完全脱离悬浮区可点。
-    paddingBottom: aboveMiniPlayerBottom,
-  }), [aboveMiniPlayerBottom])
+    // 第 73 轮这里改成了 useAboveMiniPlayerBottom()（跟 Tab 栏收起态走），本意是「收起态下
+    // 悬浮层只到 safeAreaBottom + 底缝 4 + 胶囊高 ≈ 54，可以少留 120pt 空白」。但本页是
+    // Home 的一个 tab 页（不是压栈页，useHomeCovered 恒 false ⇒ isHome 恒 true），**它自己的
+    // 滚动就驱动 Tab 栏收起**：收起态一变，这里的留白从 168 掉到 92 → contentSize 当场缩小 →
+    // iOS 把 contentOffset 夹回新的最大值 → 夹回来的位置落回展开门限以内 → 原生状态机又判
+    // 展开 → 留白涨回 168 …… 用户报的「向下滑到底部，反复在底部碰撞跳动」就是这个环；
+    // 同一根因还让每次 fling 收尾提前撞墙（内容长度半途变小），表现成滚动时的抖动。
+    // 现在取「不随滚动改变」的常量：展开态顶边 + designSpacing.sm 呼吸缝（用户第 74 轮
+    //「设置距离小了点」→ 在实测顶边之外再给一道缝，比第 73 轮的 168 多 12pt）。
+    // 代价见 useListBottomClearance 的注释：收起态下末尾会多出 tab 栏那一层空白。
+    paddingBottom: listClearance,
+  }), [listClearance])
 
   // 分类列表与本页大标题无关，它的水平内边距单独挂在列表容器上：
   // 与设置详情页（SettingDetail/index.tsx）保持一致，用 xl(32)。
