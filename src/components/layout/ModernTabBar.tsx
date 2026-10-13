@@ -793,10 +793,16 @@ export default memo(() => {
           {/* 玻璃衬底带与容器一致的圆角：按压下陷内缩时仍呈圆角，不露直角边。
               圆角 28 = 透镜圆角（56 药丸的胶囊半高，见 LiquidLensView），2026-09-29
               起玻璃端头曲线统一 circular，观感与透镜一致 */}
-          {/* 省电门扩展（C9 发热）：本栏在收起态是**完全不可见**的（opacity 0 + 下移 28），
-              却仍在跑 Metal 逐帧渲染 —— 收起态是长时间驻留状态（只要列表不停在顶部），
-              这是纯白烧的电。可见性一并纳入门控。 */}
-          <LiquidGlass glassOpacity={glassOpacity} dark={theme.isDark} liquid={liquidGlassOn} paused={glassHomeCovered || collapsed || !appActive} live={pagerDragging} style={{ borderRadius: designRadius.glass }} />
+          {/* 省电门（两档，2026-10-13 第 72 轮拆开）：
+              ① 覆盖冻结档 paused —— 被压栈页覆盖 / 转场按住 / App 退后台：冻结时原生会
+                 让 App 把「冻结后还会自己动一下」的列表贴到落点 + 重采定格帧（第 66 轮）；
+              ② 可见性档 hiddenPaused —— 本栏在收起态是**完全不可见**的（opacity 0 + 下移 28），
+                 却仍在跑 Metal 逐帧渲染，收起态又是长时间驻留状态（只要列表不停在顶部），
+                 纯白烧电。可见性走独立一档：只停渲染，绝不触发 ① 那两步。
+              合并成一档的后果（第 72 轮用户「上下滑动跳动」）：收起/展开是列表滚动顺手触发
+              的（滚过门限就翻一次），并进 paused = 每滚一次都把正在惯性滑行的列表贴到落点、
+              当场掐断惯性。两档都不许再把 collapsed 并回 paused。 */}
+          <LiquidGlass glassOpacity={glassOpacity} dark={theme.isDark} liquid={liquidGlassOn} paused={glassHomeCovered || !appActive} hiddenPaused={collapsed} live={pagerDragging} style={{ borderRadius: designRadius.glass }} />
           {/* 液态透镜药丸（tab 切换动画）：玻璃之上、tab 内容之下；快速点击走
               Pressable 切页（x prop 弹簧），横滑跟手 / 长按拖动走 ref 命令式
               followX（同一套通道，见组件上部注释） */}
@@ -875,8 +881,9 @@ export default memo(() => {
           ]}
           pointerEvents={collapsed ? 'auto' : 'none'}
         >
-          {/* 同上：圆钮在展开态完全不可见（opacity 0 + scale 0.5），可见性纳入省电门 */}
-          <LiquidGlass glassOpacity={glassOpacity} dark={theme.isDark} liquid={liquidGlassOn} paused={glassHomeCovered || !collapsed || !appActive} live={pagerDragging} style={{ borderRadius: designRadius.pill }} />
+          {/* 同上：圆钮在展开态完全不可见（opacity 0 + scale 0.5）→ 可见性档 hiddenPaused
+              （只停渲染）；覆盖 / 退后台仍是 paused。第 72 轮拆开，理由见上面那块玻璃。 */}
+          <LiquidGlass glassOpacity={glassOpacity} dark={theme.isDark} liquid={liquidGlassOn} paused={glassHomeCovered || !appActive} hiddenPaused={!collapsed} live={pagerDragging} style={{ borderRadius: designRadius.pill }} />
           <Pressable style={styles.pillInner} onPress={handlePillPress}>
             <View style={styles.pillIcon} pointerEvents="none">
               <Icon name="menu" size={20} color={theme['c-primary']} />

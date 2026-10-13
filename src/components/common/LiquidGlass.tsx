@@ -53,8 +53,30 @@ type LiquidGlassProps = ViewProps & {
    * 玻璃背后其实还是正在向右滑走的那一页，采进胶囊就是用户第 60/61 轮报的「透过的
    * 画面是由右向左滑入的，这个方向是反的」。第 58～60 轮曾反过来做（转场中让玻璃
    * 恢复实时采景 + 原生重新入窗口自恢复），那条路径与露出门一起删除 —— 别改回去。
+   *
+   * 【第 72 轮】本档 = **覆盖冻结档**（覆盖 / 转场按住 / 退后台）：这几档的暂停是要付
+   * 代价的——冻结时原生会通知 App 把「冻结后还会自己动一下」的内容贴到落点 + 重采定格
+   * 帧，而这两步只在「冻结前后用户看到的是同一块画面」时成立。玻璃只是**自己不可见**
+   * （Tab 栏收起/展开时另一块玻璃）是另一档语义，走 hiddenPaused；**别把 collapsed 之类
+   * 的可见性条件并回这里**：收起/展开是列表滚动顺手触发的，并回来 = 每滚一次就把正在
+   * 惯性滑行的列表掐断一次（第 72 轮用户报的「上下滑动跳动」）。
    */
   paused?: boolean
+  /**
+   * 省电「可见性」档（2026-10-13 第 72 轮）：玻璃只是**自己不可见**时传 true——Tab 栏
+   * 收起/展开时两块玻璃轮换可见（收起态圆钮 / 展开态衬底带），不可见的那块该停渲染。
+   *
+   * 与 paused 的**唯一**差别：本档只停 Metal 逐帧渲染，**不触发覆盖冻结档那两步**
+   * （通知 App 把「冻结后还会自己动一下」的内容贴到落点 + 重采定格帧）。那两步是为
+   * 「冻结帧与返回后第一帧重合」服务的，只在覆盖/转场/退后台这类「冻结前后用户看到的
+   * 是同一块画面」的场合成立；而收起/展开是**列表滚动顺手**触发的（滚过收起门限就翻
+   * 一次），并进 paused 就等于每滚一次都把正在惯性滑行的列表贴到落点、当场掐断惯性
+   * ——用户第 72 轮原话：「还原上下滑动速度，现在配置后，存在滑动跳动，使用体验很差」。
+   *
+   * 重新可见（true → false）时仍会做一次性复位 + 立即重采（与 paused 的恢复路径同一套），
+   * 避免「露出来第一眼是旧画面」。磨砂档（26.2+ / 开关关）原生 no-op。
+   */
+  hiddenPaused?: boolean
   /**
    * 实时采景会话（2026-10-02 用户第 2/9 条）：首页横向滑动 PagerView 的手势会话期间传 true。
    * 原生把「重新采一次背景」从静止态基线的 30fps 档放宽到 60fps、渲染档同步到 60fps
@@ -99,7 +121,7 @@ const DARK_OVERLAY_FLOOR_USER = 0.2 / 0.6
  * 父容器需设置 `borderRadius` + `overflow: 'hidden'` 裁出圆角形状，
  * 内容子元素渲染在其上层。原生的 userInteractionEnabled 已关闭，触摸全部穿透。
  */
-const LiquidGlass = memo(({ tint, glassOpacity = 0.4, dark = false, liquid = false, paused = false, live = false, style }: LiquidGlassProps) => {
+const LiquidGlass = memo(({ tint, glassOpacity = 0.4, dark = false, liquid = false, paused = false, hiddenPaused = false, live = false, style }: LiquidGlassProps) => {
   // 26.2+ 强制磨砂兜底（2026-09-30 定案）：UIGlassEffect(.regular) 在白底/图底
   // 页面切换瞬间闪烁，液态玻璃开关已在 26.2+ 从设置页隐藏。业务层已在各消费点
   // 门控（ModernTabBar / PlayerBar），此处兜底保证**任何**调用方漏门控（残留的
@@ -138,6 +160,7 @@ const LiquidGlass = memo(({ tint, glassOpacity = 0.4, dark = false, liquid = fal
       dark={dark}
       liquid={effectiveLiquid}
       paused={paused}
+      hiddenPaused={hiddenPaused}
       live={live}
       tint={nativeTint}
       pointerEvents="none"
