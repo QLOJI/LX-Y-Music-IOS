@@ -27,7 +27,8 @@ import { LIST_IDS, COMPONENT_IDS } from '@/config/constant'
 import { scaleSizeH } from '@/utils/pixelRatio'
 import { designRadius, designSpacing, pageTitleGap, pageTitleLineHeight } from '@/theme/DesignTokens'
 import { useButtonRadius } from '@/utils/buttonRadius'
-import { useBottomOverlayInset, useNavActiveId } from '@/store/common/hook'
+import { useNavActiveId } from '@/store/common/hook'
+import { useListBottomClearance } from '@/utils/tabBarCollapse'
 import PageTopInset from '@/components/common/PageTopInset'
 import Loading from '@/components/common/Loading'
 import { Navigation } from 'react-native-navigation'
@@ -368,8 +369,19 @@ export default memo(() => {
   const buttonOpacity = useSettingValue('theme.buttonOpacity')
   // 「点击重试」按钮无静态高度：paddingVertical 10×2 + 14 号字行高 ≈ 40
   const buttonRadius = useButtonRadius()
-  // 底部悬浮层（迷你播放器 + 底部 Tab + 安全区）统一避让高度
-  const bottomInset = useBottomOverlayInset()
+  // 列表末尾的避让高度（2026-10-14 第 74 轮第 1 条）。
+  //
+  // 原来是 useBottomOverlayInset()，即 BOTTOM_OVERLAY_BASE_HEIGHT(180) + 安全区 —— 一个按
+  // 「最高形态的悬浮层」凑出来的常数，比播放器实际顶边（展开态 = 安全区 + 底缝 4 + Tab 栏高
+  // 56 + 滑块 20 + 胶囊实测高 ≈ 54）多出 46pt，在末尾那条宫格（FeatureGrid）下面就是一块
+  // 看得见的空白（用户第 74 轮图一：「我的列表下面空白也比较多」）。改成与设置页同一条单源
+  // 算式 useListBottomClearance()（展开态顶边 + 呼吸缝），末尾留白回到 ≈ 一道缝的量。
+  //
+  // 为什么不像悬浮控件那样跟 Tab 栏收起态走：本页是 Home 的一个 tab 页，**它自己的滚动**
+  // 就驱动栏收起 —— 避让值一跟着变，列表 contentSize 就会在滚动中途改变，iOS 会把
+  // contentOffset 夹回去（用户第 74 轮报的「反复在底部碰撞跳动」/滚动抖动）。详见
+  // useListBottomClearance 的注释。
+  const listClearance = useListBottomClearance()
   const t = useI18n()
 
   // 加载失败时的「点击重试」按钮：底色是硬编码的 rgba 常量（不是主题 token），
@@ -897,7 +909,7 @@ export default memo(() => {
         <>
           <FlatList
             data={listItems}
-            contentContainerStyle={{ paddingBottom: bottomInset }}
+            contentContainerStyle={{ paddingBottom: listClearance }}
             renderItem={renderItem}
             ListHeaderComponent={listHeader}
             // 更多功能网格（网易/酷狗/QQ 歌单、关注歌手、收藏专辑、WebDAV、本地与下载）
