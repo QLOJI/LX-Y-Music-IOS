@@ -11,7 +11,7 @@ import commonState from '@/store/common/state'
 import { COMPONENT_IDS } from '@/config/constant'
 import { navigations } from '@/navigation'
 import { SETTING_SCREENS, type SettingScreenIds } from '../Main'
-import { useSafeAreaBottom } from '@/store/common/hook'
+import { useAboveMiniPlayerBottom } from '@/utils/tabBarCollapse'
 import Text from '@/components/common/Text'
 import PageHeader from '@/components/common/PageHeader'
 import { Icon } from '@/components/common/Icon'
@@ -20,7 +20,9 @@ import LandscapeCentered from '@/components/LandscapeCentered'
 export default memo(() => {
   const theme = useTheme()
   const t = useI18n()
-  const safeAreaBottom = useSafeAreaBottom()
+  // 底部悬浮层顶边（迷你播放器胶囊上边缘）距屏底的距离：本页列表末尾的避让高度。
+  // 与播放器落点共用同一条算式，改「Tab 栏距离」/字号/机型都会自动跟上。
+  const aboveMiniPlayerBottom = useAboveMiniPlayerBottom()
   const buttonOpacity = useSettingValue('theme.buttonOpacity')
   // 「按钮圆角」：分类按钮行内覆盖；高度取 styles.categoryItem.minHeight 的源值 56
   const buttonRadius = useButtonRadius()
@@ -36,10 +38,17 @@ export default memo(() => {
   // 而推荐页的「推荐」仍在 lg(24) 处 —— 两者相差正好是外层那层内边距
   // （历史上这里是 xl(32)，表现为「设置」比「推荐」右缩进 32pt，左右切 Tab 时标题横向跳一下）。
   const contentContainer = useMemo(() => ({
-    // 底部悬浮的迷你播放器胶囊 + tab 栏最高约到 safeAreaBottom+150pt，
-    // 参照 Discovery 页的 180 底部留白并叠加安全区，保证最后一项滚到底后完全脱离悬浮区可点。
-    paddingBottom: 180 + safeAreaBottom,
-  }), [safeAreaBottom])
+    // 底部留白改成**实测的单源落点**（2026-10-13 第 73 轮）。
+    //
+    // 旧值是一个写死的 `180 + safeAreaBottom`，本意是「按最高形态的悬浮层留余量」——
+    // 但最高形态（展开态 tab 栏 56 + 滑块 20 + 胶囊 ≈54）只出现在首页；本页是被压栈的，
+    // tab 栏走收起态，悬浮层顶边其实只到 `safeAreaBottom + 底缝 4 + 胶囊高 ≈ 54`。
+    // 两边差了 120pt 上下，全变成列表末尾下面那块看得见的空白（用户第 3 条）。
+    // useAboveMiniPlayerBottom() 就是「迷你播放器顶边距屏底」的单源算式（与 PlayerBar 的
+    // 展开态逐字同式、含首页/横屏/滑块/收起态/实测高度四路输入），底部悬浮层所有避让都用它。
+    // 留白 = 它 ⇒ 最后一项滚到底后下边缘正好贴到胶囊上边缘，完全脱离悬浮区可点。
+    paddingBottom: aboveMiniPlayerBottom,
+  }), [aboveMiniPlayerBottom])
 
   // 分类列表与本页大标题无关，它的水平内边距单独挂在列表容器上：
   // 与设置详情页（SettingDetail/index.tsx）保持一致，用 xl(32)。
