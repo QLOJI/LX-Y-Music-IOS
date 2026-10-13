@@ -28,6 +28,8 @@ import { COMPONENT_IDS } from '@/config/constant'
  * 冻结纹理就永远对得上），等玻璃真的醒来（转场按住门松开 = navTransitioning 落回 false，
  * 那一刻原生侧 handleResumeFromPause 正要重采一帧）再一次性落地 —— 布局变化与重采同拍发生，
  * 用户看到的就是「返回 → 栏回到该有的样子」，中间没有旧画面。
+ * 【第 74 轮第 3 条】返回侧不再按住（玻璃在 pop 方向是活的），所以这里的「冻着」也必须
+ * 只在 push 方向成立（见下面 glassFrozen）：返回时欠账在「Home 回到栈顶」那一拍落地。
  * 消费方：ModernTabBar（Home）与 PlayerBar（isHome）。
  */
 
@@ -41,8 +43,12 @@ let inited = false
 
 /** Home 的两块玻璃（tab 栏 / 收起圆钮 / 迷你播放器）现在是不是被冻着 */
 const glassFrozen = (): boolean => {
-  // 转场窗口：push 与 pop 两侧共用，窗口内玻璃一律按住（第 61 轮第 3 条）
-  if (state.navTransitioning) return true
+  // 转场窗口：窗口内玻璃被按住门冻着（第 61 轮第 3 条）——但**只在 push 侧**。
+  // 【第 74 轮第 3 条】返回侧（navReturning）玻璃不冻（useGlassNavHold 在返回方向放行，
+  // 见 store/common/hook.ts），所以这道门也不该再拦返回侧收到的变化：欠账必须在
+  // 「Home 回到栈顶、玻璃开始实时采景」那一拍落地（两者的翻转时刻逐字对齐），
+  // 拖到 420ms 之后就是「返回完成后栏又跳一下」。
+  if (state.navTransitioning && !state.navReturning) return true
   // 账本覆盖门：RNN 栈顶不是 home 即 Home 被盖住（与 useHomeCovered 同一判据，
   // 这里读的是同一个 state，所以两者的翻转时刻完全一致）
   const ids = state.componentIds
@@ -177,8 +183,12 @@ export const useCollapsedRowGeometry = (): CollapsedRowGeometry => {
  *    · 收起态底边 = collapsedFloatBottom(安全区)（与左下角圆钮共用同一条公式）；
  *    · 顶边 = 底边 + 播放器高（= 收起行几何的 size，同一份实测值）。
  *  播放器高度取 useMiniPlayerHeight 的实测值（PlayerBar 只按展开态上报），
- *  未测量时由 getCollapsedPillSize 的 token 兜底 —— 与圆钮同源。 */
-export const useAboveMiniPlayerBottom = (): number => {
+ *  未测量时由 getCollapsedPillSize 的 token 兜底 —— 与圆钮同源。
+ *
+ *  【第 74 轮】新增 `{ pinnedExpanded }` 入参：true = 底边恒取**展开态**、不跟 Tab 栏收起态。
+ *  可滚动内容的末尾避让一律走 useListBottomClearance（= 它 + 一道呼吸缝），
+ *  悬浮控件（要贴着播放器）用默认值。 */
+export const useAboveMiniPlayerBottom = ({ pinnedExpanded = false }: { pinnedExpanded?: boolean } = {}): number => {
   const safeAreaBottom = useSafeAreaBottom()
   const homeCovered = useHomeCovered()
   const isHorizontalMode = useHorizontalMode()
@@ -191,7 +201,30 @@ export const useAboveMiniPlayerBottom = (): number => {
     const bottomExpanded = safeAreaBottom + (isHome
       ? (isHorizontalMode ? 76 : bottomFloatGap + scaleSizeH(tabBarBaseHeight) + floatDistance(tabBarDistance))
       : bottomFloatGap)
-    const playerBottom = isHome && tabBarCollapsed ? collapsedFloatBottom(safeAreaBottom) : bottomExpanded
+    // pinnedExpanded：永久按**展开态**（最高形态）取底边，不跟 Tab 栏收起态走。
+    // 悬浮控件（批量管理框 / 多选条 / 悬浮球）要「贴着播放器」，必须跟；可滚动内容的避让
+    // 高度不能跟 —— 原因见 useListBottomClearance 的说明（跟着走会在滚动中途改 contentSize）。
+    const playerBottom = isHome && tabBarCollapsed && !pinnedExpanded ? collapsedFloatBottom(safeAreaBottom) : bottomExpanded
     return playerBottom + getCollapsedPillSize(measured)
-  }, [safeAreaBottom, homeCovered, isHorizontalMode, tabBarDistance, tabBarCollapsed, measured])
+  }, [safeAreaBottom, homeCovered, isHorizontalMode, tabBarDistance, tabBarCollapsed, measured, pinnedExpanded])
 }
+
+/** 可滚动内容（列表 / 设置页 ScrollView）**末尾**要留的避让高度：让最后一行完整露在底部
+ *  悬浮层之上。
+ *
+ *  2026-10-14（第 74 轮第 1 条）定案。此前列表末尾各有各的写法：「我的」页 / 歌曲列表页吃
+ *  useBottomOverlayInset()（= BOTTOM_OVERLAY_BASE_HEIGHT 180 + 安全区，一个按最高形态凑出来
+ *  的常数），设置页吃 useAboveMiniPlayerBottom()（**会跟着 Tab 栏收起态变**）。后者在真机上
+ *  是一个自馈环 —— 设置页是 Home 的一个 tab 页（不是压栈页），**它自己的滚动**就驱动 Tab 栏
+ *  收起：收起态一变，padding 从 168 掉到 92 → 列表 contentSize 当场缩小 → iOS 把
+ *  contentOffset 夹回新的最大值 → 夹回来的 offset 落回展开门限以内 → 原生状态机又判展开 →
+ *  padding 涨回 168 …… 用户看到的就是「向下滑到底部，反复在底部碰撞跳动」；同一根因还会让
+ *  每一次 fling 的收尾提前「撞墙」（内容长度在半途变小），表现成「上下滑动有抖动/不平滑」。
+ *
+ *  所以列表避让**必须是一个不随滚动改变的量**：取展开态（最高形态）的播放器顶边，再加一道
+ *  呼吸缝。代价是收起态下末尾会多出 tab 栏那一层（≈76pt）的空白 —— 这是 iOS 系统应用的同
+ *  一项取舍（内容内边距按最高形态一次定死，收起/展开都不再动列表，宁可多留一点空白也不让
+ *  列表在滚动中途跳）。缝取 designSpacing.sm，与悬浮控件那边的「裸值不加缩放」口径无关
+ *  （它是内容内边距，不是落点）。 */
+export const useListBottomClearance = (): number =>
+  useAboveMiniPlayerBottom({ pinnedExpanded: true }) + designSpacing.sm
