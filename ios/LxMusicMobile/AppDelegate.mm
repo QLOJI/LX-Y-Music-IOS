@@ -7677,6 +7677,17 @@ static void LX_RCTScrollView_scrollViewDidScroll(id self, SEL _cmd, UIScrollView
     // 程序化滚动不许收起（歌词列表挂载自动滚到当前行 = 用户第 63 轮第 1 条报的
     //「突然进入播放详情页就变成合并状态」）
     if (!userDriven) return;
+    // 【第 74 轮第 1 条】落点越过门限只说明「松开手之后会滑过去」，还要**当前位置**真的走出
+    // 顶部迟滞区才判收起。顶/底被甩出边界之后的**回弹**会把 offset 从越界处拉回边界，而穿过
+    // 边界那一刻的速度方向与「刚从顶部往下滑」完全相同（都朝内容下方），外推于是给出一个很
+    // 深的落点：状态机在列表明明停在顶部时把它判成收起，等弹簧在边界停稳（offset = 0）又判回
+    // 展开 —— 用户第 74 轮报的「向上滑到顶部碰撞时，展开/收起抽动一下」「滑动过程中出现展开
+    // 跳动」。第 71 轮的 LXGlassLegalRestOffsetY 只堵住了「offset 还在越界区」的那几帧，
+    // 回弹穿过边界之后的那一段没有覆盖，这里补上。
+    // 加上这一条后：回弹全程 current ≤ 展开门限 ⇒ 不可能判收起；真正的下滑 / fling 跨过展开
+    // 门限只要一两帧，收起最多晚一两帧发生 —— 第 69 轮第 4 条「轻扫一下就该合并」的口径保住
+    //（轻扫时当前点本来就已经走出 12pt，只有「手指是在顶部 6pt 之内抬起的」那一种才晚一拍）。
+    if (scrollView.contentOffset.y <= LXTabBarExpandOffset) return;
     // 点过收起按钮手动展开的（第 31 轮口径：保持到列表重新离开顶部）：不被一次拖动收回去
     if (LXTabBarManualExpanded) return;
     LXTabBarCollapseDriver = scrollView;
