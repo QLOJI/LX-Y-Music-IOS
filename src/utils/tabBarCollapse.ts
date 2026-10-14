@@ -234,3 +234,38 @@ export const useAboveMiniPlayerBottom = ({ pinnedExpanded = false }: { pinnedExp
  *  或改收起态下那 76pt 的 tab 栏层（那要引入「随收起态变」的写法 = 第 74 轮那个自馈环）。 */
 export const useListBottomClearance = (): number =>
   useAboveMiniPlayerBottom({ pinnedExpanded: true }) + bottomFloatGap
+
+/** 末尾避让的**下限**：收起态悬浮行顶边 + 缝（与 Tab 栏收起状态无关 ⇒ 不会形成自馈环）。 */
+export const useListBottomClearanceFloor = (): number => {
+  const safeAreaBottom = useSafeAreaBottom()
+  const measured = useMiniPlayerHeight()
+  return collapsedFloatBottom(safeAreaBottom) + getCollapsedPillSize(measured) + bottomFloatGap
+}
+
+/** 实测收口要求列表至少还能滚这么多（pt）。必须大于原生收起门限（`LXTabBarCollapseOffset` = 12），
+ *  否则「滚到底」时栏不收起、末项会被**展开态**的播放器盖住并且滚不出来。 */
+export const LIST_CLEARANCE_SCROLL_MARGIN = 24
+
+/**
+ * 【第 77 轮第 1 条】把常量预留按实测收紧：取「内容刚好还能滚过收起门限」所需的最小预留，
+ * 夹在 [floor, max] 之间（max = 展开态顶边 + 缝，floor = 收起态顶边 + 缝）。
+ *
+ * 为什么这样收是安全的：预留要按**展开态**算，只是因为「末项得能被滚到展开态播放器上方」；
+ * 而真正滚到底时栏一定是收起态（滚动超过 12pt 就合并），所以只要列表还滚得动、末项就只需要
+ * 让开**收起态**那一行。内容只要比视口高出「余量」这一点，就能两头兼顾 —— 此时预留可以一路
+ * 收到 floor，那条 76pt 的 tab 栏层就省掉了。
+ * 内容几乎填满视口时收到 floor 会让列表滚不动（＝栏永不收起、末项被盖住），所以那种情况自动
+ * 退回 max —— 这也是第 74 轮那个常量为什么必须取展开态。
+ *
+ * 与第 74 轮那个自馈环的区别：这里只依赖**内容与视口的高度**，与收起状态无关 ⇒ 预留不会
+ * 因为收起/展开而变 ⇒ 不会「收起 → contentSize 缩小 → offset 被夹回 → 又判展开」。
+ */
+export const resolveListBottomClearance = (
+  max: number,
+  floor: number,
+  viewportHeight: number,
+  rowsHeight: number,
+): number => {
+  if (!(viewportHeight > 0) || !(rowsHeight > 0)) return max
+  return Math.min(max, Math.max(floor, viewportHeight - rowsHeight + LIST_CLEARANCE_SCROLL_MARGIN))
+}
