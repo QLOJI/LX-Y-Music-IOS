@@ -1,12 +1,12 @@
 import { playNext } from '@/core/player/player'
 import { updatePlayIndex } from '@/core/player/playInfo'
-import { throttleBackgroundTimer } from '@/utils/tools'
+import { throttle } from '@/utils/tools'
 import playerState from '@/store/player/state'
 
 const changedListIds = new Set<string | null>()
 
 export default () => {
-  const throttleListChange = throttleBackgroundTimer(() => {
+  const throttleListChange = throttle(() => {
     const isSkip = !changedListIds.has(playerState.playInfo.playerListId) && !changedListIds.has(playerState.playMusicInfo.listId)
     changedListIds.clear()
     if (isSkip) return
