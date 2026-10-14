@@ -3793,13 +3793,8 @@ static NSString *LXStreamingFlacDecoderErrorStatusName(FLAC__StreamDecoderErrorS
 // 非混音口径。策略标记本身继续做第 24 轮那件事：勾选 = 引擎被系统停掉也不对外呈现暂停。
 static BOOL LXPlayWithOthersEnabled = NO;
 
-// 【第 75 轮第 2 条】后台保活心跳的周期（秒）。用户原话：「软件长时间后台播放后，会出现突然杀掉，
-// 然后要重新进入软件才行，请确保每隔一段时间确认后台保活，但是不能频繁激活影响电量」。
-// 30 秒是「够早」与「够省」之间取的中间值：一拍只做两次**属性读**（进程是否在前台、引擎是否
-// 还在跑），正常播放时读完就返回 —— 会话、引擎、后台任务断言一个都不碰（那才是耗电的东西）。
-// 只有真读出来「该在播、引擎却停了」才会走一次自愈（重新激活会话 + 重挂引擎），且两次自愈
-// 之间天然隔着这个周期。周期再拉长没有意义：音频一停 iOS 通常几秒内就把进程挂起，那时定时源
-// 本身也停了（见 handleAudioKeepAliveTick 的说明）。
+// 【第 75 轮第 2 条】后台保活心跳周期（秒）。一拍只读两个属性，正常播放时读完就返回；
+// 只有「该在播、引擎却停了」才自愈一次，两次之间天然隔着一个周期。
 static const double LXAudioKeepAliveIntervalSeconds = 30.0;
 
 @implementation StreamingFlacPlayerModule {
@@ -3822,8 +3817,7 @@ static const double LXAudioKeepAliveIntervalSeconds = 30.0;
   std::shared_ptr<LXRealtimeSpatialPannerProcessor> _realtimePannerProcessor;
   BOOL _lastRealtimeEqualizerEnabled;
   std::vector<float> _lastRealtimeEqualizerGains;
-  // 【第 75 轮第 2 条】后台保活心跳（见 startAudioKeepAliveWatchdog）：常驻的 GCD 定时源，
-  // 只在**进程还活着**的时候滴答 —— App 一旦被挂起它自然停摆，不会把 App 从挂起里拽起来。
+  // 【第 75 轮第 2 条】后台保活心跳：常驻 GCD 定时源，App 被挂起时自然停摆
   dispatch_source_t _audioKeepAliveTimer;
 }
 
@@ -5288,10 +5282,8 @@ static const int64_t LXResumeFadeStepMs = 40;
   });
 }
 
-// 【第 75 轮第 2 条】后台保活心跳（周期见 LXAudioKeepAliveIntervalSeconds）。常驻的 GCD 定时源，
-// 挂在**主队列**上：那一拍要在主队列读 UIApplication.applicationState（UIKit 的主线程口径），
-// 而真正的引擎检查与自愈再跳到 renderQueue（引擎归它管）。定时源只依赖「进程在跑」，不依赖
-// 播放状态 —— 没在播时那一拍会当场早退，所以不需要在起播 / 暂停的每条路径上挂接 / 摘除。
+// 【第 75 轮第 2 条】后台保活心跳。挂主队列（那一拍要读 applicationState），
+// 引擎检查与自愈再跳 renderQueue。不依赖播放状态，所以不需要在起播/暂停路径上挂接。
 - (void)startAudioKeepAliveWatchdog {
   if (_audioKeepAliveTimer != nil) return;
   _audioKeepAliveTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
@@ -5327,14 +5319,11 @@ static const int64_t LXResumeFadeStepMs = 40;
   if ([self.currentState isEqualToString:@"idle"] || [self.currentState isEqualToString:@"stopped"]) return;
   // 系统打断期间（独占态）会话本来就不该由我们抢回来（第 16 轮口径）
   if (self.interruptedBySystem && !LXPlayWithOthersEnabled) return;
-  // 便宜判据：引擎还在跑 —— 会话与输出 IO 都还挂着，这一拍读完就返回，一个会话调用都不发
+  // 便宜判据：引擎还在跑就什么都不做（会话与输出 IO 都还挂着），这一拍一个会话调用都不发
   if (self.engine != nil && self.engine.isRunning) return;
-  // 引擎掉了 = 后台音频资格跟着掉：iOS 会在几秒内把进程挂起，再往后就是被系统回收 —— 用户报的
-  //「长时间后台播放后突然被杀、要重新进软件」正是这个形态（音频停了没人知道，App 就这么没了）。
-  // 走与路由变化同一条自愈链把它重新挂回去（重设会话分类 + 激活 + 重挂引擎 + 恢复输出）。
-  // ⚠ 覆盖面有限：只认「引擎停了」这一种。若音频会话还活着、引擎也 isRunning，但输出 IO 被悄悄
-  // 掐断（第 62 轮那种「一帧都取不走」），后台读不出这个事实（渲染帧数在缓冲等待期同样不涨），
-  // 只能等回前台那一拍的死检 —— 与第 69 轮第 2 条前台门的既有口径一致，这里不越权。
+  // 引擎掉了 = 后台音频资格跟着掉 → 几秒后被挂起 → 被系统回收（用户报的「突然被杀」）。
+  // 走与路由变化同一条自愈链。⚠ 只认「引擎停了」；会话活着但 IO 被悄悄掐断那一种
+  // 后台读不出来，只能等回前台那一拍的死检（与第 69 轮第 2 条前台门同口径）。
   [self recoverStreamingOutputForRouteChange:NO];
 }
 
