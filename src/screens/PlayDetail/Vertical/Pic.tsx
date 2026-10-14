@@ -6,7 +6,7 @@ import playerState from '@/store/player/state'
 import { useWindowSize } from '@/utils/hooks'
 import { useSettingValue } from '@/store/setting/hook'
 import Image, { defaultHeaders } from '@/components/common/Image'
-import { useStatusbarHeight, useScreenCovered } from '@/store/common/hook'
+import { useStatusbarHeight, useScreenCovered, useAppActive } from '@/store/common/hook'
 import { HEADER_HEIGHT } from './components/Header'
 import { createStyle } from '@/utils/tools'
 import CoverLongPressMenu, { type CoverLongPressMenuType } from '@/screens/PlayDetail/components/CoverLongPressMenu'
@@ -122,7 +122,11 @@ export default memo(({ componentId, active = true, coverRegionHeight = 0 }: { co
   // 两者任一不满足即封面不可见：PagerView 会一直保持封面页挂载，不加这道门时滑到歌词页、
   // 或被别的页面盖住后，原生动画仍被逐帧驱动，纯白烧电。
   const screenCovered = useScreenCovered(componentId)
-  const spinVisible = active && !screenCovered
+  // 【第 76 轮第 3 条】再加一道前后台门：App 退到后台时封面根本不可见，但本页仍被
+  // PagerView 保持挂载、RNN 栈顶也没变（active / screenCovered 都不翻）⇒ 自转会在后台
+  // 以 60fps 一直驱动 UI 线程。后台不可见 ⇒ 停转，回来按「临时不可见」那条语义续转（相位不跳）。
+  const appActive = useAppActive()
+  const spinVisible = active && !screenCovered && appActive
 
   // 封面 URL：playerMusicInfo.pic 已兼容在线 + 下载两种来源（playInfo.ts setPlayerMusicInfo）。
   // 同时兜底 playMusicInfo.musicInfo.meta.picUrl，保证和参考版 e58d1ab1 的数据入口一致。

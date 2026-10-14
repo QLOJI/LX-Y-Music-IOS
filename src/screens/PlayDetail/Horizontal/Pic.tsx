@@ -9,7 +9,7 @@ import { HEADER_HEIGHT } from './components/Header'
 import { BTN_WIDTH } from './MoreBtn/Btn'
 import { marginLeft } from './constant'
 import Image from '@/components/common/Image'
-import { useStatusbarHeight, useScreenCovered } from '@/store/common/hook'
+import { useStatusbarHeight, useScreenCovered, useAppActive } from '@/store/common/hook'
 import playerState from '@/store/player/state'
 import { useSettingValue } from '@/store/setting/hook'
 import { useLandscapeLayout, getLeftWidth } from '@/utils/landscapeLayout'
@@ -50,7 +50,10 @@ export default memo(({ componentId }: { componentId: string }) => {
   // 横屏没有「封面页/歌词页」分页（左栏常驻，见 Horizontal/index.tsx），所以不需要竖屏
   // 那条 active（PagerView 当前页）门控，可见性只有屏幕是否被覆盖这一个来源。
   const screenCovered = useScreenCovered(componentId)
-  const spinVisible = !screenCovered
+  // 【第 76 轮第 3 条】后台门（与竖屏同一条）：App 退到后台时本屏仍挂着、栈顶也没变，
+  // 不加这道门自转会在后台一直 60fps 驱动 UI 线程。
+  const appActive = useAppActive()
+  const spinVisible = !screenCovered && appActive
   const coverSizeRaw = useSettingValue('playDetail.style.coverSize')
   const coverSize = typeof coverSizeRaw === 'number' && !isNaN(coverSizeRaw) ? coverSizeRaw : 100
   const spinValue = useRef(new Animated.Value(0)).current
