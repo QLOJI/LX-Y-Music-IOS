@@ -1597,6 +1597,11 @@ static dispatch_queue_t LXNowPlayingLyricQueue = nil;
 static double LXNowPlayingLyricAnchorSystemMs = 0;  // CACurrentMediaTime() 毫秒
 static double LXNowPlayingLyricAnchorElapsedMs = 0; // 锚点对应的播放位置（ms）
 static NSInteger LXNowPlayingLyricIndex = -1;
+// 【第 77 轮】artist 文本 → 行号的查表缓存：那一拍原本每拍都把整张表线性扫一遍找 artistLine
+//（40Hz × 行数），而 artist 文本只在我们自己写卡片时才变。文本没变就复用上次的行号。
+// 时间轴被换掉（换歌 / 清空）时必须作废 —— 见 LXSetNowPlayingLyricLines。
+static NSString *LXNowPlayingArtistLineText = nil;
+static NSInteger LXNowPlayingArtistLineIndex = -1;
 // 【第 46 轮】上一次「每秒对表」（把外推位置写回 ElapsedPlaybackTime 并全量重发）的
 // 原生时钟戳（CACurrentMediaTime 毫秒）。0 = 还没对过表（起播后第一拍立即对一次）。
 // 见 LXNowPlayingLyricStep 里的 1Hz 心跳：只把已有 tick 拿来计数，不新建定时器。
@@ -1887,12 +1892,19 @@ static void LXNowPlayingLyricStep(void) {
     // artist 命中时间轴的哪一行（-1 = 空 / 不是任何一行：上一首残留、歌手名…）
     NSInteger artistLine = -1;
     if (currentArtist.length > 0) {
-      for (NSUInteger i = 0; i < LXNowPlayingLyricLines.count; i++) {
-        NSString *lineText = LXNowPlayingLyricLines[i][@"text"];
-        if ([lineText isKindOfClass:[NSString class]] && [currentArtist isEqualToString:lineText]) {
-          artistLine = (NSInteger)i;
-          break;
+      // 【第 77 轮】文本没变就走缓存（那一拍不再线性扫表）；变了才重扫并记下结果
+      if (LXNowPlayingArtistLineText != nil && [LXNowPlayingArtistLineText isEqualToString:currentArtist]) {
+        artistLine = LXNowPlayingArtistLineIndex;
+      } else {
+        for (NSUInteger i = 0; i < LXNowPlayingLyricLines.count; i++) {
+          NSString *lineText = LXNowPlayingLyricLines[i][@"text"];
+          if ([lineText isKindOfClass:[NSString class]] && [currentArtist isEqualToString:lineText]) {
+            artistLine = (NSInteger)i;
+            break;
+          }
         }
+        LXNowPlayingArtistLineText = currentArtist;
+        LXNowPlayingArtistLineIndex = artistLine;
       }
     }
     // 时钟落后于 JS（artist 是更靠后的一行，含前奏窗口的 found < 0）：保留 JS 文本、
@@ -1945,17 +1957,16 @@ static void LXStartNowPlayingLyricTimer(void) {
   if (LXNowPlayingLyricTimer != nil) return;
   LXNowPlayingLyricQueue = dispatch_queue_create("com.lxmusic.nowplaying.lyric", DISPATCH_QUEUE_SERIAL);
   dispatch_source_t timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, LXNowPlayingLyricQueue);
-  // 周期 0.05s（20Hz）【第 47 轮】：用户原话「歌词显示需要更加迅速和提高加载帧率」。
-  // 此前是 0.12s（约 8.3Hz，换行最坏延迟 120ms）；20Hz 把最坏换行延迟压到 50ms ——
-  // 锁屏/灵动岛的歌词行跟随位置外推的那点「慢半拍」主要就来自这一拍。
-  // 开销：每次 tick 只做一次二分查找，未换行时立即返回；真正昂贵的写入（快照 + 全量
-  // 重发 + 强制重绘）只在**行真的变了**时发生，换行频率由歌词本身决定，与 tick 周期无关。
-  // 省电口径（第 42 轮）不受影响：时钟只在「播放中且屏幕可信为亮」时存在
-  // （LXSyncNowPlayingLyricTimer 的双闸），暂停/熄屏/无歌词一律停钟，不产生后台净唤醒。
-  // leeway 取 0.01（周期的 20%）：给系统合并唤醒的余地的同时，不把换行延迟再拉长。
+  // 周期 0.025s（40Hz）：第 47 轮 0.12s → 0.05s（用户「歌词显示需要更加迅速和提高加载帧率」），
+  // 第 77 轮 0.05s → 0.025s（用户「锁屏界面和灵动岛的歌词换行速度慢了点，之前也提过速，再提速
+  // 一点」）。拍长即换行最坏延迟：120ms → 50ms → 25ms。
+  // 开销：每拍只做一次二分查找 + 一次「artist 文本没变就跳过扫行」的比对（第 77 轮加的缓存），
+  // 真正昂贵的写入（快照 + 全量重发 + 强制重绘）只在**行真的变了**时发生。
+  // 省电口径（第 42 轮）不受影响：时钟只在「播放中且屏幕可信为亮」时存在，暂停/熄屏/无歌词停钟。
+  // leeway 0.01：给系统合并唤醒的余地，不把换行延迟再拉长。
   dispatch_source_set_timer(timer,
-                            dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)),
-                            (uint64_t)(0.05 * NSEC_PER_SEC),
+                            dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.025 * NSEC_PER_SEC)),
+                            (uint64_t)(0.025 * NSEC_PER_SEC),
                             (uint64_t)(0.01 * NSEC_PER_SEC));
   dispatch_source_set_event_handler(timer, ^{ LXNowPlayingLyricStep(); });
   dispatch_resume(timer);
@@ -2036,6 +2047,9 @@ static void LXSetNowPlayingLyricLines(NSArray<NSDictionary *> *lines, NSNumber *
   @synchronized (LXLyricLock()) {
     LXNowPlayingLyricLines = merged.count ? merged : nil;
     LXNowPlayingLyricIndex = -1;
+    // 【第 77 轮】时间轴换了 ⇒ artist→行号 的查表缓存作废
+    LXNowPlayingArtistLineText = nil;
+    LXNowPlayingArtistLineIndex = -1;
   }
   if (positionMs != nil) {
     LXReanchorNowPlayingLyric(positionMs.doubleValue,
