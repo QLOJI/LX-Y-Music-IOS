@@ -1,4 +1,4 @@
-import { memo, useCallback, useMemo } from 'react'
+import { memo, useCallback, useMemo, useState } from 'react'
 import { ScrollView, TouchableOpacity, View } from 'react-native'
 import { createStyle } from '@/utils/tools'
 import { applyOpacity } from '@/utils/colorOpacity'
@@ -11,7 +11,7 @@ import commonState from '@/store/common/state'
 import { COMPONENT_IDS } from '@/config/constant'
 import { navigations } from '@/navigation'
 import { SETTING_SCREENS, type SettingScreenIds } from '../Main'
-import { useListBottomClearance } from '@/utils/tabBarCollapse'
+import { useListBottomClearance, useListBottomClearanceFloor, resolveListBottomClearance } from '@/utils/tabBarCollapse'
 import Text from '@/components/common/Text'
 import PageHeader from '@/components/common/PageHeader'
 import { Icon } from '@/components/common/Icon'
@@ -20,9 +20,15 @@ import LandscapeCentered from '@/components/LandscapeCentered'
 export default memo(() => {
   const theme = useTheme()
   const t = useI18n()
-  // 底部悬浮层顶边（迷你播放器胶囊上边缘）距屏底的距离：本页列表末尾的避让高度。
-  // 与播放器落点共用同一条算式，改「Tab 栏距离」/字号/机型都会自动跟上。
-  const listClearance = useListBottomClearance()
+  // 列表末尾的避让：上限（展开态顶边 + 缝）/ 下限（收起态顶边 + 缝），再按实测内容高收口
+  // （第 77 轮第 1 条，见 resolveListBottomClearance 的说明）
+  const clearanceMax = useListBottomClearance()
+  const clearanceFloor = useListBottomClearanceFloor()
+  const [scrollMetrics, setScrollMetrics] = useState({ viewport: 0, rows: 0 })
+  const listClearance = useMemo(
+    () => resolveListBottomClearance(clearanceMax, clearanceFloor, scrollMetrics.viewport, scrollMetrics.rows),
+    [clearanceMax, clearanceFloor, scrollMetrics],
+  )
   const buttonOpacity = useSettingValue('theme.buttonOpacity')
   // 「按钮圆角」：分类按钮行内覆盖；高度取 styles.categoryItem.minHeight 的源值 56
   const buttonRadius = useButtonRadius()
@@ -79,6 +85,14 @@ export default memo(() => {
           contentContainerStyle={contentContainer}
           keyboardShouldPersistTaps="always"
           showsVerticalScrollIndicator={false}
+          onLayout={(e) => {
+            const viewport = e.nativeEvent.layout.height
+            setScrollMetrics(s => (s.viewport === viewport ? s : { ...s, viewport }))
+          }}
+          onContentSizeChange={(_w, h) => {
+            const rows = h - listClearance
+            setScrollMetrics(s => (s.rows === rows ? s : { ...s, rows }))
+          }}
         >
           <PageHeader title={t('nav_setting')} />
           <View style={listStyle}>
