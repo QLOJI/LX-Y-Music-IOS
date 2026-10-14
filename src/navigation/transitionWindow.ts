@@ -38,19 +38,40 @@ import commonActions from '@/store/common/action'
  *   · 之后整段返回转场继续实时采景，画面一直是当下这一帧（「快速实时更新」）。
  * push 侧一个字没动（玻璃正被盖住，按住最省电、也最不容易出错）。
  *
+ * 【第 75 轮第 4 条】**返回侧写成「只放行一拍，然后重新按住」**。用户原话（2026-10-14）：
+ * 「还是老问题……透过的画面会显示在移动前的画面……我有个主意，在我上下左右滑动界面或者切入
+ * 其他画面时，就要固定之前的画面，不要让它移动，这样返回界面时就不会存在变动了，属于一直保持
+ * 静态情况」。第 74 轮把 pop 侧改成「放行 + 整段实时跟到底」，画面确实永远是最新的，但整段返回
+ * 动画里玻璃里的内容会跟着底下那一页滑动 —— 用户要的不是这个，他要的是**全程静止**。
+ * 所以本条把「放行」缩到只有开头那一拍：玻璃 resume 时原生 handleResumeFromPause 会丢旧纹理 +
+ * **同步**采一帧当前背景 + 立刻画（`NAV_RETURN_REFREEZE_MS` 之后这一帧已经呈现），随后
+ * `setNavReturning(false)` 把玻璃**重新按住** —— 整段返回动画停在「移动后的那一帧」上不动。
+ * 这样两句要求同时满足：「切回刚开始就确认主界面移动后画面」（第 73 / 74 轮那句）与
+ * 「固定画面不要让它移动」（第 75 轮这句）。
+ *
  * 历史（别改回去）：2026-10-02 ~ 第 60 轮，pop 侧是「screenPopped 到达即立即释放」，
  * 第 52 / 56 / 58 轮还额外加过一道「露出门」让玻璃在返回转场开始前就复位重采——
  * 那正是玻璃在返回转场里逐帧采到「正在滑走的那一页」的原因，也是第 58 / 59 / 60 / 61 轮
  * 反复出现的「错位 / 延迟 / 方向反了」的来源。第 61 轮起整条露出门已删除，pop 侧改成
- * 「与 push 一样按住」——**第 74 轮把按住门的方向拆开：push 按住、pop 放行**（理由如上，
- * 关键是第 73 轮先修掉了采景源；顺序不能反，先放行再收采景源就是第 61 轮那个现场）。
+ * 「与 push 一样按住」——第 74 轮把按住门的方向拆开（push 按住、pop 放行，关键是第 73 轮先
+ * 修掉了采景源；顺序不能反，先放行再收采景源就是第 61 轮那个现场）——**第 75 轮把 pop 侧的
+ * 放行缩到开头一拍，之后与 push 一样按住**（理由见上）。
  */
 export const NAV_TRANSITION_SETTLE_MS = 420
 
-/** 本次转场的方向：'push' 盖住（按住）/'pop' 返回（放行玻璃，见文件头第 74 轮段） */
+/** 返回侧放行多久之后重新按住（第 75 轮第 4 条）。
+ *
+ *  ⚠ 这个值不是量出来的：它只需要「够原生那一拍落地」——handleResumeFromPause 是**同步**采景 +
+ *  同步 draw，真正上屏要等下一次显示器刷新（≈16ms）。50ms ≈ 3 帧，留足余量又短到用户看不出来
+ *  （返回转场本身 350ms）。调大 = 玻璃在返回里多实时动几帧；调到 0 或删掉 = 回到第 74 轮那种
+ *  「整段实时」。 */
+export const NAV_RETURN_REFREEZE_MS = 50
+
+/** 本次转场的方向：'push' 盖住（按住）/'pop' 返回（先放行一拍再按住，见文件头第 74/75 轮段） */
 export type NavTransitionDirection = 'push' | 'pop'
 
 let navTransitionTimer: ReturnType<typeof setTimeout> | null = null
+let navRefreezeTimer: ReturnType<typeof setTimeout> | null = null
 
 /** 开窗 / 续期：重复调用把窗口从这一刻重新计时（RNN 系统默认转场 0.35s）。
  *
@@ -59,8 +80,19 @@ let navTransitionTimer: ReturnType<typeof setTimeout> | null = null
  *  组件重渲染时看到的已经是最终组合。 */
 export const beginNavTransitionWindow = (direction: NavTransitionDirection = 'push') => {
   if (navTransitionTimer) clearTimeout(navTransitionTimer)
+  if (navRefreezeTimer) clearTimeout(navRefreezeTimer)
+  navRefreezeTimer = null
   commonActions.setNavReturning(direction === 'pop')
   commonActions.setNavTransitioning(true)
+  if (direction === 'pop') {
+    // 【第 75 轮第 4 条】只放行开头这一拍：resume 采到的那一帧呈现之后立刻重新按住（见文件头）。
+    // 单独一个定时器，与 420ms 的关窗定时器互不干扰：关窗时两条一起清（下面那一拍会把
+    // navReturning 落回 false，即使重冻定时器还没到点，语义也已经是「按住」）。
+    navRefreezeTimer = setTimeout(() => {
+      navRefreezeTimer = null
+      commonActions.setNavReturning(false)
+    }, NAV_RETURN_REFREEZE_MS)
+  }
   navTransitionTimer = setTimeout(() => {
     navTransitionTimer = null
     commonActions.setNavTransitioning(false)
