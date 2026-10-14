@@ -1953,24 +1953,62 @@ static void LXNowPlayingLyricStep(void) {
   }
 }
 
+// 【第 78 轮第 3 条】时钟从「固定周期轮询」改成**按下一行边界定时**。用户三次要求歌词换行更快
+//（「锁屏界面和灵动岛的歌词换行速度慢了点……再提速一点」）：拍长本身就是换行最坏延迟，而周期
+// 已经压到 0.025s，再压只能拿唤醒次数换。事件驱动两头都赚 —— 行边界那一拍准时打点（延迟 ≈0，
+// 不再有「最坏等一拍」），段中不动（只按上限兜底重检），唤醒从 40/s 降到 ≈5/s。
+static const double LXNowPlayingLyricTickMaxMs = 200.0;  // 兜底重检：seek / 暂停 / 锚点漂移靠它自愈
+static const double LXNowPlayingLyricTickMinMs = 16.0;   // 下限：行边界密集时别把唤醒打爆
+
+/** 距「下一个行边界」还有多少毫秒（没有下一行 / 非播放态 / 拿不到位置时返回上限兜底）。
+ *  只读锚点与缓存、不写任何状态；真正的写仍只在 LXNowPlayingLyricStep 里发生。 */
+static double LXNowPlayingLyricNextTickDelayMs(void) {
+  @synchronized (LXLyricLock()) {
+    if (LXNowPlayingLyricLines.count == 0 || LXNowPlayingLyricAnchorSystemMs <= 0) return LXNowPlayingLyricTickMaxMs;
+    if (LXNowPlayingClockHold || LXNowPlayingState == MPNowPlayingPlaybackStatePaused) return LXNowPlayingLyricTickMaxMs;
+    NSNumber *cachedRate = [LXNowPlayingInfoCache[MPNowPlayingInfoPropertyPlaybackRate] isKindOfClass:[NSNumber class]]
+      ? LXNowPlayingInfoCache[MPNowPlayingInfoPropertyPlaybackRate]
+      : nil;
+    double rate = cachedRate.doubleValue > 0 ? cachedRate.doubleValue : 1.0;
+    double positionMs = LXNowPlayingLyricAnchorElapsedMs
+      + ((CACurrentMediaTime() * 1000.0) - LXNowPlayingLyricAnchorSystemMs) * rate;
+    // 二分找第一个 time > positionMs 的行（时间轴按 time 升序，与 step 里查行同一套口径）
+    NSUInteger lo = 0, hi = LXNowPlayingLyricLines.count;
+    while (lo < hi) {
+      NSUInteger mid = lo + (hi - lo) / 2;
+      if ([LXNowPlayingLyricLines[mid][@"time"] doubleValue] > positionMs) hi = mid;
+      else lo = mid + 1;
+    }
+    if (lo >= LXNowPlayingLyricLines.count) return LXNowPlayingLyricTickMaxMs;
+    double waitMs = [LXNowPlayingLyricLines[lo][@"time"] doubleValue] - positionMs;
+    if (!(waitMs > 0)) return LXNowPlayingLyricTickMinMs;
+    return LXClampDouble(waitMs, LXNowPlayingLyricTickMinMs, LXNowPlayingLyricTickMaxMs);
+  }
+}
+
+/** 按「距下一行边界多久」重挂一次性定时器（间隔传 DISPATCH_TIME_FOREVER = 只打一拍）。 */
+static void LXArmNowPlayingLyricTick(void) {
+  if (LXNowPlayingLyricTimer == nil) return;
+  dispatch_source_set_timer(LXNowPlayingLyricTimer,
+                            dispatch_time(DISPATCH_TIME_NOW, (int64_t)(LXNowPlayingLyricNextTickDelayMs() * NSEC_PER_MSEC)),
+                            DISPATCH_TIME_FOREVER,
+                            (uint64_t)(0.005 * NSEC_PER_SEC));
+}
+
 static void LXStartNowPlayingLyricTimer(void) {
   if (LXNowPlayingLyricTimer != nil) return;
   LXNowPlayingLyricQueue = dispatch_queue_create("com.lxmusic.nowplaying.lyric", DISPATCH_QUEUE_SERIAL);
   dispatch_source_t timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, LXNowPlayingLyricQueue);
-  // 周期 0.025s（40Hz）：第 47 轮 0.12s → 0.05s（用户「歌词显示需要更加迅速和提高加载帧率」），
-  // 第 77 轮 0.05s → 0.025s（用户「锁屏界面和灵动岛的歌词换行速度慢了点，之前也提过速，再提速
-  // 一点」）。拍长即换行最坏延迟：120ms → 50ms → 25ms。
-  // 开销：每拍只做一次二分查找 + 一次「artist 文本没变就跳过扫行」的比对（第 77 轮加的缓存），
-  // 真正昂贵的写入（快照 + 全量重发 + 强制重绘）只在**行真的变了**时发生。
   // 省电口径（第 42 轮）不受影响：时钟只在「播放中且屏幕可信为亮」时存在，暂停/熄屏/无歌词停钟。
-  // leeway 0.01：给系统合并唤醒的余地，不把换行延迟再拉长。
-  dispatch_source_set_timer(timer,
-                            dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.025 * NSEC_PER_SEC)),
-                            (uint64_t)(0.025 * NSEC_PER_SEC),
-                            (uint64_t)(0.01 * NSEC_PER_SEC));
-  dispatch_source_set_event_handler(timer, ^{ LXNowPlayingLyricStep(); });
-  dispatch_resume(timer);
+  // leeway 0.005：定时器本来就按行边界算过，不需要再让系统合并唤醒。
+  dispatch_source_set_event_handler(timer, ^{
+    LXNowPlayingLyricStep();
+    // **无论 step 走的是哪条早退分支，这里都重挂下一拍** —— 否则时钟会永久停摆。
+    LXArmNowPlayingLyricTick();
+  });
   LXNowPlayingLyricTimer = timer;
+  LXArmNowPlayingLyricTick();
+  dispatch_resume(timer);
 }
 
 // 停止歌词时钟（无歌词 / 停播 / 蓝牙歌词关闭时调用）。
@@ -3807,6 +3845,19 @@ static NSString *LXStreamingFlacDecoderErrorStatusName(FLAC__StreamDecoderErrorS
 // 非混音口径。策略标记本身继续做第 24 轮那件事：勾选 = 引擎被系统停掉也不对外呈现暂停。
 static BOOL LXPlayWithOthersEnabled = NO;
 
+// 【第 78 轮第 4 条】低电量模式下的抗卡顿。用户原话：「手机进入省电模式后，播放声音出现频繁
+// 卡顿抽搐的情况」。低电量模式会降频 CPU/GPU，实时渲染回调的余量随之变小 —— I/O 缓冲越小越
+// 容易错过截止时间（连续咔哒 / 抽搐就是这一类的听感）。省电模式请求更宽的 I/O 缓冲
+// （0.0232s ≈ 1024 帧 @44.1k；音乐播放听不出这点延迟），退出时交还系统默认（0，等同不设偏好）。
+// 只动「偏好」，不动数据通路：设不上也不影响出声（静默放过，下次恢复拍还会再试）。
+static void LXApplyPowerAwareIOBufferPolicy(void) {
+  NSTimeInterval preferred = NSProcessInfo.processInfo.isLowPowerModeEnabled ? 0.0232 : 0.0;
+  NSError *bufferError = nil;
+  if (![[AVAudioSession sharedInstance] setPreferredIOBufferDuration:preferred error:&bufferError]) {
+    bufferError = nil;
+  }
+}
+
 // 【第 75 轮第 2 条】后台保活心跳周期（秒）。一拍只读两个属性，正常播放时读完就返回；
 // 只有「该在播、引擎却停了」才自愈一次，两次之间天然隔着一个周期。
 static const double LXAudioKeepAliveIntervalSeconds = 30.0;
@@ -3907,6 +3958,11 @@ RCT_EXPORT_MODULE();
     [[NSNotificationCenter defaultCenter] addObserver:self
                                              selector:@selector(handleSoundEffectConfigChanged:)
                                                  name:LXSoundEffectConfigDidChangeNotification
+                                               object:nil];
+    // 【第 78 轮第 4 条】低电量模式开关变化：重贴 I/O 缓冲偏好（正在播放时顺手走一次轻量输出恢复）
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(handlePowerStateDidChange:)
+                                                 name:NSProcessInfoPowerStateDidChangeNotification
                                                object:nil];
     // 【第 75 轮第 2 条】后台保活心跳。在这里起一次、之后常驻：它只依赖「进程在跑」这个事实，
     // 不依赖播放状态（没在播时那一拍会当场早退），所以不需要在起播/暂停的每条路径上挂接。
@@ -4027,6 +4083,8 @@ static void LXRememberAudioSessionCombination(LXAudioSessionCombination combinat
 // 正是第 58 轮记过的「一停一响」。这些路径统一用本函数的 NO 口径（失败即放弃、下拍再来）。
 - (BOOL)prepareAudioSessionAllowingExclusiveFallback:(BOOL)allowExclusiveFallback error:(NSError **)error {
   AVAudioSession *session = [AVAudioSession sharedInstance];
+  // 【第 78 轮第 4 条】每次建/恢复会话都重贴一次省电档的 I/O 缓冲偏好（开关状态可能刚变过）
+  LXApplyPowerAwareIOBufferPolicy();
   // 【第 69 轮第 2 条】只有真的落了 setCategory 才更新组合记忆（见上面的注释）：
   // 走「组合没变」的快路时这一趟什么都没设，会话上仍是原来那一组，记忆保持不动
   LXAudioSessionCombination appliedCombination = LXAudioSessionCombinationUnknown;
@@ -4779,6 +4837,14 @@ static const int64_t LXShortInterruptionIgnoreMs = 1500;
 // 如实说明：这是 stop + start 的**轻量重建**，不是官方建议的整图重建；媒体服务重置后若引擎
 // 仍然 start 不起来，恢复链发的是 warning 而不是 error（不会把播放态翻成暂停），
 // JS 侧的有界重取阶梯会继续补试。
+// 【第 78 轮第 4 条】低电量模式开关变化：重贴 I/O 缓冲偏好。正在播放时顺手走一次轻量输出
+// 恢复（只重贴输出与音量，不重建引擎 —— 开关本身不该造成一次可听见的中断）。
+- (void)handlePowerStateDidChange:(NSNotification *)notification {
+  LXApplyPowerAwareIOBufferPolicy();
+  if (self.currentURL.length == 0) return;
+  [self schedulePlaybackOutputRestoreWithDelays:@[ @0.1, @0.5 ]];
+}
+
 - (void)handleMediaServicesWereReset:(NSNotification *)notification {
   if (self.currentURL.length == 0 || self.manualPause) return;
   dispatch_async(self.renderQueue, ^{
