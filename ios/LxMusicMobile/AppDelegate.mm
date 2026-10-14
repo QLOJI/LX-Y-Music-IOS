@@ -7091,6 +7091,10 @@ static UIBackgroundTaskIdentifier LXBackgroundTaskId = UIBackgroundTaskInvalid;
 static BOOL LXTabBarManualExpanded = NO;
 static NSNotificationName const LXTabBarCollapseChangedNotification = @"LXTabBarCollapseChanged";
 static void LXSetTabBarCollapsed(BOOL collapsed);
+// 【第 75 轮第 3 条】记一次「翻转时刻」。定义在下方「最短驻留」区块里（与那个静态量同处），
+// 这里前置声明是因为 `setTabBarExpanded`（手点展开，定义在本区块**之前**）只有它可用 ——
+// 直接在那儿读 `LXTabBarLastFlipTime` 会撞上「使用未声明的标识符」（CI 就是这么挂的）。
+static void LXTabBarNoteFlip(void);
 
 // 【第 41 轮】遥控命令「不许静默丢弃」暂存区。
 //
@@ -7344,7 +7348,7 @@ RCT_EXPORT_METHOD(setTabBarExpanded) {
     LXTabBarManualExpanded = YES;
     // 【第 75 轮第 3 条】手点展开也记一次翻转时刻：不然刚点完的 0.35s 内，一次轻微下滑就能
     // 立刻把它顶回收起态（手势侧那道驻留门只看「上一次翻转」，不看是谁翻的）。
-    LXTabBarLastFlipTime = CACurrentMediaTime();
+    LXTabBarNoteFlip();
     LXSetTabBarCollapsed(NO);
   });
 }
@@ -7704,6 +7708,10 @@ static const CGFloat LXTabBarExpandOffset = 6;
 // 免得刚点完就被一次反向下滑顶回去。
 static CFTimeInterval LXTabBarLastFlipTime = 0;
 static const CFTimeInterval LXTabBarMinDwellSeconds = 0.35;
+/** 手点展开那条显式通道用：只记时刻、不过驻留门（前置声明在本区块之前）。 */
+static void LXTabBarNoteFlip(void) {
+  LXTabBarLastFlipTime = CACurrentMediaTime();
+}
 /** 距上一次翻转是否已过最短驻留；过了就顺手把这一刻记为新的翻转时刻（调用方随后必须真的翻）。
  *  首次调用（从未翻过）直接放行 —— 冷启动那一次不该被罚 0.35s。 */
 static BOOL LXTabBarDwellElapsed(void) {
