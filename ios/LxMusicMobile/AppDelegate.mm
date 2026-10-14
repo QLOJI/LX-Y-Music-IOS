@@ -3793,6 +3793,15 @@ static NSString *LXStreamingFlacDecoderErrorStatusName(FLAC__StreamDecoderErrorS
 // 非混音口径。策略标记本身继续做第 24 轮那件事：勾选 = 引擎被系统停掉也不对外呈现暂停。
 static BOOL LXPlayWithOthersEnabled = NO;
 
+// 【第 75 轮第 2 条】后台保活心跳的周期（秒）。用户原话：「软件长时间后台播放后，会出现突然杀掉，
+// 然后要重新进入软件才行，请确保每隔一段时间确认后台保活，但是不能频繁激活影响电量」。
+// 30 秒是「够早」与「够省」之间取的中间值：一拍只做两次**属性读**（进程是否在前台、引擎是否
+// 还在跑），正常播放时读完就返回 —— 会话、引擎、后台任务断言一个都不碰（那才是耗电的东西）。
+// 只有真读出来「该在播、引擎却停了」才会走一次自愈（重新激活会话 + 重挂引擎），且两次自愈
+// 之间天然隔着这个周期。周期再拉长没有意义：音频一停 iOS 通常几秒内就把进程挂起，那时定时源
+// 本身也停了（见 handleAudioKeepAliveTick 的说明）。
+static const double LXAudioKeepAliveIntervalSeconds = 30.0;
+
 @implementation StreamingFlacPlayerModule {
   std::unique_ptr<LXStreamingPlanarPCMBuffer> _pcmBuffer;
   std::atomic<int64_t> _renderedFrames;
@@ -3813,6 +3822,9 @@ static BOOL LXPlayWithOthersEnabled = NO;
   std::shared_ptr<LXRealtimeSpatialPannerProcessor> _realtimePannerProcessor;
   BOOL _lastRealtimeEqualizerEnabled;
   std::vector<float> _lastRealtimeEqualizerGains;
+  // 【第 75 轮第 2 条】后台保活心跳（见 startAudioKeepAliveWatchdog）：常驻的 GCD 定时源，
+  // 只在**进程还活着**的时候滴答 —— App 一旦被挂起它自然停摆，不会把 App 从挂起里拽起来。
+  dispatch_source_t _audioKeepAliveTimer;
 }
 
 RCT_EXPORT_MODULE();
@@ -3888,12 +3900,20 @@ RCT_EXPORT_MODULE();
                                              selector:@selector(handleSoundEffectConfigChanged:)
                                                  name:LXSoundEffectConfigDidChangeNotification
                                                object:nil];
+    // 【第 75 轮第 2 条】后台保活心跳。在这里起一次、之后常驻：它只依赖「进程在跑」这个事实，
+    // 不依赖播放状态（没在播时那一拍会当场早退），所以不需要在起播/暂停的每条路径上挂接。
+    [self startAudioKeepAliveWatchdog];
   }
   return self;
 }
 
 - (void)dealloc {
   [[NSNotificationCenter defaultCenter] removeObserver:self];
+  // 复位态的定时源必须显式取消（dealloc 后还挂着的事件处理器会去戳已释放的 self）
+  if (_audioKeepAliveTimer != nil) {
+    dispatch_source_cancel(_audioKeepAliveTimer);
+    _audioKeepAliveTimer = nil;
+  }
 }
 
 - (NSArray<NSString *> *)supportedEvents {
@@ -5266,6 +5286,56 @@ static const int64_t LXResumeFadeStepMs = 40;
   dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)), self.renderQueue, ^{
     [self checkStreamingOutputLivenessLocked];
   });
+}
+
+// 【第 75 轮第 2 条】后台保活心跳（周期见 LXAudioKeepAliveIntervalSeconds）。常驻的 GCD 定时源，
+// 挂在**主队列**上：那一拍要在主队列读 UIApplication.applicationState（UIKit 的主线程口径），
+// 而真正的引擎检查与自愈再跳到 renderQueue（引擎归它管）。定时源只依赖「进程在跑」，不依赖
+// 播放状态 —— 没在播时那一拍会当场早退，所以不需要在起播 / 暂停的每条路径上挂接 / 摘除。
+- (void)startAudioKeepAliveWatchdog {
+  if (_audioKeepAliveTimer != nil) return;
+  _audioKeepAliveTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
+  uint64_t interval = (uint64_t)(LXAudioKeepAliveIntervalSeconds * NSEC_PER_SEC);
+  // leeway 2s：允许系统把这一拍与别的唤醒合并，省电口径的一部分（定时源本来就不需要准点）
+  dispatch_source_set_timer(_audioKeepAliveTimer,
+                            dispatch_time(DISPATCH_TIME_NOW, (int64_t)interval),
+                            interval,
+                            (uint64_t)(2.0 * NSEC_PER_SEC));
+  __weak __typeof(self) weakSelf = self;
+  dispatch_source_set_event_handler(_audioKeepAliveTimer, ^{
+    [weakSelf handleAudioKeepAliveTick];
+  });
+  dispatch_resume(_audioKeepAliveTimer);
+}
+
+- (void)handleAudioKeepAliveTick {
+  // 这一拍的全部成本就是下面这一次属性读。前台不需要它（前台那条路有回前台的重挂 + IO 死检，
+  // 见 handleApplicationDidBecomeActive），直接返回。
+  if ([UIApplication sharedApplication].applicationState == UIApplicationStateActive) return;
+  // 没在播（或用户手动暂停）时不碰任何东西 —— 后台挂着暂停态的 App 本来就该被系统挂起
+  if (self.currentURL.length == 0 || self.manualPause) return;
+  // 引擎与播放状态都归 renderQueue 管，读它们也要在 renderQueue 上（AVAudioEngine 不是线程安全的）
+  __weak __typeof(self) weakSelf = self;
+  dispatch_async(self.renderQueue, ^{
+    [weakSelf handleAudioKeepAliveTickLocked];
+  });
+}
+
+- (void)handleAudioKeepAliveTickLocked {
+  if (self.currentURL.length == 0 || self.manualPause) return;
+  if (self.sourceNode == nil) return;
+  if ([self.currentState isEqualToString:@"idle"] || [self.currentState isEqualToString:@"stopped"]) return;
+  // 系统打断期间（独占态）会话本来就不该由我们抢回来（第 16 轮口径）
+  if (self.interruptedBySystem && !LXPlayWithOthersEnabled) return;
+  // 便宜判据：引擎还在跑 —— 会话与输出 IO 都还挂着，这一拍读完就返回，一个会话调用都不发
+  if (self.engine != nil && self.engine.isRunning) return;
+  // 引擎掉了 = 后台音频资格跟着掉：iOS 会在几秒内把进程挂起，再往后就是被系统回收 —— 用户报的
+  //「长时间后台播放后突然被杀、要重新进软件」正是这个形态（音频停了没人知道，App 就这么没了）。
+  // 走与路由变化同一条自愈链把它重新挂回去（重设会话分类 + 激活 + 重挂引擎 + 恢复输出）。
+  // ⚠ 覆盖面有限：只认「引擎停了」这一种。若音频会话还活着、引擎也 isRunning，但输出 IO 被悄悄
+  // 掐断（第 62 轮那种「一帧都取不走」），后台读不出这个事实（渲染帧数在缓冲等待期同样不涨），
+  // 只能等回前台那一拍的死检 —— 与第 69 轮第 2 条前台门的既有口径一致，这里不越权。
+  [self recoverStreamingOutputForRouteChange:NO];
 }
 
 - (void)waitForBufferCapacityIfNeeded {
@@ -7272,6 +7342,9 @@ RCT_EXPORT_METHOD(screenUnkeepAwake) {
 RCT_EXPORT_METHOD(setTabBarExpanded) {
   dispatch_async(dispatch_get_main_queue(), ^{
     LXTabBarManualExpanded = YES;
+    // 【第 75 轮第 3 条】手点展开也记一次翻转时刻：不然刚点完的 0.35s 内，一次轻微下滑就能
+    // 立刻把它顶回收起态（手势侧那道驻留门只看「上一次翻转」，不看是谁翻的）。
+    LXTabBarLastFlipTime = CACurrentMediaTime();
     LXSetTabBarCollapsed(NO);
   });
 }
@@ -7619,6 +7692,27 @@ static __weak UIScrollView *LXTabBarCollapseDriver = nil;
 static const CGFloat LXTabBarCollapseOffset = 12;
 static const CGFloat LXTabBarExpandOffset = 6;
 
+// 【第 75 轮第 3 条】收起 / 展开的**最短驻留**（秒）：用户原话「上下滑动时，感觉迷你播放器栏和
+// 底部 tab 栏收缩和展开会出现抖动，不要短时间出现又收缩又展开的情况」。迟滞区（12 / 6）只管
+// 「当前 offset 落在哪」，管不住「外推落点在边界附近来回跨」——手指在门限附近抖动、或在惯性尾巴
+// 上连续两次 fling，都会让 judgeY 一个来回同时越过两个门限，状态机就收缩 → 展开 → 收缩地跳。
+// 收起 / 展开动画本身 220ms，所以驻留必须比它长：0.35s 意味着一次翻转落地后至少 350ms 内不再
+// 接受反向翻转（同向的重复请求本就由 LXSetTabBarCollapsed 的同值短路吃掉，不占驻留）。
+// 两道门分别落在滚动驱动的两个分支上：**收起侧无条件过门**（那条路本来就只在 userDriven 分支
+// 里，且手势事件连绵，挡一次下一拍重来）；**展开侧只对手势过门**（程序化归位只有一两个事件，
+// 挡掉就永远没人重试 = 卡在收起态）。手点收起按钮的展开是显式意图，不过门，但**记一次翻转** ——
+// 免得刚点完就被一次反向下滑顶回去。
+static CFTimeInterval LXTabBarLastFlipTime = 0;
+static const CFTimeInterval LXTabBarMinDwellSeconds = 0.35;
+/** 距上一次翻转是否已过最短驻留；过了就顺手把这一刻记为新的翻转时刻（调用方随后必须真的翻）。
+ *  首次调用（从未翻过）直接放行 —— 冷启动那一次不该被罚 0.35s。 */
+static BOOL LXTabBarDwellElapsed(void) {
+  CFTimeInterval now = CACurrentMediaTime();
+  if (LXTabBarLastFlipTime > 0 && now - LXTabBarLastFlipTime < LXTabBarMinDwellSeconds) return NO;
+  LXTabBarLastFlipTime = now;
+  return YES;
+}
+
 static void LXSetTabBarCollapsed(BOOL collapsed) {
   if (LXTabBarCollapsedState == collapsed) return;
   LXTabBarCollapsedState = collapsed;
@@ -7690,6 +7784,8 @@ static void LX_RCTScrollView_scrollViewDidScroll(id self, SEL _cmd, UIScrollView
     if (scrollView.contentOffset.y <= LXTabBarExpandOffset) return;
     // 点过收起按钮手动展开的（第 31 轮口径：保持到列表重新离开顶部）：不被一次拖动收回去
     if (LXTabBarManualExpanded) return;
+    // 【第 75 轮第 3 条】最短驻留：刚翻过就不许立刻反向翻（见 LXTabBarDwellElapsed）
+    if (!LXTabBarDwellElapsed()) return;
     LXTabBarCollapseDriver = scrollView;
     LXSetTabBarCollapsed(YES);
   } else if (judgeY <= LXTabBarExpandOffset) {
@@ -7697,6 +7793,10 @@ static void LX_RCTScrollView_scrollViewDidScroll(id self, SEL _cmd, UIScrollView
     // 别的列表在 Home 被盖住期间程序化滚到顶部不算（见 ②）
     if (!userDriven && LXTabBarCollapseDriver != nil && LXTabBarCollapseDriver != scrollView) return;
     if (userDriven) LXTabBarCollapseDriver = scrollView;
+    // 【第 75 轮第 3 条】最短驻留，但**只对真手势**（userDriven）：手势期间事件连绵不断，被挡掉
+    // 的那一次下一拍就会重来；程序化归位（切页 / 列表重建后滚回顶部）往往只有一两个滚动事件，
+    // 挡掉就再没人来重试 —— 那会把状态机**卡在收起态**，正是第 64 轮用户报过的「合并了不展开」。
+    if (userDriven && !LXTabBarDwellElapsed()) return;
     LXTabBarManualExpanded = NO;
     LXSetTabBarCollapsed(NO);
   }
