@@ -43,11 +43,6 @@ import { TOAST_SCREEN } from '@/navigation/screenNames'
 
 // https://stackoverflow.com/a/47349998
 export const getDeviceLanguage = async() => {
-  // let deviceLanguage = Platform.OS === 'ios'
-  //   ? NativeModules.SettingsManager.settings.AppleLocale ||
-  //     NativeModules.SettingsManager.settings.AppleLanguages[0] // iOS 13
-  //   : await getSystemLocales()
-  // deviceLanguage = typeof deviceLanguage === 'string' ? deviceLanguage.substring(0, 5).toLocaleLowerCase() : ''
   return getSystemLocales()
 }
 
@@ -79,28 +74,6 @@ export const isActive = () => AppState.currentState == 'active'
 
 export const TEMP_FILE_PATH = temporaryDirectoryPath + '/tempFile'
 
-// fix https://github.com/facebook/react-native/issues/4934
-// export const getWindowSise = (windowDimensions?: ReturnType<(typeof Dimensions)['get']>) => {
-//   return windowSizeTools.getSize()
-//   // windowDimensions ??= Dimensions.get('window')
-//   // if (Platform.OS === 'ios') return windowDimensions
-//   // return windowDimensions
-//   // const windowSize = {
-//   //   width: ExtraDimensions.getRealWindowWidth(),
-//   //   height: ExtraDimensions.getRealWindowHeight(),
-//   // }
-//   // if (
-//   //   (windowDimensions.height > windowDimensions.width && windowSize.height < windowSize.width) ||
-//   //   (windowDimensions.width > windowDimensions.height && windowSize.width < windowSize.height)
-//   // ) {
-//   //   windowSize.height = windowSize.width
-//   // }
-//   // windowSize.width = windowDimensions.width
-
-//   // if (ExtraDimensions.isSoftMenuBarEnabled()) {
-//   //   windowSize.height -= ExtraDimensions.getSoftMenuBarHeight()
-//   // }
-//   // return windowSize
 // }
 
 export const checkStoragePermissions = async() => {
@@ -142,11 +115,6 @@ export const requestStoragePermission = async() => {
       : granteds.includes(PermissionsAndroid.RESULTS.NEVER_ASK_AGAIN)
         ? null
         : false
-    // if (granted === PermissionsAndroid.RESULTS.GRANTED) {
-    //   console.log('You can use the storage')
-    // } else {
-    //   console.log('Storage permission denied')
-    // }
   } catch (err: any) {
     // console.warn(err)
     return false
@@ -548,6 +516,24 @@ export const showImportTip = (type: string) => {
     message,
     btnText: global.i18n.t('ok'),
   })
+}
+
+/** 普通定时器节流（前台专用工作）——每次触发**不申请后台任务断言**，后台不跑。
+ *  需要「后台也得执行」的用 throttleBackgroundTimer。 */
+export function throttle<Args extends any[]>(
+  fn: (...args: Args) => void | Promise<void>,
+  delay = 100,
+) {
+  let timer: ReturnType<typeof setTimeout> | null = null
+  let _args: Args
+  return (...args: Args) => {
+    _args = args
+    if (timer) return
+    timer = setTimeout(() => {
+      timer = null
+      void fn(..._args)
+    }, delay)
+  }
 }
 
 /**
