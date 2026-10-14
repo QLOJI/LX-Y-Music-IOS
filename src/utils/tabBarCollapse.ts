@@ -44,10 +44,12 @@ let inited = false
 /** Home 的两块玻璃（tab 栏 / 收起圆钮 / 迷你播放器）现在是不是被冻着 */
 const glassFrozen = (): boolean => {
   // 转场窗口：窗口内玻璃被按住门冻着（第 61 轮第 3 条）——但**只在 push 侧**。
-  // 【第 74 轮第 3 条】返回侧（navReturning）玻璃不冻（useGlassNavHold 在返回方向放行，
-  // 见 store/common/hook.ts），所以这道门也不该再拦返回侧收到的变化：欠账必须在
-  // 「Home 回到栈顶、玻璃开始实时采景」那一拍落地（两者的翻转时刻逐字对齐），
-  // 拖到 420ms 之后就是「返回完成后栏又跳一下」。
+  // 【第 74 轮第 3 条】返回侧（navReturning）那一段时间玻璃不冻（useGlassNavHold 在返回方向
+  // 放行，见 store/common/hook.ts），所以这道门也不该再拦那期间收到的变化：欠账要在玻璃真的
+  // 醒着的时候落地，拖到 420ms 之后就是「返回完成后栏又跳一下」。
+  // 【第 75 轮第 4 条】这个「醒着」的窗口被缩到返回开头的一拍（NAV_RETURN_REFREEZE_MS = 50ms）：
+  // 之后玻璃又被重新按住，这道门跟着变回 true（判据一个字没改，两边读的是同一个会落回去的
+  // 信号）—— 玻璃冻着时收到的收起/展开照旧只记账不下发，等 420ms 关窗再一次性落地。
   if (state.navTransitioning && !state.navReturning) return true
   // 账本覆盖门：RNN 栈顶不是 home 即 Home 被盖住（与 useHomeCovered 同一判据，
   // 这里读的是同一个 state，所以两者的翻转时刻完全一致）
@@ -224,7 +226,12 @@ export const useAboveMiniPlayerBottom = ({ pinnedExpanded = false }: { pinnedExp
  *  所以列表避让**必须是一个不随滚动改变的量**：取展开态（最高形态）的播放器顶边，再加一道
  *  呼吸缝。代价是收起态下末尾会多出 tab 栏那一层（≈76pt）的空白 —— 这是 iOS 系统应用的同
  *  一项取舍（内容内边距按最高形态一次定死，收起/展开都不再动列表，宁可多留一点空白也不让
- *  列表在滚动中途跳）。缝取 designSpacing.sm，与悬浮控件那边的「裸值不加缩放」口径无关
- *  （它是内容内边距，不是落点）。 */
+ *  列表在滚动中途跳）。缝取 designSpacing.xs，与悬浮控件那边的「裸值不加缩放」口径无关
+ *  （它是内容内边距，不是落点）。
+ *
+ *  2026-10-14（第 75 轮第 1 条）缝 sm(12) → **xs(8)**：用户「我的界面和设置界面的最下面空白
+ *  区域改了之后还是多了一点，稍微再少一点点，其他不要变」—— 只在「缝」这一个常量上收，
+ *  `pinnedExpanded` 那条结构（展开态顶边、不随滚动改变）一个字没动。想再少就得动收起态下
+ *  那 76pt 的 tab 栏层，而那要引入「随收起态变」的写法 = 第 74 轮那个自馈环，不能动。 */
 export const useListBottomClearance = (): number =>
-  useAboveMiniPlayerBottom({ pinnedExpanded: true }) + designSpacing.sm
+  useAboveMiniPlayerBottom({ pinnedExpanded: true }) + designSpacing.xs
