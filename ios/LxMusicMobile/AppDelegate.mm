@@ -1959,7 +1959,6 @@ static void LXNowPlayingLyricStep(void) {
 // 不再有「最坏等一拍」），段中不动（只按上限兜底重检），唤醒从 40/s 降到 ≈5/s。
 static const double LXNowPlayingLyricTickMaxMs = 200.0;  // 兜底重检：seek / 暂停 / 锚点漂移靠它自愈
 static const double LXNowPlayingLyricTickMinMs = 16.0;   // 下限：行边界密集时别把唤醒打爆
-
 /** 距「下一个行边界」还有多少毫秒（没有下一行 / 非播放态 / 拿不到位置时返回上限兜底）。
  *  只读锚点与缓存、不写任何状态；真正的写仍只在 LXNowPlayingLyricStep 里发生。 */
 static double LXNowPlayingLyricNextTickDelayMs(void) {
@@ -1999,6 +1998,21 @@ static void LXStartNowPlayingLyricTimer(void) {
   if (LXNowPlayingLyricTimer != nil) return;
   LXNowPlayingLyricQueue = dispatch_queue_create("com.lxmusic.nowplaying.lyric", DISPATCH_QUEUE_SERIAL);
   dispatch_source_t timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, LXNowPlayingLyricQueue);
+  // 【第 81 轮第 1 条·回退】退回**固定周期 0.025s（40Hz）的重复定时器** —— 第 77 轮那版、已验证
+  // 可用（锁屏 / 灵动岛歌词正常更新）的形态。第 78 轮改成「按下一行边界重挂的一次性拍」之后，
+  // 用户报「锁屏和灵动岛的歌词不会更新了，而且和声音不同步」：一次性链一旦在哪一处断掉
+  // （重挂没生效 / 源被取消后没人重建）就是**永久停更**，重复定时器天然不会。25ms 的换行延迟与
+  // 用户可感知差别极小，「更快」这条路不值得拿「可能停更」去换。
+  // 每拍只做一次二分查找 + 一次「artist 文本没变就跳过扫行」的比对（第 77 轮的缓存）。
+  // 省电口径（第 42 轮）不受影响：时钟只在「播放中且屏幕可信为亮」时存在，暂停/熄屏/无歌词停钟。
+  dispatch_source_set_timer(timer,
+                            dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.025 * NSEC_PER_SEC)),
+                            (uint64_t)(0.025 * NSEC_PER_SEC),
+                            (uint64_t)(0.01 * NSEC_PER_SEC));
+  dispatch_source_set_event_handler(timer, ^{ LXNowPlayingLyricStep(); });
+  dispatch_resume(timer);
+  LXNowPlayingLyricTimer = timer;
+}
   // 省电口径（第 42 轮）不受影响：时钟只在「播放中且屏幕可信为亮」时存在，暂停/熄屏/无歌词停钟。
   // leeway 0.005：定时器本来就按行边界算过，不需要再让系统合并唤醒。
   dispatch_source_set_event_handler(timer, ^{
