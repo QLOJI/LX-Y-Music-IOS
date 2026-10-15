@@ -629,6 +629,10 @@ final class LiquidGlassView: MTKView {
     /// 采景被 33ms 全局节流压在 30Hz，升上去的帧全是重复绘制，已删除。）
     private static let idleFramesPerSecond = 30
     /// 实时档 60fps：与 liveCaptureMinInterval(16.7ms) **同速**（透镜抬起 / 横滑会话）。
+    /// 【第 84 轮第 2 条】**已评估并回退**：要让它跟随屏幕最大刷新率（60/90/120）必须连同
+    /// `liveCaptureMinInterval` 一起动，而那两处被 4 个契约当**定值**钉着
+    ///（sim-r67-glass-present-dedup 明写「要动必须先改这个契约」）—— 迁移要一次改干净，
+    /// 见《第八十四轮增量》的说明。
     private static let liveFramesPerSecond = 60
     /// 把渲染帧率同步到当前采景档。**全类唯一给 preferredFramesPerSecond 赋值的地方** ——
     /// 档位由 isLiveCaptureActive 四路会话唯一决定（透镜抬起 / RN live / 重新入窗口实时窗口 /
