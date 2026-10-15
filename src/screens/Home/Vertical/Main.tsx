@@ -7,6 +7,7 @@ import Mylist from '../Views/Mylist'
 import Leaderboard from '../Views/Leaderboard'
 import Setting from '../Views/Setting'
 import commonState, { type InitState as CommonState } from '@/store/common/state'
+import { useHomeCovered } from '@/store/common/hook'
 import { createStyle } from '@/utils/tools'
 import PagerView, {
   type PageScrollStateChangedNativeEvent,
@@ -479,6 +480,8 @@ const Main = () => {
   const resyncPagerScroll = useCallback(() => {
     pagerViewRef.current?.setScrollEnabled?.(pagerScrollEnabledRef.current)
   }, [])
+  // 【第 84 轮第 1 条】Home 是否被压栈页盖住 —— 盖住期间心跳不做无意义的双桥往返
+  const homeCovered = useHomeCovered()
   useEffect(() => {
     // 心跳 = 横滑开关重发 + 抹平库私有闩锁（2026-10-02，用户第 4 条）。
     // 两者失效时机相同（原生丢事件、程序化切页打断手势、后台恢复重建子视图），
@@ -490,6 +493,11 @@ const Main = () => {
       // clearNativePagerScrolling）。回前台由本文件的「后台恢复兜底」effect 直接清一次、
       // 重发一次，覆盖不受影响。
       if (AppState.currentState !== 'active') return
+      // 【第 84 轮第 1 条】Home 被压栈页（播放详情 / 设置详情…）盖住时也跳过：盖住期间没有
+      // 新手势会话，原生也不会产生新的失配，而这一跳每次要跨两次桥（setScrollEnabled +
+      // clearNativePagerScrolling）—— 播放中长时间停在详情页就是每分钟 60 次白跨。
+      // 返回 Home 由账本覆盖门翻转时的那次心跳立即覆盖（本 effect 的依赖里有它）。
+      if (homeCovered) return
       resyncPagerScroll()
       healPagerScrollLatch()
     }
@@ -499,7 +507,7 @@ const Main = () => {
     return () => {
       clearInterval(timer)
     }
-  }, [pagerScrollEnabled, resyncPagerScroll, healPagerScrollLatch])
+  }, [pagerScrollEnabled, homeCovered, resyncPagerScroll, healPagerScrollLatch])
 
   const onPageSelected = useCallback(({ nativeEvent }: PagerViewOnPageSelectedEvent) => {
     activeIndexRef.current = nativeEvent.position
