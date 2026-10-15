@@ -1953,46 +1953,10 @@ static void LXNowPlayingLyricStep(void) {
   }
 }
 
-// 【第 78 轮第 3 条】时钟从「固定周期轮询」改成**按下一行边界定时**。用户三次要求歌词换行更快
-//（「锁屏界面和灵动岛的歌词换行速度慢了点……再提速一点」）：拍长本身就是换行最坏延迟，而周期
-// 已经压到 0.025s，再压只能拿唤醒次数换。事件驱动两头都赚 —— 行边界那一拍准时打点（延迟 ≈0，
-// 不再有「最坏等一拍」），段中不动（只按上限兜底重检），唤醒从 40/s 降到 ≈5/s。
-static const double LXNowPlayingLyricTickMaxMs = 200.0;  // 兜底重检：seek / 暂停 / 锚点漂移靠它自愈
-static const double LXNowPlayingLyricTickMinMs = 16.0;   // 下限：行边界密集时别把唤醒打爆
-/** 距「下一个行边界」还有多少毫秒（没有下一行 / 非播放态 / 拿不到位置时返回上限兜底）。
- *  只读锚点与缓存、不写任何状态；真正的写仍只在 LXNowPlayingLyricStep 里发生。 */
-static double LXNowPlayingLyricNextTickDelayMs(void) {
-  @synchronized (LXLyricLock()) {
-    if (LXNowPlayingLyricLines.count == 0 || LXNowPlayingLyricAnchorSystemMs <= 0) return LXNowPlayingLyricTickMaxMs;
-    if (LXNowPlayingClockHold || LXNowPlayingState == MPNowPlayingPlaybackStatePaused) return LXNowPlayingLyricTickMaxMs;
-    NSNumber *cachedRate = [LXNowPlayingInfoCache[MPNowPlayingInfoPropertyPlaybackRate] isKindOfClass:[NSNumber class]]
-      ? LXNowPlayingInfoCache[MPNowPlayingInfoPropertyPlaybackRate]
-      : nil;
-    double rate = cachedRate.doubleValue > 0 ? cachedRate.doubleValue : 1.0;
-    double positionMs = LXNowPlayingLyricAnchorElapsedMs
-      + ((CACurrentMediaTime() * 1000.0) - LXNowPlayingLyricAnchorSystemMs) * rate;
-    // 二分找第一个 time > positionMs 的行（时间轴按 time 升序，与 step 里查行同一套口径）
-    NSUInteger lo = 0, hi = LXNowPlayingLyricLines.count;
-    while (lo < hi) {
-      NSUInteger mid = lo + (hi - lo) / 2;
-      if ([LXNowPlayingLyricLines[mid][@"time"] doubleValue] > positionMs) hi = mid;
-      else lo = mid + 1;
-    }
-    if (lo >= LXNowPlayingLyricLines.count) return LXNowPlayingLyricTickMaxMs;
-    double waitMs = [LXNowPlayingLyricLines[lo][@"time"] doubleValue] - positionMs;
-    if (!(waitMs > 0)) return LXNowPlayingLyricTickMinMs;
-    return LXClampDouble(waitMs, LXNowPlayingLyricTickMinMs, LXNowPlayingLyricTickMaxMs);
-  }
-}
-
-/** 按「距下一行边界多久」重挂一次性定时器（间隔传 DISPATCH_TIME_FOREVER = 只打一拍）。 */
-static void LXArmNowPlayingLyricTick(void) {
-  if (LXNowPlayingLyricTimer == nil) return;
-  dispatch_source_set_timer(LXNowPlayingLyricTimer,
-                            dispatch_time(DISPATCH_TIME_NOW, (int64_t)(LXNowPlayingLyricNextTickDelayMs() * NSEC_PER_MSEC)),
-                            DISPATCH_TIME_FOREVER,
-                            (uint64_t)(0.005 * NSEC_PER_SEC));
-}
+// 【第 78 轮第 3 条 → 第 81 轮第 1 条回退】这里曾有一套「按下一行边界重挂的一次性拍」
+// （上下限常量 + 距下一行边界的计算 + 重挂入口），已被整体删除：那版被用户现场判为回归
+// （「锁屏和灵动岛的歌词不会更新了」）。现在的口径是**固定周期 0.025s 的重复定时器**，
+// 见下面的 LXStartNowPlayingLyricTimer。
 
 static void LXStartNowPlayingLyricTimer(void) {
   if (LXNowPlayingLyricTimer != nil) return;
@@ -2012,17 +1976,6 @@ static void LXStartNowPlayingLyricTimer(void) {
   dispatch_source_set_event_handler(timer, ^{ LXNowPlayingLyricStep(); });
   dispatch_resume(timer);
   LXNowPlayingLyricTimer = timer;
-}
-  // 省电口径（第 42 轮）不受影响：时钟只在「播放中且屏幕可信为亮」时存在，暂停/熄屏/无歌词停钟。
-  // leeway 0.005：定时器本来就按行边界算过，不需要再让系统合并唤醒。
-  dispatch_source_set_event_handler(timer, ^{
-    LXNowPlayingLyricStep();
-    // **无论 step 走的是哪条早退分支，这里都重挂下一拍** —— 否则时钟会永久停摆。
-    LXArmNowPlayingLyricTick();
-  });
-  LXNowPlayingLyricTimer = timer;
-  LXArmNowPlayingLyricTick();
-  dispatch_resume(timer);
 }
 
 // 停止歌词时钟（无歌词 / 停播 / 蓝牙歌词关闭时调用）。
