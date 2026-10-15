@@ -7,7 +7,7 @@ import { setNowPlayingCurrentLine, setNowPlayingLyrics } from '@/utils/nativeMod
 // 【第 50 轮】开关切换时同时对齐第三条通路：卡片歌词区的状态文案（见 nowPlayingStatus.ts）
 import { syncNowPlayingStatusText } from './nowPlayingStatus'
 import settingState from '@/store/setting/state'
-import { AppState, Platform } from 'react-native'
+import { Platform } from 'react-native'
 
 // 「显示蓝牙歌词」取值：开 = 把当前歌词行推送到系统媒体信息（控制中心/锁屏/车机/音箱
 // 读的都是同一份 MPNowPlayingInfoCenter），关 = 只显示歌名·歌手。
@@ -86,11 +86,6 @@ export default async(setting: LX.AppSetting) => {
       if (lyric === prevLyric) return
       prevLyric = lyric
       setLastLyric(lyric)
-      // 【第 80 轮第 2 条】后台跳过下面这两次桥往返（详见其后的说明）：卡片歌词在后台本来就由
-      // 原生时钟（行权威）驱动，JS 这一侧只是「前台取消换行延迟」的快通路 —— 后台继续跑等于按
-      // 换行频率白烧 2~3 次桥接 + 一次日志写盘。JS 侧的状态（realCurrentLyric / prevLyric /
-      // lastLyric）已在上面更新过，回前台不会丢行号。
-      if (AppState.currentState != 'active') return
       // 【第 50 轮】逐行快速通路（取消换行延迟）：详情页大歌词与这里用的是同一个
       // onLyricPlay 事件，先把这一行一次轻量桥调用直接落到卡片歌词区 —— 之前要经
       // updateMetaData（发布前先取一次引擎位置快照 = 一次桥往返）→ 500ms 发布冷却
