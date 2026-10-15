@@ -65,6 +65,12 @@ export const useSmoothProgressAnim = (progress: number, duration: number): Anima
   // 太慢了，要实时显示当前进度」。用户 seek 的唯一入口是 global.app_event.setProgress，
   // 所以这里只需订阅该事件打一个一次性标记，不改任何调用方。
   const seekArmedRef = useRef(false)
+  // 【第 79 轮第 1 条】本次挂载后的**第一次**落位永不挂过渡：用户原话「当画面切到播放详情页，
+  // 播放进度条会突然跳跃一下……确保返回软件或者切回该界面时，播放进度条不会出现跳跃的动画」。
+  // 挂载时 Animated 初值已经取自当时的 prop，第一次 change 只可能是「这一屏刚拿到的实时位置」
+  // （后台期间 store 里的位置是冻的，回前台/重进本页才第一次刷新）——那次必须瞬时落位。
+  // 只作用于挂载后的第一拍，播放中途的用户 seek（挂载之后）照旧走 200ms 标准曲线过渡。
+  const firstAssignRef = useRef(true)
 
   useEffect(() => {
     const handleSeek = () => { seekArmedRef.current = true }
@@ -84,8 +90,9 @@ export const useSmoothProgressAnim = (progress: number, duration: number): Anima
     // 标记只在「这一次跳变真的用掉它」时消费：seek 之后引擎真正落位前可能先来一两个
     // 普通 tick，不能把它们当成 seek 消费掉，否则用户的 seek 会退化成硬跳。
     // 反过来，切回来 / 切歌归零这类非用户跳变即使标记还残留也不会走过渡分支。
-    const isSeek = isJump && seekArmedRef.current
+    const isSeek = isJump && seekArmedRef.current && !firstAssignRef.current
     if (isJump) seekArmedRef.current = false
+    firstAssignRef.current = false
     targetRef.current = target
     Animated.timing(anim, {
       toValue: target,
