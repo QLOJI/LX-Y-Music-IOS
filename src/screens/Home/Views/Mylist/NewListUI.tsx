@@ -28,7 +28,7 @@ import { scaleSizeH } from '@/utils/pixelRatio'
 import { designRadius, designSpacing, pageTitleGap, pageTitleLineHeight } from '@/theme/DesignTokens'
 import { useButtonRadius } from '@/utils/buttonRadius'
 import { useNavActiveId } from '@/store/common/hook'
-import { useListBottomClearance } from '@/utils/tabBarCollapse'
+import { useListBottomClearance, useListBottomClearanceFloor, resolveListBottomClearance } from '@/utils/tabBarCollapse'
 import PageTopInset from '@/components/common/PageTopInset'
 import Loading from '@/components/common/Loading'
 import { Navigation } from 'react-native-navigation'
@@ -381,7 +381,15 @@ export default memo(() => {
   // 就驱动栏收起 —— 避让值一跟着变，列表 contentSize 就会在滚动中途改变，iOS 会把
   // contentOffset 夹回去（用户第 74 轮报的「反复在底部碰撞跳动」/滚动抖动）。详见
   // useListBottomClearance 的注释。
-  const listClearance = useListBottomClearance()
+  const clearanceMax = useListBottomClearance()
+  const clearanceFloor = useListBottomClearanceFloor()
+  const [scrollMetrics, setScrollMetrics] = useState({ viewport: 0, rows: 0 })
+  // 【第 77 轮第 1 条】再按实测内容高收口（见 resolveListBottomClearance）：内容比视口高出
+  // 一点就足够把预留收到收起态那一档，不必一直按展开态留出那条 76pt 的 tab 栏层。
+  const listClearance = useMemo(
+    () => resolveListBottomClearance(clearanceMax, clearanceFloor, scrollMetrics.viewport, scrollMetrics.rows),
+    [clearanceMax, clearanceFloor, scrollMetrics],
+  )
   const t = useI18n()
 
   // 加载失败时的「点击重试」按钮：底色是硬编码的 rgba 常量（不是主题 token），
@@ -910,6 +918,14 @@ export default memo(() => {
           <FlatList
             data={listItems}
             contentContainerStyle={{ paddingBottom: listClearance }}
+            onLayout={(e) => {
+              const viewport = e.nativeEvent.layout.height
+              setScrollMetrics(s => (s.viewport === viewport ? s : { ...s, viewport }))
+            }}
+            onContentSizeChange={(_w, h) => {
+              const rows = h - listClearance
+              setScrollMetrics(s => (s.rows === rows ? s : { ...s, rows }))
+            }}
             renderItem={renderItem}
             ListHeaderComponent={listHeader}
             // 更多功能网格（网易/酷狗/QQ 歌单、关注歌手、收藏专辑、WebDAV、本地与下载）
