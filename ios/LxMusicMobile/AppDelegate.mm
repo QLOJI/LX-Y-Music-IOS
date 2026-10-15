@@ -4808,18 +4808,20 @@ static const int64_t LXShortInterruptionIgnoreMs = 1500;
   return NO;
 }
 
-// 【第 80 轮第 1 条】路由输出的**身份**（UID + 端口类型 + 数据源名）。用户原话「蓝牙信号变差或者
+// 【第 80 轮第 1 条】路由输出的**身份**（UID + 端口类型）。用户原话「蓝牙信号变差或者
 // 切换更好信号的过程中，耳机里突然播放声音抖动，断断续续，然后过了一会儿又好了」：蓝牙链路变差
 // 时的编解码 / 码率重协商会换端口对象、**照样发一条路由变化通知**，而输出设备其实没变。
 // 抖动期冷却（ms）：非设备级的路由变化在这个窗口内只做轻量重贴输出，不重建引擎与图
 static double LXAudioRouteRecoveryLastAtMs = 0;
 static const double LXAudioRouteRecoveryCooldownMs = 800.0;
 
+// 身份 = 每个输出端口的 UID + 端口类型（两者都在且无弃用；不用 dataSourceName —— 那个属性挂在
+// AVAudioSessionDataSourceDescription 上，端口描述对象没有它，写了直接编译失败）。
 static NSString *LXAudioRouteOutputIdentity(AVAudioSessionRouteDescription *route) {
   if (route == nil) return @"";
   NSMutableString *identity = [NSMutableString string];
   for (AVAudioSessionPortDescription *output in route.outputs) {
-    [identity appendFormat:@"%@|%@|%@;", output.UID ?: @"", output.portType ?: @"", output.dataSourceName ?: @""];
+    [identity appendFormat:@"%@|%@;", output.UID ?: @"", output.portType ?: @""];
   }
   return identity;
 }
