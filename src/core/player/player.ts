@@ -27,6 +27,7 @@ import { getRandom } from '@/utils/common'
 import { filterList } from './utils'
 import BackgroundTimer from 'react-native-background-timer'
 import { checkIgnoringBatteryOptimization, checkNotificationPermission, debounceBackgroundTimer } from '@/utils/tools'
+import { beginBackgroundTask } from '@/utils/nativeModules/utils'
 import { LIST_IDS } from '@/config/constant'
 import { addListMusics, removeListMusics } from '@/core/list'
 import { addDislikeInfo } from '@/core/dislikeList'
@@ -348,6 +349,16 @@ const handlePlay = async() => {
 
   if (!musicInfo) return
 
+  // 【第 83 轮第 2 条】切歌窗口要**自己持有后台执行凭证**：下面 await setStop() 会走原生
+  // stop → 释放音频会话（第 57 轮的省电门），而会话正是「后台可运行」的凭证 —— 于是从这一刻
+  // 到新流 openStream 重新拿到会话之间，本 App 在后台**没有任何凭证**：取链 / 取封面 / 取歌词
+  // 的网络请求可能被系统挂起，表现就是用户报的「播完不跳歌 / 后台突然没了」。
+  // beginBackgroundTask 这个接口本来就是为这个窗口写的（见 nativeModules/utils.ts 与
+  // AppDelegate.mm 的注释），但一直没人调用。
+  // 这里**不主动 end**：一是取链完成的时点不在这条链上（不引新耦合），二是原生只维护一个任务 id，
+  // 主动 end 一旦被上一首的延迟调用撞上就会把**新**那份断言收掉 —— 让系统的到期回收（约 30s）
+  // 收口最稳；播放中本来就有音频会话这条凭证，这 30s 不额外耗电。
+  void beginBackgroundTask()
   await setStop()
   global.app_event.pause()
 
