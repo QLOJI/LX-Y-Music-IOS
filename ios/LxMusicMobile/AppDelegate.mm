@@ -2028,7 +2028,12 @@ static BOOL LXIsScreenTrustedOff(void) {
 static void LXSyncNowPlayingLyricTimer(void) {
   // 【第 23 轮】熄屏（亮度证据可信）时也走停钟：卡片不可见，20Hz 是净唤醒；
   // 判定一律走 LXIsScreenTrustedOff——不确定按亮，绝不因亮度误判冻结歌词。
-  if (LXNowPlayingState == MPNowPlayingPlaybackStatePlaying && !LXIsScreenTrustedOff()) {
+  // 【第 83 轮第 1 条】再加一道**前台豁免**：亮度证据在「暗环境自动亮度 / 手动拉到最暗」时
+  // 也会落到 0，而那时 App 明明是前台可见的 —— 光按亮度停钟会把前台 4Hz 位置事件一起停掉
+  //（时钟同时是进度条位置事件的唯一源），用户看到的是「进度条变成一秒一格」。所以：
+  // 只要 App 是前台 active，就**不认**熄屏判断；只有退到后台 / inactive 时才允许按亮度停钟。
+  BOOL foregroundActive = [UIApplication sharedApplication].applicationState == UIApplicationStateActive;
+  if (LXNowPlayingState == MPNowPlayingPlaybackStatePlaying && (foregroundActive || !LXIsScreenTrustedOff())) {
     LXStartNowPlayingLyricTimer();
   } else {
     LXStopNowPlayingLyricTimer();
