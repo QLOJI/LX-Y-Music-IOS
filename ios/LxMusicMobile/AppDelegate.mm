@@ -4808,6 +4808,22 @@ static const int64_t LXShortInterruptionIgnoreMs = 1500;
   return NO;
 }
 
+// 【第 80 轮第 1 条】路由输出的**身份**（UID + 端口类型 + 数据源名）。用户原话「蓝牙信号变差或者
+// 切换更好信号的过程中，耳机里突然播放声音抖动，断断续续，然后过了一会儿又好了」：蓝牙链路变差
+// 时的编解码 / 码率重协商会换端口对象、**照样发一条路由变化通知**，而输出设备其实没变。
+// 抖动期冷却（ms）：非设备级的路由变化在这个窗口内只做轻量重贴输出，不重建引擎与图
+static double LXAudioRouteRecoveryLastAtMs = 0;
+static const double LXAudioRouteRecoveryCooldownMs = 800.0;
+
+static NSString *LXAudioRouteOutputIdentity(AVAudioSessionRouteDescription *route) {
+  if (route == nil) return @"";
+  NSMutableString *identity = [NSMutableString string];
+  for (AVAudioSessionPortDescription *output in route.outputs) {
+    [identity appendFormat:@"%@|%@|%@;", output.UID ?: @"", output.portType ?: @"", output.dataSourceName ?: @""];
+  }
+  return identity;
+}
+
 - (void)handleAudioRouteChangeWhileStreaming:(NSNotification *)notification {
   if (self.currentURL.length == 0) return;
   NSDictionary *userInfo = [notification.userInfo isKindOfClass:[NSDictionary class]] ? notification.userInfo : @{};
@@ -4819,6 +4835,29 @@ static const int64_t LXShortInterruptionIgnoreMs = 1500;
   // 这里不恢复 —— 否则会在扬声器上抢放几百毫秒才被暂停（静音突然外放）。被抢占、切换设备
   // （新路由仍是耳机类输出）与其它原因照常恢复输出。
   BOOL isPhysicalDisconnect = reason == AVAudioSessionRouteChangeReasonOldDeviceUnavailable;
+  // 同一条线上的重协商：输出身份没变、硬件采样率也没变 ⇒ 引擎与整张图都不用动，只重贴一次输出。
+  // 全链（含「停引擎 → 重挂图」）在信号抖动期被反复触发，正是用户听到的「断断续续；过一会儿又好了」。
+  AVAudioSessionRouteDescription *previousRoute = userInfo[AVAudioSessionRouteChangePreviousRouteKey];
+  NSString *previousIdentity = LXAudioRouteOutputIdentity(
+    [previousRoute isKindOfClass:[AVAudioSessionRouteDescription class]] ? previousRoute : nil);
+  NSString *currentIdentity = LXAudioRouteOutputIdentity([AVAudioSession sharedInstance].currentRoute);
+  double hardwareSampleRate = [AVAudioSession sharedInstance].sampleRate;
+  BOOL formatChanged = hardwareSampleRate > 0 && self.configuredHardwareSampleRate > 0 &&
+    fabs(hardwareSampleRate - self.configuredHardwareSampleRate) > 0.5;
+  if (previousIdentity.length > 0 && [previousIdentity isEqualToString:currentIdentity] && !formatChanged) {
+    [self schedulePlaybackOutputRestoreWithDelays:@[ @0.1, @0.4 ]];
+    return;
+  }
+  // 抖动期连着来的其它原因（非「设备来了 / 走了」这两类确定的设备级变化）：冷却窗口内只轻量重贴，
+  // 不反复重建输出。设备级变化永远走全链 —— 那是真的换了设备，必须重建。
+  BOOL deviceLevelChange = reason == AVAudioSessionRouteChangeReasonNewDeviceAvailable ||
+    reason == AVAudioSessionRouteChangeReasonOldDeviceUnavailable;
+  double nowMs = CACurrentMediaTime() * 1000.0;
+  if (!deviceLevelChange && nowMs - LXAudioRouteRecoveryLastAtMs < LXAudioRouteRecoveryCooldownMs) {
+    [self schedulePlaybackOutputRestoreWithDelays:@[ @0.15 ]];
+    return;
+  }
+  LXAudioRouteRecoveryLastAtMs = nowMs;
   [self scheduleStreamingOutputRecoveryWithDelays:@[ @0.15, @0.6, @1.5 ] treatAsDisconnect:isPhysicalDisconnect];
 }
 
