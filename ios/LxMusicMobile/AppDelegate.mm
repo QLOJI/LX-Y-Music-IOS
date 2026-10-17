@@ -3985,6 +3985,14 @@ RCT_EXPORT_MODULE();
 
 - (void)emitState:(NSString *)state position:(NSNumber *)position duration:(NSNumber *)duration {
   self.currentState = state ?: @"idle";
+  // 【第 98 轮第 1 条】停声模型（用户原话「明确在缓存中、加载中、暂停等状态不能发出声音，
+  // 进度条也不能加载」）：对外宣告 buffering 的那一拍就**关掉渲染** —— 环里剩下的几秒不再
+  // 出声、进度也不再前进；补满到短门槛后由 maybeStartPlaybackLocked 重新打开（见那里）。
+  // 放在 emitState 里是刻意的：三处缓冲发射点（起播等待 / 解码断流 / 缓冲看门狗）共用同一出口，
+  // 起播等待那一处本来就是没渲染的状态，重复置 false 无害。
+  if ([self.currentState isEqualToString:@"buffering"]) {
+    _sourceRenderingEnabled.store(false, std::memory_order_release);
+  }
   [self emitEventWithType:@"state" body:@{
     @"state": self.currentState,
     @"position": position ?: @(self.lastKnownPosition),
@@ -5334,9 +5342,23 @@ static const int64_t LXResumeFadeStepMs = 40;
   if (self.engine == nil || !self.engine.isRunning) return;
   int64_t queuedFrames = [self currentQueuedFrameCountLocked];
   double queuedSeconds = (double)queuedFrames / self.sampleRate;
-  // 【第 96 轮·回退第 91 轮】这里曾补发一次 "playing" 带 `lastKnownPosition` —— 那个位置
-  // 可能落后于真实外推位置，卡片 / 进度条会被**往回拉**（用户现场：0:01→0:05→0:04→0:05）。
-  // 中途恢复的「谁叫醒 UI」改由 JS 侧按引擎位置重锚（syncFromEngine），这里不再发状态。
+  // 【第 98 轮第 1 条】停声模型的**恢复侧**：缓冲期间渲染是关的（见 emitState 里那一段），
+  // 补满到短门槛后重新打开渲染并广播 playing。位置**必须用外推值** —— `lastKnownPosition`
+  // 可能落后，广播出去会把卡片 / 进度条往回拉（第 96 轮那次回退就是它）。
+  if (self.playbackStarted && !_sourceRenderingEnabled.load(std::memory_order_acquire)
+      && queuedFrames > 0 && queuedSeconds >= self.resumeThresholdSeconds) {
+    _sourceRenderingEnabled.store(true, std::memory_order_release);
+    NSNumber *cachedRate = [LXNowPlayingInfoCache[MPNowPlayingInfoPropertyPlaybackRate] isKindOfClass:[NSNumber class]]
+      ? LXNowPlayingInfoCache[MPNowPlayingInfoPropertyPlaybackRate]
+      : nil;
+    double rate = cachedRate.doubleValue > 0 ? cachedRate.doubleValue : 1.0;
+    double resumeSeconds = self.lastKnownPosition;
+    if (LXNowPlayingLyricAnchorSystemMs > 0) {
+      resumeSeconds = (LXNowPlayingLyricAnchorElapsedMs
+        + ((CACurrentMediaTime() * 1000.0) - LXNowPlayingLyricAnchorSystemMs) * rate) / 1000.0;
+    }
+    [self emitState:@"playing" position:@(resumeSeconds) duration:@(self.duration)];
+  }
   // 【第 33 轮第 5 条】「快速启动 + 后台缓冲」的兜底：10 秒门槛装上后 20 秒还攒不够（弱网 /
   // 源站限速），退回老门槛先出声 —— 宁可偶发一次卡顿，也不能一直静默不播。只在已攒到短门槛
   // 时才降档，绝不提前出声；整首下完时下面的 downloadCompleted 快路径本来就会起播。
