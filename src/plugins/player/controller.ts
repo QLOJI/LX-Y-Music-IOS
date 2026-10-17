@@ -191,12 +191,16 @@ export const initUnifiedPlayerController = () => {
             setStatusText(global.i18n.t('player__loading'))
             break
           case 'buffering':
-            // 【第 100 轮第 1 条】停声模型的三件套之一：这次 buffering 是**原生主动停渲染**造成的
-            //（AppDelegate.mm 的 emitState 在宣告 buffering 的那一拍关渲染），引擎位置不会推进。
-            // 必须告诉 JS 的缓冲看门狗「这是预期内的停」，否则它会数满 10 次就 autoSkip 跳歌
-            //（第 98 轮现场：缓存中 → 约 10 秒后自动下一首）。复用 seek 的宽限基准：
-            // 宽限期内看门狗只 startBuffering() 不计数、不跳歌。
-            markSeekIntent()
+            // 【第 105 轮】seek 引起的补货**不对外宣告**：倒退拖动（甚至拖到 0:00）必然让引擎
+            // 重新补货并发一条 buffering —— 若照旧翻 UI（缓存中 / 暂停）并把进度冻住，就会出现
+            // 用户报的「显示缓存中、声音还在放、进度条随便拖都不生效、暂停键没反应」。
+            // 真正的断流不受影响：那时环里没数据，本来就是无声的，也不需要这一条。
+            if (isSeekRecently()) break
+            // 【第 105 轮】不变量：**buffering 永远不翻播放态**（原来这里会
+            // `global.app_event.pause()`）。一次 seek 的补货、一次系统提示音都可能发 buffering，
+            // 翻成暂停后 UI 与引擎分叉：进度条时钟停住、按键语义反转（按「暂停」实际发「播放」）、
+            // 看起来就是「缓存中 + 声音还在 + 进度条随便拖都不生效 + 暂停键没反应」。
+            // 播放态只由引擎的 playing/paused 事件与用户操作决定；真卡死由 loading 看门狗兜。
             if (!global.lx.isPlayedStop && playerState.musicInfo.id) startLoadingTimeout()
             // 【第 60 轮第 2 条】混音态不许这一支翻 UI 的播放态：勾选「与其他应用同时播放」
             // 后别的应用一出声，系统把我们的输出压住 / 抽走 IO，引擎的排队帧排空就会自报
@@ -206,7 +210,6 @@ export const initUnifiedPlayerController = () => {
             // 'paused' 这一种状态，见 shouldSuppressSystemPause）。
             // 只吞这一句：状态文案「缓存中...」（第 33 轮第 5 条）与 playerWaiting 照旧 ——
             // 真·缓冲耗尽的提示不受影响，缺的只是「把播放态翻成暂停」这一个副作用。
-            if (!shouldSuppressSystemPause()) global.app_event.pause()
             global.app_event.playerWaiting()
             // 【第 33 轮第 5 条】用户原话「立即显示为缓存中，缓存下一个 10 秒」：原生引擎的
             // buffering 事件同时覆盖「起播前累积缓存」与「播放中缓冲耗尽、重填下一个 10 秒」
