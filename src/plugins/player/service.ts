@@ -53,7 +53,7 @@ let interruptedAt = 0
 // 全程不被触碰；超时才真正 pause（导航 / 通话 / 其它音乐照旧）。任何用户动作（播放 /
 // 切歌 / 停止 / 遥控）都会撤销待决暂停 —— 用户要的音乐优先。数值与原生侧
 // LXShortInterruptionIgnoreMs 同值，可在真机上按需调。
-const SHORT_INTERRUPTION_IGNORE_MS = 1500
+const SHORT_INTERRUPTION_IGNORE_MS = 2500
 let interruptionPauseTimer: ReturnType<typeof setTimeout> | null = null
 
 const clearInterruptionPauseTimer = () => {
