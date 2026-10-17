@@ -1,5 +1,6 @@
 import { addPlayedList, clearPlayedList } from '@/core/player/playedList'
 import { pause, playNext } from '@/core/player/player'
+import { isSeekRecently } from './playProgress'
 import { setStatusText, setIsPlay } from '@/core/player/playStatus'
 // import { resetPlayerMusicInfo } from '@/core/player/playInfo'
 import { setStop } from '@/plugins/player'
@@ -34,6 +35,10 @@ export default async(setting: LX.AppSetting) => {
     // resetPlayerMusicInfo()
     // global.app_event.stop()
     setStatusText(global.i18n.t('player__end'))
+    // 【第 90 轮】seek 之后的抑制窗口内**不切歌**：用户把进度条拖到末尾（详情页 / 锁屏 /
+    // 灵动岛，三条路都汇进 playProgress 的 setProgress 打点）时，引擎会紧接着发 ended ——
+    // 那不该被当成「这首唱完了」。正常播完离一次 seek 远得多，不受影响。
+    if (isSeekRecently()) return
     void playNext(true)
     // })
   }

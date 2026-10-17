@@ -31,6 +31,15 @@ import {
 // 对齐上游 usePlaybackPersistence 的保存语义：始终持久化播放位置，
 // time 按开关取值——「记住播放进度」开启存真实进度，关闭存 0（下次从头播）。
 // 旧实现开关关闭时完全不保存，残留上次开启时的旧进度，重开后恢复到过期位置。
+// 【第 90 轮】最近一次 seek 意图的**模块级**时刻：用户拖进度条（播放详情页 / 锁屏 / 灵动岛）
+// 都会打点，`playerEnded → playNext` 在这个窗口内**不切歌** —— 把滑块拖到末尾不该被当成
+// 「这首歌唱完了」。窗口取 1.5s：正常播完不会离一次 seek 这么近（拖动松手到引擎走到末尾至少
+// 也要几百毫秒，而且真播完整首的位置是引擎自己报的 ended，不经过这里打点）。
+const SEEK_END_SUPPRESS_MS = 1500
+let seekIntentAtMs = 0
+export const markSeekIntent = () => { seekIntentAtMs = Date.now() }
+export const isSeekRecently = () => seekIntentAtMs > 0 && Date.now() - seekIntentAtMs < SEEK_END_SUPPRESS_MS
+
 /** 【第 86 轮第 1 条】立即落盘（不节流）。供「暂停 / 停止 / App 退到后台」这三个**边沿**调用 ——
  *  用户的场景（暂停后退出、播放中关掉软件）正好卡在 2s 节流窗口内，只靠节流会丢最后那一段。 */
 const savePlayInfoNow = (liveTimeSeconds?: number) => {
@@ -491,6 +500,7 @@ export default () => {
     const musicId = playerState.musicInfo.id
     // 用户 seek 的意图时刻（供「ended 抑制窗口」判定，见 app_event.on('ended') 一侧的说明）
     lastSeekIntentAt = Date.now()
+    markSeekIntent()
     // console.log('setProgress', time, maxTime)
     // 出声回拉记录（上游 restorePlayTime）：seek 意图位置，出声时把音频拉回这里。
     // 同时刷新看门狗宽限基准与回拉预算（每次用户 seek 都是新一轮）。
