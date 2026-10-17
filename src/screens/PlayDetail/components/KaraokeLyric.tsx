@@ -4,7 +4,7 @@ import { Animated, type LayoutChangeEvent, type StyleProp, type TextStyle, View 
 import Text from '@/components/common/Text'
 import KaraokeLine from './KaraokeLine'
 import { audioClock } from '@/core/player/audioClock'
-import { findLineIndexByTime, getWordState, useLrcSet } from '@/plugins/lyric'
+import { findLineIndexByTime, getCurrentLyricLines, getWordState } from '@/plugins/lyric'
 import { useTheme } from '@/store/theme/hook'
 import { useIsPlay } from '@/store/player/hook'
 import { createStyle } from '@/utils/tools'
@@ -80,7 +80,10 @@ const KaraokeWords = memo(({
   const isPlay = useIsPlay()
   // 歌词行表（与调用方同一份 currentLines）：跨行钳制要判断「音频时间应该在哪一行」，
   // 复用现成的 findLineIndexByTime 二分查找，不另造行查找逻辑。
-  const lines = useLrcSet()
+  // 【第 94 轮】歌词表改成**普通读取**（`getCurrentLyricLines()`），不再用 `useLrcSet()`：
+  // 详情页是整表挂载，每一行都订阅一次全局歌词表 ⇒ N 份订阅同时活着（一次切歌 / 换译文本
+  // 就是 N 次回调）。跨行钳制只用得到「当前这一份」，rAF 内部现读即可，不需要推送。
+  const lines = getCurrentLyricLines()
 
   useEffect(() => {
     // 非激活行静态渲染：停掉 rAF、进度归零（全部字用未播放颜色）。
@@ -128,7 +131,7 @@ const KaraokeWords = memo(({
     }
     raf = requestAnimationFrame(tick)
     return () => { cancelAnimationFrame(raf) }
-  }, [words, lineTime, isActive, isPlay, lines])
+  }, [words, lineTime, isActive, isPlay])
 
   return (
     <Text style={style} numberOfLines={numberOfLines}>
