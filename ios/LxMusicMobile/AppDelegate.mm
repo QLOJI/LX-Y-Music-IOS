@@ -4640,7 +4640,7 @@ static void LXRememberAudioSessionCombination(LXAudioSessionCombination combinat
 // 【第 31 轮·追加】短暂系统音忽略窗口的毫秒数（与 JS 侧 SHORT_INTERRUPTION_IGNORE_MS 同值）：
 // 电源键锁定音 / 系统提示音基本都会在 1.5s 内走完「Began → Ended」，窗口内结束就当没发生；
 // 超过它的打断（导航播报、通话、其它音乐）照走 performInterruptionBeganHandling 的完整处理。
-static const int64_t LXShortInterruptionIgnoreMs = 1500;
+static const int64_t LXShortInterruptionIgnoreMs = 2500;
 
 // 【第 31 轮·追加】Began 的推迟调度：立即置待决标记，窗口到期后若仍待决（没等到 Ended）
 // 才执行完整处理；窗口内 Ended 到达会清掉待决（见 handleAudioSessionInterruption: 的
