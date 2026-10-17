@@ -5328,6 +5328,14 @@ static const int64_t LXResumeFadeStepMs = 40;
   if (self.engine == nil || !self.engine.isRunning) return;
   int64_t queuedFrames = [self currentQueuedFrameCountLocked];
   double queuedSeconds = (double)queuedFrames / self.sampleRate;
+  // 【第 91 轮第 1 条】**中途缓冲恢复**也要广播 "playing"：下面的起播分支只在
+  // `!playbackStarted`（这首还没开始过）时发射；而播放中途断流 → 引擎/JS 收到过 "buffering"
+  // （JS 侧那一刻把 UI 收成「缓存中」并暂停时钟）→ 缓冲补满之后没有任何「恢复」信号，
+  // 界面就一直停在「缓存中 / 暂停」（用户原话「缓存满 10 秒后继续播放，目前是缓存后还是暂停」）。
+  // 判据：已经开始播过 + 当前对外状态仍是 buffering + 环里又有数据 ⇒ 补发一次 playing。
+  if (self.playbackStarted && queuedFrames > 0 && [self.currentState isEqualToString:@"buffering"]) {
+    [self emitState:@"playing" position:@(self.lastKnownPosition) duration:@(self.duration)];
+  }
   // 【第 33 轮第 5 条】「快速启动 + 后台缓冲」的兜底：10 秒门槛装上后 20 秒还攒不够（弱网 /
   // 源站限速），退回老门槛先出声 —— 宁可偶发一次卡顿，也不能一直静默不播。只在已攒到短门槛
   // 时才降档，绝不提前出声；整首下完时下面的 downloadCompleted 快路径本来就会起播。
