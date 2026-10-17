@@ -1610,6 +1610,9 @@ static NSInteger LXNowPlayingArtistLineIndex = -1;
 // 原生时钟戳（CACurrentMediaTime 毫秒）。0 = 还没对过表（起播后第一拍立即对一次）。
 // 见 LXNowPlayingLyricStep 里的 1Hz 心跳：只把已有 tick 拿来计数，不新建定时器。
 static double LXNowPlayingElapsedRefreshAtMs = 0;
+// 【第 101 轮】原生落盘的相邻两拍下限（与 1Hz 对表同档：每拍写一次 NSUserDefaults 足够，
+// 不跟 25ms 的歌词钟同频）—— 独立成块，避免动到上面那段被契约逐字钉住的 1Hz 心跳。
+static double LXNowPlayingProgressSavedAtMs = 0;
 // 【第 57 轮】上一次「前台位置事件」（LXPlayerPosition → JS）发出的原生时钟戳（毫秒）。
 // 0 = 还没发过（起播后第一拍立即发一次）。见 LXNowPlayingLyricStep 里的 250ms 节流：
 // 时钟本身 20Hz（第 47 轮，为歌词换行延迟服务），位置事件按注释口径只发 4Hz。
@@ -1739,6 +1742,18 @@ static void LXSetNowPlayingCurrentLine(NSString *text) {
   }
 }
 
+// 【第 101 轮】原生持有的「最后播放进度」：写在喂**锁屏进度条**的同一处（1Hz 心跳），所以它
+// 与用户在锁屏看到的值严格同源；而且这个心跳在后台照样跑 —— 强杀前最后一次写入必然是接近
+// 真实位置的。JS 侧那几次落盘之所以时好时坏，是因为「暂停后退出 / 强杀」那一刻 JS 已经停了；
+// 让原生记，才是这件事的正确主人。
+static void LXSavePlaybackProgress(double positionSeconds, double durationSeconds) {
+  if (!(positionSeconds >= 0) || !(durationSeconds > 0)) return;
+  NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+  [defaults setDouble:positionSeconds forKey:@"LXSavedProgressTime"];
+  [defaults setDouble:durationSeconds forKey:@"LXSavedProgressDuration"];
+  [defaults setDouble:[[NSDate date] timeIntervalSince1970] forKey:@"LXSavedProgressAt"];
+}
+
 static void LXNowPlayingLyricStep(void) {
   @synchronized (LXLyricLock()) {
     NSNumber *cachedRate = [LXNowPlayingInfoCache[MPNowPlayingInfoPropertyPlaybackRate] isKindOfClass:[NSNumber class]]
@@ -1840,6 +1855,14 @@ static void LXNowPlayingLyricStep(void) {
       LXNowPlayingInfoCache[MPNowPlayingInfoPropertyElapsedPlaybackTime] = @(positionMs / 1000.0);
       LXNowPlayingElapsedSnapshotAtMs = elapsedRefreshNowMs;
       LXApplyNowPlayingInfo();
+    }
+
+    // 【第 101 轮】原生落盘「最后播放进度」：与喂锁屏的 `ElapsedPlaybackTime` **同值同源**、只在
+    // 「真在播放且没有外推冻结」时写（与上面 1Hz 对表同一组闸门），每拍下限 1s。
+    // 独立成块而不并进上面那段心跳：那一段被契约逐字钉住（lockscreen-tap 的 g1/g3/g7）。
+    if (!paused && !LXNowPlayingClockHold && elapsedRefreshNowMs - LXNowPlayingProgressSavedAtMs >= 1000.0) {
+      LXNowPlayingProgressSavedAtMs = elapsedRefreshNowMs;
+      LXSavePlaybackProgress(positionMs / 1000.0, self.duration);
     }
 
     // 位置事件枢纽：前台播放时把外推位置广播给 JS，驱动进度条等 UI。后台/熄屏不发
@@ -7480,6 +7503,18 @@ RCT_EXPORT_METHOD(setTabBarExpanded) {
 // 只有 audio，音频一停就失去后台运行资格）。
 // 这里暴露 UIApplication 的后台任务接口：切歌开始时 begin，取链结束后 end，
 // 为 JS 争取一段额外的后台执行时间（时长由系统决定，通常约 30 秒）。
+// 【第 101 轮】把原生记录的最后播放进度交给 JS（启动恢复时合并）：它与锁屏进度条同源，
+// 且在后台也一直更新 —— 强杀之后这就是「杀之前最后一次真实位置」。
+RCT_EXPORT_METHOD(getSavedPlaybackProgress:(RCTPromiseResolveBlock)resolve
+                                  rejecter:(RCTPromiseRejectBlock)reject) {
+  NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+  resolve(@{
+    @"time": @([defaults doubleForKey:@"LXSavedProgressTime"]),
+    @"duration": @([defaults doubleForKey:@"LXSavedProgressDuration"]),
+    @"savedAt": @([defaults doubleForKey:@"LXSavedProgressAt"]),
+  });
+}
+
 RCT_EXPORT_METHOD(beginBackgroundTask:(RCTPromiseResolveBlock)resolve
                              rejecter:(RCTPromiseRejectBlock)reject) {
   dispatch_async(dispatch_get_main_queue(), ^{
