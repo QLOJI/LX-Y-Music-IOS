@@ -266,7 +266,13 @@ export const useHomeCovered = () => {
 export const useScreenCovered = (componentId?: string) => {
   const ids = useComponentIds()
   if (!componentId) return false
-  return String(ids[ids.length - 1]?.id) !== String(componentId)
+  // 【第 85 轮第 4 条②】判据由「只比栈顶」改成「**在栈内且非栈顶**才算被覆盖」：
+  // 传进来的 id 若已不在栈里（页面已销毁 / 上游传了陈旧 id），旧写法会判「被覆盖」——
+  // 而 paused 门一旦永久为真，MTKView 就定格成静态图（用户报的「迷你播放器玻璃偶发卡住」）。
+  // 陈旧 id 一律 fail-open：宁可多渲染一帧，也不把可见玻璃永久冻住。
+  const index = ids.findIndex(item => String(item.id) === String(componentId))
+  if (index < 0) return false
+  return index !== ids.length - 1
 }
 
 /**
