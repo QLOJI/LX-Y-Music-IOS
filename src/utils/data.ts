@@ -13,11 +13,6 @@ import { throttle } from './common'
 // import type 编译期擦除，不会与 viewRestore.ts 形成运行时循环依赖
 import type { ViewPrevDetailState } from '@/core/viewRestore'
 export { storageDataPrefix }
-// import { gzip, ungzip } from '@/utils/nativeModules/gzip'
-// import { readFile, writeFile, temporaryDirectoryPath, unlink } from '@/utils/fs'
-// import { isNotificationsEnabled, openNotificationPermissionActivity, shareText } from '@/utils/nativeModules/utils'
-// import { i18n } from '@/plugins/i18n'
-// import musicSdk from '@/utils/musicSdk'
 
 const fontSizeKey = storageDataPrefix.fontSize
 const themeKey = storageDataPrefix.theme
@@ -575,11 +570,24 @@ export const getMetaCache = async() => {
   return info
 }
 
+// 【第 93 轮】双份写入 + 读取校验：用户报「播放中突然退出再进，有概率播放器变回初始样子」——
+// 记录只有一份时，强杀若正好撞上写 JSON 的那一下就会写坏（读回来是 null / 解析失败），
+// 于是启动恢复拿不到任何记录。现在**先写备份、再写正本**（被杀的永远是后写的那份），
+// 读取时正本不可用就回退备份 —— 最坏情况下丢的也只是最后一次进度，不会再「整台播放器变空」。
+const playInfoBackupStorageKey = playInfoStorageKey + '_bak'
+
+const isUsablePlayInfo = (info: LX.Player.SavedPlayInfo | null | undefined): info is LX.Player.SavedPlayInfo =>
+  info != null && typeof info.time === 'number' && Number.isFinite(info.time) && info.time >= 0
+
 export const savePlayInfo = async(playInfo: LX.Player.SavedPlayInfo) => {
+  await saveData(playInfoBackupStorageKey, playInfo).catch(() => {})
   return saveData(playInfoStorageKey, playInfo)
 }
 export const getPlayInfo = async() => {
-  return getData<LX.Player.SavedPlayInfo | null>(playInfoStorageKey)
+  const primary = await getData<LX.Player.SavedPlayInfo | null>(playInfoStorageKey).catch(() => null)
+  if (isUsablePlayInfo(primary)) return primary
+  const backup = await getData<LX.Player.SavedPlayInfo | null>(playInfoBackupStorageKey).catch(() => null)
+  return isUsablePlayInfo(backup) ? backup : primary
 }
 
 export const savePlayHistory = async(history: LX.Player.PlayHistoryItem[]) => {
