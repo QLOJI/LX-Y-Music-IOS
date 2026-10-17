@@ -5509,7 +5509,13 @@ static const int64_t LXResumeFadeStepMs = 40;
     // 存着 pausedBufferSeconds 的音频，恢复播放后最坏 200ms 才补货（存货是这个量级的
     // 几十倍，听感无差异），换来「暂停挂着」每秒少 28 次线程唤醒——这是暂停 / 挂着后台
     // 时唯一还在高频转的轮询（歌词时钟早已按播放态 + 熄屏双闸停钟，第 23/42 轮）。
-    [NSThread sleepForTimeInterval:self.manualPause ? 0.2 : 0.03];
+    // 【第 108 轮】等缓冲从「原地 sleep 轮询」改成**条件变量 + 有界等待**：任何一处
+    // `_streamCondition` 信号都能立刻醒来（例如 seek / 恢复拍把环腾出空间），没有信号时
+    // 仍按原节拍（暂停 200ms / 播放 30ms）超时醒来 —— **行为与改动前逐字等价，只是不再死睡**。
+    // 现场：多次快速 seek / 拖到 0:00 之后「声音在放、进度条与暂停全失灵、播完不跳歌」。
+    [_streamCondition lock];
+    [_streamCondition waitUntilDate:[NSDate dateWithTimeIntervalSinceNow:(self.manualPause ? 0.2 : 0.03)]];
+    [_streamCondition unlock];
   }
 }
 
