@@ -485,12 +485,12 @@ export default () => {
 
   const setProgress = (time: number, maxTime?: number) => {
     if (!playerState.musicInfo.id) return
-    // 【第 87 轮第 2 条】抠住「拖到末尾」：详情页拖动与锁屏/灵动岛拖拽都汇进这里，落点一旦
-    // 钳到「恰好结束」，引擎就会发 ended → 自动下一首（用户报的「拖进度条有概率自动切歌」）。
-    // 把落点从末尾往回收 1 秒：想拖到最末照样能听到最后一段，只是不再由「一次拖动」触发切歌。
-    const seekDuration = maxTime ?? playerState.progress.maxPlayTime
-    if (seekDuration > 2) time = Math.min(time, seekDuration - 1)
+    // 【第 89 轮·回退】第 87 轮在这里把落点从末尾回收 1 秒，结果「记录的进度」也被钳到
+    // 接近结尾（强杀再进来进度条停在最后一秒）—— 用户现场判为更糟。恢复原样：
+    // 落点 = 用户拖到哪就是哪；「拖完自动跳歌」改由下面的 seek 抑制窗口处理。
     const musicId = playerState.musicInfo.id
+    // 用户 seek 的意图时刻（供「ended 抑制窗口」判定，见 app_event.on('ended') 一侧的说明）
+    lastSeekIntentAt = Date.now()
     // console.log('setProgress', time, maxTime)
     // 出声回拉记录（上游 restorePlayTime）：seek 意图位置，出声时把音频拉回这里。
     // 同时刷新看门狗宽限基准与回拉预算（每次用户 seek 都是新一轮）。
