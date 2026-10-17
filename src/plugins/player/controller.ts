@@ -4,7 +4,7 @@ import BackgroundTimer from 'react-native-background-timer'
 import { updateMetaData } from './playList'
 import { initUnifiedPlayerEngine, onUnifiedPlayerEvent } from './engine'
 import { getNativeFlacTrackId, setNativeFlacRate } from './nativeFlac'
-import { isSeekRecently } from '@/core/init/player/playProgress'
+import { isSeekRecently, markSeekIntent } from '@/core/init/player/playProgress'
 import { getPositionStamped, elapsedSnapshotFields, isEmpty, setStop } from './utils'
 // 【第 39 轮第 4 条】播放真正开始时的音量落地（带渐入预约时走斜坡）——见 volumeFade.ts
 import { applyVolumeOnPlayStart } from './volumeFade'
@@ -191,6 +191,12 @@ export const initUnifiedPlayerController = () => {
             setStatusText(global.i18n.t('player__loading'))
             break
           case 'buffering':
+            // 【第 100 轮第 1 条】停声模型的三件套之一：这次 buffering 是**原生主动停渲染**造成的
+            //（AppDelegate.mm 的 emitState 在宣告 buffering 的那一拍关渲染），引擎位置不会推进。
+            // 必须告诉 JS 的缓冲看门狗「这是预期内的停」，否则它会数满 10 次就 autoSkip 跳歌
+            //（第 98 轮现场：缓存中 → 约 10 秒后自动下一首）。复用 seek 的宽限基准：
+            // 宽限期内看门狗只 startBuffering() 不计数、不跳歌。
+            markSeekIntent()
             if (!global.lx.isPlayedStop && playerState.musicInfo.id) startLoadingTimeout()
             // 【第 60 轮第 2 条】混音态不许这一支翻 UI 的播放态：勾选「与其他应用同时播放」
             // 后别的应用一出声，系统把我们的输出压住 / 抽走 IO，引擎的排队帧排空就会自报
