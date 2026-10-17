@@ -281,6 +281,10 @@ export default () => {
       isBufferingHold = false
       audioClock.setAnchor(stamped.position * 1000, settingState.setting['player.playbackRate'], true)
       setNowPlayTime(stamped.position)
+      // 【第 87 轮第 1 条】「引擎确认在播」这一拍立即落盘：自动切歌后 store 会被 setProgress(0)
+      // 重置，若只靠 2s 节流 + 后台边沿，用户在「下一首播了一段后强杀」时，记录可能还停在
+      // 归零那一刻（下次启动就是 0）。这一拍的位置是引擎真相，写下去即「这一首 + 当前位置」。
+      savePlayInfoNow()
       anchorLyricToEngineTime(stamped.position * 1000)
       const ageMs = stamped.snapshotAt > 0 ? 0 : Math.max(0, Date.now() - calibStartedAt - stamped.ageMs)
       void reanchorNowPlayingLyric(stamped.position * 1000, stamped.snapshotAt, ageMs)
@@ -476,6 +480,11 @@ export default () => {
 
   const setProgress = (time: number, maxTime?: number) => {
     if (!playerState.musicInfo.id) return
+    // 【第 87 轮第 2 条】抠住「拖到末尾」：详情页拖动与锁屏/灵动岛拖拽都汇进这里，落点一旦
+    // 钳到「恰好结束」，引擎就会发 ended → 自动下一首（用户报的「拖进度条有概率自动切歌」）。
+    // 把落点从末尾往回收 1 秒：想拖到最末照样能听到最后一段，只是不再由「一次拖动」触发切歌。
+    const seekDuration = maxTime ?? playerState.progress.maxPlayTime
+    if (seekDuration > 2) time = Math.min(time, seekDuration - 1)
     const musicId = playerState.musicInfo.id
     // console.log('setProgress', time, maxTime)
     // 出声回拉记录（上游 restorePlayTime）：seek 意图位置，出声时把音频拉回这里。
