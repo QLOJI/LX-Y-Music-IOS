@@ -1919,14 +1919,20 @@ static void LXNowPlayingLyricStep(void) {
       return;
     }
     if (found < 0) {
-      // 前奏：没有「当前行」。artist 本来就空（常态）、或已是前奏前写入的空串，都
-      // 无需动；只有「不是任何一行的残留文本」（上一首遗留）才清掉并重绘。
-      LXNowPlayingLyricIndex = -1;
-      if (artistLine >= 0 || currentArtist.length == 0) return;
-      LXNowPlayingInfoCache[MPMediaItemPropertyArtist] = @"";
-      LXApplyNowPlayingInfo();
-      LXForceNowPlayingCardRepaint();
-      return;
+      // 【第 97 轮第 4 条】前奏段没有「当前行」（二分找不到 ≤ position 的行）时，旧实现把
+      // 卡片留空 —— 用户原话「前面几秒的歌词也会显示为空，等加载第二行歌词才会显示，其实
+      // 存在第一行歌词，但是未显示」。列表非空时**钳到第 0 行**：首行本来就在，只是还没到
+      // 它的时间；这样卡片从第一拍起就有内容，不会再空几秒。列表为空（无歌词）才走原来的清空。
+      if (LXNowPlayingLyricLines.count > 0) {
+        found = 0;
+      } else {
+        LXNowPlayingLyricIndex = -1;
+        if (artistLine >= 0 || currentArtist.length == 0) return;
+        LXNowPlayingInfoCache[MPMediaItemPropertyArtist] = @"";
+        LXApplyNowPlayingInfo();
+        LXForceNowPlayingCardRepaint();
+        return;
+      }
     }
     NSString *text = LXNowPlayingLyricLines[(NSUInteger)found][@"text"];
     if (![text isKindOfClass:[NSString class]] || text.length == 0) return;
