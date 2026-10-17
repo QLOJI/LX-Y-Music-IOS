@@ -87,10 +87,14 @@ export const useSmoothProgressAnim = (progress: number, duration: number): Anima
     // 对齐上游 usePlayProgress 的 watch：跳变 >2s 才挂过渡，且只作用于这一次变更；
     // 时长未就绪（duration=0）时 Δ×0=0，永不触发过渡（直接落位）。
     const isJump = Math.abs(target - targetRef.current) * duration > SEEK_JUMP_SEC
+    // 【第 86 轮第 1 条】只认**向前**的跳变：用户 seek 是往前跳（往后拖由逐帧跟手的
+    // dragProgressAnim 那一层负责，不走本 hook）；而「新歌恢复 / 切歌归零」一定是**大幅回退**。
+    // 于是大幅回退一律瞬时落位 —— 用户原话「新播放的歌曲不要进度条跳跃播放」就是这一条。
+    const isBackwardJump = target < targetRef.current - 0.05
     // 标记只在「这一次跳变真的用掉它」时消费：seek 之后引擎真正落位前可能先来一两个
     // 普通 tick，不能把它们当成 seek 消费掉，否则用户的 seek 会退化成硬跳。
     // 反过来，切回来 / 切歌归零这类非用户跳变即使标记还残留也不会走过渡分支。
-    const isSeek = isJump && seekArmedRef.current && !firstAssignRef.current
+    const isSeek = isJump && !isBackwardJump && seekArmedRef.current && !firstAssignRef.current
     if (isJump) seekArmedRef.current = false
     firstAssignRef.current = false
     targetRef.current = target
