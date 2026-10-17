@@ -1760,10 +1760,11 @@ static void LXSetNowPlayingCurrentLine(NSString *text) {
 // 与用户在锁屏看到的值严格同源；而且这个心跳在后台照样跑 —— 强杀前最后一次写入必然是接近
 // 真实位置的。JS 侧那几次落盘之所以时好时坏，是因为「暂停后退出 / 强杀」那一刻 JS 已经停了；
 // 让原生记，才是这件事的正确主人。
-// 【第 104 轮】停声模型：缓冲期间**渲染回调输出静音**（不关 `_sourceRenderingEnabled` ——
-// 前两次反噬都是关渲染门造成的：位置冻住、拖动无效）。置位在 emitState 宣告 buffering 那一拍，
-// 清除在补满短门槛的恢复侧；**seek 必须能打断**（见渲染回调里的那个分支）。
-static BOOL LXBufferingSilenced = NO;
+// 【第 105 轮·删除第 104 轮】`LXBufferingSilenced` 停声模型整条删除。现场：**倒退 seek（甚至拖到
+// 0:00）必然触发引擎补货 → 那一刻静音 ⇒ 位置冻住、看门狗卡住、拖动无效、暂停键没反应**。
+// 结论（这一条写死，别再试「旗子静音」）：本引擎的环形缓冲决定了「缓冲期静音」必然与 seek /
+// 位置时钟 / 看门狗打架。**真正的断流本来就没数据、自然无声**，不需要旗子；而「seek 引起的
+// 补货」根本不该对外宣告 buffering —— 修在 JS 侧（controller 的 buffering 分支按 seek 宽限忽略）。
 
 static void LXSavePlaybackProgress(double positionSeconds, double durationSeconds) {
   if (!(positionSeconds >= 0) || !(durationSeconds > 0)) return;
@@ -4031,12 +4032,8 @@ RCT_EXPORT_MODULE();
 
 - (void)emitState:(NSString *)state position:(NSNumber *)position duration:(NSNumber *)duration {
   self.currentState = state ?: @"idle";
-  // 【第 104 轮】停声模型（第三版，前两版都是关渲染门、被现场否决）：
-  // 宣告 buffering 那一拍只置**静音标记**，渲染回调据此输出静音 —— `_sourceRenderingEnabled`、
-  // 位置时钟、seek、状态机全部照常。seek 在渲染回调里直接打断该标记（见那里的分支）。
-  if ([self.currentState isEqualToString:@"buffering"]) {
-    LXBufferingSilenced = YES;
-  }
+  // 【第 105 轮】停声模型整条删除（见上方说明）：真正的断流本就没数据、自然无声；
+  // seek 引起的补货由 JS 侧按 seek 宽限忽略 buffering 事件，不在这里做任何静音。
   [self emitEventWithType:@"state" body:@{
     @"state": self.currentState,
     @"position": position ?: @(self.lastKnownPosition),
@@ -5217,21 +5214,6 @@ static NSString *LXAudioRouteOutputIdentity(AVAudioSessionRouteDescription *rout
         }
         return noErr;
       }
-      // 【第 104 轮】停声：缓冲期输出静音（写法与上面 strongSelf==nil 那一支逐字同形）。
-      // seek 必须能打断 —— 前两次反噬的另一半就是「一停就拖不动」。
-      if (LXBufferingSilenced) {
-        if (strongSelf.seekRequested) {
-          LXBufferingSilenced = NO;
-        } else {
-          if (isSilence != NULL) *isSilence = YES;
-          if (outputData != NULL) {
-            for (UInt32 index = 0; index < outputData->mNumberBuffers; index++) {
-              if (outputData->mBuffers[index].mData != NULL) memset(outputData->mBuffers[index].mData, 0, outputData->mBuffers[index].mDataByteSize);
-            }
-          }
-          return noErr;
-        }
-      }
       return [strongSelf renderSourceFramesToBufferList:outputData frameCount:frameCount isSilence:isSilence timestamp:timestamp];
     }];
     self.timePitchNode = [[AVAudioUnitTimePitch alloc] init];
@@ -5404,9 +5386,9 @@ static const int64_t LXResumeFadeStepMs = 40;
   // 【第 98 轮第 1 条】停声模型的**恢复侧**：缓冲期间渲染是关的（见 emitState 里那一段），
   // 补满到短门槛后重新打开渲染并广播 playing。位置**必须用外推值** —— `lastKnownPosition`
   // 可能落后，广播出去会把卡片 / 进度条往回拉（第 96 轮那次回退就是它）。
-  if (self.playbackStarted && LXBufferingSilenced
+  if (self.playbackStarted && !_sourceRenderingEnabled.load(std::memory_order_acquire)
       && queuedFrames > 0 && queuedSeconds >= self.resumeThresholdSeconds) {
-    LXBufferingSilenced = NO;
+    _sourceRenderingEnabled.store(true, std::memory_order_release);
     NSNumber *cachedRate = [LXNowPlayingInfoCache[MPNowPlayingInfoPropertyPlaybackRate] isKindOfClass:[NSNumber class]]
       ? LXNowPlayingInfoCache[MPNowPlayingInfoPropertyPlaybackRate]
       : nil;
