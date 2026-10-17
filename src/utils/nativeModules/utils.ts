@@ -342,6 +342,19 @@ export const setScreenOrientation = (orientation: 'landscape' | 'portrait' | 'au
 // 同时只允许持有一个任务：连续切歌时复用，避免重复申请把系统给的预算耗光。
 let backgroundTaskId: number | null = null
 
+/** 【第 101 轮】原生记录的最后播放进度（与锁屏进度条同源、后台也一直更新）。
+ *  返回 null = 没有可用记录（还没播过 / 字段不合法 / 老包没有这个方法）。 */
+export const getSavedPlaybackProgress = async(): Promise<{ time: number, duration: number, savedAt: number } | null> => {
+  if (!isIOS || !UtilsModule?.getSavedPlaybackProgress) return null
+  try {
+    const info = await (UtilsModule.getSavedPlaybackProgress as () => Promise<{ time: number, duration: number, savedAt: number }>)()
+    if (!info || !(info.time >= 0) || !(info.duration > 0)) return null
+    return info
+  } catch {
+    return null
+  }
+}
+
 export const beginBackgroundTask = async(): Promise<void> => {
   if (!isIOS || !UtilsModule?.beginBackgroundTask) return
   if (backgroundTaskId != null) return
