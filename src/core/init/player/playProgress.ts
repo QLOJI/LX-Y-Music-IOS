@@ -502,6 +502,13 @@ export default () => {
     // 接近结尾（强杀再进来进度条停在最后一秒）—— 用户现场判为更糟。恢复原样：
     // 落点 = 用户拖到哪就是哪；「拖完自动跳歌」改由下面的 seek 抑制窗口处理。
     const musicId = playerState.musicInfo.id
+    // 【第 106 轮】每次用户 seek 先把所有 seek 闩锁复位：连续快速拖动会留下「没落地」的
+    // `seekTargetPosition` 与缓冲保持，之后 4Hz 快路径、拖动手势、暂停键都可能被它挡死 ——
+    // 现场就是「多次点击跳转后，声音在放，但进度条和暂停都控制不了、播完也不跳下一首」。
+    // 不变量：**新的用户动作永远不该被旧的闩锁拦住**。
+    seekTargetPosition = null
+    seekHoldUntil = 0
+    isBufferingHold = false
     // 用户 seek 的意图时刻（供「ended 抑制窗口」判定，见 app_event.on('ended') 一侧的说明）
     lastSeekIntentAt = Date.now()
     markSeekIntent()
