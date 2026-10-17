@@ -4,6 +4,7 @@ import BackgroundTimer from 'react-native-background-timer'
 import { updateMetaData } from './playList'
 import { initUnifiedPlayerEngine, onUnifiedPlayerEvent } from './engine'
 import { getNativeFlacTrackId, setNativeFlacRate } from './nativeFlac'
+import { isSeekRecently } from '@/core/init/player/playProgress'
 import { getPositionStamped, elapsedSnapshotFields, isEmpty, setStop } from './utils'
 // 【第 39 轮第 4 条】播放真正开始时的音量落地（带渐入预约时走斜坡）——见 volumeFade.ts
 import { applyVolumeOnPlayStart } from './volumeFade'
@@ -274,6 +275,11 @@ export const initUnifiedPlayerController = () => {
         }
         break
       case 'ended':
+        // 【第 95 轮】seek 抑制必须**在分发之前**：拖进度条到末尾时引擎会发 ended，若等到
+        // 事件的消费侧再拦（第 90 轮放在了 playerEnded 的处理里），下面这一串
+        //（playerPause / pause / playerEnded / playerEmptied）早已发出去 —— UI 收成
+        //「播放完毕 + 暂停」而声音还在放（用户截图现场）。这里先判，命中就直接忽略这次 ended。
+        if (isSeekRecently()) break
         stopPreload()
         global.lx.playerTrackId = ''
         global.app_event.playerPause()
