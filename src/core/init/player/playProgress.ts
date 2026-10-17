@@ -31,14 +31,19 @@ import {
 // 对齐上游 usePlaybackPersistence 的保存语义：始终持久化播放位置，
 // time 按开关取值——「记住播放进度」开启存真实进度，关闭存 0（下次从头播）。
 // 旧实现开关关闭时完全不保存，残留上次开启时的旧进度，重开后恢复到过期位置。
-const delaySavePlayInfo = throttleBackgroundTimer(() => {
+/** 【第 86 轮第 1 条】立即落盘（不节流）。供「暂停 / 停止 / App 退到后台」这三个**边沿**调用 ——
+ *  用户的场景（暂停后退出、播放中关掉软件）正好卡在 2s 节流窗口内，只靠节流会丢最后那一段。 */
+const savePlayInfoNow = () => {
   void savePlayInfo({
     time: settingState.setting['player.isSavePlayTime'] ? playerState.progress.nowPlayTime : 0,
     maxTime: playerState.progress.maxPlayTime,
     listId: playerState.playMusicInfo.listId!,
     index: playerState.playInfo.playIndex,
   })
-}, 2000)
+}
+
+// 播放中的周期性落盘（2s 节流，第 75 轮确认必须保留后台执行能力）
+const delaySavePlayInfo = throttleBackgroundTimer(savePlayInfoNow, 2000)
 
 export default () => {
   // const updateMusicInfo = useCommit('list', 'updateMusicInfo')
@@ -564,6 +569,10 @@ export default () => {
     audioClock.setPlaying(false)
     clearUpdateTimeout()
     clearSyncRetry()
+    // 【第 86 轮第 1 条】暂停这一拍**立即落盘**：用户的「暂停后退出软件」正好落在 2s 节流
+    // 窗口内，只靠节流会丢掉最后那一段（下次恢复位置偏旧）。注意上游把 buffering 也发成
+    // pause —— 那种情况落盘同样无害（位置就是当前外推位置，与界面一致）。
+    savePlayInfoNow()
     // 快路径随暂停冻结（engineConfirmedPlaying/isBufferingHold/seek 窗口由引擎状态
     // 事件订阅维护——buffering 也会走到这里（controller 对 buffering 发 app_event.pause，
     // ≈上游 waiting→pause），此处不能清 seek 窗口，否则 seek 中途的缓冲会让引擎旧
@@ -699,6 +708,10 @@ export default () => {
   // 修复在某些设备上屏幕状态改变事件未触发导致的进度条未更新的问题
   AppState.addEventListener('change', (state) => {
     if (state == 'active' && !isScreenOn) handleScreenStateChanged('ON')
+    // 【第 86 轮第 1 条】App 退到后台这一拍**立即落盘**：这是「播放中直接关掉软件」之前
+    // 唯一还跑得到 JS 的时刻（iOS 的熄屏事件在本工程是 no-op，落盘不能指望那条路）。
+    // 只在前台→后台这一个边沿写，回前台不重复写。
+    if (state == 'background') savePlayInfoNow()
   })
 
   // 原生位置事件快路径（4Hz，仅前台播放时由歌词时钟发布）：免桥接查询驱动进度 UI，
