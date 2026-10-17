@@ -236,6 +236,14 @@ export default () => {
     // 回前台后 handleScreenStateChanged/syncFromEngine 会重锚，状态无残留。
     // 若将来让本 tick 承担后台工作，必须换回并在原生侧评估断言成本。
     updateTimeout = setInterval(() => {
+      // 【第 107 轮】落点闩锁兜底自愈：用户拖过之后，若落点在 3s 内都没落地
+      //（引擎没确认 / 被覆盖掉的旧意图残留），强制清闩锁并让下一次 tick 按引擎真相重锚。
+      // 现场：多次点击跳转后「声音在放、进度条与暂停都控制不了、播完也不跳下一首」。
+      if (seekTargetPosition != null && Date.now() - lastSeekIntentAt > 3000) {
+        seekTargetPosition = null
+        seekHoldUntil = 0
+        isBufferingHold = false
+      }
       if (isProgressDragging) return
       getCurrentTime()
     }, 1000)
