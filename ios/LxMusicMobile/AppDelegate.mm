@@ -1862,7 +1862,9 @@ static void LXNowPlayingLyricStep(void) {
     // 独立成块而不并进上面那段心跳：那一段被契约逐字钉住（lockscreen-tap 的 g1/g3/g7）。
     if (!paused && !LXNowPlayingClockHold && elapsedRefreshNowMs - LXNowPlayingProgressSavedAtMs >= 1000.0) {
       LXNowPlayingProgressSavedAtMs = elapsedRefreshNowMs;
-      LXSavePlaybackProgress(positionMs / 1000.0, self.duration);
+      // 本函数是 **C 函数**（没有 self）：时长从 Now Playing 缓存取（与喂锁屏同一份）
+      double totalDurationSeconds = [LXNowPlayingInfoCache[MPMediaItemPropertyPlaybackDuration] doubleValue];
+      LXSavePlaybackProgress(positionMs / 1000.0, totalDurationSeconds);
     }
 
     // 位置事件枢纽：前台播放时把外推位置广播给 JS，驱动进度条等 UI。后台/熄屏不发
