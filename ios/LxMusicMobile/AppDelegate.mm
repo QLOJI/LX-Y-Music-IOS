@@ -837,8 +837,14 @@ static MPRemoteCommandHandlerStatus LXHandleRemoteChangePlaybackPositionEvent(MP
   // LXApplyNowPlayingInfo，但下面一行会同步走到 JS，往后再有 native → apply 的调用时
   // 这个标记同样兜住；置位/复位成对，任何路径都不会把它留在 YES）。
   LXInsideRemoteCommandHandler = YES;
+  // 【第 88 轮第 1 条】锁屏 / 灵动岛拖到末尾时不要把落点定在「恰好结束」：落点等于总时长
+  // ⇒ 引擎随即发 ended ⇒ 自动下一首（用户报的「锁屏拖进度条有概率跳歌」，详情页那条已由
+  // JS 的 setProgress 入口钳住，锁屏这条走的是原生遥控、不经过那里）。这里同样从末尾回收 1 秒。
+  double seekTarget = event.positionTime;
+  double nowPlayingDuration = [LXNowPlayingInfoCache[MPMediaItemPropertyPlaybackDuration] doubleValue];
+  if (nowPlayingDuration > 2) seekTarget = MIN(seekTarget, nowPlayingDuration - 1);
   LXPostRemoteCommandNotification(@"seek", @{
-    @"position": @(event.positionTime),
+    @"position": @(seekTarget),
   });
   LXInsideRemoteCommandHandler = NO;
   return MPRemoteCommandHandlerStatusSuccess;
