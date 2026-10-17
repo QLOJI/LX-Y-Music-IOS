@@ -1911,20 +1911,17 @@ static void LXNowPlayingLyricStep(void) {
         LXNowPlayingArtistLineIndex = artistLine;
       }
     }
-    // 时钟落后于 JS（artist 是更靠后的一行，含前奏窗口的 found < 0）：保留 JS 文本、
-    // 只把游标推上去。**绝不回退文本**——回退就是用户看到的「跳回上一句」。
-    // 典型来源：updateMetaData 有 500ms 发布冷却，JS 已换行而锚点尚未推进。
-    if (artistLine >= 0 && artistLine > found) {
-      LXNowPlayingLyricIndex = artistLine;
-      return;
-    }
+    // 【第 100 轮第 2 条】先做**前奏钳位**、再做「JS 领先」判断：前奏段 found = -1，而 JS 的
+    // 逐行钩子往往已经把**第二行**写进卡片，于是「artistLine > found」那条会留下第二行 ——
+    // 第 97 轮的首行钳位就被绕过了（用户原话「第一行歌词不显示，只显示换行后的第二行」）。
+    // 钳位命中时（前奏段显示首行）不许 JS 的领先文本盖过它。
+    BOOL introClamped = NO;
     if (found < 0) {
-      // 【第 97 轮第 4 条】前奏段没有「当前行」（二分找不到 ≤ position 的行）时，旧实现把
-      // 卡片留空 —— 用户原话「前面几秒的歌词也会显示为空，等加载第二行歌词才会显示，其实
-      // 存在第一行歌词，但是未显示」。列表非空时**钳到第 0 行**：首行本来就在，只是还没到
-      // 它的时间；这样卡片从第一拍起就有内容，不会再空几秒。列表为空（无歌词）才走原来的清空。
+      // 列表非空 ⇒ 钳到第 0 行（首行本来就在，只是还没到它的时间）；列表为空（真没歌词）
+      // 才保留原来的「清空残留文本」口径。
       if (LXNowPlayingLyricLines.count > 0) {
         found = 0;
+        introClamped = YES;
       } else {
         LXNowPlayingLyricIndex = -1;
         if (artistLine >= 0 || currentArtist.length == 0) return;
@@ -1933,6 +1930,13 @@ static void LXNowPlayingLyricStep(void) {
         LXForceNowPlayingCardRepaint();
         return;
       }
+    }
+    // 时钟落后于 JS（artist 是更靠后的一行）：保留 JS 文本、只把游标推上去。
+    // **绝不回退文本**——回退就是用户看到的「跳回上一句」。前奏钳位命中时不适用（见上）。
+    // 典型来源：updateMetaData 有 500ms 发布冷却，JS 已换行而锚点尚未推进。
+    if (!introClamped && artistLine >= 0 && artistLine > found) {
+      LXNowPlayingLyricIndex = artistLine;
+      return;
     }
     NSString *text = LXNowPlayingLyricLines[(NSUInteger)found][@"text"];
     if (![text isKindOfClass:[NSString class]] || text.length == 0) return;
@@ -3985,11 +3989,12 @@ RCT_EXPORT_MODULE();
 
 - (void)emitState:(NSString *)state position:(NSNumber *)position duration:(NSNumber *)duration {
   self.currentState = state ?: @"idle";
-  // 【第 98 轮第 1 条】停声模型（用户原话「明确在缓存中、加载中、暂停等状态不能发出声音，
-  // 进度条也不能加载」）：对外宣告 buffering 的那一拍就**关掉渲染** —— 环里剩下的几秒不再
-  // 出声、进度也不再前进；补满到短门槛后由 maybeStartPlaybackLocked 重新打开（见那里）。
-  // 放在 emitState 里是刻意的：三处缓冲发射点（起播等待 / 解码断流 / 缓冲看门狗）共用同一出口，
-  // 起播等待那一处本来就是没渲染的状态，重复置 false 无害。
+  // 【第 100 轮第 1 条】停声模型的三件套之一（另外两件：JS 看门狗的预期缓冲宽限在
+  // controller 的 buffering 分支、恢复侧在 maybeStartPlaybackLocked）。用户原话「明确在缓存中、
+  // 加载中、暂停等状态不能发出声音，进度条也不能加载」：宣告 buffering 的那一拍关渲染 ——
+  // 环里剩的几秒不再出声、进度也不再前进；补满到短门槛后由 maybeStartPlaybackLocked 重新打开。
+  // 放在这个唯一出口：三处缓冲发射点（起播等待 / 解码断流 / 缓冲看门狗）共用它；起播等待
+  // 那一处本来就未渲染，重复置 false 无害。
   if ([self.currentState isEqualToString:@"buffering"]) {
     _sourceRenderingEnabled.store(false, std::memory_order_release);
   }
