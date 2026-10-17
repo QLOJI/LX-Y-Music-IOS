@@ -43,6 +43,10 @@ export const isSeekRecently = () => seekIntentAtMs > 0 && Date.now() - seekInten
 /** 【第 86 轮第 1 条】立即落盘（不节流）。供「暂停 / 停止 / App 退到后台」这三个**边沿**调用 ——
  *  用户的场景（暂停后退出、播放中关掉软件）正好卡在 2s 节流窗口内，只靠节流会丢最后那一段。 */
 const savePlayInfoNow = (liveTimeSeconds?: number) => {
+  // 【第 96 轮第 3 条】落盘只认**稳态位置**：距上一次 seek 不满 1.5s 时一律不写 —— 用户拖到
+  // 末尾后马上退出，写下去的就是「最后一秒」，下次进来进度条就停在最后一秒（用户报的现场）。
+  // 稳态下（正常播放）位置才是可信的；短窗口内不写，最坏丢 1.5s 的进度。
+  if (liveTimeSeconds == null && isSeekRecently()) return
   // 【第 88 轮第 2 条】支持传入**引擎实时位置**：退后台那一刻 store 里的进度可能刚被切歌
   // 重置成 0（用户报的「强杀后进度是 0 或不是退出前的」），而引擎手上的位置才是真相。
   const time = liveTimeSeconds != null
