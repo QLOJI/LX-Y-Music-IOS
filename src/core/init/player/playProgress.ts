@@ -33,9 +33,14 @@ import {
 // 旧实现开关关闭时完全不保存，残留上次开启时的旧进度，重开后恢复到过期位置。
 /** 【第 86 轮第 1 条】立即落盘（不节流）。供「暂停 / 停止 / App 退到后台」这三个**边沿**调用 ——
  *  用户的场景（暂停后退出、播放中关掉软件）正好卡在 2s 节流窗口内，只靠节流会丢最后那一段。 */
-const savePlayInfoNow = () => {
+const savePlayInfoNow = (liveTimeSeconds?: number) => {
+  // 【第 88 轮第 2 条】支持传入**引擎实时位置**：退后台那一刻 store 里的进度可能刚被切歌
+  // 重置成 0（用户报的「强杀后进度是 0 或不是退出前的」），而引擎手上的位置才是真相。
+  const time = liveTimeSeconds != null
+    ? liveTimeSeconds * 1000
+    : playerState.progress.nowPlayTime
   void savePlayInfo({
-    time: settingState.setting['player.isSavePlayTime'] ? playerState.progress.nowPlayTime : 0,
+    time: settingState.setting['player.isSavePlayTime'] ? time : 0,
     maxTime: playerState.progress.maxPlayTime,
     listId: playerState.playMusicInfo.listId!,
     index: playerState.playInfo.playIndex,
@@ -720,7 +725,13 @@ export default () => {
     // 【第 86 轮第 1 条】App 退到后台这一拍**立即落盘**：这是「播放中直接关掉软件」之前
     // 唯一还跑得到 JS 的时刻（iOS 的熄屏事件在本工程是 no-op，落盘不能指望那条路）。
     // 只在前台→后台这一个边沿写，回前台不重复写。
-    if (state == 'background') savePlayInfoNow()
+    // 【第 88 轮第 2 条】写的是**引擎实时位置**（带戳快照），不是 store 里那个可能刚被切歌
+    // 重置成 0 的值 —— 强杀前最后一段进度要靠它记住。
+    if (state == 'background') {
+      void getPositionStamped()
+        .then(stamped => { savePlayInfoNow(stamped.position) })
+        .catch(() => { savePlayInfoNow() })
+    }
   })
 
   // 原生位置事件快路径（4Hz，仅前台播放时由歌词时钟发布）：免桥接查询驱动进度 UI，
