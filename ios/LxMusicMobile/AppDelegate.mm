@@ -1325,8 +1325,16 @@ static void LXSetNowPlayingPlaybackState(MPNowPlayingPlaybackState state, NSDict
       double snapshotAtMs = LXResolveElapsedSnapshotAtMs(stateOptions, nowMs);
       // 系统进度基线必须写「发布时刻」的值：把快照位置推进到现在，否则每次状态
       // 发布（播放/暂停/seek）进度条都回拨一个快照年龄
-      info[MPNowPlayingInfoPropertyElapsedPlaybackTime] =
-        @(LXAdvanceElapsedToNowSec(elapsedTime.doubleValue, snapshotAtMs, rateForAdvance, nowMs));
+      // 【第 102 轮第 3 条】开头几秒**不许回退**：用户现场「0:01→0:05→0:04→0:05」。
+      // 只在「缓存里的位置还没走出前 6 秒」时钳（那就是用户报的那一段）；向后 seek 落在
+      // 更靠后的位置时不受影响（那时 cached ≥ 6 秒）。
+      double advancedElapsed = LXAdvanceElapsedToNowSec(elapsedTime.doubleValue, snapshotAtMs, rateForAdvance, nowMs);
+      NSNumber *cachedElapsedState = info[MPNowPlayingInfoPropertyElapsedPlaybackTime];
+      if ([cachedElapsedState isKindOfClass:[NSNumber class]] && cachedElapsedState.doubleValue < 6.0 &&
+          advancedElapsed < cachedElapsedState.doubleValue) {
+        advancedElapsed = cachedElapsedState.doubleValue;
+      }
+      info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = @(advancedElapsed);
       // 位置缓存对（值, 戳）成对更新：推进后的基线对应「现在」——歌词锚点重锚
       // 读同一缓存对，若值推进而戳仍留在快照时刻，歌词时钟会被推超前
       LXNowPlayingElapsedSnapshotAtMs = (snapshotAtMs > 0) ? nowMs : 0;
@@ -1513,8 +1521,14 @@ static void LXSetNowPlayingInfo(NSDictionary *metadata) {
       if (advanceRate == nil) advanceRate = LXDefaultNowPlayingRate();
       // 系统进度基线必须写「发布时刻」的值：把快照位置推进到现在，否则逐行
       // 元数据每次发布（前台每行一次）进度条都回拨一个快照年龄
-      info[MPNowPlayingInfoPropertyElapsedPlaybackTime] =
-        @(LXAdvanceElapsedToNowSec(elapsedTime.doubleValue, snapshotAtMs, advanceRate.doubleValue, nowMs));
+      // 【第 102 轮第 3 条】同上一处（播放态发布）：开头 6 秒内不许回退。
+      double advancedElapsedInfo = LXAdvanceElapsedToNowSec(elapsedTime.doubleValue, snapshotAtMs, advanceRate.doubleValue, nowMs);
+      NSNumber *cachedElapsedInfo = info[MPNowPlayingInfoPropertyElapsedPlaybackTime];
+      if ([cachedElapsedInfo isKindOfClass:[NSNumber class]] && cachedElapsedInfo.doubleValue < 6.0 &&
+          advancedElapsedInfo < cachedElapsedInfo.doubleValue) {
+        advancedElapsedInfo = cachedElapsedInfo.doubleValue;
+      }
+      info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = @(advancedElapsedInfo);
       // 位置缓存对（值, 戳）成对更新：推进后的基线对应「现在」——歌词锚点重锚
       // 读同一缓存对，若值推进而戳仍留在快照时刻，歌词时钟会被推超前
       LXNowPlayingElapsedSnapshotAtMs = (snapshotAtMs > 0) ? nowMs : 0;
@@ -1746,6 +1760,11 @@ static void LXSetNowPlayingCurrentLine(NSString *text) {
 // 与用户在锁屏看到的值严格同源；而且这个心跳在后台照样跑 —— 强杀前最后一次写入必然是接近
 // 真实位置的。JS 侧那几次落盘之所以时好时坏，是因为「暂停后退出 / 强杀」那一刻 JS 已经停了；
 // 让原生记，才是这件事的正确主人。
+// 【第 104 轮】停声模型：缓冲期间**渲染回调输出静音**（不关 `_sourceRenderingEnabled` ——
+// 前两次反噬都是关渲染门造成的：位置冻住、拖动无效）。置位在 emitState 宣告 buffering 那一拍，
+// 清除在补满短门槛的恢复侧；**seek 必须能打断**（见渲染回调里的那个分支）。
+static BOOL LXBufferingSilenced = NO;
+
 static void LXSavePlaybackProgress(double positionSeconds, double durationSeconds) {
   if (!(positionSeconds >= 0) || !(durationSeconds > 0)) return;
   NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
@@ -1936,17 +1955,22 @@ static void LXNowPlayingLyricStep(void) {
         LXNowPlayingArtistLineIndex = artistLine;
       }
     }
-    // 【第 100 轮第 2 条】先做**前奏钳位**、再做「JS 领先」判断：前奏段 found = -1，而 JS 的
-    // 逐行钩子往往已经把**第二行**写进卡片，于是「artistLine > found」那条会留下第二行 ——
-    // 第 97 轮的首行钳位就被绕过了（用户原话「第一行歌词不显示，只显示换行后的第二行」）。
-    // 钳位命中时（前奏段显示首行）不许 JS 的领先文本盖过它。
-    BOOL introClamped = NO;
+    // 【第 103 轮·回退第 100 轮】第 100 轮把「前奏钳位」提到「JS 领先」判断之前、并用
+    // `introClamped` 屏蔽 JS 文本 —— 现场变成「歌词只显示几秒又变空白」，比原来的「首行缺一下」
+    // 严重得多。这里退回第 97 轮的排列：先认 JS 领先（不倒退文本），再在前奏段钳到首行。
+    // 「显示几秒又空白」的下一步是查「谁把 artist 清掉」（时间轴被清 / 空行分支），不再动闸位。
+    // 时钟落后于 JS（artist 是更靠后的一行，含前奏窗口的 found < 0）：保留 JS 文本、
+    // 只把游标推上去。**绝不回退文本**——回退就是用户看到的「跳回上一句」。
+    // 典型来源：updateMetaData 有 500ms 发布冷却，JS 已换行而锚点尚未推进。
+    if (artistLine >= 0 && artistLine > found) {
+      LXNowPlayingLyricIndex = artistLine;
+      return;
+    }
     if (found < 0) {
       // 列表非空 ⇒ 钳到第 0 行（首行本来就在，只是还没到它的时间）；列表为空（真没歌词）
       // 才保留原来的「清空残留文本」口径。
       if (LXNowPlayingLyricLines.count > 0) {
         found = 0;
-        introClamped = YES;
       } else {
         LXNowPlayingLyricIndex = -1;
         if (artistLine >= 0 || currentArtist.length == 0) return;
@@ -1955,13 +1979,6 @@ static void LXNowPlayingLyricStep(void) {
         LXForceNowPlayingCardRepaint();
         return;
       }
-    }
-    // 时钟落后于 JS（artist 是更靠后的一行）：保留 JS 文本、只把游标推上去。
-    // **绝不回退文本**——回退就是用户看到的「跳回上一句」。前奏钳位命中时不适用（见上）。
-    // 典型来源：updateMetaData 有 500ms 发布冷却，JS 已换行而锚点尚未推进。
-    if (!introClamped && artistLine >= 0 && artistLine > found) {
-      LXNowPlayingLyricIndex = artistLine;
-      return;
     }
     NSString *text = LXNowPlayingLyricLines[(NSUInteger)found][@"text"];
     if (![text isKindOfClass:[NSString class]] || text.length == 0) return;
@@ -4014,14 +4031,11 @@ RCT_EXPORT_MODULE();
 
 - (void)emitState:(NSString *)state position:(NSNumber *)position duration:(NSNumber *)duration {
   self.currentState = state ?: @"idle";
-  // 【第 100 轮第 1 条】停声模型的三件套之一（另外两件：JS 看门狗的预期缓冲宽限在
-  // controller 的 buffering 分支、恢复侧在 maybeStartPlaybackLocked）。用户原话「明确在缓存中、
-  // 加载中、暂停等状态不能发出声音，进度条也不能加载」：宣告 buffering 的那一拍关渲染 ——
-  // 环里剩的几秒不再出声、进度也不再前进；补满到短门槛后由 maybeStartPlaybackLocked 重新打开。
-  // 放在这个唯一出口：三处缓冲发射点（起播等待 / 解码断流 / 缓冲看门狗）共用它；起播等待
-  // 那一处本来就未渲染，重复置 false 无害。
+  // 【第 104 轮】停声模型（第三版，前两版都是关渲染门、被现场否决）：
+  // 宣告 buffering 那一拍只置**静音标记**，渲染回调据此输出静音 —— `_sourceRenderingEnabled`、
+  // 位置时钟、seek、状态机全部照常。seek 在渲染回调里直接打断该标记（见那里的分支）。
   if ([self.currentState isEqualToString:@"buffering"]) {
-    _sourceRenderingEnabled.store(false, std::memory_order_release);
+    LXBufferingSilenced = YES;
   }
   [self emitEventWithType:@"state" body:@{
     @"state": self.currentState,
@@ -5203,6 +5217,21 @@ static NSString *LXAudioRouteOutputIdentity(AVAudioSessionRouteDescription *rout
         }
         return noErr;
       }
+      // 【第 104 轮】停声：缓冲期输出静音（写法与上面 strongSelf==nil 那一支逐字同形）。
+      // seek 必须能打断 —— 前两次反噬的另一半就是「一停就拖不动」。
+      if (LXBufferingSilenced) {
+        if (strongSelf.seekRequested) {
+          LXBufferingSilenced = NO;
+        } else {
+          if (isSilence != NULL) *isSilence = YES;
+          if (outputData != NULL) {
+            for (UInt32 index = 0; index < outputData->mNumberBuffers; index++) {
+              if (outputData->mBuffers[index].mData != NULL) memset(outputData->mBuffers[index].mData, 0, outputData->mBuffers[index].mDataByteSize);
+            }
+          }
+          return noErr;
+        }
+      }
       return [strongSelf renderSourceFramesToBufferList:outputData frameCount:frameCount isSilence:isSilence timestamp:timestamp];
     }];
     self.timePitchNode = [[AVAudioUnitTimePitch alloc] init];
@@ -5375,9 +5404,9 @@ static const int64_t LXResumeFadeStepMs = 40;
   // 【第 98 轮第 1 条】停声模型的**恢复侧**：缓冲期间渲染是关的（见 emitState 里那一段），
   // 补满到短门槛后重新打开渲染并广播 playing。位置**必须用外推值** —— `lastKnownPosition`
   // 可能落后，广播出去会把卡片 / 进度条往回拉（第 96 轮那次回退就是它）。
-  if (self.playbackStarted && !_sourceRenderingEnabled.load(std::memory_order_acquire)
+  if (self.playbackStarted && LXBufferingSilenced
       && queuedFrames > 0 && queuedSeconds >= self.resumeThresholdSeconds) {
-    _sourceRenderingEnabled.store(true, std::memory_order_release);
+    LXBufferingSilenced = NO;
     NSNumber *cachedRate = [LXNowPlayingInfoCache[MPNowPlayingInfoPropertyPlaybackRate] isKindOfClass:[NSNumber class]]
       ? LXNowPlayingInfoCache[MPNowPlayingInfoPropertyPlaybackRate]
       : nil;
