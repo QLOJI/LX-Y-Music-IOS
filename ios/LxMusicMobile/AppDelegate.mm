@@ -8285,6 +8285,24 @@ RCT_REMAP_METHOD(sha1, sha1:(NSString *)input resolver:(RCTPromiseResolveBlock)r
 
 - (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)launchOptions
 {
+  // 【第 85 轮第 2 条】清掉 Metal Performance HUD（Apple 的调试浮层：Metal 设备名 / 分辨率 /
+  // 帧率 / 帧柱状图）。它只盖在 App 的 Metal 内容上，而本 App 唯一的 Metal 内容就是液态玻璃的
+  // MTKView —— 所以表现为「开液态玻璃才出现、关掉就消失」，且 App 内关不掉。
+  // 这里**只删不写**：删除最多让浮层消失；写入等于把调试浮层强开给所有用户。
+  // 两条来源分别处理：进程环境变量（Xcode scheme / 注入）与 App 自身 UserDefaults 域
+  // （MetalHUDForceEnabled）。设备级「设置 → 开发者 → Graphics HUD」App 无权关闭。
+  const char *hudEnvValue = getenv("MTL_HUD_ENABLED");
+  if (hudEnvValue != NULL) unsetenv("MTL_HUD_ENABLED");
+  BOOL hadHudEnv = hudEnvValue != NULL;
+  NSUserDefaults *hudDefaults = [NSUserDefaults standardUserDefaults];
+  BOOL hadHudForceKey = [hudDefaults objectForKey:@"MetalHUDForceEnabled"] != nil;
+  if (hadHudForceKey) [hudDefaults removeObjectForKey:@"MetalHUDForceEnabled"];
+  // 一行判定日志（仅启动一次）：说明黑框来自哪一侧 —— 两侧都没有却仍然出现，那就是设备级开关。
+  if (hadHudEnv || hadHudForceKey) {
+    NSLog(@"[MetalHUD] cleared env=%d defaults=%d (device-level Graphics HUD cannot be closed by the app)",
+          hadHudEnv ? 1 : 0, hadHudForceKey ? 1 : 0);
+  }
+
   LXRegisterTrackPlayerLifecycleObserver();
   self.launchOptions = launchOptions;
   self.initialProps = @{};
