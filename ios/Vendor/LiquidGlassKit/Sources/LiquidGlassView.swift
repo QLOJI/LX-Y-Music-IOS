@@ -534,6 +534,42 @@ final class LiquidGlassView: MTKView {
     /// 又短到用户感知不到「画面停在上一帧」。
     private static let resumeQuietDuration: TimeInterval = 0.12
 
+    /// 【第 122 轮】「恢复 / 定格后的第一帧干净采景必须立刻接替旧纹理」标记。
+    ///
+    /// 现象（用户第 73/74 轮原话，第 122 轮复报）：「静态情况下可以实时显示，上下左右
+    /// 滑动界面再切入切回，透过的画面会显示在移动前的画面……动画结束时产生更新的闪烁」。
+    /// 成因：handleResumeFromPause 打开了 120ms 恢复静默窗（resumeQuietUntil），又把
+    /// lastCommitAcceptedAt 锚到恢复时刻（陈旧度门 150ms）——于是**恢复那一下同步采到的
+    /// 当前画面被「沿用」掉**，转场剩下 300ms 挂的都是转场前那张旧纹理；动画结束进下一次
+    /// resume 时同一套窗口再挡一遍，干净帧到点才放行 = 收尾闪一下。
+    ///
+    /// 修法：恢复 / 冻结时置位本标记；commitCapturedTexture 里只要这一帧**看着干净**
+    ///（非均匀、且未被半成品判据命中），就无视静默窗 / 沉降窗口 / 陈旧度门的沿用，
+    /// 直接提交。可疑帧仍照旧沿用（黑边保护不变），标记留给下一帧继续尝试 —— 它有界：
+    /// 沿用本身仍受 maxStaleHoldAge 墙钟约束，不会把旧画面永久钉住。
+    private var acceptNextCleanCapture = false
+
+    /// 定格后仍没采到干净帧时的补采次数（第 122 轮）。复位 / 定格那一拍若恰好撞上
+    /// CABackdropLayer 尚未重新合成，干净帧要再等一两拍才到；而冻结之后显示链已停，
+    /// 不补采就整段转场挂着旧纹理。只在这条路径上、只补有限次数，且采到干净帧即停。
+    private var freezeCaptureRetryRemaining = 0
+
+    /// 挂一次补采（40ms ≈ 2~3 拍，与合成追上来的时间同量级）。paused 状态下手动
+    /// capture + draw 是 MTKView 官方支持的手动渲染路径，调用方无需先恢复渲染。
+    private func scheduleFreezeCaptureRetry() {
+        guard acceptNextCleanCapture, freezeCaptureRetryRemaining > 0 else { return }
+        freezeCaptureRetryRemaining -= 1
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.04) { [weak self] in
+            guard let self, self.acceptNextCleanCapture else { return }
+            // 只复位本实例节流：40ms 已跨过全局闸门的 33ms 格，不必再动全局闸门
+            //（那会多出一处复位点，与「定格四步里的唯一复位」口径冲突）。
+            self.lastCaptureAt = 0
+            self.captureBackground()
+            self.draw(self.bounds)
+            self.scheduleFreezeCaptureRetry()
+        }
+    }
+
     /// 采景尺寸变化 = 第五个沉降窗口锚点（见 lastCaptureGeometry）。
     /// 只比尺寸**不比原点**：原点平移（透镜拖动、列表滚动时玻璃不动）不需要重新合成，
     /// 那正是 captureReferenceSize 注释里已被接受的现状；而尺寸变化必然是
@@ -1028,6 +1064,11 @@ final class LiquidGlassView: MTKView {
         // 图层被移出层级又移回）：此时「本帧输入没变 ⇒ 输出与上一帧相同」不成立，
         // 强制复位「已 present」，让恢复后的第一帧一定画出去（本函数末尾的 draw(bounds)
         // 就是为此存在的那一脚）
+        // 【第 122 轮】恢复的第一帧：干净就必须立刻接替旧纹理（否则整段返回都在展示
+        // 转场前那张「移动前」的画面，收尾才刷新 —— 用户复报的错位 + 结束闪烁）。
+        // 放在 hasPresentedFrame 复位之前：定格四步的文档锚点要求那行与
+        // beginCaptureSettleWindow / captureBackground 紧邻。
+        acceptNextCleanCapture = true
         hasPresentedFrame = false
         beginCaptureSettleWindow()
         captureBackground()
@@ -1087,6 +1128,15 @@ final class LiquidGlassView: MTKView {
         // 必须等于贴完落点之后的画面）。正常路径上 captureBackground 会赋值一次纹理、
         // 去重呈现自然放行；但万一本帧采景被全局闸门挡掉，也要在这一脚强制 present 一次
         // （代价最多是多画一帧与上一帧相同的画面，不会少画）
+        // 【第 122 轮】定格帧同理：干净就立刻提交（冻结帧必须等于此刻的真实背景，
+        // 否则返回时展示的仍是更早那张）。可疑帧照旧沿用。
+        // 冻结后显示链已停：第一拍若采到可疑帧，补采有限几次，直到拿到干净帧
+        //（最多 3 次 ≈ 120ms，且只在本玻璃真的还挂着旧纹理时才继续）。
+        // 这两行必须放在 hasPresentedFrame 之前：定格四步的锚点要求
+        // `hasPresentedFrame = false` 与 `captureBackground()` 紧邻。
+        acceptNextCleanCapture = true
+        freezeCaptureRetryRemaining = 3
+        scheduleFreezeCaptureRetry()
         hasPresentedFrame = false
         captureBackground()
         draw(bounds)
@@ -1564,6 +1614,13 @@ final class LiquidGlassView: MTKView {
         // 长，正常情况下不会打架；真打起来以「不挂太旧的画面」为准）。
         if !shouldHold, !geometryGrew, now < resumeQuietUntil, backgroundTexture != nil, previous != nil {
             shouldHold = true
+        }
+        // 【第 122 轮】恢复 / 定格后的第一帧干净采景：静默窗、沉降窗口、几何沿用全部让行。
+        // 「干净」= 非均匀且未被半成品判据命中 —— 可疑帧仍按既有策略沿用，黑边保护不变。
+        // 标记只在真正消费到干净帧时清掉，否则留给后续帧继续尝试（沿用仍有墙钟上限）。
+        if acceptNextCleanCapture, !isUniform, !lastCaptureHadPartialBlack {
+            acceptNextCleanCapture = false
+            shouldHold = false
         }
         // 陈旧度门（2026-10-11，第 56 轮第 2 条）：沿用到手的画面不能「太旧」——
         // 超过 maxStaleHoldAge 就宁可把这一帧半成品画出去，也不再挂旧画面。

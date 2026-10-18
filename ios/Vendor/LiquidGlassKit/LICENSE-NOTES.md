@@ -188,4 +188,9 @@ reaches a conclusion about the capture (accept or hold) bumps `textureRevision`,
 so a conclusion is always presented; transparent-from-cold-start (no texture
 yet) is caught by the pre-existing `backgroundTexture != nil` guard.
 
+## Round 122 (2026-10-18): resume / freeze commits the first clean capture
+
+Return-transition misalignment (the glass still shows the pre-scroll backdrop, then flashes when the animation ends) came from the resume quiet window: handleResumeFromPause opens a 120 ms quiet window and re-anchors lastCommitAcceptedAt, so the synchronous capture taken at resume was held back and the stale pre-transition texture stayed on screen for the whole transition.
+
+acceptNextCleanCapture is now set on resume and on the freeze settle; when the captured frame is clean (non-uniform, not flagged as partially composited) commitCapturedTexture ignores the quiet window / settle holds for that frame and commits it immediately. Suspicious frames keep the existing hold behaviour (black-edge protection unchanged). After a freeze, up to three 40 ms retry captures are scheduled, so a backdrop layer that is still re-compositing can still land the current frame before the transition ends.
 
