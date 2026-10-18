@@ -143,22 +143,16 @@ export const startNativeFlacPlayback = async(musicInfo: LX.Player.PlayMusic, url
 }
 
 export const pauseNativeFlacPlayback = async() => {
-  const trackId = currentTrackId
-  if (!trackId) return
-  if (currentMode == 'stream') {
-    // 【第 47 轮】暂停必须确认落地。旧实现把桥失败静默吞掉（`.catch(() => {})`）后
-    // **无条件**写 `currentState = 'paused'` —— 界面据此显示暂停、原生引擎却还在出声，
-    // 正是用户这轮的「点暂停后进度条停了、声音继续放」。现在：失败按同一曲目归属补发
-    // 一次；两发都失败就不改状态（宁可状态停在 playing，让 utils.setPause 的有界复核
-    // 再补刀，也不许写一个骗人的 'paused'）。曲目归属变化说明已经换歌，直接放弃。
-    let failed = false
+  // 【第 116 轮】暂停不再以 JS 侧曲目状态为前提：只要这台原生引擎可能出声，就必须真的
+  // 发一次 pause。引擎已空闲时原生 pause 是幂等的；而「JS 以为空闲就提前 return」一旦
+  // 撞上状态不同步，就是用户听到的「按暂停没反应、声音继续放」。
+  if (!isStreamingFlacSupported) return
+  let failed = false
+  await pauseStreamingFlac().catch(() => { failed = true })
+  if (failed) {
     await pauseStreamingFlac().catch(() => { failed = true })
-    if (failed && currentTrackId == trackId) {
-      await pauseStreamingFlac().catch(() => { failed = true })
-    }
-    if (failed) return
   }
-  if (currentTrackId == trackId) currentState = 'paused'
+  if (!failed && currentTrackId) currentState = 'paused'
 }
 
 export const resumeNativeFlacPlayback = async() => {
@@ -348,9 +342,10 @@ export const onNativeFlacPlayerEvent = (listener: (event: NativeFlacEvent) => vo
         })
         break
       case 'ended':
-        currentState = 'stopped'
-        currentTrackId = ''
-        currentMode = 'none'
+        // 【第 116 轮】不在这里清曲目 / 模式：本地流下载完成后，seek 会先清空环形缓冲，
+        // 原生「队列空 + 下载完成」会误发一次 ended。控制器按 seek 窗口忽略它，但如果我们
+        // 先把引擎身份清掉，之后的 seek / 暂停就全发给空轨道 —— 声音却仍是本引擎在放。
+        // 真结束由控制器 playNext → setStop 收口（那里会清）。
         listener({
           type: 'ended',
           state: 'stopped',
