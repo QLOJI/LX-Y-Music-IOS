@@ -53,8 +53,9 @@ export interface ProgressDrag {
 const SEEK_JUMP_SEC = 2
 const SEEK_TRANSITION_MS = designMotion.quick
 // 拖动手势看门狗：拖动中连续这么久没有任何移动事件，就认定手势回调已丢失（见 ProgressTouchArea）。
-// 取 8s：真人拖进度条不会站着不动 8 秒，而假死是「永久失效」，宁可晚一点也不能不兜。
-const DRAG_WATCHDOG_MS = 8000
+// 【第 115 轮】8s → 3s：release/terminate 一旦丢失，拖动锁会让整屏按钮一起失灵，而听感上
+// 声音还在放——用户只会觉得「进度条和暂停都坏了」。3s 足够区分「真人停手」与「回调丢了」。
+const DRAG_WATCHDOG_MS = 3000
 const SEEK_EASING = Easing.bezier(0.22, 1, 0.36, 1)
 export const useSmoothProgressAnim = (progress: number, duration: number): Animated.Value => {
   const anim = useRef(new Animated.Value(clamp01(progress))).current
