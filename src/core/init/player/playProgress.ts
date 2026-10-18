@@ -2,7 +2,7 @@ import { updateListMusics } from '@/core/list'
 import { playNext } from '@/core/player/player'
 import { setMaxplayTime, setNowPlayTime } from '@/core/player/progress'
 import { getTimelineDuration } from '@/core/player/timeline'
-import { setCurrentTime, getDuration, getPosition, getPositionStamped, getPlaybackEngineState } from '@/plugins/player/utils'
+import { setCurrentTime, getDuration, getPosition, getPositionStamped, getPlaybackEngineState, isEngineOnMusic } from '@/plugins/player/utils'
 import { formatPlayTime2 } from '@/utils/common'
 import { savePlayInfo } from '@/utils/data'
 import { throttleBackgroundTimer } from '@/utils/tools'
@@ -116,6 +116,11 @@ export default () => {
     void getPositionStamped().then(async stamped => {
       const position = stamped.position
       if (!position || id != playerState.musicInfo.id) return
+      // 【第 119 轮】引擎身份门控：切歌后新歌的 URL 还没装载时，位置桥读到的仍是上一首的
+      // 引擎 —— 把它的末尾位置发布进新歌进度条，就是「跳到下一首的最后一秒」；那个假位置
+      // 又会让 ended 被误判成「用户拖到了末尾」再跳一首。不是本曲的引擎一律不采信。
+      const engineMusic = playerState.playMusicInfo.musicInfo
+      if (engineMusic != null && !isEngineOnMusic(engineMusic)) return
 
       // seek 生效窗口内：引擎可能仍回报 seek 前的旧位置（seek 异步生效）。
       // 此时绝不能把旧位置发布进 UI 状态（setNowPlayTime → playProgressChanged

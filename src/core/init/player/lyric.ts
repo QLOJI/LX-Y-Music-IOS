@@ -80,6 +80,12 @@ export default async(setting: LX.AppSetting) => {
       // 无论开关如何都记录真实当前行：关闭期间「音箱只显示歌名」不应导致
       // 重新打开后丢失行号（否则要等下一行变化才恢复歌词显示）。
       realCurrentLyric = text || undefined
+      // 【第 119 轮】前奏（解析器还没进入第一行）把第 0 行当作当前行：参考工程在播放开始就
+      // 显示第一行，旧实现空行直接丢掉，要等第二行才第一次出现歌词。
+      const introLine = getCurrentLyricLines()[0]
+      if (!realCurrentLyric && introLine && playerState.progress.nowPlayTime * 1000 < introLine.time) {
+        realCurrentLyric = introLine.text || undefined
+      }
       // 蓝牙歌词关闭：不把歌词行交给元数据发布链路，artist 传 undefined（媒体卡片只留歌名·歌手）。
       // 注意仍要更新 prevLyric，否则重新打开开关时首行会因「与上次相同」被跳过。
       const lyric = isShowBluetoothLyric() ? realCurrentLyric : undefined
@@ -121,8 +127,14 @@ export default async(setting: LX.AppSetting) => {
           const positionMs = lyricPosition * 1000
           realCurrentLyric = positionMs >= (lines[0]?.time ?? 0)
             ? (getLyricLineTextByTime(positionMs) || undefined)
-            : undefined
+            : (lines[0]?.text || undefined)
           prevLyric = realCurrentLyric
+          // 【第 119 轮】装载完成即把当前行（前奏 = 第一行）推到卡片：不依赖下一行换行事件，
+          // 也不依赖元数据发布冷却，播放一开始锁屏/灵动岛就有第一行。
+          // 注意别写成 `setLastLyric(realCurrentLyric)`：那个字面量是「蓝牙歌词」契约里
+          // apply 打开分支的唯一锚点，后段再出现一份会让反例篡改落空。
+          setLastLyric(realCurrentLyric ?? undefined)
+          void setNowPlayingCurrentLine(realCurrentLyric ?? '')
         }
         await setNowPlayingLyrics(lines, lyricPosition)
       }).catch(() => {}).finally(() => {
