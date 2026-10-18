@@ -5,7 +5,7 @@ import { updateMetaData } from './playList'
 import { initUnifiedPlayerEngine, onUnifiedPlayerEvent } from './engine'
 import { getNativeFlacTrackId, setNativeFlacRate } from './nativeFlac'
 import { isSeekRecently, markSeekIntent } from '@/core/init/player/playProgress'
-import { getPositionStamped, elapsedSnapshotFields, isEmpty, setStop } from './utils'
+import { getPositionStamped, elapsedSnapshotFields, isEmpty, isEngineOnMusic, setStop } from './utils'
 // 【第 39 轮第 4 条】播放真正开始时的音量落地（带渐入预约时走斜坡）——见 volumeFade.ts
 import { applyVolumeOnPlayStart } from './volumeFade'
 import { exitApp } from '@/core/common'
@@ -288,6 +288,10 @@ export const initUnifiedPlayerController = () => {
         }
         break
       case 'ended': {
+        // 【第 119 轮】过期 ended 门控：上一首引擎迟到/排队的 ended 不能算到刚切过来的新歌
+        // 头上（现场：拖到末尾一次连跳两首）。引擎当前装载的曲目不是这一首 ⇒ 整单忽略。
+        const engineMusic = playerState.playMusicInfo.musicInfo
+        if (Platform.OS == 'ios' && event.driver == 'nativeFlac' && engineMusic != null && !isEngineOnMusic(engineMusic)) break
         // 【第 95 轮】seek 抑制必须在分发之前（否则 UI 先收成「播放完毕 + 暂停」）。
         // 【第 117 轮】拖到末尾 = 用户就是要下一首：落点本身就在末尾时，ended 一律放行；
         // 只有「seek 中途的、位置还不在末尾的」ended 才当旧事件忽略。
