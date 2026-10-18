@@ -6,6 +6,7 @@ import { checkUrl } from '@/utils/request'
 import playerState from '@/store/player/state'
 import { isCached } from '@/plugins/player/utils'
 import { prefetchNativeFlacPlayback } from '@/plugins/player/nativeFlac'
+import { onPreloadNext } from '@/utils/nativeModules/utils'
 
 
 const preloadMusicInfo = {
@@ -149,6 +150,18 @@ export default () => {
         })
     }
   }
+
+  // 【第 125 轮】原生侧的最后 10 秒触发（锁屏 / 灵动岛 / 后台也发）：
+  // JS 的 playProgressChanged 只在 App active 时才有，那些场景走这一条。
+  // 与前台进度拍共用同一套守卫（isLoading / memo / requestId / 2s 防重入）。
+  onPreloadNext((position) => {
+    if (!playerState.playMusicInfo.musicInfo || preloadMusicInfo.info) return
+    void preloadNextMusicUrl(position)
+      .catch(() => {})
+      .then(() => {
+        startPreload()
+      })
+  })
 
   global.app_event.on('setProgress', setProgress)
   global.app_event.on('musicToggled', handleSetPlayInfo)
