@@ -288,6 +288,21 @@ export const onPlayerPosition = (handler: (position: number, rate: number) => vo
   }
 }
 
+// 【第 125 轮】最后 10 秒预取触发（原生歌词时钟跨过门槛时发一次，**与前后台无关**）。
+// JS 的 playProgressChanged 只在 App active 时发布，锁屏 / 灵动岛 / 后台没有进度拍，
+// 预取在那些场景整条失联；这条事件补上唯一的触发源。
+export const onPreloadNext = (handler: (position: number) => void): (() => void) => {
+  if (!isIOS || !UtilsModule) return () => {}
+  const eventEmitter = new NativeEventEmitter(UtilsModule)
+  const eventListener = eventEmitter.addListener('preload-next', (event: { position?: number }) => {
+    if (typeof event?.position != 'number') return
+    handler(event.position)
+  })
+  return () => {
+    eventListener.remove()
+  }
+}
+
 // ≈ 上游 `seeked`（AVPlayer seek completion，源级无条件触发）：引擎真正到达落点时
 // 原生转发（仅 AVPlayer 路径；nativeFlac 由其 playing 状态事件承担同一职责）
 export const onPlayerSeeked = (handler: (position: number) => void): (() => void) => {
