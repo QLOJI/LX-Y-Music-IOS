@@ -35,6 +35,19 @@ export const screenUnkeepAwake = () => {
 }
 
 /**
+ * 【第 124 轮】返回转场开始：刷新仍处于暂停态的液态玻璃冻结帧（不解除暂停）。
+ *
+ * 为什么必须走原生直通而不是 paused prop：玻璃的账本覆盖门（componentIds）要等 RNN
+ * screenPopped 才翻，返回命令派发时它还是「被覆盖」；JS 那 50ms 的放行一拍在它面前
+ * 根本不生效，返回整段展示的都是推页前的冻结帧，动画收尾才刷新。
+ * 原生侧对每块暂停玻璃做一次恢复路径的完整复位（重采 + 同步 present），isPaused 不变。
+ */
+export const refreshLiquidGlassFrames = () => {
+  if (!isIOS) return
+  UtilsModule.refreshLiquidGlassFrames?.()
+}
+
+/**
  * 把 RNN 的 Toast 浮层窗口提到 App 主窗口之上（2026-10-02 用户第 6 条）。
  *
  * 背景：RNN 的 overlay 不是普通视图，而是独立 UIWindow（RNNOverlayManager →

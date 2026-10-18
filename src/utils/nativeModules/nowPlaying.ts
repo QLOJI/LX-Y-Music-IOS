@@ -39,6 +39,10 @@ interface NativeNowPlayingModule {
     snapshotAtMs?: number,
     ageMs?: number,
   ) => Promise<void>
+  /** 【第 124 轮】当前歌词时间轴所属歌曲 id（在 setNowPlayingLyrics 之前下发）。
+   * 原生据此区分「新歌首帧元数据发布时时间轴还是上一首残留」与「新歌歌词已装好」，
+   * 后者不再被换歌清理抹掉。 */
+  setNowPlayingLyricMusicId?: (musicId: string) => Promise<void>
   /** 引擎真实位置回传，重锚原生歌词/位置时钟（AppDelegate.mm 的 RCT_REMAP_METHOD 同名导出）。
    * snapshotAtMs：快照的原生时钟戳（CACurrentMediaTime 毫秒，精确回放锚点时刻）；
    * ageMs：快照墙钟年龄（无原生戳时原生以「now − 年龄」回放）。两者都缺省 = 旧行为。 */
@@ -103,6 +107,13 @@ export const setNowPlayingLyrics = async(
 ) => {
   if (!hasMethod('setNowPlayingLyrics')) return
   return NowPlayingModule?.setNowPlayingLyrics?.(lines, positionMs, snapshotAtMs, ageMs)
+}
+
+/** 【第 124 轮】声明时间轴归属：必须在 setNowPlayingLyrics 之前 await，保证原生
+ * 先拿到「这条时间轴属于哪首歌」，首个元数据发布才不会把它当成上一首残留清掉。 */
+export const setNowPlayingLyricMusicId = async(musicId: string) => {
+  if (!hasMethod('setNowPlayingLyricMusicId')) return
+  return NowPlayingModule?.setNowPlayingLyricMusicId?.(musicId)
 }
 
 /** 引擎真实位置回传：重锚原生歌词/位置时钟（慢速校准 tick 调用）。
