@@ -120,10 +120,14 @@ const setPlayerMusicInfo = (musicInfo: LX.Music.MusicInfo | LX.Download.ListItem
  * @param isTempPlay 是否临时播放
  */
 export const setPlayMusicInfo = (listId: string | null, musicInfo: LX.Download.ListItem | LX.Music.MusicInfo | null, isTempPlay: boolean = false) => {
+  // 【第 110 轮】**同一首歌**的再次装载不许清零进度：清零只属于「真的换歌」。
+  // 现场日志：快速 seek 会触发同曲重新装载 → `setProgress(0, 0)` ⇒ 进度变 0/0 ⇒ 进度条、
+  // 播完判定、暂停全部失灵（用户报的「点 3~5 次跳转后卡死」）。判据用歌曲 id 相等。
+  const prevMusicId = playerState.playMusicInfo.musicInfo?.id
   playerActions.setPlayMusicInfo(listId, musicInfo, isTempPlay)
   setPlayerMusicInfo(musicInfo)
 
-  setProgress(0, 0)
+  if (musicInfo == null || prevMusicId == null || prevMusicId != musicInfo.id) setProgress(0, 0)
 
   if (musicInfo == null) {
     playerActions.updatePlayIndex(-1, -1)
