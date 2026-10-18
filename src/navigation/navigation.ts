@@ -19,7 +19,7 @@ import { COMPONENT_IDS } from '@/config/constant'
 import { getStatusBarStyle } from './utils'
 import { beginNavTransitionWindow } from './transitionWindow'
 import { type ListInfoItem } from '@/store/songlist/state'
-import { getCachedBgPicColor } from '@/utils/nativeModules/utils'
+import { getCachedBgPicColor, refreshLiquidGlassFrames } from '@/utils/nativeModules/utils'
 
 // const store = getStore()
 // const getTheme = () => getter('common', 'theme')(store.getState())
@@ -93,6 +93,9 @@ export const handleScreenPopped = (componentId: string) => {
   // 【第 74 轮第 3 条】方向改成 'pop'：采景门在本事件到达的同一帧翻掉、玻璃按当前画面重采。
   // 【第 75 轮第 4 条】重采之后立刻重新按住（只在开头放行一拍）—— 整段返回动画停在「移动后的
   // 那一帧」上不动。理由与「为什么现在可以这么改」见 transitionWindow.ts。
+  // 【第 124 轮】系统边缘返回手势没有 JS 的派发前锚点，这是它到达时唯一能刷新冻结帧
+  // 的地方（按钮路径已在 navigation/utils 的 holdTransitionBeforePop 里调过）。
+  refreshLiquidGlassFrames()
   beginNavTransitionWindow('pop')
   if (target) endPush(target.name)
 }

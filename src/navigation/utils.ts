@@ -4,7 +4,7 @@ import { VERSION_MODAL, PACT_MODAL, SYNC_MODE_MODAL, ANNOUNCEMENT_MODAL } from '
 import themeState from '@/store/theme/state'
 import syncState from '@/store/sync/state'
 import syncActions from '@/store/sync/action'
-import { raiseSyncModeOverlay } from '@/utils/nativeModules/utils'
+import { raiseSyncModeOverlay, refreshLiquidGlassFrames } from '@/utils/nativeModules/utils'
 
 const pendingOverlays = new Set<string>()
 
@@ -63,6 +63,10 @@ export const dismissOverlay = async(compId: string) => {
 // 【第 75 轮第 4 条】重采之后立刻重新按住（`NAV_RETURN_REFREEZE_MS` = 50ms），整段返回动画
 // 停在「移动后的那一帧」上不动。详见 navigation/transitionWindow.ts 的【第 74/75 轮】段。
 const holdTransitionBeforePop = <T>(run: () => Promise<T>): Promise<T> => {
+  // 【第 124 轮】返回转场开始：直接让原生刷新仍暂停的玻璃冻结帧（不解除暂停）。
+  // 不走 paused prop —— 账本覆盖门在 screenPopped 前恒为真，prop 的放行一拍轮不到，
+  // 返回整段展示的都是「移动前」的旧帧。详见 nativeModules/utils.refreshLiquidGlassFrames。
+  refreshLiquidGlassFrames()
   beginNavTransitionWindow('pop')
   return run()
 }
