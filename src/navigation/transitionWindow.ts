@@ -82,6 +82,10 @@ export const beginNavTransitionWindow = (direction: NavTransitionDirection = 'pu
   if (navTransitionTimer) clearTimeout(navTransitionTimer)
   if (navRefreezeTimer) clearTimeout(navRefreezeTimer)
   navRefreezeTimer = null
+  // 【第 125 轮】方向 + 整段放行窗口一起落：navReturning 只负责开头那一拍的重采，
+  // navReturningWindow 负责到 420ms 关窗为止的**整段**活体采景（账本覆盖门在窗口内
+  // 不参与）。只用前者时，50ms 后玻璃又被账本门按停，返回里展示的还是推页前的冻结帧。
+  commonActions.setNavReturningWindow(direction === 'pop')
   commonActions.setNavReturning(direction === 'pop')
   commonActions.setNavTransitioning(true)
   if (direction === 'pop') {

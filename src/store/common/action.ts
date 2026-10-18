@@ -39,6 +39,13 @@ export default {
     state.navReturning = returning
     global.state_event.navReturningUpdated(returning)
   },
+  // 【第 125 轮】返回转场整段放行窗口：与 navReturning 分开记，重冻定时器落回 false
+  // 也不影响它（指向 420ms 关窗出口）。玻璃门在窗口内忽略账本覆盖门，整段保持活体采景。
+  setNavReturningWindow(windowActive: boolean) {
+    if (state.navReturningWindow == windowActive) return
+    state.navReturningWindow = windowActive
+    global.state_event.navReturningWindowUpdated(windowActive)
+  },
   setComponentId(name: COMPONENT_IDS, id: string) {
     state.componentIds.push({ name, id })
     global.state_event.componentIdsUpdated([...state.componentIds])

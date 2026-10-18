@@ -109,15 +109,23 @@ export const useNavTransitioning = () => {
  */
 export const useNavReturning = () => {
   const [value, update] = useState(state.navReturning)
+  // 【第 125 轮】整段返回放行窗口：navReturning 在 50ms 后被重冻定时器落回 false，
+  // 但返回转场还有 300ms+，账本覆盖门要等 screenPopped 才翻。只用 navReturning 的话
+  // 玻璃在返回里始终 paused（显示推页前的冻结帧）。窗口与方向分开订阅、这里取或；
+  // 窗口本身不单独清（关窗出口保持第 75 轮原样），以 navTransitioning 为期限现算。
+  const [windowActive, updateWindow] = useState(state.navReturningWindow)
+  const transitioning = useNavTransitioning()
 
   useEffect(() => {
     global.state_event.on('navReturningUpdated', update)
+    global.state_event.on('navReturningWindowUpdated', updateWindow)
     return () => {
       global.state_event.off('navReturningUpdated', update)
+      global.state_event.off('navReturningWindowUpdated', updateWindow)
     }
   }, [])
 
-  return value
+  return value || (transitioning && windowActive)
 }
 
 // 底部悬浮层（悬浮迷你播放器 + 底部 Tab）的固定部分总高（pt），
@@ -289,7 +297,9 @@ export const useScreenCovered = (componentId?: string) => {
  * 让它们在转场中途翻转会让列表底部留白与图标动画跳一下。
  */
 export const useGlassCovered = (componentId?: string) => {
-  const covered = useScreenCovered(componentId)
+  // 返回窗口内账本门不参与（返回命令发出时栈顶还是详情页，screenPopped 还没到）。
+  const glassReturning = useNavReturning()
+  const covered = useScreenCovered(componentId) && !glassReturning
   const navHold = useGlassNavHold()
   return covered || navHold
 }
@@ -300,7 +310,9 @@ export const useGlassCovered = (componentId?: string) => {
  * ⚠️ 同上：只用于玻璃的 paused，不要用它替换 useHomeCovered 的其它消费点。
  */
 export const useGlassHomeCovered = () => {
-  const covered = useHomeCovered()
+  // 同 useGlassCovered：返回窗口内账本覆盖门不参与，整段返回保持活体采景。
+  const glassReturning = useNavReturning()
+  const covered = useHomeCovered() && !glassReturning
   const navHold = useGlassNavHold()
   return covered || navHold
 }

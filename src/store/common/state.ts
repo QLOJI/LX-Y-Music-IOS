@@ -25,6 +25,12 @@ export interface InitState {
   // 收窄成「包含本玻璃的那一屏」之后，返回转场里采到的就是本屏自己（静止的、正确的那一
   // 帧），那个成因已经从结构上消失 —— 所以这里给的是「返回侧不按住」，不是旧机制回来。
   navReturning: boolean
+  // 【第 125 轮】返回转场的**整段**放行窗口（true = 从 pop 命令派发到 420ms 关窗）。
+  // navReturning 在 50ms 后会被重冻定时器落回 false（第 75 轮口径），而账本覆盖门
+  // （componentIds）要等 screenPopped 才翻 —— 两者一夹，玻璃在返回里一直 paused，
+  // 显示的还是推页前的冻结帧。本字段与 navReturning 一起消费：整段返回玻璃保持活体采景，
+  // 背景怎么动都跟着更新；关窗时一起清。
+  navReturningWindow: boolean
   componentIds: Array<{ name: COMPONENT_IDS, id: string }>
   navActiveId: NAV_ID_Type
   lastNavActiveId: NAV_ID_Type
@@ -41,6 +47,7 @@ const state: InitState = {
   safeAreaReady: false,
   navTransitioning: false,
   navReturning: false,
+  navReturningWindow: false,
   componentIds: [],
   navActiveId: 'nav_discovery',
   lastNavActiveId: 'nav_discovery',

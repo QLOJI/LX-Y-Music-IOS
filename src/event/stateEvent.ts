@@ -87,6 +87,12 @@ export class StateEvent extends Event {
     this.emit('navReturningUpdated', returning)
   }
 
+  // 【第 125 轮】返回转场整段放行窗口（见 state.navReturningWindow）：玻璃在 420ms
+  // 关窗前保持活体采景，账本覆盖门在窗口内不参与。
+  navReturningWindowUpdated(windowActive: boolean) {
+    this.emit('navReturningWindowUpdated', windowActive)
+  }
+
   apiSourceUpdated(source: LX.AppSetting['common.apiSource']) {
     this.emit('apiSourceUpdated', source)
   }
