@@ -1963,9 +1963,15 @@ static void LXNowPlayingLyricStep(void) {
     // 时钟落后于 JS（artist 是更靠后的一行，含前奏窗口的 found < 0）：保留 JS 文本、
     // 只把游标推上去。**绝不回退文本**——回退就是用户看到的「跳回上一句」。
     // 典型来源：updateMetaData 有 500ms 发布冷却，JS 已换行而锚点尚未推进。
+    // 【第 116 轮】「领先」只认「该行时间已经到（容差 500ms = 发布冷却 + 锚点落后）」：
+    // JS 逐行通路在前奏段写下的下一行（时间还没到）不算领先 —— 否则首行永远没机会显示。
+    BOOL artistLineTimeReached = artistLine >= 0 &&
+      [[LXNowPlayingLyricLines[(NSUInteger)artistLine] objectForKey:@"time"] doubleValue] <= positionMs + 500.0;
     if (artistLine >= 0 && artistLine > found) {
-      LXNowPlayingLyricIndex = artistLine;
-      return;
+      if (artistLineTimeReached) {
+        LXNowPlayingLyricIndex = artistLine;
+        return;
+      }
     }
     if (found < 0) {
       // 列表非空 ⇒ 钳到第 0 行（首行本来就在，只是还没到它的时间）；列表为空（真没歌词）
@@ -4269,16 +4275,27 @@ static void LXRememberAudioSessionCombination(LXAudioSessionCombination combinat
   _sourceRenderingEnabled.store(false, std::memory_order_release);
   dispatch_async(self.renderQueue, ^{
     if (generation != self.playbackGeneration) return;
-    if (_sourceRenderingEnabled.load(std::memory_order_acquire)) return;
-    if (self.stopRequested || self.streamError != nil || !self.downloadCompleted || [self currentQueuedFrameCountLocked] > 0) return;
-    self.lastKnownPosition = [self currentPlaybackPositionLocked];
-    self.playbackStarted = NO;
-    self.currentState = @"stopped";
-    [self emitEventWithType:@"ended" body:@{
-      @"state": @"stopped",
-      @"position": @(self.lastKnownPosition),
-      @"duration": @(self.duration),
-    }];
+    // 【第 116 轮】「这一拍没有可渲染的帧」≠ 播放结束：seek 会先清空环形缓冲，本地流已
+    // 下载完成时同样满足「队列空」——此时误发 ended，JS 会以为这首停了，之后 seek /
+    // 暂停全发给空轨道，而本引擎仍在出声。只有「队列空 + 位置真的到尾」才认 ended；
+    // 其余情况把调度标记放回去（旧实现让它永久为真：真播完时反而永远发不出 ended）。
+    BOOL queueEmpty = !(_sourceRenderingEnabled.load(std::memory_order_acquire) ||
+                        self.stopRequested || self.streamError != nil ||
+                        !self.downloadCompleted || [self currentQueuedFrameCountLocked] > 0);
+    double endedPosition = [self currentPlaybackPositionLocked];
+    BOOL reachedEnd = self.duration <= 0 || endedPosition + 0.75 >= self.duration;
+    if (queueEmpty && reachedEnd) {
+      self.lastKnownPosition = endedPosition;
+      self.playbackStarted = NO;
+      self.currentState = @"stopped";
+      [self emitEventWithType:@"ended" body:@{
+        @"state": @"stopped",
+        @"position": @(self.lastKnownPosition),
+        @"duration": @(self.duration),
+      }];
+    } else {
+      _endedNotificationScheduled.store(false, std::memory_order_release);
+    }
   });
 }
 
