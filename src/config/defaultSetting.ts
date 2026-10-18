@@ -1,5 +1,5 @@
 const defaultSetting: LX.AppSetting = {
-  version: '2.0',
+  version: '2.1',
   'version.autoCheckUpdate': true,
   'common.isAutoTheme': false,
   'common.isDarkMode': false,
@@ -123,7 +123,7 @@ const defaultSetting: LX.AppSetting = {
   'player.soundEffect.eq.8000': 0,
   'player.soundEffect.eq.16000': 0,
   'player.isHandleAudioFocus': true,
-  'player.isEnableAudioPreload': false,
+  'player.isEnableAudioPreload': true,
   'player.cacheSize': '1024',
   'player.isEnableAudioOffload': false,
   // 「原生 FLAC 播放器」开关已移除（去门控）：无损档一律走原生引擎，见 nativeFlac.ts 注释。

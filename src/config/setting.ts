@@ -5,6 +5,7 @@ import migrateSetting from './migrateSetting'
 import settingState from '@/store/setting/state'
 import { migrateMetaData, migrateListData } from './migrate'
 import { exitApp, tipDialog } from '@/utils/tools'
+import { compareVer } from '@/utils'
 
 const primitiveType = ['string', 'boolean', 'number']
 const checkPrimitiveType = (val: any): boolean => val === null || primitiveType.includes(typeof val)
@@ -117,6 +118,14 @@ export const initSetting = async() => {
       }
       await removeData(storageDataPrefixOld.setting)
     }
+  }
+
+  // 【第 123 轮】2.0 → 2.1：音频预加载默认值由关改为开。
+  // 老用户的持久化设置在 initSetting 末尾会被整包重写，`player.isEnableAudioPreload`
+  // 一旦以 false 落盘就永远盖住 defaultSetting —— 默认值改了也等于没改。这里按设置
+  // 版本做一次性迁移，让「最后 10 秒预取下一首」在升级后恢复；用户之后仍可手动关闭。
+  if (setting && (!setting.version || compareVer(setting.version, '2.1') < 0)) {
+    setting = { ...setting, 'player.isEnableAudioPreload': true }
   }
 
   const updatedSetting = updateSetting(setting, true)
