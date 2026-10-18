@@ -127,10 +127,10 @@ export const setPlayMusicInfo = (listId: string | null, musicInfo: LX.Download.L
   playerActions.setPlayMusicInfo(listId, musicInfo, isTempPlay)
   setPlayerMusicInfo(musicInfo)
 
-  // 【第 112 轮】判据再收紧：**正在播放时不许清零**（原判据在「旧歌 id 取不到」那一瞬间
-  // 照样清零 —— 现场日志里 seek 之后仍出现 `(0/0)` 就是这个漏网）。清场（null）与「没在播时
-  // 换歌」才清零：那时界面本来就是 0，不存在把正在走的位置抹掉的后果。
-  if (musicInfo == null || !playerState.isPlay) setProgress(0, 0)
+  // 【第 115 轮】清场（null）或**歌曲 id 真的变了**才清零。不再看 isPlay：缓冲会把 UI 收成
+  // 暂停，而那一刻正是同曲重装最容易发生的时候 —— 旧判据会在那时把进度清成 0/0，进度条
+  // 从此不可拖。同曲重装（取链重试 / seek 触发的重载）一律保留当前进度。
+  if (musicInfo == null || (prevMusicId != null && prevMusicId !== musicInfo.id)) setProgress(0, 0)
 
   if (musicInfo == null) {
     playerActions.updatePlayIndex(-1, -1)
