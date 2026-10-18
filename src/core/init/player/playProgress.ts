@@ -358,6 +358,9 @@ export default () => {
           void getPosition().then((position) => {
             if (!playerState.isPlay || playerState.musicInfo.id != musicId) return
             if (Math.abs((position || 0) - resumeTime) <= 0.3) return
+            // 【第 114 轮】回拉也是一次原生 seek：在飞期间绝不再叠一条（叠 seek 是
+            // 「多次跳转后控件全失灵」的直接来源），交给用户 seek 的 latest-wins。
+            if (seekInFlight) return
             pullBackCount++
             lastSeekIntentAt = Date.now()
             void setCurrentTime(resumeTime).catch(() => {})
@@ -436,6 +439,25 @@ export default () => {
   // 现在任何时刻最多一条在飞；在飞期间来的 seek 只记最新目标，前一条结束立刻补发。
   let seekInFlight = false
   let pendingSeekTarget: number | null = null
+  // 【第 114 轮】在飞 seek 的有界闩锁：原生 seek 的 Promise 一旦不回来（引擎/桥丢回调），
+  // 旧实现会让 seekInFlight 永远为真 —— 之后所有拖动被 pendingSeekTarget 吞掉，现场就是
+  // 「声音继续放、进度条怎么点都不跳、暂停键不生效」。超过上限强制放行，迟到的旧回调
+  // 由 seekGen 作废；同一时刻仍只有一条 seek 在飞（回拉/缓冲探测也必须让行，见各调用点）。
+  const SEEK_FLIGHT_TIMEOUT_MS = 6000
+  let seekFlightId = 0
+  let seekLatchTimer: number | null = null
+  const clearSeekLatch = () => {
+    if (seekLatchTimer != null) BackgroundTimer.clearTimeout(seekLatchTimer)
+    seekLatchTimer = null
+  }
+  const settleSeekFlight = (flightId: number, time: number) => {
+    if (flightId !== seekFlightId) return
+    clearSeekLatch()
+    seekInFlight = false
+    const nextTarget = pendingSeekTarget
+    pendingSeekTarget = null
+    if (nextTarget != null && nextTarget !== time) setProgress(nextTarget)
+  }
   // 单次 seek 意图的回拉预算：回拉后的落点若仍偏差（极端引擎/网络），最多再拉 2 次
   // 就接受引擎位置并锚定，防慢缓冲长曲上回拉-探测无限拉锯；每次用户 seek 重置
   let pullBackCount = 0
@@ -492,7 +514,9 @@ export default () => {
           lastSeekIntentAt = Date.now()
           mediaBuffer.playTime = null
           startBuffering()
-          if (skipTime != null) void setCurrentTime(skipTime)
+          // 看门狗探测同样不许与在飞 seek 叠加（第 114 轮）：用户意图未落地前探测只会
+          // 覆盖落点；seek 超时闩锁会自行放行，探测留到下一轮。
+          if (skipTime != null && !seekInFlight) void setCurrentTime(skipTime)
         }).catch(() => { startBuffering() })
       }).catch(() => {})
     }, 3000)
@@ -520,6 +544,18 @@ export default () => {
     if (seekInFlight) return
     seekInFlight = true
     pendingSeekTarget = null
+    const flightId = ++seekFlightId
+    clearSeekLatch()
+    seekLatchTimer = BackgroundTimer.setTimeout(() => {
+      seekLatchTimer = null
+      if (!seekInFlight || flightId !== seekFlightId) return
+      // 在飞超时：按「原生回调丢失」处理 —— 作废旧代、放行下一单（latest-wins 继续）
+      seekGen++
+      const nextTarget = pendingSeekTarget
+      pendingSeekTarget = null
+      seekInFlight = false
+      if (nextTarget != null) setProgress(nextTarget)
+    }, SEEK_FLIGHT_TIMEOUT_MS)
     // 【第 106 轮】每次用户 seek 先把所有 seek 闩锁复位：连续快速拖动会留下「没落地」的
     // `seekTargetPosition` 与缓冲保持，之后 4Hz 快路径、拖动手势、暂停键都可能被它挡死 ——
     // 现场就是「多次点击跳转后，声音在放，但进度条和暂停都控制不了、播完也不跳下一首」。
@@ -597,10 +633,9 @@ export default () => {
     }).catch(() => {}).finally(() => {
       // 【第 109 轮】串行化收尾（成功 / 失败 / 提前 return 都会走到这里）：
       // 释放「在飞」标记；若期间来过新目标，立刻补发**最新**那一条（latest-wins）。
-      seekInFlight = false
-      const nextTarget = pendingSeekTarget
-      pendingSeekTarget = null
-      if (nextTarget != null && nextTarget !== time) setProgress(nextTarget)
+      // 【第 114 轮】flightId 守卫：闩锁已被超时/切歌释放过时，迟到的旧回调不许
+      // 再动「在飞」标记（否则会把下一单的闩锁提前放掉，叠出并发 seek）。
+      settleSeekFlight(flightId, time)
     })
 
     if (maxTime != null) setMaxplayTime(getTimelineDuration(playerState.playMusicInfo.musicInfo, maxTime))
@@ -699,6 +734,12 @@ export default () => {
     pullBackCount = 0
     engineConfirmedPlaying = false
     isBufferingHold = false
+    // 【第 114 轮】在飞/排队的 seek 属于上一首：切歌后既不能继续挡着新歌的拖动，
+    // 也不能把旧目标补发到新歌上（迟到的旧回调由上面的 seekGen++ 作废）。
+    pendingSeekTarget = null
+    seekInFlight = false
+    seekFlightId++
+    clearSeekLatch()
     // 注意：这里**不**动 audioClock / nowPlayTime / maxPlayTime —— 进度条归零由
     // setPlayMusicInfo 的 store 层 setProgress(0, 0) 完成，重复归零只会让 UI 多抖一次。
   }
