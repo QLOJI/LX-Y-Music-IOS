@@ -12,6 +12,8 @@ interface NowPlayingInfoMetadata {
   elapsedTimeSnapshotAt?: number
   /** elapsedTime 快照的墙钟年龄（毫秒，无原生戳时的回放补偿），不进系统 info */
   elapsedTimeAgeMs?: number
+  /** 当前播放歌曲 id（不进系统 info）：原生据此判断「真的换歌」，不再拿标题字符串猜 */
+  musicId?: string
 }
 
 interface NowPlayingStateOptions {
