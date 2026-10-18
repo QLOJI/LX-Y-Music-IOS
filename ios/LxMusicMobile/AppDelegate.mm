@@ -4279,8 +4279,10 @@ static void LXRememberAudioSessionCombination(LXAudioSessionCombination combinat
     // 下载完成时同样满足「队列空」——此时误发 ended，JS 会以为这首停了，之后 seek /
     // 暂停全发给空轨道，而本引擎仍在出声。只有「队列空 + 位置真的到尾」才认 ended；
     // 其余情况把调度标记放回去（旧实现让它永久为真：真播完时反而永远发不出 ended）。
+    // 【第 119 轮】seekRequested = 还有一次 seek 没被解码线程应用：此时环形缓冲空是
+    // seek 复位造成的，不能当成播放结束。放回调度标记，等 seek 落地后由下一拍重新判定。
     BOOL queueEmpty = !(_sourceRenderingEnabled.load(std::memory_order_acquire) ||
-                        self.stopRequested || self.streamError != nil ||
+                        self.stopRequested || self.seekRequested || self.streamError != nil ||
                         !self.downloadCompleted || [self currentQueuedFrameCountLocked] > 0);
     double endedPosition = [self currentPlaybackPositionLocked];
     BOOL reachedEnd = self.duration <= 0 || endedPosition + 0.75 >= self.duration;
@@ -5567,6 +5569,11 @@ static const int64_t LXResumeFadeStepMs = 40;
     return;
   }
 
+  // 【第 119 轮】seek 会重新解码：清掉「整首已解完」标记。否则解码器从关键帧重走、
+  // 环形缓冲一空，渲染回调就把上一次解到末尾留下的 _streamFinished 当成「这首播完了」
+  // 提前发 ended —— 现场是「进度条到了最后一秒、UI 变暂停、声音还在放」。
+  _streamFinished.store(false, std::memory_order_release);
+
   dispatch_sync(self.renderQueue, ^{
     [self updatePlaybackGenerationLocked];
     [self resetRealtimeRenderStateLocked];
@@ -5674,9 +5681,13 @@ static const int64_t LXResumeFadeStepMs = 40;
     FLAC__stream_decoder_delete(self.decoder);
     self.decoder = NULL;
 
+    // 【第 119 轮】带代际：解码循环退出与切歌/复位并发时，这个块可能在新流已经打开后
+    // 才执行 —— 旧流的 ended 绝不能发到新歌头上（那会一次拖到末尾连跳两首）。
+    int64_t completionGeneration = self.playbackGeneration;
     dispatch_async(self.renderQueue, ^{
+      if (completionGeneration != self.playbackGeneration) return;
       if (self.streamError == nil && self.downloadCompleted && [self currentQueuedFrameCountLocked] == 0 && !self.stopRequested &&
-          !_endedNotificationScheduled.exchange(true, std::memory_order_acq_rel)) {
+          !self.seekRequested && !_endedNotificationScheduled.exchange(true, std::memory_order_acq_rel)) {
         self.lastKnownPosition = [self currentPlaybackPositionLocked];
         self.playbackStarted = NO;
         self.currentState = @"stopped";
@@ -5687,6 +5698,14 @@ static const int64_t LXResumeFadeStepMs = 40;
         }];
       }
     });
+
+    // 【第 119 轮】循环退出与 seek 请求撞车（seekTo 那侧读 decoder 时它还没置空）：
+    // 不补这一轮，seek 请求就永远没人应用（进度条停在落点、缓冲里剩下的音频照放）。
+    // 仍在同一条串行队列上重开一轮，顶部 applyPendingSeekIfNeeded 会先消费这次 seek。
+    if (!self.stopRequested && self.seekRequested) {
+      self.readOffset = 0;
+      [self startDecoderLoop];
+    }
   });
 #endif
 }
@@ -5976,16 +5995,19 @@ RCT_REMAP_METHOD(reset, resetStreamWithResolver:(RCTPromiseResolveBlock)resolve 
 }
 
 RCT_REMAP_METHOD(seekTo, seekToStream:(nonnull NSNumber *)position resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
-  if (self.currentURL.length == 0 || [self.currentState isEqualToString:@"idle"] || [self.currentState isEqualToString:@"stopped"]) {
+  // 【第 119 轮】只有「流已拆干净」（idle / 停止后 cleanupAudioGraph 把图拆没）才拒绝。
+  // 不再按 stopped 拒绝：解码循环到达整首末尾后会自行退出，而播放状态仍停在刚才那一拍，
+  // 一次「拖到最后一秒」不该被当成「没有流可 seek」整单丢掉。
+  if (self.currentURL.length == 0 || [self.currentState isEqualToString:@"idle"] ||
+      self.sourceNode == nil || self.sampleRate <= 0) {
     NSError *error = LXError(@"streaming_flac_seek", @"No streaming FLAC playback to seek");
     reject(@"streaming_flac_seek", error.localizedDescription, error);
     return;
   }
-  if (self.decoder == NULL && self.sampleRate > 0) {
-    NSError *error = LXError(@"streaming_flac_seek", @"Streaming FLAC decoder is no longer active");
-    reject(@"streaming_flac_seek", error.localizedDescription, error);
-    return;
-  }
+  // 【第 119 轮】解码器在播完 / 整首解完后会置空（循环已退出）。旧实现直接 reject，
+  // 现场就是「拖到最后：进度到末尾、声音继续放十几秒、暂停无效」。这里登记完 seek 后
+  // 把解码循环重新拉起来，让落点照常生效。
+  BOOL needsDecoderRestart = self.decoder == NULL;
 
   double requestedPosition = MAX([position doubleValue], 0);
   if (self.duration > 0) requestedPosition = LXClampDouble(requestedPosition, 0, self.duration);
@@ -6034,6 +6056,8 @@ RCT_REMAP_METHOD(seekTo, seekToStream:(nonnull NSNumber *)position resolver:(RCT
   [self.streamCondition lock];
   [self.streamCondition broadcast];
   [self.streamCondition unlock];
+
+  if (needsDecoderRestart) [self restartDecoderLoopForSeek];
 
   [self emitState:self.currentState position:@(requestedPosition) duration:@(self.duration)];
   resolve(@(requestedPosition));
