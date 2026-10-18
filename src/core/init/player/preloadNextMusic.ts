@@ -52,12 +52,14 @@ const preloadNextMusicUrl = async(curTime: number) => {
   }
 
   preloadMusicInfo.info = info
+  let warmed = false
   const urlInfo = await getMusicUrlInfo({ musicInfo: info.musicInfo }).catch(() => null)
   if (urlInfo?.url) {
     console.log('preload url', urlInfo.url)
     try {
       if (requestId !== preloadMusicInfo.requestId) return
       await warmPreloadUrl(info.musicInfo, urlInfo.url, urlInfo.quality)
+      warmed = true
     } catch {
       // 【第 53 轮第 2 条】预热失败 = 这条链接不可用：先把它的缓存整体作废再重取。
       // 不作废的话，下一次播放这首歌时读缓存仍会**首选命中**这条坏链（预取写入的坏链
@@ -69,11 +71,19 @@ const preloadNextMusicUrl = async(curTime: number) => {
       console.log('preload url refresh', refreshedUrlInfo?.url ?? '')
       if (requestId !== preloadMusicInfo.requestId) return
       if (refreshedUrlInfo?.url) {
-        await warmPreloadUrl(info.musicInfo, refreshedUrlInfo.url, refreshedUrlInfo.quality).catch(() => {})
+        try {
+          await warmPreloadUrl(info.musicInfo, refreshedUrlInfo.url, refreshedUrlInfo.quality)
+          warmed = true
+        } catch {}
       }
     }
   }
-  if (requestId === preloadMusicInfo.requestId) preloadMusicInfo.isLoading = false
+  if (requestId === preloadMusicInfo.requestId) {
+    preloadMusicInfo.isLoading = false
+    // 【第 123 轮】这一轮没拿到可用链接（取链失败 / 预热失败）不占 memo：后面的进度拍
+    // （2s 防重入后）还能再试一次，不会因为一次网络抖动就整首不再预取。
+    if (!warmed) preloadMusicInfo.info = null
+  }
 }
 
 // 【第 113 轮】播放中就把下一首的歌词取好：自动切歌时歌词已在缓存里，0:00 就有
