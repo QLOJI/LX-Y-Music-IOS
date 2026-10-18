@@ -431,6 +431,11 @@ export default () => {
   // 探测，否则探测越过 seek 目标并与出声回拉互相拉锯（回拉引发的新缓冲又被探测，
   // 永不收敛）——「泪海 FLAC 快进快退后始终不同步」的实锤根因
   let lastSeekIntentAt = 0
+  // 【第 109 轮】seek 串行化（latest-wins）：快速连点会叠出多条**并发**原生 seek，
+  // 落点 / 生效窗口 / 缓冲保持互相覆盖，谁最后落地不确定 ⇒ 偶发卡死（现场：点 3~5 次必现）。
+  // 现在任何时刻最多一条在飞；在飞期间来的 seek 只记最新目标，前一条结束立刻补发。
+  let seekInFlight = false
+  let pendingSeekTarget: number | null = null
   // 单次 seek 意图的回拉预算：回拉后的落点若仍偏差（极端引擎/网络），最多再拉 2 次
   // 就接受引擎位置并锚定，防慢缓冲长曲上回拉-探测无限拉锯；每次用户 seek 重置
   let pullBackCount = 0
@@ -510,6 +515,11 @@ export default () => {
     // 接近结尾（强杀再进来进度条停在最后一秒）—— 用户现场判为更糟。恢复原样：
     // 落点 = 用户拖到哪就是哪；「拖完自动跳歌」改由下面的 seek 抑制窗口处理。
     const musicId = playerState.musicInfo.id
+    // 【第 109 轮】串行化入口：在飞期间来的 seek 只记最新目标、立刻返回 —— 绝不叠并发 seek。
+    pendingSeekTarget = time
+    if (seekInFlight) return
+    seekInFlight = true
+    pendingSeekTarget = null
     // 【第 106 轮】每次用户 seek 先把所有 seek 闩锁复位：连续快速拖动会留下「没落地」的
     // `seekTargetPosition` 与缓冲保持，之后 4Hz 快路径、拖动手势、暂停键都可能被它挡死 ——
     // 现场就是「多次点击跳转后，声音在放，但进度条和暂停都控制不了、播完也不跳下一首」。
@@ -584,6 +594,13 @@ export default () => {
         // 上面的立即尝试丢弃、或无状态变化引擎的 seek 事件缺失场景）
         scheduleFastResync(musicId)
       }
+    }).catch(() => {}).finally(() => {
+      // 【第 109 轮】串行化收尾（成功 / 失败 / 提前 return 都会走到这里）：
+      // 释放「在飞」标记；若期间来过新目标，立刻补发**最新**那一条（latest-wins）。
+      seekInFlight = false
+      const nextTarget = pendingSeekTarget
+      pendingSeekTarget = null
+      if (nextTarget != null && nextTarget !== time) setProgress(nextTarget)
     })
 
     if (maxTime != null) setMaxplayTime(getTimelineDuration(playerState.playMusicInfo.musicInfo, maxTime))
