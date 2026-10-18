@@ -308,6 +308,9 @@ private final class GlassInstanceRegistry {
         // App 侧的调用是空操作，玻璃行为与上游一致。
         // 非捕获闭包才能变成 C 函数指针：这里只引用注册表自己这个静态单例。
         LXGlassSetScrollActivityFn { GlassInstanceRegistry.shared.noteScrollActivity() }
+        // 【第 124 轮】返回转场开始：App 在派发 pop 命令之前登记的这一脚会刷新所有
+        // 暂停态玻璃的冻结帧（不恢复渲染，见 LXGlassFreezeHook.h 的第三条桥）。
+        LXGlassSetRefreshFrozenFramesFn { GlassInstanceRegistry.shared.refreshFrozenFrames() }
     }
 
     // MARK: - 【第 73 轮】滚动实时档
@@ -388,6 +391,28 @@ private final class GlassInstanceRegistry {
             if seen.insert(ObjectIdentifier(root)).inserted { roots.append(root) }
         }
         return roots.filter { view in !roots.contains { $0 !== view && view.isDescendant(of: $0) } }
+    }
+
+    /// 【第 124 轮】返回转场开始：刷新所有**仍在暂停态**的在窗玻璃的冻结帧。
+    ///
+    /// 用户现场：「静态情况下可以实时显示；上下左右滑动界面再切入切回，透过的画面会
+    /// 显示在移动前的画面，而背景已经移动 —— 返回不是一瞬间，是个过程动画，动画结束
+    /// 才闪一下刷新」。成因是账本覆盖门要等 RNN screenPopped 才翻，JS 那 50ms 的
+    /// 「放行一拍」在它面前根本轮不到（玻璃整段仍是 paused），返回里展示的始终是冻结
+    /// 那一刻的旧纹理。这里由 App 在派发 pop 命令前直接调进来，**不经过 React 状态与
+    /// paused prop**：对每块暂停态玻璃做一次恢复路径的完整复位（重采 + 同步 present），
+    /// 暂停态保持不变 —— 转场仍整段静止，只是静止在「主界面移动后」的当前帧。
+    func refreshFrozenFrames() {
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async { [weak self] in self?.refreshFrozenFrames() }
+            return
+        }
+        for instance in instances.allObjects {
+            guard let glass = instance as? LiquidGlassView,
+                  glass.window != nil,
+                  glass.isPaused else { continue }
+            glass.refreshFrozenFrame()
+        }
     }
 }
 
@@ -1084,6 +1109,19 @@ final class LiquidGlassView: MTKView {
         // 复位之后才把 isPaused 置回 false），所以这一帧一定画得出去；drawable / 渲染描述符
         // 未就绪时 draw(_:) 内部按既有分支安全返回（保持原样等下一 tick，不会崩、不会画错）。
         draw(bounds)
+    }
+
+    /// 【第 124 轮】返回转场开始时的冻结帧刷新：重采当前背景并同步画出去，
+    /// **不改变 isPaused**。
+    ///
+    /// 与 handleResumeFromPause 的区别只有「不恢复渲染」这一点：返回侧仍按第 75 轮
+    /// 口径整段按住（静止），但静止的是「主界面移动后」的当前帧，而不是冻结前的旧帧。
+    /// 复用恢复路径的完整复位（清沿用痕迹 / 干净帧优先提交 / 同步 draw），并在仍暂停时
+    /// 补采有限几次（与冻结路径同一个重试器），第一拍撞上半成品帧也能在转场开头换掉。
+    func refreshFrozenFrame() {
+        handleResumeFromPause()
+        freezeCaptureRetryRemaining = 3
+        scheduleFreezeCaptureRetry()
     }
 
     /// 【第 66 轮第 1 条】冻结前的一次性「定格」采景 —— 与 handleResumeFromPause 对称，

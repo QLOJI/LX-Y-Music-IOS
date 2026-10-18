@@ -38,3 +38,18 @@ void LXGlassNotifyScrollActivity(void) {
   if (handler == NULL) return;
   handler();
 }
+
+// 【第 124 轮】返回转场开始前的冻结帧刷新（App → Kit）。存储侧口径与上面完全一致：
+// 单写者（Kit 侧 GlassInstanceRegistry 初始化时写一次）、之后只读；读取发生在主线程
+// （App 的 pop 入口），不需要锁、不需要派发。
+static LXGlassRefreshFrozenFramesFn LXGlassRefreshFrozenFramesHandler = NULL;
+
+void LXGlassSetRefreshFrozenFramesFn(LXGlassRefreshFrozenFramesFn fn) {
+  LXGlassRefreshFrozenFramesHandler = fn;
+}
+
+void LXGlassNotifyRefreshFrozenFrames(void) {
+  LXGlassRefreshFrozenFramesFn refreshHandler = LXGlassRefreshFrozenFramesHandler;
+  if (refreshHandler == NULL) return;
+  refreshHandler();
+}

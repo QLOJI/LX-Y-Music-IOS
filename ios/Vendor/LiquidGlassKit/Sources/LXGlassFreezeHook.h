@@ -62,6 +62,27 @@ void LXGlassSetScrollActivityFn(LXGlassScrollActivityFn fn);
 /// 由 App 在用户主动的滚动事件里同步调用：把这一脚的时刻记成「滚动窗口」。
 void LXGlassNotifyScrollActivity(void);
 
+//! Vendored addition（第 124 轮）: 返回转场开始时的「冻结帧刷新」桥（App → Kit）。
+//!
+//! 背景：转场期间玻璃由 JS 的按住门（paused=true）暂停渲染，CAMetalLayer 上留着冻结
+//! 那一刻的画面；而返回时整段动画展示的就是它 —— 只要用户在冻结前上下滑过、或列表在
+//! 冻结前后又被贴过落点，返回里透过玻璃看到的就是「移动前」的旧画面，直到动画收尾
+//! 恢复渲染才刷新（用户看到的错位 + 末尾闪一下）。
+//!
+//! App 在返回命令派发前调用一次本桥：Kit 对每块**仍处于暂停态**的玻璃同步重采一帧
+//! 当前背景并 present，**不改变 isPaused** —— 返回转场仍是整段静止（第 75 轮口径），
+//! 只是静止在「主界面移动后」的当前帧。
+//!
+//! 契约与上面两条桥一致：单写者（Kit 注册表初始化时登记一次）、之后只读；调用必须在
+//! 主线程；没登记就什么都不做（可选增强，缺席时玻璃行为与上游一致）。
+typedef void (*LXGlassRefreshFrozenFramesFn)(void);
+
+/// 注册（传 NULL 注销）。Kit 只在注册表初始化时注册一次。
+void LXGlassSetRefreshFrozenFramesFn(LXGlassRefreshFrozenFramesFn fn);
+
+/// 由 App 在返回命令派发前同步/主线程调用：刷新所有暂停态玻璃的冻结帧。
+void LXGlassNotifyRefreshFrozenFrames(void);
+
 #ifdef __cplusplus
 }
 #endif
