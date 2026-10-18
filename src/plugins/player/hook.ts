@@ -348,8 +348,9 @@ export function useBufferProgress() {
       }
     })
 
+    // 【第 118 轮】去重：这里原本在 nativeFlac 路径上又调了一次 updateBuffer()，
+    // 一次挂载会并发发两套「缓冲位置 + 时长」桥往返；上一次已经覆盖两条引擎。
     void updateBuffer()
-    if (isNativeFlacActive()) void updateBuffer()
     void TrackPlayer.getState().then((state) => {
       if (!isNativeFlacActive() && state == State.Buffering) {
         wantPolling = true

@@ -81,15 +81,17 @@ const stopPlayingHeartbeat = () => {
   }
 }
 
-// 标记「此刻确实在播」并保证心跳在跑；心跳随后每 1s 刷新一次，
-// 一旦发现已经不在播就自己停表（lastPlayingAt 保留 —— 时间窗要能跨过这次暂停）。
+// 标记「此刻确实在播」并保证心跳在跑；心跳每 2s 刷新一次，一旦发现不在播就自己停表
+// （lastPlayingAt 保留 —— 时间窗要能跨过这次暂停）。
+// 【第 118 轮】周期 1s → 2s：判定窗口是 3s（RECENT_PLAYING_WINDOW_MS），2s 的刷新间隔
+// 仍保证「刚播过」在翻转瞬间不超过 3s —— 语义不变，后台 JS 唤醒减半。
 const startPlayingHeartbeat = () => {
   lastPlayingAt = Date.now()
   if (playingHeartbeat != null) return
   playingHeartbeat = setInterval(() => {
     if (playerState.isPlay) lastPlayingAt = Date.now()
     else stopPlayingHeartbeat()
-  }, 1000)
+  }, 2000)
 }
 
 /** 「最近 3s 确实在播」：此刻在播，或者最后一次确认在播发生在 3s 之内 */
