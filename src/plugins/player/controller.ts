@@ -191,8 +191,12 @@ export const initUnifiedPlayerController = () => {
             setStatusText(global.i18n.t('player__loading'))
             break
           case 'buffering':
-            // 【第 105 轮】seek 引起的补货**不对外宣告**：倒退拖动（甚至拖到 0:00）必然让引擎
-            // 重新补货并发一条 buffering —— 若照旧翻 UI（缓存中 / 暂停）并把进度冻住，就会出现
+            // 【第 117 轮】「缓存中」文案如实显示，不受 seek 宽限影响：宽限只用来拦住
+            // 「把播放态翻成暂停」这一个副作用（第 105 轮现场）。连文案一起吞掉，用户
+            // 看到的就是「缓存中不显示 + 画面像卡死」。
+            setStatusText(global.i18n.t('player__caching'))
+            // 【第 105 轮】seek 引起的补货**不翻播放态**：倒退拖动（甚至拖到 0:00）必然让
+            // 引擎重新补货并发一条 buffering —— 若照旧翻 UI（暂停）并把进度冻住，就会出现
             // 用户报的「显示缓存中、声音还在放、进度条随便拖都不生效、暂停键没反应」。
             // 真正的断流不受影响：那时环里没数据，本来就是无声的，也不需要这一条。
             if (isSeekRecently()) break
@@ -215,10 +219,6 @@ export const initUnifiedPlayerController = () => {
             // 收成暂停、等补满再继续 —— 用户原话「缓存中……播放按钮未暂停等待缓存完再播放」。
             if (!shouldSuppressSystemPause()) global.app_event.pause()
             global.app_event.playerWaiting()
-            // 【第 33 轮第 5 条】用户原话「立即显示为缓存中，缓存下一个 10 秒」：原生引擎的
-            // buffering 事件同时覆盖「起播前累积缓存」与「播放中缓冲耗尽、重填下一个 10 秒」
-            // 两种时刻（AppDelegate.mm 的 scheduleBufferingStateForGeneration），文案统一为「缓存中...」
-            setStatusText(global.i18n.t('player__caching'))
             break
           case 'playing':
             clearLoadingTimeout()
@@ -287,12 +287,13 @@ export const initUnifiedPlayerController = () => {
           clearLoadingTimeout()
         }
         break
-      case 'ended':
-        // 【第 95 轮】seek 抑制必须**在分发之前**：拖进度条到末尾时引擎会发 ended，若等到
-        // 事件的消费侧再拦（第 90 轮放在了 playerEnded 的处理里），下面这一串
-        //（playerPause / pause / playerEnded / playerEmptied）早已发出去 —— UI 收成
-        //「播放完毕 + 暂停」而声音还在放（用户截图现场）。这里先判，命中就直接忽略这次 ended。
-        if (isSeekRecently()) break
+      case 'ended': {
+        // 【第 95 轮】seek 抑制必须在分发之前（否则 UI 先收成「播放完毕 + 暂停」）。
+        // 【第 117 轮】拖到末尾 = 用户就是要下一首：落点本身就在末尾时，ended 一律放行；
+        // 只有「seek 中途的、位置还不在末尾的」ended 才当旧事件忽略。
+        const { nowPlayTime, maxPlayTime } = playerState.progress
+        const seekedToEnd = maxPlayTime > 0 && nowPlayTime >= maxPlayTime - 1
+        if (isSeekRecently() && !seekedToEnd) break
         stopPreload()
         global.lx.playerTrackId = ''
         global.app_event.playerPause()
@@ -302,6 +303,7 @@ export const initUnifiedPlayerController = () => {
         clearDelayNextTimeout()
         clearLoadingTimeout()
         break
+      }
     }
   })
 
