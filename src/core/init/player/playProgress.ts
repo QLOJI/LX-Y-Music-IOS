@@ -778,13 +778,24 @@ export default () => {
 
   // 修复在某些设备上屏幕状态改变事件未触发导致的进度条未更新的问题
   AppState.addEventListener('change', (state) => {
-    if (state == 'active' && !isScreenOn) handleScreenStateChanged('ON')
+    if (state == 'active') {
+      if (!isScreenOn) handleScreenStateChanged('ON')
+      // 【第 118 轮】后台期间慢校准 tick 已停，回前台立即重起并重锚；
+      // 缓冲自动暂停的恢复探测也挂在这条 tick 上，等待中的那次同样要重起。
+      if (playerState.musicInfo.id && (playerState.isPlay || autoPausedForBuffering)) {
+        startUpdateTimeout()
+        syncFromEngine(playerState.musicInfo.id)
+      }
+    }
     // 【第 86 轮第 1 条】App 退到后台这一拍**立即落盘**：这是「播放中直接关掉软件」之前
     // 唯一还跑得到 JS 的时刻（iOS 的熄屏事件在本工程是 no-op，落盘不能指望那条路）。
     // 只在前台→后台这一个边沿写，回前台不重复写。
     // 【第 88 轮第 2 条】写的是**引擎实时位置**（带戳快照），不是 store 里那个可能刚被切歌
     // 重置成 0 的值 —— 强杀前最后一段进度要靠它记住。
     if (state == 'background') {
+      // 【第 118 轮】退后台停 1s 慢校准：tick 第一步就因 AppState 早退，停表省掉后台
+      // 每秒一次 JS 定时器唤醒（后台音频常驻、进程不会被系统挂起）。落盘逻辑不变。
+      clearUpdateTimeout()
       void getPositionStamped()
         .then(stamped => { savePlayInfoNow(stamped.position) })
         .catch(() => { savePlayInfoNow() })
