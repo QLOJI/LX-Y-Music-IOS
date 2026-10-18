@@ -749,6 +749,10 @@ static void LXApplyNowPlayingInfo(void);
 static NSObject *LXLyricLock(void);
 // 播放位置事件（原生 4Hz 外推位置广播给 JS，驱动进度条等 UI，替代 JS 侧桥接轮询）
 static NSNotificationName const LXPlayerPositionNotificationName = @"LXPlayerPosition";
+// 【第 125 轮】最后 10 秒预取触发（原生 → JS，每首一次）。JS 的 playProgressChanged
+// 只在 App active 时发布（锁屏 / 灵动岛 / 后台都没有进度拍），预取在那些场景整条失联；
+// 这条事件由原生歌词时钟跨过门槛时发，与前后台无关。
+static NSNotificationName const LXPlayerPreloadNextNotificationName = @"LXPreloadNext";
 // 时钟冻结标志：RNTP state 事件报告 loading/暂停等非播放态时置 YES——网络流
 // 微缓冲会让音频走走停停，墙钟外推持续超前（表现为控制中心歌词"同步一句、
 // 停一会、隔几句又同步"）；冻结在最后已知位置才能与音频保持一致。
@@ -1484,6 +1488,9 @@ static BOOL LXNowPlayingHasLyricTimeline(void);
 // 定义必须放在 LXSetNowPlayingInfo 之前（.mm 按 C++ 规则编译，C++ 不允许先 tentative
 // 定义再带初值定义；只能前置真实定义）。
 static NSString *LXNowPlayingLyricMusicId = nil;
+// 【第 125 轮】最后 10 秒预取「本首已触发」标记：按 musicId 记，一首只发一次；
+// 起播 / 单曲循环重播时 elapsed < 5s 会清空（见 LXSetNowPlayingInfo）。
+static NSString *LXNowPlayingPreloadFiredMusicId = nil;
 
 static void LXSetNowPlayingInfo(NSDictionary *metadata) {
   @synchronized (LXLyricLock()) {
@@ -1495,6 +1502,12 @@ static void LXSetNowPlayingInfo(NSDictionary *metadata) {
     NSNumber *duration = [metadata[@"duration"] isKindOfClass:[NSNumber class]] ? metadata[@"duration"] : nil;
     NSNumber *elapsedTime = [metadata[@"elapsedTime"] isKindOfClass:[NSNumber class]] ? metadata[@"elapsedTime"] : nil;
     NSNumber *playbackRate = [metadata[@"playbackRate"] isKindOfClass:[NSNumber class]] ? metadata[@"playbackRate"] : nil;
+
+    // 【第 125 轮】起播 / 单曲循环重播：elapsed 很小 ⇒ 允许本首再触发一次最后 10 秒预取。
+    // 换歌时 musicId 比较本身就会放行，这里主要覆盖 loop 同一首的情况。
+    if (elapsedTime != nil && elapsedTime.doubleValue < 5.0) {
+      LXNowPlayingPreloadFiredMusicId = nil;
+    }
 
     // 歌词时间轴归属判定：标题变化 = 换歌 → 清掉旧歌时间轴（新歌歌词经
     // lyricUpdated 重新注入）。不能用"artist 为空"判定换歌——封面图等后到的
@@ -1909,6 +1922,25 @@ static void LXNowPlayingLyricStep(void) {
       : (LXNowPlayingClockHold
         ? LXNowPlayingLyricAnchorElapsedMs
         : LXNowPlayingLyricAnchorElapsedMs + ((CACurrentMediaTime() * 1000.0) - LXNowPlayingLyricAnchorSystemMs) * rate);
+
+    // 【第 125 轮】最后 10 秒 URL 预取的原生触发点（每首一次，与前后台无关）。
+    // JS 的 playProgressChanged 只在 App active 时发布：锁屏 / 灵动岛 / 切后台时
+    // 一条进度拍都没有，预取整条失联（用户实测：只有主界面进度条在时才预取）。
+    // 放在状态文案与「无时间轴」两个早退之前：无歌词的歌、显示状态文案时也要预取。
+    if (!paused) {
+      double totalDurationSeconds = [LXNowPlayingInfoCache[MPMediaItemPropertyPlaybackDuration] doubleValue];
+      double positionSeconds = positionMs / 1000.0;
+      double remainingSeconds = totalDurationSeconds - positionSeconds;
+      NSString *currentMusicId = LXNowPlayingMusicId;
+      if (totalDurationSeconds > 10.0 && remainingSeconds > 0.0 && remainingSeconds <= 10.0 &&
+          currentMusicId.length > 0 &&
+          ![LXNowPlayingPreloadFiredMusicId isEqualToString:currentMusicId]) {
+        LXNowPlayingPreloadFiredMusicId = [currentMusicId copy];
+        [[NSNotificationCenter defaultCenter] postNotificationName:LXPlayerPreloadNextNotificationName
+                                                            object:nil
+                                                            userInfo:@{ @"position": @(positionSeconds), @"musicId": currentMusicId }];
+      }
+    }
 
     // 【第 46 轮】锁屏 / 灵动岛「每秒对表」（用户第 46 轮第 1 条：「进度时间没有按秒加载，
     // 而是按歌词换行才跳转……确保锁屏和灵动岛界面的所有功能正常刷新显示，按钮，音频可视化，
@@ -7453,6 +7485,10 @@ RCT_EXPORT_MODULE();
                                                  name:LXPlayerPositionNotificationName
                                                object:nil];
     [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(handlePreloadNext:)
+                                                 name:LXPlayerPreloadNextNotificationName
+                                               object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self
                                              selector:@selector(handlePlayerSeeked:)
                                                  name:LXTrackPlayerLifecycleNotificationName
                                                object:nil];
@@ -7494,6 +7530,18 @@ RCT_EXPORT_MODULE();
   if (![event isEqualToString:@"seeked"] || position == nil) return;
   dispatch_async(dispatch_get_main_queue(), ^{
     [self sendEventWithName:@"player-seeked" body:@{ @"position": position }];
+  });
+}
+
+// 【第 125 轮】最后 10 秒预取触发（原生歌词时钟跨过门槛时发一次）：转发给 JS。
+// 与 player-position 不同，这条**不看前后台**——锁屏 / 灵动岛 / 后台正是它存在的理由。
+- (void)handlePreloadNext:(NSNotification *)notification {
+  if (!self.hasListeners) return;
+  NSDictionary *userInfo = [notification.userInfo isKindOfClass:[NSDictionary class]] ? notification.userInfo : @{};
+  NSNumber *position = [userInfo[@"position"] isKindOfClass:[NSNumber class]] ? userInfo[@"position"] : nil;
+  NSString *musicId = [userInfo[@"musicId"] isKindOfClass:[NSString class]] ? userInfo[@"musicId"] : @"";
+  dispatch_async(dispatch_get_main_queue(), ^{
+    [self sendEventWithName:@"preload-next" body:@{ @"position": position ?: @0, @"musicId": musicId }];
   });
 }
 
