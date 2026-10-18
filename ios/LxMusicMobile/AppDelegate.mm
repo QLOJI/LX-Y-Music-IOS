@@ -1476,6 +1476,14 @@ static void LXClearNowPlayingLyricLines(void);
 static void LXReanchorNowPlayingLyric(double elapsedMs, double snapshotAtMs, double ageMs);
 static NSObject *LXLyricLock(void);
 static BOOL LXNowPlayingHasLyricTimeline(void);
+// 【第 124 轮】当前歌词时间轴所属的歌曲 id（JS 在 setNowPlayingLyrics 之前单独下发）。
+// 为什么需要它：换歌判定只看 metadata 的 musicId，而歌词（尤其缓存命中的歌）常常在
+// 「新歌的首个元数据发布」之前就已装载完成。首次发布看到 isNewSong = YES 就清时间轴，
+// 会把刚显示的首行连同整条时间轴一起抹掉；lyricUpdated 只发一次，不会再来补 ——
+// 锁屏/灵动岛歌词区从此空白。有了归属 id，只有时间轴确实属于上一首时才清。
+// 定义必须放在 LXSetNowPlayingInfo 之前（.mm 按 C++ 规则编译，C++ 不允许先 tentative
+// 定义再带初值定义；只能前置真实定义）。
+static NSString *LXNowPlayingLyricMusicId = nil;
 
 static void LXSetNowPlayingInfo(NSDictionary *metadata) {
   @synchronized (LXLyricLock()) {
@@ -1587,7 +1595,13 @@ static void LXSetNowPlayingInfo(NSDictionary *metadata) {
       }
     }
 
-    if (isNewSong) LXClearNowPlayingLyricLines();
+    // 【第 124 轮】换歌清时间轴之前先看归属：歌词（缓存命中的歌尤其快）可能已经在新歌的
+    // **首个**元数据发布之前装载完成。此时 isNewSong 仍为真（LXNowPlayingMusicId 还是上一首），
+    // 直接清=把刚显示的首行和整条时间轴抹掉，而 lyricUpdated 不会再来第二次 —— 歌词区从此
+    // 空白（用户报的「有些歌不显示第一行」）。只有时间轴不属于这首新歌时才清。
+    BOOL lyricTimelineForIncoming = musicId != nil && LXNowPlayingLyricMusicId != nil &&
+      [LXNowPlayingLyricMusicId isEqualToString:musicId];
+    if (isNewSong && !lyricTimelineForIncoming) LXClearNowPlayingLyricLines();
     // 歌词时钟锚点：以本次发布的引擎真实位置（elapsedTime）为基准外推；
     // 前台 JS 每行歌词都会发布一次，锚点随之持续校准
     LXRefreshNowPlayingLyricAnchor();
@@ -1715,6 +1729,26 @@ static void LXClearNowPlayingLyricLines(void) {
   @synchronized (LXLyricLock()) {
     LXNowPlayingLyricLines = nil;
     LXNowPlayingLyricIndex = -1;
+    LXNowPlayingLyricMusicId = nil;
+  }
+}
+
+// 【第 124 轮】记录当前时间轴属于哪首歌。JS 在 setNowPlayingLyrics 之前单独调用，
+// 目的与理由见 LXNowPlayingLyricMusicId 的声明处。空串/未知 = 归属不明（换歌时照常清）。
+static void LXSetNowPlayingLyricMusicId(NSString *musicId) {
+  @synchronized (LXLyricLock()) {
+    NSString *incoming = [musicId isKindOfClass:[NSString class]] ? musicId : @"";
+    // 归属 id 变了 = 这条时间轴属于上一首：先清掉，别在「声明归属」与「交出时间轴」
+    // 两次桥调用之间把上一首的行挂在新歌标题下。同 id（开关切换 / 歌词重载）不丢时间轴。
+    BOOL sameOwner = (incoming.length == 0 && LXNowPlayingLyricMusicId == nil) ||
+      (incoming.length > 0 && LXNowPlayingLyricMusicId != nil && [LXNowPlayingLyricMusicId isEqualToString:incoming]);
+    if (!sameOwner) {
+      LXNowPlayingLyricLines = nil;
+      LXNowPlayingLyricIndex = -1;
+      LXNowPlayingArtistLineText = nil;
+      LXNowPlayingArtistLineIndex = -1;
+    }
+    LXNowPlayingLyricMusicId = incoming.length > 0 ? [incoming copy] : nil;
   }
 }
 
@@ -2158,6 +2192,11 @@ static void LXSetNowPlayingLyricLines(NSArray<NSDictionary *> *lines, NSNumber *
     LXReanchorNowPlayingLyric(positionMs.doubleValue,
                              snapshotAtMs ? snapshotAtMs.doubleValue : 0,
                              ageMs ? ageMs.doubleValue : 0);
+  } else if (LXNowPlayingLyricAnchorSystemMs <= 0) {
+    // 【第 124 轮】没有任何位置快照、也还没有旧锚点（起播最早期）：按 0 锚定一次。
+    // 不锚的话 LXNowPlayingLyricStep 会在「无锚点」处早退，前奏首行永远没机会显示，
+    // 歌词区就是用户报的那段空白。
+    LXReanchorNowPlayingLyric(0, 0, 0);
   } else {
     LXRefreshNowPlayingLyricAnchor();
   }
@@ -7304,6 +7343,16 @@ RCT_REMAP_METHOD(setNowPlayingLyrics, setNowPlayingLyrics:(NSArray *)lines posit
   });
 }
 
+// 【第 124 轮】歌词时间轴归属：JS 在 setNowPlayingLyrics 之前调用。原生据此区分
+// 「新歌首帧元数据发布时的时间轴是上一首残留」与「新歌自己的歌词已经装好」，
+// 后者不再被换歌清理抹掉（详见 LXNowPlayingLyricMusicId 声明处）。
+RCT_REMAP_METHOD(setNowPlayingLyricMusicId, setNowPlayingLyricMusicId:(NSString *)musicId resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
+  dispatch_async(dispatch_get_main_queue(), ^{
+    LXSetNowPlayingLyricMusicId(musicId);
+    resolve(nil);
+  });
+}
+
 // JS 慢速校准 tick（~1s 一次的引擎真实位置查询）回传位置：重锚原生歌词/位置时钟。
 // snapshotAtMs / ageMs：快照时间补偿（见 LXReanchorNowPlayingLyric），消除桥接
 // 往返被钉进锚点造成的灵动岛/控制中心歌词恒定滞后。
@@ -7595,6 +7644,17 @@ RCT_EXPORT_METHOD(screenkeepAwake) {
 RCT_EXPORT_METHOD(screenUnkeepAwake) {
   dispatch_async(dispatch_get_main_queue(), ^{
     [UIApplication sharedApplication].idleTimerDisabled = NO;
+  });
+}
+
+// 【第 124 轮】返回转场开始：刷新仍处于暂停态的液态玻璃冻结帧（不解除暂停）。
+// 现场：「上下左右滑动界面再切入切回，透过的画面显示的是移动前的画面，背景已经移动，
+// 动画结束才闪一下刷新」。账本覆盖门要等 screenPopped 才翻，JS 的 50ms 放行轮不到，
+// 返回整段展示的都是冻结旧帧。这里由 JS 在派发 pop 命令前直接调进来，走 Kit 的
+// LXGlassNotifyRefreshFrozenFrames：逐块重采当前主界面 + 同步 present，isPaused 不变。
+RCT_EXPORT_METHOD(refreshLiquidGlassFrames) {
+  dispatch_async(dispatch_get_main_queue(), ^{
+    LXGlassNotifyRefreshFrozenFrames();
   });
 }
 
