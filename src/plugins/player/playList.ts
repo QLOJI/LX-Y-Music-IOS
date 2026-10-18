@@ -5,7 +5,7 @@ import {
   getNativeFlacDuration,
   isNativeFlacActive,
 } from './nativeFlac'
-import { getPositionStamped, elapsedSnapshotFields } from './utils'
+import { getPositionStamped, elapsedSnapshotFields, isEngineOnMusic } from './utils'
 import playerState from '@/store/player/state'
 import { getTimelineDuration } from '@/core/player/timeline'
 import {
@@ -92,6 +92,11 @@ export const playMusic = (musicInfo: LX.Player.PlayMusic, url: string, time: num
 // let musicId = null
 // let duration = 0
 const updateMetaInfo = async(mInfo: LX.Player.MusicInfo, lyric?: string, isPlaying = state.isPlaying) => {
+  // 【第 119 轮·追加】过期发布门控：debounce 会把上一首的 (musicInfo, lyric) 原样留到
+  // 下一拍执行；新歌已经开始却把旧歌的标题/歌词写进卡片，会同时清掉新歌的歌词时间轴
+  // 并把首行擦掉。发布对象必须就是当前曲。
+  const currentMusicId = playerState.musicInfo.id
+  if (currentMusicId != null && mInfo.id != null && mInfo.id !== currentMusicId) return
   const isShowNotificationImage = settingState.setting['player.isShowNotificationImage']
   // const mInfo = formatMusicInfo(musicInfo)
   // console.log('+++++updateMusicPic+++++', track.artwork, track.duration)
@@ -137,7 +142,12 @@ const updateMetaInfo = async(mInfo: LX.Player.MusicInfo, lyric?: string, isPlayi
   //      「把 0 当真实位置、把歌词锚点钉回第 0 行」）：缺字段时系统同样渲染 -:--。
   //      取不到带戳快照时退回 **JS 侧进度位置**，且不带戳 —— 原生按「就是现在」处理，
   //      既不外推也不把锚点回放到过去：字段永远在，位置也不说谎。
-  const stamped = await getPositionStamped().catch(() => null)
+  const stampedSnapshot = await getPositionStamped().catch(() => null)
+  // 【第 119 轮·追加】引擎身份门控：切歌后新歌 URL 还没装载时，位置桥仍读上一首的引擎；
+  // 把它的末尾位置当成本曲 elapsedTime 发布，会把原生歌词锚点直接推到整首末尾 ——
+  // 卡片先显示第一行、随后整段歌词跳到末行/消失。不是本曲的引擎就用 JS 侧位置。
+  const engineMusic = playerState.playMusicInfo.musicInfo
+  const stamped = engineMusic != null && !isEngineOnMusic(engineMusic) ? null : stampedSnapshot
   const elapsedSeconds = Number.isFinite(playerState.progress.nowPlayTime) && playerState.progress.nowPlayTime > 0
     ? playerState.progress.nowPlayTime
     : 0
@@ -149,6 +159,10 @@ const updateMetaInfo = async(mInfo: LX.Player.MusicInfo, lyric?: string, isPlayi
     artist: singer,
     album,
     artwork,
+    // 【第 119 轮·追加】换歌判定改认歌曲 id：标题只是展示字符串（歌手为空时
+    // 「name - Unknow」与「name」两种格式会互相触发 isNewSong），用它判断换歌会把
+    // 同一首的歌词时间轴清掉，首行随即消失。
+    musicId: mInfo.id ?? undefined,
     duration: resolveMetadataDuration(state.prevDuration),
     ...elapsedFields,
     ...(Platform.OS == 'ios'

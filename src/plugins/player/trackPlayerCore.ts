@@ -39,6 +39,7 @@ const formatIOSNowPlayingMetadata = (metadata: {
   elapsedTime?: number
   playbackRate?: number
   lyric?: string
+  musicId?: string
 }) => {
   return {
     title: formatNowPlayingTitleLine(metadata.title, metadata.artist),
@@ -48,6 +49,7 @@ const formatIOSNowPlayingMetadata = (metadata: {
     duration: metadata.duration,
     elapsedTime: metadata.elapsedTime,
     playbackRate: metadata.playbackRate,
+    musicId: metadata.musicId,
   }
 }
 
@@ -152,6 +154,8 @@ export const updateCurrentTrackMetadata = async(metadata: {
   /** elapsedTime 快照的原生时钟戳 / 墙钟年龄：歌词时钟重锚回放用（透传原生，不进系统 info） */
   elapsedTimeSnapshotAt?: number
   elapsedTimeAgeMs?: number
+  /** 当前歌曲 id：原生据此判断换歌（标题字符串只用于展示，不能当身份） */
+  musicId?: string
 }) => {
   if (Platform.OS == 'ios') {
     // iOS 控制中心/锁屏媒体卡片由原生 NowPlayingModule 独家管理，不要再经 RNTP 写入：
@@ -197,6 +201,7 @@ export const ensureCurrentTrackMetadata = (metadata: {
   duration?: number
   elapsedTime?: number
   playbackRate?: number
+  musicId?: string
 }) => {
   void (async() => {
     const targetMetadata = Platform.OS == 'ios' ? formatIOSNowPlayingMetadata(metadata) : metadata
@@ -221,7 +226,8 @@ export const restoreTrack = async(track: LX.Player.Track, position: number, isPl
   await applyCurrentVolume()
   ensureCurrentTrackMetadata({
     title: restoredTrack.title,
-    artist: restoredTrack.artist,
+    artist: restoredTrack.artist === 'Unknow' ? '' : restoredTrack.artist,
+    musicId: restoredTrack.musicId,
     album: restoredTrack.album,
     artwork: typeof restoredTrack.artwork == 'string' ? restoredTrack.artwork : undefined,
     duration: restoredTrack.duration,

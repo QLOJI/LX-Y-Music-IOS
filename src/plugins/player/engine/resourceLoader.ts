@@ -62,7 +62,10 @@ export const loadPlaybackResource = async({
         global.lx.playerTrackId = getNativeFlacTrackId()
         ensureCurrentTrackMetadata({
           title: ('progress' in musicInfo ? musicInfo.metadata.musicInfo.name : musicInfo.name) ?? 'Unknow',
-          artist: ('progress' in musicInfo ? musicInfo.metadata.musicInfo.singer : musicInfo.singer) ?? 'Unknow',
+          // 【第 119 轮·追加】歌手缺失时别再补 'Unknow'：它与 updateMetaInfo 的
+          // 「name - singer / name」标题格式不一致，会被原生当成换歌并清掉歌词时间轴。
+          artist: ('progress' in musicInfo ? musicInfo.metadata.musicInfo.singer : musicInfo.singer) ?? '',
+          musicId: 'progress' in musicInfo ? musicInfo.metadata.musicInfo.id : musicInfo.id,
           album: ('progress' in musicInfo ? musicInfo.metadata.musicInfo.meta.albumName : musicInfo.meta.albumName) ?? undefined,
           artwork: 'progress' in musicInfo
             ? (typeof musicInfo.metadata.musicInfo.meta.picUrl == 'string' ? musicInfo.metadata.musicInfo.meta.picUrl : undefined)
@@ -105,7 +108,10 @@ export const loadPlaybackResource = async({
   const track = await loadTrackPlayerResource(musicInfo, url, startTime, shouldAutoStart)
   ensureCurrentTrackMetadata({
     title: track.title,
-    artist: track.artist,
+    // 同上：buildTracks 缺省补的是 'Unknow'，而 updateMetaInfo 补空串 —— 统一成空串，
+    // 标题格式才稳定，原生不会误判换歌。
+    artist: track.artist === 'Unknow' ? '' : track.artist,
+    musicId: track.musicId,
     album: track.album,
     artwork: typeof track.artwork == 'string' ? track.artwork : undefined,
     // 【第 48 轮】同 nativeFlac 分支：buildTracks 在 iOS 上不带 duration（引擎时长要等
