@@ -210,6 +210,10 @@ export const initUnifiedPlayerController = () => {
             // 'paused' 这一种状态，见 shouldSuppressSystemPause）。
             // 只吞这一句：状态文案「缓存中...」（第 33 轮第 5 条）与 playerWaiting 照旧 ——
             // 真·缓冲耗尽的提示不受影响，缺的只是「把播放态翻成暂停」这一个副作用。
+            // 【第 111 轮】真实断流才翻暂停（与上面「seek 补货直接忽略」组合）：
+            // seek 引起的补货不翻 UI（那条会卡死，第 105 轮现场）；真正的缓冲耗尽则把按钮
+            // 收成暂停、等补满再继续 —— 用户原话「缓存中……播放按钮未暂停等待缓存完再播放」。
+            if (!shouldSuppressSystemPause()) global.app_event.pause()
             global.app_event.playerWaiting()
             // 【第 33 轮第 5 条】用户原话「立即显示为缓存中，缓存下一个 10 秒」：原生引擎的
             // buffering 事件同时覆盖「起播前累积缓存」与「播放中缓冲耗尽、重填下一个 10 秒」
