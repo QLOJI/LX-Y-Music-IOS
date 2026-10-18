@@ -4,7 +4,6 @@ import { getNextPlayMusicInfo, resetRandomNextMusicInfo } from '@/core/player/pl
 import { startPreload } from '@/core/player/preload'
 import { checkUrl } from '@/utils/request'
 import playerState from '@/store/player/state'
-import settingState from '@/store/setting/state'
 import { isCached } from '@/plugins/player/utils'
 import { prefetchNativeFlacPlayback } from '@/plugins/player/nativeFlac'
 
@@ -38,8 +37,10 @@ const preloadNextMusicUrl = async(curTime: number) => {
   const currentMusicId = playerState.musicInfo.id
   if (!currentMusicId) return
 
-  // 对齐上游：预加载受「音频预加载」开关控制（设置里关闭后不再预取下一首）
-  if (!settingState.setting['player.isEnableAudioPreload']) return
+  // 【第 124 轮】最后 10 秒的取链不再受「音频预加载」开关门控：这条是用户点名的
+  // 核心行为（取下一首链接、下首直接复用缓存），与参考工程一致 —— 参考工程的
+  // usePreloadNextMusic 里也没有这道开关；开关只控制 core/player/preload.ts 的完整
+  // 预加载（歌词预取 + 换源兜底链）。此前一旦持久化值为 false，整条取链就静默失踪。
 
   preloadMusicInfo.isLoading = true
   const requestId = ++preloadMusicInfo.requestId

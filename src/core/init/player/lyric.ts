@@ -3,7 +3,7 @@ import playerState from '@/store/player/state'
 import { updateMetaData } from '@/plugins/player'
 import { setLastLyric } from '@/core/player/playInfo'
 import { getCurrentLyricLines, getLyricLineTextByTime } from '@/plugins/lyric'
-import { setNowPlayingCurrentLine, setNowPlayingLyrics } from '@/utils/nativeModules/nowPlaying'
+import { setNowPlayingCurrentLine, setNowPlayingLyrics, setNowPlayingLyricMusicId } from '@/utils/nativeModules/nowPlaying'
 // 【第 50 轮】开关切换时同时对齐第三条通路：卡片歌词区的状态文案（见 nowPlayingStatus.ts）
 import { syncNowPlayingStatusText } from './nowPlayingStatus'
 import settingState from '@/store/setting/state'
@@ -44,6 +44,9 @@ export const applyBluetoothLyricSetting = () => {
   if (Platform.OS != 'ios') return
   const on = isShowBluetoothLyric()
   if (on) {
+    // 【第 124 轮】先声明时间轴归属，再交时间轴：原生要据此避免「新歌首个元数据发布」
+    // 把已经装好的时间轴当成上一首残留清掉（首行随之消失）。
+    if (playerState.musicInfo.id) void setNowPlayingLyricMusicId(playerState.musicInfo.id)
     if (playerState.musicInfo.lrc) void setNowPlayingLyrics(getCurrentLyricLines())
     setLastLyric(realCurrentLyric)
     if (playerState.playMusicInfo.musicInfo) {
@@ -80,9 +83,11 @@ export default async(setting: LX.AppSetting) => {
       // 无论开关如何都记录真实当前行：关闭期间「音箱只显示歌名」不应导致
       // 重新打开后丢失行号（否则要等下一行变化才恢复歌词显示）。
       realCurrentLyric = text || undefined
-      // 【第 119 轮】前奏（解析器还没进入第一行）把第 0 行当作当前行：参考工程在播放开始就
+      // 【第 119 轮】前奏（解析器还没进入第一行）把第一行当作当前行：参考工程在播放开始就
       // 显示第一行，旧实现空行直接丢掉，要等第二行才第一次出现歌词。
-      const introLine = getCurrentLyricLines()[0]
+      // 【第 124 轮】取**第一条有文本**的行：有些歌词源的首条是空行/空白（时间轴上存在，
+      // 大歌词会跳到下一条有文本的），拿 [0] 会得到空串，歌词区看起来仍是空的。
+      const introLine = getCurrentLyricLines().find(line => (line.text ?? '').trim().length > 0)
       if (!realCurrentLyric && introLine && playerState.progress.nowPlayTime * 1000 < introLine.time) {
         realCurrentLyric = introLine.text || undefined
       }
@@ -125,9 +130,11 @@ export default async(setting: LX.AppSetting) => {
           // 与 JS 逐行状态对齐（窗口内丢弃的回调不会补发）：判据与原生侧一致
           // （最后一个 time ≤ 位置的行）；早于首行视为无行——前奏不预告第一句。
           const positionMs = lyricPosition * 1000
+          // 前奏段取第一条**有文本**的行（部分歌词源首条是空行/空白，[0] 会得到空串）。
+          const firstAudibleLine = lines.find(line => (line.text ?? '').trim().length > 0)
           realCurrentLyric = positionMs >= (lines[0]?.time ?? 0)
             ? (getLyricLineTextByTime(positionMs) || undefined)
-            : (lines[0]?.text || undefined)
+            : (firstAudibleLine?.text || undefined)
           prevLyric = realCurrentLyric
           // 【第 119 轮】装载完成即把当前行（前奏 = 第一行）推到卡片：不依赖下一行换行事件，
           // 也不依赖元数据发布冷却，播放一开始锁屏/灵动岛就有第一行。
@@ -136,6 +143,9 @@ export default async(setting: LX.AppSetting) => {
           setLastLyric(realCurrentLyric ?? undefined)
           void setNowPlayingCurrentLine(realCurrentLyric ?? '')
         }
+        // 【第 124 轮】先 await 归属声明，再交时间轴：原生随后收到的首个元数据发布
+        // （isNewSong 仍为真）就不会把这条新时间轴当成上一首残留清掉。
+        if (playerState.musicInfo.id) await setNowPlayingLyricMusicId(playerState.musicInfo.id)
         await setNowPlayingLyrics(lines, lyricPosition)
       }).catch(() => {}).finally(() => {
         lyricLoading -= 1
