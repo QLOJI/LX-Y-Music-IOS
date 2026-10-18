@@ -696,6 +696,10 @@ static NSUInteger LXNowPlayingArtworkRequestId = 0;
 static NSString *LXNowPlayingArtworkRetryPath = nil;
 static NSInteger LXNowPlayingArtworkAttempt = 0;
 static MPNowPlayingPlaybackState LXNowPlayingState = MPNowPlayingPlaybackStateStopped;
+// 【第 119 轮·追加】当前卡片的歌曲 id（JS 随元数据透传，不进系统 info）。
+// 换歌判定只认 id：标题是展示字符串（歌手缺失时「名称 - Unknow」与「名称」两种格式），
+// 拿标题猜换歌会把同一首的歌词时间轴误清，首行随即消失。
+static NSString *LXNowPlayingMusicId = nil;
 static BOOL LXIsReceivingRemoteControlEvents = NO;
 static NSString * const LXTrackPlayerLifecycleNotificationName = @"LXTrackPlayerLifecycle";
 static id LXTrackPlayerLifecycleObserver = nil;
@@ -1370,6 +1374,7 @@ static void LXClearNowPlayingInfo(void) {
     LXNowPlayingArtworkRetryPath = nil;
     LXNowPlayingInfoCache = nil;
     LXNowPlayingState = MPNowPlayingPlaybackStateStopped;
+    LXNowPlayingMusicId = nil;
     LXNowPlayingElapsedSnapshotAtMs = 0;
     // 【第 50 轮】整卡片清空时一并撤销状态文案覆盖：停止 / 退出后残留的「缓存中…」
     // 不能在下一次发布时凭空复活（JS 侧 statusText 清空也会推一次空串，这里是双保险）。
@@ -1469,6 +1474,8 @@ static void LXRegisterTrackPlayerLifecycleObserver(void) {
 static void LXRefreshNowPlayingLyricAnchor(void);
 static void LXClearNowPlayingLyricLines(void);
 static void LXReanchorNowPlayingLyric(double elapsedMs, double snapshotAtMs, double ageMs);
+static NSObject *LXLyricLock(void);
+static BOOL LXNowPlayingHasLyricTimeline(void);
 
 static void LXSetNowPlayingInfo(NSDictionary *metadata) {
   @synchronized (LXLyricLock()) {
@@ -1488,10 +1495,27 @@ static void LXSetNowPlayingInfo(NSDictionary *metadata) {
     NSString *previousTitle = [LXNowPlayingInfoCache[MPMediaItemPropertyTitle] isKindOfClass:[NSString class]]
       ? LXNowPlayingInfoCache[MPMediaItemPropertyTitle]
       : nil;
+    // 【第 119 轮·追加】换歌判定优先认歌曲 id；没有 id 的老调用退回标题比较。
+    // 标题只是展示字符串：`ensureCurrentTrackMetadata` 的补发与 `updateMetaInfo` 在歌手
+    // 缺失时一个给「名称 - Unknow」、一个给「名称」，同曲不同标题 ⇒ 旧的纯标题判据会
+    // 在同一次播放里把歌词时间轴清掉，锁屏/灵动岛首行随即消失。
+    NSString *musicId = [metadata[@"musicId"] isKindOfClass:[NSString class]] ? metadata[@"musicId"] : nil;
     BOOL isNewSong = title != nil && previousTitle != nil && ![title isEqualToString:previousTitle];
+    if (musicId.length > 0 && LXNowPlayingMusicId.length > 0) {
+      isNewSong = ![musicId isEqualToString:LXNowPlayingMusicId];
+    }
+    if (musicId.length > 0) LXNowPlayingMusicId = [musicId copy];
 
     if (title != nil) info[MPMediaItemPropertyTitle] = title;
-    if (artist != nil) info[MPMediaItemPropertyArtist] = artist;
+    // 【第 119 轮·追加】空 artist 不清已装载的歌词行：`ensureCurrentTrackMetadata` 在
+    // 起播后的 0/160/420/900ms 会补发一次不带歌词的元数据（artist 恒为空串），旧写法
+    // 把刚写上去的第一行擦掉，之后要等下一行歌词事件才恢复 —— 现场就是「第一行只显示
+    // 1 秒 / 有些歌干脆没有」。时间轴在时歌词区归原生时钟仲裁；关闭蓝牙歌词与换歌两条
+    // 真正要清行的路都会先把时间轴清空。
+    if (artist != nil) {
+      // isNewSong 必须放行空 artist：换歌要立刻擦掉上一首留在歌词区的句子。
+      if (artist.length > 0 || isNewSong || !LXNowPlayingHasLyricTimeline()) info[MPMediaItemPropertyArtist] = artist;
+    }
     if (album != nil) info[MPMediaItemPropertyAlbumTitle] = album;
     // 【第 48 轮】时长只进不退：已知的正时长不得被一次 duration = 0 的发布抹掉。
     // 用户原话：「歌曲刚开始播放时，锁屏界面的歌曲进度、歌词、歌曲时间显示都不显示，
@@ -1620,6 +1644,12 @@ static NSInteger LXNowPlayingLyricIndex = -1;
 // 时间轴被换掉（换歌 / 清空）时必须作废 —— 见 LXSetNowPlayingLyricLines。
 static NSString *LXNowPlayingArtistLineText = nil;
 static NSInteger LXNowPlayingArtistLineIndex = -1;
+
+static BOOL LXNowPlayingHasLyricTimeline(void) {
+  @synchronized (LXLyricLock()) {
+    return LXNowPlayingLyricLines.count > 0;
+  }
+}
 // 【第 46 轮】上一次「每秒对表」（把外推位置写回 ElapsedPlaybackTime 并全量重发）的
 // 原生时钟戳（CACurrentMediaTime 毫秒）。0 = 还没对过表（起播后第一拍立即对一次）。
 // 见 LXNowPlayingLyricStep 里的 1Hz 心跳：只把已有 tick 拿来计数，不新建定时器。
@@ -3782,6 +3812,10 @@ RCT_REMAP_METHOD(updateEqualizerConfig, updateEqualizerConfig:(NSDictionary *)co
 @property (nonatomic, strong) NSCondition *streamCondition;
 @property (nonatomic, strong) dispatch_queue_t decoderQueue;
 @property (nonatomic, strong) dispatch_queue_t renderQueue;
+// 【第 121 轮】解码循环是否已排程/在跑。seek 落点可能在流信息（采样率）就绪前到达，
+// 也可能在解码循环解完整首退场之后到达 —— 必须区分「还没开始跑（等它自己应用 seek）」
+// 与「已经退场（要补开一轮）」，否则会把恢复播放的 seek 误拒或起出两条解码循环。
+@property (atomic, assign) BOOL decoderLoopScheduled;
 @property (nonatomic, strong) AVAudioEngine *engine;
 @property (nonatomic, strong) AVAudioSourceNode *sourceNode;
 @property (nonatomic, strong) AVAudioUnitTimePitch *timePitchNode;
@@ -5627,11 +5661,13 @@ static const int64_t LXResumeFadeStepMs = 40;
   self.streamError = LXError(@"streaming_flac_decoder", @"libFLAC is not available");
   [self emitErrorMessage:self.streamError.localizedDescription];
 #else
+  self.decoderLoopScheduled = YES;
   dispatch_async(self.decoderQueue, ^{
     self.decoder = FLAC__stream_decoder_new();
     if (self.decoder == NULL) {
       self.streamError = LXError(@"streaming_flac_decoder", @"Failed to create FLAC decoder");
       [self emitErrorMessage:self.streamError.localizedDescription];
+      self.decoderLoopScheduled = NO;
       return;
     }
 
@@ -5653,6 +5689,7 @@ static const int64_t LXResumeFadeStepMs = 40;
       [self emitErrorMessage:self.streamError.localizedDescription];
       FLAC__stream_decoder_delete(self.decoder);
       self.decoder = NULL;
+      self.decoderLoopScheduled = NO;
       return;
     }
 
@@ -5680,6 +5717,7 @@ static const int64_t LXResumeFadeStepMs = 40;
     FLAC__stream_decoder_finish(self.decoder);
     FLAC__stream_decoder_delete(self.decoder);
     self.decoder = NULL;
+    self.decoderLoopScheduled = NO;
 
     // 【第 119 轮】带代际：解码循环退出与切歌/复位并发时，这个块可能在新流已经打开后
     // 才执行 —— 旧流的 ended 绝不能发到新歌头上（那会一次拖到末尾连跳两首）。
@@ -5744,6 +5782,20 @@ static const int64_t LXResumeFadeStepMs = 40;
   [self.streamCondition unlock];
   if (task != nil) [task cancel];
   if (session != nil) [session invalidateAndCancel];
+}
+
+// 【第 121 轮】待应用 seek 的循环保底：在解码串行队列上按「当前真实状态」判定。
+//   · 循环已在跑（scheduled = YES）→ 下一拍 applyPendingSeekIfNeeded 会消费它；
+//   · 流还没开始跑（openStream 刚排程）→ 同上，等它自己消费（不能另起一轮）；
+//   · 循环已退场（scheduled = NO）→ 补开一轮。
+// 绝不能在桥线程用 `decoder == NULL` 猜：恢复播放时流信息尚未解析、decoder 本来就是空的，
+// 那样要么误拒 seek，要么并发出两条解码循环。
+- (void)ensureDecoderLoopForPendingSeek {
+  dispatch_async(self.decoderQueue, ^{
+    if (self.stopRequested || !self.seekRequested || self.decoderLoopScheduled) return;
+    self.readOffset = 0;
+    [self startDecoderLoop];
+  });
 }
 
 - (void)restartDecoderLoopForSeek {
@@ -5998,16 +6050,15 @@ RCT_REMAP_METHOD(seekTo, seekToStream:(nonnull NSNumber *)position resolver:(RCT
   // 【第 119 轮】只有「流已拆干净」（idle / 停止后 cleanupAudioGraph 把图拆没）才拒绝。
   // 不再按 stopped 拒绝：解码循环到达整首末尾后会自行退出，而播放状态仍停在刚才那一拍，
   // 一次「拖到最后一秒」不该被当成「没有流可 seek」整单丢掉。
-  if (self.currentURL.length == 0 || [self.currentState isEqualToString:@"idle"] ||
-      self.sourceNode == nil || self.sampleRate <= 0) {
+  // 【第 121 轮】也不能把「流信息还没解析完」当成失效：恢复播放的 seek 就在 openStream
+  // 返回后立刻发出，那一刻采样率仍是 0、sourceNode 还没挂上 —— 旧守卫把它整单拒绝，
+  // 记忆进度永远落不到引擎上（现场就是「播放进度记录功能没了」）。
+  BOOL tornDown = [self.currentState isEqualToString:@"stopped"] && self.sourceNode == nil;
+  if (self.currentURL.length == 0 || [self.currentState isEqualToString:@"idle"] || tornDown) {
     NSError *error = LXError(@"streaming_flac_seek", @"No streaming FLAC playback to seek");
     reject(@"streaming_flac_seek", error.localizedDescription, error);
     return;
   }
-  // 【第 119 轮】解码器在播完 / 整首解完后会置空（循环已退出）。旧实现直接 reject，
-  // 现场就是「拖到最后：进度到末尾、声音继续放十几秒、暂停无效」。这里登记完 seek 后
-  // 把解码循环重新拉起来，让落点照常生效。
-  BOOL needsDecoderRestart = self.decoder == NULL;
 
   double requestedPosition = MAX([position doubleValue], 0);
   if (self.duration > 0) requestedPosition = LXClampDouble(requestedPosition, 0, self.duration);
@@ -6057,7 +6108,7 @@ RCT_REMAP_METHOD(seekTo, seekToStream:(nonnull NSNumber *)position resolver:(RCT
   [self.streamCondition broadcast];
   [self.streamCondition unlock];
 
-  if (needsDecoderRestart) [self restartDecoderLoopForSeek];
+  [self ensureDecoderLoopForPendingSeek];
 
   [self emitState:self.currentState position:@(requestedPosition) duration:@(self.duration)];
   resolve(@(requestedPosition));
