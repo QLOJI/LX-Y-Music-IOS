@@ -1,4 +1,4 @@
-import { getMusicUrlInfo } from '@/core/music'
+import { getLyricInfo, getMusicUrlInfo } from '@/core/music'
 import { removeMusicUrlAll } from '@/core/music/utils'
 import { getNextPlayMusicInfo, resetRandomNextMusicInfo } from '@/core/player/player'
 import { startPreload } from '@/core/player/preload'
@@ -76,6 +76,29 @@ const preloadNextMusicUrl = async(curTime: number) => {
   if (requestId === preloadMusicInfo.requestId) preloadMusicInfo.isLoading = false
 }
 
+// 【第 113 轮】播放中就把下一首的歌词取好：自动切歌时歌词已在缓存里，0:00 就有
+// 时间轴可显示（否则要等网络回来，前奏段是空的）。只在起播后触发 —— musicToggled
+// 时洗牌袋还没记账，提前取会把当前歌当成下一首；最后 12 秒跳过，交给
+// preloadNextMusicUrl 那条链，避免两个入口同时向袋子里取歌。
+const lyricPrefetchInfo = { musicId: '', loading: false }
+const preloadNextMusicLyric = async() => {
+  const currentMusicId = playerState.musicInfo.id
+  if (!currentMusicId) return
+  if (lyricPrefetchInfo.loading || lyricPrefetchInfo.musicId === currentMusicId) return
+  const { nowPlayTime, maxPlayTime } = playerState.progress
+  if (maxPlayTime > 10 && maxPlayTime - nowPlayTime < 12) return
+
+  lyricPrefetchInfo.musicId = currentMusicId
+  lyricPrefetchInfo.loading = true
+  try {
+    const info = await getNextPlayMusicInfo().catch(() => null)
+    if (!info || playerState.musicInfo.id !== currentMusicId) return
+    await getLyricInfo({ musicInfo: info.musicInfo }).catch(() => {})
+  } finally {
+    lyricPrefetchInfo.loading = false
+  }
+}
+
 export default () => {
   const setProgress = (time: number) => {
     if (!playerState.musicInfo.id) return
@@ -88,8 +111,10 @@ export default () => {
 
   const handleConfigUpdated: typeof global.state_event.configUpdated = (keys, _settings) => {
     if (!keys.includes('player.togglePlayMethod')) return
-    if (!preloadMusicInfo.info || preloadMusicInfo.info.isTempPlay) return
+    // 模式变了「下一首」也随之变化：memo 必须作废（第 113 轮起歌词预取会在起播时
+    // 就写入 memo，不能再依赖 preloadMusicInfo.info 是否已有值）。
     resetRandomNextMusicInfo()
+    if (!preloadMusicInfo.info || preloadMusicInfo.info.isTempPlay) return
     preloadMusicInfo.info = null
     preloadMusicInfo.preProgress = playerState.progress.nowPlayTime
   }
@@ -116,6 +141,9 @@ export default () => {
 
   global.app_event.on('setProgress', setProgress)
   global.app_event.on('musicToggled', handleSetPlayInfo)
+  global.app_event.on('play', () => {
+    void preloadNextMusicLyric()
+  })
   global.state_event.on('configUpdated', handleConfigUpdated)
   global.state_event.on('playProgressChanged', handlePlayProgressChanged)
 }
