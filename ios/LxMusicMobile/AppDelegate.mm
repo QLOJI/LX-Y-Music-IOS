@@ -8483,6 +8483,45 @@ static BOOL LXGlassSettleDeceleratingScrollView(void) {
 
 @end
 
+// ============================================================================
+// 【第 126 轮】右滑返回的冻结帧刷新锚点
+// ============================================================================
+// 用户现场：惯性滑动中点迷你播放器进入详情 → 右滑返回。手势全程底部玻璃透过的画面
+// 仍是进入详情前的冻结帧，与完全返回后的背景不一致，收尾还会闪一下。
+//
+// 为什么现有两条路都盖不住：
+//   · JS 的三个 pop 入口只覆盖「返回按钮」；系统右滑手势不经过 JS；
+//   · RNN 的 screenPopped 在交互结束时才到 —— JS 的整段放行窗口（第 125 轮）此时
+//     才开，整段手势早就展示完了；
+//   · 第 124 轮的原生刷新只在 JS 的 pop 入口被调用，右滑路径没人叫它。
+//
+// 最简单的锚点：UIKit 在交互式 pop **一开始**就会调用目标页（Home）的
+// -viewWillAppear:（手势取消也会调用）。这是这条路径上最早、且完全不依赖 JS 的
+// 时机。这里直接走第 124 轮的 Kit 桥刷新所有暂停态玻璃的冻结帧：重采当前主界面
+// 并同步 present，暂停态不变（转场仍静止，只是静止在移动后的当前帧）。没有暂停
+// 玻璃时是空操作；只多一次主线程采景，成本与既有恢复路径同档。
+static void (*LXOrigViewControllerViewWillAppear)(UIViewController *, SEL, BOOL) = NULL;
+
+static void LX_UIViewController_viewWillAppear(UIViewController *self, SEL _cmd, BOOL animated) {
+  if (LXOrigViewControllerViewWillAppear != NULL) {
+    LXOrigViewControllerViewWillAppear(self, _cmd, animated);
+  }
+  LXGlassNotifyRefreshFrozenFrames();
+}
+
+@interface LXGlassReturnGestureSetup : NSObject
+@end
+@implementation LXGlassReturnGestureSetup
+
++ (void)load {
+  Method method = class_getInstanceMethod([UIViewController class], @selector(viewWillAppear:));
+  if (method == nil) return;
+  LXOrigViewControllerViewWillAppear = method_getImplementation(method);
+  method_setImplementation(method, (IMP)LX_UIViewController_viewWillAppear);
+}
+
+@end
+
 @interface CryptoModule : NSObject<RCTBridgeModule>
 @end
 
