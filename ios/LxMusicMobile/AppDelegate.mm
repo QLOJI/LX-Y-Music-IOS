@@ -8521,7 +8521,7 @@ static void LX_UIViewController_viewWillAppear(UIViewController *self, SEL _cmd,
 + (void)load {
   Method method = class_getInstanceMethod([UIViewController class], @selector(viewWillAppear:));
   if (method == nil) return;
-  LXOrigViewControllerViewWillAppear = method_getImplementation(method);
+  LXOrigViewControllerViewWillAppear = (void (*)(UIViewController *, SEL, BOOL))method_getImplementation(method);
   method_setImplementation(method, (IMP)LX_UIViewController_viewWillAppear);
 }
 
