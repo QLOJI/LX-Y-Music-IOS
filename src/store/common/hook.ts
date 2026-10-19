@@ -196,8 +196,46 @@ export const useAppActive = () => {
  */
 export const usePagerDragging = () => {
   const [value, update] = useState(false)
+  const holdTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  useEffect(() => subscribePagerDrag(update), [])
+  useEffect(() => {
+    const clearHold = () => {
+      if (holdTimerRef.current == null) return
+      clearTimeout(holdTimerRef.current)
+      holdTimerRef.current = null
+    }
+    // 【第 127 轮】把实时档从「手势会话」扩到「整段动画」：松手后的吸附回弹、
+    // 点 tab 的程序化翻页都在手势结束之后才走完，旧写法在这一段掉回 30fps，
+    // 玻璃看起来一顿一顿。这里在任何一次翻页动画开始/结束时保持 420ms 实时窗口。
+    const holdLive = () => {
+      clearHold()
+      update(true)
+      holdTimerRef.current = setTimeout(() => {
+        holdTimerRef.current = null
+        update(false)
+      }, 420)
+    }
+    const offDrag = subscribePagerDrag((dragging) => {
+      if (dragging) {
+        clearHold()
+        update(true)
+      } else {
+        holdLive()
+      }
+    })
+    const handleNavActiveId = () => { holdLive() }
+    global.state_event.on('navActiveIdUpdated', handleNavActiveId)
+    // Tab 栏收起/展开也是逐帧变形动画（手点收起按钮时没有滚动窗口），同样保持实时档。
+    // 事件由 tabBarCollapse 单例在状态真正落地时发出（不在这里直接订阅原生事件）。
+    global.state_event.on('tabBarCollapseUpdated', holdLive)
+
+    return () => {
+      offDrag()
+      global.state_event.off('navActiveIdUpdated', handleNavActiveId)
+      global.state_event.off('tabBarCollapseUpdated', holdLive)
+      clearHold()
+    }
+  }, [])
 
   return value
 }

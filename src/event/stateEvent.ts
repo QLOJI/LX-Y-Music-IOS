@@ -93,6 +93,12 @@ export class StateEvent extends Event {
     this.emit('navReturningWindowUpdated', windowActive)
   }
 
+  // 【第 127 轮】Tab 栏收起/展开真正落地（tabBarCollapse 单例发出）：玻璃据此把
+  // 实时档覆盖到 220ms 的收展动画上（手点收起按钮时没有滚动窗口）。
+  tabBarCollapseUpdated(collapsed: boolean) {
+    this.emit('tabBarCollapseUpdated', collapsed)
+  }
+
   apiSourceUpdated(source: LX.AppSetting['common.apiSource']) {
     this.emit('apiSourceUpdated', source)
   }
