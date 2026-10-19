@@ -8502,15 +8502,19 @@ static BOOL LXGlassSettleDeceleratingScrollView(void) {
 //
 // 最简单的锚点：UIKit 在交互式 pop **一开始**就会调用目标页（Home）的
 // -viewWillAppear:（手势取消也会调用）。这是这条路径上最早、且完全不依赖 JS 的
-// 时机。这里直接走第 124 轮的 Kit 桥刷新所有暂停态玻璃的冻结帧：重采当前主界面
-// 并同步 present，暂停态不变（转场仍静止，只是静止在移动后的当前帧）。没有暂停
-// 玻璃时是空操作；只多一次主线程采景，成本与既有恢复路径同档。
+// 时机。这里直接走 Kit 桥开启冻结帧刷新会话（第 130 轮起整段 60Hz 连续补帧），
+// 暂停态不变。第 130 轮补的方向门：push 进来的新页同样会走 viewWillAppear，但那里
+// 没有冻结帧要救，整树重采只会和新页首次布局抢主线程（「进入详情页卡顿」）。
 static void (*LXOrigViewControllerViewWillAppear)(UIViewController *, SEL, BOOL) = NULL;
 
 static void LX_UIViewController_viewWillAppear(UIViewController *self, SEL _cmd, BOOL animated) {
   if (LXOrigViewControllerViewWillAppear != NULL) {
     LXOrigViewControllerViewWillAppear(self, _cmd, animated);
   }
+  // 只有「返回到这一页」（pop / 右滑返回）才需要救冻结帧。push 进来的新页
+  // （isMovingToParent / isBeingPresented）没有冻结帧要刷新，整树重采只会和
+  // 新页首次布局抢主线程 —— 用户第 130 轮报的「进入播放详情页卡顿」。
+  if (self.isMovingToParent || self.isBeingPresented) return;
   LXGlassNotifyRefreshFrozenFrames();
 }
 
