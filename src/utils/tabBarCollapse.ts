@@ -61,6 +61,9 @@ const applyCollapsed = (v: boolean): void => {
   if (collapsed === v) return
   collapsed = v
   for (const listener of listeners) listener(v)
+  // 【第 127 轮】广播给玻璃实时档：收展是 220ms 的逐帧变形动画，手点收起按钮时
+  // 没有滚动窗口，玻璃会以静止档 30fps 跟这段动画 —— 保持 420ms 实时档才不顿。
+  global.state_event.tabBarCollapseUpdated(v)
 }
 
 /** 玻璃醒了：把欠下的那一次落地 */
