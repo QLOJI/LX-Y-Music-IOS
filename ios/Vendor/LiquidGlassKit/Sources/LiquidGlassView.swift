@@ -407,12 +407,29 @@ private final class GlassInstanceRegistry {
             DispatchQueue.main.async { [weak self] in self?.refreshFrozenFrames() }
             return
         }
+        guard refreshPausedFramesOnce() else { return }
+        // 【第 127 轮】右滑返回是连续动画：手势开始那一拍之后背景可能还在动（惯性收尾 /
+        // 布局落定）。在接下来 240ms 再补三拍，暂停态玻璃也能逐段跟上；玻璃一旦恢复
+        // 渲染（isPaused == false）就自然跳过这些补拍。
+        for delay in [0.08, 0.16, 0.24] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                _ = self?.refreshPausedFramesOnce()
+            }
+        }
+    }
+
+    /// 刷新所有暂停态在窗玻璃；返回 true 表示至少刷新了一块。
+    @discardableResult
+    private func refreshPausedFramesOnce() -> Bool {
+        var refreshed = false
         for instance in instances.allObjects {
             guard let glass = instance as? LiquidGlassView,
                   glass.window != nil,
                   glass.isPaused else { continue }
             glass.refreshFrozenFrame()
+            refreshed = true
         }
+        return refreshed
     }
 }
 
@@ -792,6 +809,14 @@ final class LiquidGlassView: MTKView {
     /// 留 2ms 余量让「恰好 16.67ms 的一拍」稳定通过；静止档 33.3ms 从 31.3ms 起放行，
     /// 频率不变（渲染档本身就是 30fps 的 33.3ms 一拍）。
     private static let captureGateJitterGuard: TimeInterval = 0.002
+    /// 【第 127 轮】全局采景名额的授予间隔缩放（相对实时/静止档的单实例间隔）。
+    ///
+    /// 一块玻璃的采景间隔是 16.7ms（实时）/ 33.3ms（静止），但名额闸门此前要求
+    /// **合计**也只有这么多：两块常驻玻璃（Tab 栏 + 迷你播放器）在实时档各只分到
+    /// 约 30fps，画面逐帧更新却看起来一顿一顿。取 0.5 后实时档每 8.35ms 放一个名额，
+    /// 两块玻璃各 60fps；静止档每 16.65ms 放一个名额（两块各 30fps，与引擎档一致）。
+    /// 主线程占用 = 每块玻璃一帧最多一次整树渲染，次数与各自的渲染帧率同阶，仍然有界。
+    private static let globalCaptureSlotScale: TimeInterval = 0.5
 
     /// 采景节流（**每实例**，2026-10-02，用户第 5 条）：两次采景之间的最小墙钟间隔。
     /// 完整说明见 shouldThrottleCapture。取 30fps（= idleFramesPerSecond 的静止态基线）。
@@ -1051,6 +1076,11 @@ final class LiquidGlassView: MTKView {
     /// 陈旧度门放行——不会把上一页内容永久留在玻璃里。
     func handleResumeFromPause() {
         consecutiveUniformFrames = 0
+        // 【第 127 轮】恢复（返回 / 回前台）也按实时档跑一段：返回转场与露出动画里
+        // 玻璃要和背景同帧跟手，静止档 30fps 会明显一顿一顿。0.9s 后自动落回静止档。
+        let resumeNow = CACurrentMediaTime()
+        reentryLiveStartedAt = resumeNow
+        scheduleReentryLiveExpiry()
         lastCaptureHadPartialBlack = false
         lastCaptureAt = 0
         Self.resetGlobalCaptureGate()
@@ -1082,7 +1112,6 @@ final class LiquidGlassView: MTKView {
         // 它整段转场都对），它就是「刚被接受的画面」。所以把锚点挪到恢复时刻，
         // 让沿用门在这之后仍然只有 150ms 的有效期（上限不变），再叠一个 120ms 的静默窗
         // 兜住启发式漏判的干净可疑帧。
-        let resumeNow = CACurrentMediaTime()
         lastCommitAcceptedAt = resumeNow
         resumeQuietUntil = resumeNow + Self.resumeQuietDuration
         // 【第 67 轮】暂停期间 CAMetalLayer 的内容可能已被系统回收（App 挂后台再回来、
@@ -1353,6 +1382,9 @@ final class LiquidGlassView: MTKView {
         let interval = isLiveCaptureActive ? Self.liveCaptureMinInterval : Self.captureMinInterval
         Self.globalCaptureLock.lock()
         defer { Self.globalCaptureLock.unlock() }
+        // 【第 127 轮】名额节拍 = 单实例档位 × globalCaptureSlotScale（见常量注释）。
+        // 队首过期仍按单实例间隔清理：等待者最多等一整拍，与旧口径一致。
+        let slotInterval = interval * Self.globalCaptureSlotScale
         // 排队超过一整格还没回来的实例（被暂停 / 实时档已结束 / 已被移除）不再占位：
         // 队首永远等不到人的话，后面的实例会被一个死名字无辜拖住。
         Self.globalCaptureQueue.removeAll { now - $0.at >= interval }
@@ -1361,7 +1393,7 @@ final class LiquidGlassView: MTKView {
             Self.globalLastCaptureAt = now
             return true
         }
-        if now - Self.globalLastCaptureAt < interval - Self.captureGateJitterGuard {
+        if now - Self.globalLastCaptureAt < slotInterval - Self.captureGateJitterGuard {
             if !Self.globalCaptureQueue.contains(where: { $0.id == me }) {
                 Self.globalCaptureQueue.append((me, now))
             }
