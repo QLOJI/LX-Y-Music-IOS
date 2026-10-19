@@ -8512,9 +8512,9 @@ static void LX_UIViewController_viewWillAppear(UIViewController *self, SEL _cmd,
     LXOrigViewControllerViewWillAppear(self, _cmd, animated);
   }
   // 只有「返回到这一页」（pop / 右滑返回）才需要救冻结帧。push 进来的新页
-  // （isMovingToParent / isBeingPresented）没有冻结帧要刷新，整树重采只会和
+  // （movingToParentViewController / beingPresented）没有冻结帧要刷新，整树重采只会和
   // 新页首次布局抢主线程 —— 用户第 130 轮报的「进入播放详情页卡顿」。
-  if (self.isMovingToParent || self.isBeingPresented) return;
+  if (self.movingToParentViewController || self.beingPresented) return;
   LXGlassNotifyRefreshFrozenFrames();
 }
 
