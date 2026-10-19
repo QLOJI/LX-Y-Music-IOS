@@ -12,6 +12,11 @@
 // 【第 66 轮第 1 条】玻璃「冻结前」的回调口：vendored LiquidGlassKit 在把渲染循环暂停
 // 之前同步回调进来（注册在文件下方的 LXGlassFreezeSettleSetup，+load 早于 main）。
 #import <LiquidGlassKit/LXGlassFreezeHook.h>
+// 【第 126 轮】Kit 桥的本地前置声明（与 LXGlassFreezeHook.h 同签名）。
+// CocoaPods 的公开头是 pod install 时拷进 Pods/Headers 的；CI 若命中了旧 Pods 缓存，
+// 头里可能还没有这条桥，App 侧会报「undeclared identifier」。这里重复声明一次，
+// 编译不再依赖缓存头的新旧；真正的实现仍由 Kit 的 .mm / Swift 提供。
+extern "C" void LXGlassNotifyRefreshFrozenFrames(void);
 
 @class SceneDelegate;
 #import <Security/Security.h>
