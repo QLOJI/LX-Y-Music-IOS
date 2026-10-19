@@ -393,40 +393,61 @@ private final class GlassInstanceRegistry {
         return roots.filter { view in !roots.contains { $0 !== view && view.isDescendant(of: $0) } }
     }
 
-    /// 【第 124 轮】返回转场开始：刷新所有**仍在暂停态**的在窗玻璃的冻结帧。
-    ///
-    /// 用户现场：「静态情况下可以实时显示；上下左右滑动界面再切入切回，透过的画面会
-    /// 显示在移动前的画面，而背景已经移动 —— 返回不是一瞬间，是个过程动画，动画结束
-    /// 才闪一下刷新」。成因是账本覆盖门要等 RNN screenPopped 才翻，JS 那 50ms 的
-    /// 「放行一拍」在它面前根本轮不到（玻璃整段仍是 paused），返回里展示的始终是冻结
-    /// 那一刻的旧纹理。这里由 App 在派发 pop 命令前直接调进来，**不经过 React 状态与
-    /// paused prop**：对每块暂停态玻璃做一次恢复路径的完整复位（重采 + 同步 present），
-    /// 暂停态保持不变 —— 转场仍整段静止，只是静止在「主界面移动后」的当前帧。
+    // 【第 130 轮】返回冻结帧改为**整段连续刷新**（60Hz 会话），不再只补 4 拍。
+    //
+    // 第 129 轮为了让冻结帧跟上返回动画，刷新期间强制走 captureRootView。但 `layer.render`
+    // 只认 model 值：跑马灯（MarqueeText 的 useNativeDriver）和歌词等只活在 render 树上的
+    // 动画在捕获里永远停在起点 —— 用户看到「玻璃上的歌名不滚动、字体先变淡」，而收尾切回
+    // CABackdrop 又出现一次清晰度/来源变化（「像有一层透镜变了一下」）。
+    // 现在整段返回都用正常的采景路径（26.2+ 仍是 root，其余是 CABackdrop），并按真实
+    // 帧率连续补帧：玻璃暂停期间画面也逐帧跟上，转场结束交回逐帧渲染时来源完全一致。
+    private var frozenRefreshUntil: TimeInterval = 0
+    private var frozenRefreshScheduled = false
+    private var frozenRefreshFirstTick = false
+    private static let frozenRefreshSessionDuration: TimeInterval = 1.2
+    private static let frozenRefreshTickInterval: TimeInterval = 1.0 / 60.0
+
+    /// 返回转场开始：开启/续期一段 60Hz 的冻结帧刷新会话，直到没有暂停态在窗玻璃。
     func refreshFrozenFrames() {
         guard Thread.isMainThread else {
             DispatchQueue.main.async { [weak self] in self?.refreshFrozenFrames() }
             return
         }
-        guard refreshPausedFramesOnce() else { return }
-        // 【第 127 轮】右滑返回是连续动画：手势开始那一拍之后背景可能还在动（惯性收尾 /
-        // 布局落定）。在接下来 240ms 再补三拍，暂停态玻璃也能逐段跟上；玻璃一旦恢复
-        // 渲染（isPaused == false）就自然跳过这些补拍。
-        for delay in [0.08, 0.16, 0.24] {
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-                _ = self?.refreshPausedFramesOnce()
-            }
+        frozenRefreshUntil = max(frozenRefreshUntil, CACurrentMediaTime() + Self.frozenRefreshSessionDuration)
+        guard !frozenRefreshScheduled else { return }
+        frozenRefreshScheduled = true
+        frozenRefreshFirstTick = true
+        runFrozenRefreshTick()
+    }
+
+    private func runFrozenRefreshTick() {
+        // 退后台立刻停表：这 1.2s 会话可能在手势中途被系统打断，后台没人看，
+        // 60Hz 采景是纯功耗（省电口径）。
+        guard UIApplication.shared.applicationState == .active else {
+            frozenRefreshScheduled = false
+            return
+        }
+        let firstTick = frozenRefreshFirstTick
+        frozenRefreshFirstTick = false
+        let refreshed = refreshPausedFramesOnce(firstTick: firstTick)
+        guard refreshed, CACurrentMediaTime() < frozenRefreshUntil else {
+            frozenRefreshScheduled = false
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.frozenRefreshTickInterval) { [weak self] in
+            self?.runFrozenRefreshTick()
         }
     }
 
     /// 刷新所有暂停态在窗玻璃；返回 true 表示至少刷新了一块。
     @discardableResult
-    private func refreshPausedFramesOnce() -> Bool {
+    private func refreshPausedFramesOnce(firstTick: Bool) -> Bool {
         var refreshed = false
         for instance in instances.allObjects {
             guard let glass = instance as? LiquidGlassView,
                   glass.window != nil,
                   glass.isPaused else { continue }
-            glass.refreshFrozenFrame()
+            glass.refreshFrozenFrame(firstTick: firstTick)
             refreshed = true
         }
         return refreshed
@@ -952,25 +973,12 @@ final class LiquidGlassView: MTKView {
 
     // MARK: - Background Capture
 
-    /// 【第 129 轮】强制走「本屏根视图 + model 几何」采景的截止时刻（墙钟秒）。
-    ///
-    /// 用户现场（右滑返回）：玻璃冻结帧偏左一点，收尾又从左往右挪一下。iOS 26.2 以下
-    /// 的 CABackdrop 路径用 `layer.presentation()` 定位 + 窗口合成取像素，交互式返回
-    /// 进行中抓到的画面带着转场位移（还可能混入正在滑走的详情页）；收尾恢复渲染再按
-    /// 静止位置重采，两次内容相差一个横向偏移 = 用户看到的「偏左 + 从左往右移动」。
-    /// 刷新冻结帧时改走 `captureRootView()`（包含本玻璃的那一屏自己的 layer 树、model
-    /// 几何、玻璃根排除），抓到的就是本屏静止内容，与最终帧严丝合缝。
-    /// 只在这个有界窗口内改道，正常稳态仍走下方的原路径。
-    private var forceRootViewCaptureUntil: TimeInterval = 0
-
     func captureBackground() {
         // 本帧的形态判据只属于本帧（2026-10-01）：analyzeCapture 会重写此标记；
         // 捕获提前返回（节流 / 缺窗口 / backdrop 不可用）时也保持 false，
         // 避免把上一帧的「半成品」印象带进下一次提交。
         lastCaptureHadPartialBlack = false
-        if CACurrentMediaTime() < forceRootViewCaptureUntil {
-            captureRootView()
-        } else if #available(iOS 26.2, *) {
+        if #available(iOS 26.2, *) {
             captureRootView()
         } else {
             captureBackdrop()
@@ -1153,29 +1161,24 @@ final class LiquidGlassView: MTKView {
         draw(bounds)
     }
 
-    /// 【第 124 轮】返回转场开始时的冻结帧刷新：重采当前背景并同步画出去，
-    /// **不改变 isPaused**。
+    /// 返回转场期间的冻结帧刷新：重采当前背景并同步画出去，**不改变 isPaused**。
     ///
-    /// 与 handleResumeFromPause 的区别只有「不恢复渲染」这一点：返回侧仍按第 75 轮
-    /// 口径整段按住（静止），但静止的是「主界面移动后」的当前帧，而不是冻结前的旧帧。
-    /// 复用恢复路径的完整复位（清沿用痕迹 / 干净帧优先提交 / 同步 draw），并在仍暂停时
-    /// 补采有限几次（与冻结路径同一个重试器），第一拍撞上半成品帧也能在转场开头换掉。
-    func refreshFrozenFrame() {
-        // 【第 129 轮】这一轮刷新（含随后 3×40ms 补采与注册表的 3×80ms 补拍）必须
-        // 走本屏根视图采景，不能走窗口合成：右滑中途的窗口合成带着转场位移。
-        // 窗口只开一次；补采在同一窗口内复用，不会每次续期。
-        let now = CACurrentMediaTime()
-        if now >= forceRootViewCaptureUntil {
-            forceRootViewCaptureUntil = now + Self.returnStaticCaptureDuration
+    /// 首拍走完整恢复复位（清沿用痕迹 / 干净帧优先提交 / 同步 draw）；后续拍只做
+    /// 「重采 + 同步 present」，不重开沉降/静默窗、不重置全局闸门 —— 60Hz 连续补帧
+    /// 期间每拍都复位会让采景被沿用门反复挂住（画面一顿一顿），也会让多块玻璃
+    /// 同时挤进主线程。采景走正常路径，跑马灯/歌词这些 render 树动画才能被真实采到。
+    func refreshFrozenFrame(firstTick: Bool) {
+        if firstTick {
+            handleResumeFromPause()
+            freezeCaptureRetryRemaining = 3
+            scheduleFreezeCaptureRetry()
+            return
         }
-        handleResumeFromPause()
-        freezeCaptureRetryRemaining = 3
-        scheduleFreezeCaptureRetry()
+        acceptNextCleanCapture = true
+        lastCaptureAt = 0
+        captureBackground()
+        draw(bounds)
     }
-
-    /// 冻结帧刷新期间强制根视图采景的窗口（秒）：覆盖首拍 + 3×40ms 补采 + 注册表
-    /// 240ms 补拍，并留一点收尾余量；之后自动回到原路径。
-    private static let returnStaticCaptureDuration: TimeInterval = 0.6
 
     /// 【第 66 轮第 1 条】冻结前的一次性「定格」采景 —— 与 handleResumeFromPause 对称，
     /// 但只做它的一半（理由见下方「为什么不照恢复路径把沉降窗口也开上」）。
