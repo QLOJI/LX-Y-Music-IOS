@@ -952,12 +952,25 @@ final class LiquidGlassView: MTKView {
 
     // MARK: - Background Capture
 
+    /// 【第 129 轮】强制走「本屏根视图 + model 几何」采景的截止时刻（墙钟秒）。
+    ///
+    /// 用户现场（右滑返回）：玻璃冻结帧偏左一点，收尾又从左往右挪一下。iOS 26.2 以下
+    /// 的 CABackdrop 路径用 `layer.presentation()` 定位 + 窗口合成取像素，交互式返回
+    /// 进行中抓到的画面带着转场位移（还可能混入正在滑走的详情页）；收尾恢复渲染再按
+    /// 静止位置重采，两次内容相差一个横向偏移 = 用户看到的「偏左 + 从左往右移动」。
+    /// 刷新冻结帧时改走 `captureRootView()`（包含本玻璃的那一屏自己的 layer 树、model
+    /// 几何、玻璃根排除），抓到的就是本屏静止内容，与最终帧严丝合缝。
+    /// 只在这个有界窗口内改道，正常稳态仍走下方的原路径。
+    private var forceRootViewCaptureUntil: TimeInterval = 0
+
     func captureBackground() {
         // 本帧的形态判据只属于本帧（2026-10-01）：analyzeCapture 会重写此标记；
         // 捕获提前返回（节流 / 缺窗口 / backdrop 不可用）时也保持 false，
         // 避免把上一帧的「半成品」印象带进下一次提交。
         lastCaptureHadPartialBlack = false
-        if #available(iOS 26.2, *) {
+        if CACurrentMediaTime() < forceRootViewCaptureUntil {
+            captureRootView()
+        } else if #available(iOS 26.2, *) {
             captureRootView()
         } else {
             captureBackdrop()
@@ -1148,10 +1161,21 @@ final class LiquidGlassView: MTKView {
     /// 复用恢复路径的完整复位（清沿用痕迹 / 干净帧优先提交 / 同步 draw），并在仍暂停时
     /// 补采有限几次（与冻结路径同一个重试器），第一拍撞上半成品帧也能在转场开头换掉。
     func refreshFrozenFrame() {
+        // 【第 129 轮】这一轮刷新（含随后 3×40ms 补采与注册表的 3×80ms 补拍）必须
+        // 走本屏根视图采景，不能走窗口合成：右滑中途的窗口合成带着转场位移。
+        // 窗口只开一次；补采在同一窗口内复用，不会每次续期。
+        let now = CACurrentMediaTime()
+        if now >= forceRootViewCaptureUntil {
+            forceRootViewCaptureUntil = now + Self.returnStaticCaptureDuration
+        }
         handleResumeFromPause()
         freezeCaptureRetryRemaining = 3
         scheduleFreezeCaptureRetry()
     }
+
+    /// 冻结帧刷新期间强制根视图采景的窗口（秒）：覆盖首拍 + 3×40ms 补采 + 注册表
+    /// 240ms 补拍，并留一点收尾余量；之后自动回到原路径。
+    private static let returnStaticCaptureDuration: TimeInterval = 0.6
 
     /// 【第 66 轮第 1 条】冻结前的一次性「定格」采景 —— 与 handleResumeFromPause 对称，
     /// 但只做它的一半（理由见下方「为什么不照恢复路径把沉降窗口也开上」）。
