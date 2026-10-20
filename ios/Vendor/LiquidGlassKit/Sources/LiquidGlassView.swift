@@ -1143,6 +1143,10 @@ final class LiquidGlassView: MTKView {
         // 转场前那张「移动前」的画面，收尾才刷新 —— 用户复报的错位 + 结束闪烁）。
         // 放在 hasPresentedFrame 复位之前：定格四步的文档锚点要求那行与
         // beginCaptureSettleWindow / captureBackground 紧邻。
+        // 【第 132 轮】恢复/返回的头几拍强制把当前视图层级提交给合成器：CABackdrop 的
+        // afterScreenUpdates:false 读上一次提交，快速滑动后立刻切入切回会一直拿到
+        // 「移动前」那一帧（见 captureBackdrop 上方 forceFreshBackdropUntil 的注释）。
+        forceFreshBackdropUntil = CACurrentMediaTime() + Self.forceFreshBackdropDuration
         acceptNextCleanCapture = true
         hasPresentedFrame = false
         beginCaptureSettleWindow()
@@ -1454,6 +1458,16 @@ final class LiquidGlassView: MTKView {
         return false
     }
 
+    /// 【第 132 轮】恢复/返回起点的「强制新鲜合成」窗口（墙钟秒）。
+    ///
+    /// CABackdrop 的 `drawHierarchy(afterScreenUpdates: false)` 读的是**上一次提交**的
+    /// 窗口合成。快速滑动后立刻切入详情页、再返回时，Home 玻璃在整段转场里读到的仍是
+    /// 「滑动前」那一帧，收尾 App 提交新帧后才闪一下刷新（用户复报）。恢复路径头几拍
+    /// 改用 `afterScreenUpdates: true` 强制提交，先把主界面移动后的当前帧确认下来，
+    /// 再回到常规采景。窗口有界，稳态与常驻采景不受影响。
+    private var forceFreshBackdropUntil: TimeInterval = 0
+    private static let forceFreshBackdropDuration: TimeInterval = 0.05
+
     /// Captures the background content via CABackdropLayer using drawHierarchy.
     /// Noticeable rendering delay.
     func captureBackdrop() {
@@ -1514,11 +1528,18 @@ final class LiquidGlassView: MTKView {
         let previousTexture = backgroundTexture
         let captureStartedAt = CACurrentMediaTime()
         var capturedIsUniform = false
+        // 恢复/返回头几拍强制提交（见 forceFreshBackdropUntil）：否则快速滑动后切入切回，
+        // backdrop 一直是上一次提交的「移动前」画面，收尾才刷新（闪一下）。
+        let forceFreshComposite = CACurrentMediaTime() < forceFreshBackdropUntil
         let capturedTexture = zeroCopyBridge.render { context in
             context.scaleBy(x: scaleCoefficient, y: scaleCoefficient)
 
             UIGraphicsPushContext(context)
-            backdropView.drawHierarchy(in: backdropView.bounds, afterScreenUpdates: false)
+            if forceFreshComposite {
+                backdropView.drawHierarchy(in: backdropView.bounds, afterScreenUpdates: true)
+            } else {
+                backdropView.drawHierarchy(in: backdropView.bounds, afterScreenUpdates: false)
+            }
             UIGraphicsPopContext()
 
             if let buffer = zeroCopyBridge.pixelBuffer {
