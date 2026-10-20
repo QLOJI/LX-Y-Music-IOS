@@ -31,6 +31,8 @@ interface GlobalData {
   restorePlayInfo: LX.Player.SavedPlayInfo | null
   isScreenKeepAwake: boolean
   isPlayedStop: boolean
+  /** 本次启动是否已经发起过播放；false 时不显示启动恢复触发的加载 / 缓存状态文案 */
+  hasPlayIntent: boolean
   isEnableLog: boolean
   isEnableSyncLog: boolean
   isEnableUserApiLog: boolean

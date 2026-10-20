@@ -335,9 +335,9 @@ export const useScreenCovered = (componentId?: string) => {
  * 让它们在转场中途翻转会让列表底部留白与图标动画跳一下。
  */
 export const useGlassCovered = (componentId?: string) => {
-  // 返回窗口内账本门不参与（返回命令发出时栈顶还是详情页，screenPopped 还没到）。
-  const glassReturning = useNavReturning()
-  const covered = useScreenCovered(componentId) && !glassReturning
+  // 【第 133 轮】返回窗口内**不**解除账本覆盖门：返回按钮与系统右滑统一成
+  // 「整段按住 + 原生冻结帧 60Hz 刷新」，两条返回路径的玻璃动画才一致。
+  const covered = useScreenCovered(componentId)
   const navHold = useGlassNavHold()
   return covered || navHold
 }
@@ -348,9 +348,8 @@ export const useGlassCovered = (componentId?: string) => {
  * ⚠️ 同上：只用于玻璃的 paused，不要用它替换 useHomeCovered 的其它消费点。
  */
 export const useGlassHomeCovered = () => {
-  // 同 useGlassCovered：返回窗口内账本覆盖门不参与，整段返回保持活体采景。
-  const glassReturning = useNavReturning()
-  const covered = useHomeCovered() && !glassReturning
+  // 同 useGlassCovered：返回按钮 / 右滑统一按住，由原生冻结帧刷新跟上背景。
+  const covered = useHomeCovered()
   const navHold = useGlassNavHold()
   return covered || navHold
 }
