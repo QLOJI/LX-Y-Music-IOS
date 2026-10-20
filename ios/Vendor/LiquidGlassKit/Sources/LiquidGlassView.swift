@@ -1095,6 +1095,11 @@ final class LiquidGlassView: MTKView {
     /// 保留纹理后：恢复期每一帧都有可画的背景（内容就是用户刚刚看到的那一张，视觉连续），
     /// 第一帧干净采景到达时自然接替；旧画面最多多留 maxStaleHoldAge（150ms），超过就被
     /// 陈旧度门放行——不会把上一页内容永久留在玻璃里。
+    /// 【第 134 轮】强制提交只给「暂停态冻结帧刷新」用（`forceFreshOnNextResume`）：
+    /// 那一拍玻璃还没恢复逐帧渲染，强制提交最新合成不会闪。恢复落点（返回 / 前台 /
+    /// 收展）不再强制 —— `afterScreenUpdates:true` 会在恢复同一拍提交整屏，用户看到的
+    /// 就是「每次返回闪一下」与 Tab 栏收展卡顿。落点的冻结帧已经是刷新过的当前画面，
+    /// 常规采景足够。
     func handleResumeFromPause() {
         consecutiveUniformFrames = 0
         // 【第 127 轮】恢复（返回 / 回前台）也按实时档跑一段：返回转场与露出动画里
@@ -1146,7 +1151,10 @@ final class LiquidGlassView: MTKView {
         // 【第 132 轮】恢复/返回的头几拍强制把当前视图层级提交给合成器：CABackdrop 的
         // afterScreenUpdates:false 读上一次提交，快速滑动后立刻切入切回会一直拿到
         // 「移动前」那一帧（见 captureBackdrop 上方 forceFreshBackdropUntil 的注释）。
-        forceFreshBackdropUntil = CACurrentMediaTime() + Self.forceFreshBackdropDuration
+        forceFreshBackdropUntil = forceFreshOnNextResume
+            ? CACurrentMediaTime() + Self.forceFreshBackdropDuration
+            : 0
+        forceFreshOnNextResume = false
         acceptNextCleanCapture = true
         hasPresentedFrame = false
         beginCaptureSettleWindow()
@@ -1173,6 +1181,7 @@ final class LiquidGlassView: MTKView {
     /// 同时挤进主线程。采景走正常路径，跑马灯/歌词这些 render 树动画才能被真实采到。
     func refreshFrozenFrame(firstTick: Bool) {
         if firstTick {
+            forceFreshOnNextResume = true
             handleResumeFromPause()
             freezeCaptureRetryRemaining = 3
             scheduleFreezeCaptureRetry()
@@ -1466,7 +1475,9 @@ final class LiquidGlassView: MTKView {
     /// 改用 `afterScreenUpdates: true` 强制提交，先把主界面移动后的当前帧确认下来，
     /// 再回到常规采景。窗口有界，稳态与常驻采景不受影响。
     private var forceFreshBackdropUntil: TimeInterval = 0
-    private static let forceFreshBackdropDuration: TimeInterval = 0.05
+    private static let forceFreshBackdropDuration: TimeInterval = 0.02
+    /// 下一次恢复是否强制提交（只有暂停态冻结帧刷新那一拍会立旗；恢复入口自消费）。
+    private var forceFreshOnNextResume = false
 
     /// Captures the background content via CABackdropLayer using drawHierarchy.
     /// Noticeable rendering delay.
