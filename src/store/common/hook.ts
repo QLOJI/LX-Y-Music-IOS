@@ -335,11 +335,9 @@ export const useScreenCovered = (componentId?: string) => {
  * 让它们在转场中途翻转会让列表底部留白与图标动画跳一下。
  */
 export const useGlassCovered = (componentId?: string) => {
-  // 【第 137 轮】返回窗口内解除账本覆盖门：玻璃在返回转场一开始就恢复实时渲染
-  // （账本要等 screenPopped 才翻）。采景源已在第 73 轮收窄到本屏，实时采到的就是
-  // 本屏自己的画面；暂停 → 冻结帧 → 恢复重画这条链路正是「返回后闪一下 / 对不上」的来源。
-  const glassReturning = useNavReturning()
-  const covered = useScreenCovered(componentId) && !glassReturning
+  // 【第 138 轮】返回期保持暂停/冻结，但冻结帧在返回开始一次性定格为「返回后的最终画面」。
+  // 实时链路会让透镜内容跟着页面做右→左滑动（用户明确说多余）；这里不解除覆盖门。
+  const covered = useScreenCovered(componentId)
   const navHold = useGlassNavHold()
   return covered || navHold
 }
@@ -350,9 +348,8 @@ export const useGlassCovered = (componentId?: string) => {
  * ⚠️ 同上：只用于玻璃的 paused，不要用它替换 useHomeCovered 的其它消费点。
  */
 export const useGlassHomeCovered = () => {
-  // 同 useGlassCovered：返回窗口内账本门让行，玻璃整段返回保持实时渲染。
-  const glassReturning = useNavReturning()
-  const covered = useHomeCovered() && !glassReturning
+  // 同 useGlassCovered：返回期保持冻结帧，不再让透镜内容跟着页面滑动。
+  const covered = useHomeCovered()
   const navHold = useGlassNavHold()
   return covered || navHold
 }

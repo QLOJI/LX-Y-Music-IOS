@@ -3,13 +3,10 @@ import * as screenNames from './screenNames'
 import * as navigations from './navigation'
 import registerScreens from './registerScreens'
 import { onAppLaunched } from './regLaunchedEvent'
-import { onNavReturningStart } from '@/utils/nativeModules/utils'
-import { beginNavTransitionWindow } from './transitionWindow'
 
 let unRegisterEvent: ReturnType<
 ReturnType<typeof Navigation.events>['registerScreenPoppedListener']
 >
-let unRegisterNavReturningStart: (() => void) | null = null
 
 // 【第 56 轮第 2 条 → 第 61 轮第 3 条撤销】这里曾经注册过一个 componentWillAppear 提前
 // 锚点（判据「即将出现的那一屏在账本里且不是栈顶」），用来把玻璃的**复位重采**边沿从
@@ -31,12 +28,6 @@ const init = (callback: () => void | Promise<void>) => {
   })
   unRegisterEvent = Navigation.events().registerScreenPoppedListener(({ componentId }) => {
     navigations.handleScreenPopped(componentId)
-  })
-  // 【第 137 轮】系统右滑返回的手势起点（原生 viewWillAppear）→ 打开返回窗口，
-  // 让玻璃提前恢复实时渲染；JS 派发的返回按钮路径本来就已在派发前开窗，这里只做续期。
-  unRegisterNavReturningStart?.()
-  unRegisterNavReturningStart = onNavReturningStart(() => {
-    beginNavTransitionWindow('pop')
   })
   onAppLaunched(() => {
     console.log('Register app launched listener')
