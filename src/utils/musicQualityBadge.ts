@@ -51,7 +51,7 @@ export const QUALITY_BADGE_FALLBACK: QualityBadgeInfo = { key: '128k', type: 'te
 const hasKey = (map: Record<string, unknown> | null, key: string): boolean => !!(map && map[key])
 
 /**
- * 由曲目标注的音质集合取小标（在线列表行用）。
+ * 由曲目标注的音质集合取小标（在线列表行 / 播放详情页共用）。
  * @param qualitys 曲目 meta._qualitys（可能为空对象 / undefined —— 表示源未返回标注）
  * @param showHighest 设置项 common.quality_show_highest
  */
@@ -67,12 +67,3 @@ export const getQualityBadge = (qualitys: unknown, showHighest: boolean): Qualit
   return QUALITY_BADGE_FALLBACK
 }
 
-/**
- * 由单个「实际达成档」取小标（播放详情页用：playerState.quality 是这一次真正解析到的档）。
- * 复用同一条天梯：把单档包成集合后按 showHighest=true 取 —— 详情页展示的是事实档，
- * 不受「音质显示最高支持」开关影响（那个开关管「平台标称支持什么」，不管「现在播的是什么」）。
- */
-export const getQualityBadgeByTier = (quality: string | null | undefined): QualityBadgeInfo => {
-  if (!quality) return QUALITY_BADGE_FALLBACK
-  return getQualityBadge({ [quality]: true }, true)
-}
