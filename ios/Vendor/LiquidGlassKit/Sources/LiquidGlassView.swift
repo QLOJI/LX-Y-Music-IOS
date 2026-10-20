@@ -339,6 +339,7 @@ private final class GlassInstanceRegistry {
     /// **热路径**：窗口内的续期只写一个时刻就返回 —— 不碰玻璃、不挂定时器、不做任何分配。
     /// 只有「从静止进入滚动」的那一脚要动手：把在屏玻璃提到实时档，并挂上到期回落。
     func noteScrollActivity() {
+        releaseCaptureHolds()
         let now = CACurrentMediaTime()
         let wasActive = now < scrollActiveUntil
         scrollActiveUntil = now + Self.scrollLiveHoldDuration
@@ -401,6 +402,12 @@ private final class GlassInstanceRegistry {
     // 从左向右移动一下再重合」。现在只刷第一拍；后续补采交给冻结重试器（只在第一拍可疑时
     // 触发），并用 0.2s 去重防止 JS 与 viewWillAppear 两个入口重复强制提交。
     private var lastFrozenRefreshAt: TimeInterval = 0
+
+    private func releaseCaptureHolds() {
+        for instance in instances.allObjects {
+            (instance as? LiquidGlassView)?.releaseCaptureHold()
+        }
+    }
 
     /// 返回转场开始：对所有暂停态在窗玻璃做一次强制当前合成刷新。
     func refreshFrozenFrames() {
@@ -699,14 +706,14 @@ final class LiquidGlassView: MTKView {
     /// 采景之间是同一张，而 shader 没有任何随时间变化的 uniform（见 ShaderUniforms：
     /// resolution / 形状参数 / touchPoint，全由输入驱动），此时多画的帧逐帧输出相同，
     /// 纯属重复绘制（白烧 GPU + 每帧唤醒 CPU）。因此渲染帧率一律跟随采景档：
-    /// 静止 = 30fps、实时会话 = 120fps，见 syncRenderFrameRate。
+    /// 静止 = 30fps、实时会话 = 60fps，见 syncRenderFrameRate。
     /// （此前另有一条「背景一变化就升到 120fps、静默 0.4s 降回」的自适应升档 ——
     /// 采景被 33ms 全局节流压在 30Hz，升上去的帧全是重复绘制，已删除。）
     private static let idleFramesPerSecond = 30
-    /// 实时档 120fps：与 liveCaptureMinInterval(8.3ms) **同速**（透镜抬起 / 横滑 /
-    /// 滚动会话）。【第 135 轮】用户要求「快速滑动时提高取样速度」，实时档从 60 提到
-    /// 120；契约里的定值已同步更新（sim-glass-render-rate / sim-r67）。
-    private static let liveFramesPerSecond = 120
+    /// 实时档 60fps：与 liveCaptureMinInterval(16.7ms) **同速**（透镜抬起 / 横滑 /
+    /// 滚动会话）。【第 140 轮】用户反馈 120fps 档发热明显变高，实时档退回 60；
+    /// 契约里的定值同步回退。
+    private static let liveFramesPerSecond = 60
     /// 把渲染帧率同步到当前采景档。**全类唯一给 preferredFramesPerSecond 赋值的地方** ——
     /// 档位由 isLiveCaptureActive 四路会话唯一决定（透镜抬起 / RN live / 重新入窗口实时窗口 /
     /// 用户正在滚动，见其定义），任何会话开始/结束都走这里，
@@ -751,8 +758,8 @@ final class LiquidGlassView: MTKView {
     /// 读的是全局窗口：在屏的每块玻璃都跟着同一次滚动一起进 / 出实时档。
     private var isScrollLiveActive: Bool { GlassInstanceRegistry.shared.isScrollActive }
 
-    /// 当前是否处于「实时采景」档：采景间隔用 liveCaptureMinInterval(120fps)，
-    /// 渲染帧率同档提到 liveFramesPerSecond(120fps)（见 syncRenderFrameRate）。
+    /// 当前是否处于「实时采景」档：采景间隔用 liveCaptureMinInterval(60fps)，
+    /// 渲染帧率同档提到 liveFramesPerSecond(60fps)（见 syncRenderFrameRate）。
     private var isLiveCaptureActive: Bool { liveCaptureRequested || realtimeCaptureRequested || isReentryLiveActive || isScrollLiveActive }
 
     /// 【第 73 轮】滚动实时档的档位重算入口 —— 由 GlassInstanceRegistry 在「进入滚动」与
@@ -817,8 +824,8 @@ final class LiquidGlassView: MTKView {
     /// 完整说明见 shouldThrottleCapture。取 30fps（= idleFramesPerSecond 的静止态基线）。
     private static let captureMinInterval: TimeInterval = 0.0333
     /// 显式高刷会话（liveCaptureRequested：透镜抬起/跟手、收起圆钮重新入层级）的采景
-    /// 间隔：120fps（8.3ms），比静止态基线宽四倍，但仍封顶——见 shouldThrottleCapture 的说明。
-    private static let liveCaptureMinInterval: TimeInterval = 0.0083
+    /// 间隔：60fps（16.7ms），比静止态基线宽一倍，但仍封顶——见 shouldThrottleCapture 的说明。
+    private static let liveCaptureMinInterval: TimeInterval = 0.0167
     /// 本实例最近一次**被接受的**采景时刻（墙钟秒）。只由 shouldThrottleCapture 读写，
     /// 都在渲染帧内（与 captureBackdrop 同一线程），不需要锁。
     private var lastCaptureAt: TimeInterval = 0
@@ -953,11 +960,22 @@ final class LiquidGlassView: MTKView {
     /// 只在冻结刷新那一拍生效；稳态仍按系统版本选路。
     private var forceRootViewCaptureUntil: TimeInterval = 0
 
+    /// 【第 140 轮】用户下一次交互时解除「保持最终冻结帧」，恢复 live 采景。
+    /// 同时作废返回帧时间戳：收展等「可见性恢复」走的是 live 路径，不能再次命中保持分支。
+    /// 没有保持/时间戳时是空操作（滚动热路径每帧都会走到这里）。
+    func releaseCaptureHold() {
+        let hadHold = holdCapturesUntilInteraction || frozenFrameRefreshedAt > 0
+        holdCapturesUntilInteraction = false
+        frozenFrameRefreshedAt = 0
+        if hadHold { lastCaptureAt = 0 }
+    }
+
     func captureBackground() {
         // 本帧的形态判据只属于本帧（2026-10-01）：analyzeCapture 会重写此标记；
         // 捕获提前返回（节流 / 缺窗口 / backdrop 不可用）时也保持 false，
         // 避免把上一帧的「半成品」印象带进下一次提交。
         lastCaptureHadPartialBlack = false
+        if holdCapturesUntilInteraction { return }
         if CACurrentMediaTime() < forceRootViewCaptureUntil {
             captureRootView()
         } else if #available(iOS 26.2, *) {
@@ -984,6 +1002,7 @@ final class LiquidGlassView: MTKView {
     ///    背景每帧都在变，30fps 的采景滞后（最多 ~33ms 外加合成队列）在跟手拖动和切页
     ///    动画里肉眼可见。
     func beginLiveCapture() {
+        releaseCaptureHold()
         liveCaptureRequested = true
         consecutiveUniformFrames = 0
         backgroundTexture = nil
@@ -1025,6 +1044,7 @@ final class LiquidGlassView: MTKView {
     /// 的成因，60fps 是这条路径上手调过的上限。
     func setRealtimeCapture(_ realtime: Bool) {
         guard realtimeCaptureRequested != realtime else { return }
+        if realtime { releaseCaptureHold() }
         realtimeCaptureRequested = realtime
         // 会话开始/结束都立刻放行下一次采景：开始的那一刻若正卡在 30fps 的节流窗口里，
         // 第一帧真实内容要再等最多 33ms 才采到 —— 那正是「滑动刚开始时玻璃里还是旧位置
@@ -1138,6 +1158,19 @@ final class LiquidGlassView: MTKView {
         forceFreshBackdropUntil = forceFresh
             ? CACurrentMediaTime() + Self.forceFreshBackdropDuration
             : 0
+        let holdFrozenFrame = !forceFresh && frozenFrameRefreshedAt > 0 &&
+            CACurrentMediaTime() - frozenFrameRefreshedAt < Self.frozenFrameHoldDuration
+        frozenFrameRefreshedAt = 0
+        if holdFrozenFrame {
+            // 保留返回开始刷新的最终 Home 帧，暂不采景；恢复显示链路时重呈一次。
+            // 括号写法：第 67 轮契约要求「hasPresentedFrame = false」恰四处（四条复位路径），
+            // 这里只是强制重呈一次冻结帧，不是复位路径。
+            holdCapturesUntilInteraction = true
+            hasPresentedFrame = (false)
+            draw(bounds)
+            return
+        }
+        holdCapturesUntilInteraction = false
         acceptNextCleanCapture = true
         hasPresentedFrame = false
         beginCaptureSettleWindow()
@@ -1168,6 +1201,7 @@ final class LiquidGlassView: MTKView {
             forceRootViewCaptureUntil = CACurrentMediaTime() + 0.12
             forceFreshOnNextResume = true
             handleResumeFromPause()
+            frozenFrameRefreshedAt = CACurrentMediaTime()
             freezeCaptureRetryRemaining = 3
             scheduleFreezeCaptureRetry()
             return
@@ -1214,6 +1248,8 @@ final class LiquidGlassView: MTKView {
     /// 都不成立，所以这里只做「复位节流 + 采一帧 + 画一帧」。
     /// 渲染档（syncRenderFrameRate）同样不动：暂停态与采景档无关，多调一次只是白算。
     func handlePauseForFreeze() {
+        holdCapturesUntilInteraction = false
+        frozenFrameRefreshedAt = 0
         lastCaptureAt = 0
         Self.resetGlobalCaptureGate()
         // 【第 67 轮】定格这一脚要的就是「真正改写 CAMetalLayer」（第 66 轮第 1 条：冻结帧
@@ -1463,6 +1499,11 @@ final class LiquidGlassView: MTKView {
     private static let forceFreshBackdropDuration: TimeInterval = 0.02
     /// 下一次恢复是否强制提交（只有暂停态冻结帧刷新那一拍会立旗；恢复入口自消费）。
     private var forceFreshOnNextResume = false
+    /// 【第 140 轮】返回开始时刷新的最终帧时刻。恢复落点若离它足够近，先保持这张最终帧、
+    /// 暂不采景；等用户下次滚动/拖动/收展再恢复 live。返回收尾不再换帧，也没有无谓采景。
+    private var frozenFrameRefreshedAt: TimeInterval = 0
+    private var holdCapturesUntilInteraction = false
+    private static let frozenFrameHoldDuration: TimeInterval = 1.5
 
     /// Captures the background content via CABackdropLayer using drawHierarchy.
     /// Noticeable rendering delay.
