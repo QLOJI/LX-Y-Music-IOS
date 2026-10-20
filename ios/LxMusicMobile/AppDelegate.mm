@@ -7432,9 +7432,6 @@ static UIBackgroundTaskIdentifier LXBackgroundTaskId = UIBackgroundTaskInvalid;
 // Tab 栏收起状态机（定义在文件后部的跟踪器区块；此处前置声明供 setTabBarExpanded 使用）
 static BOOL LXTabBarManualExpanded = NO;
 static NSNotificationName const LXTabBarCollapseChangedNotification = @"LXTabBarCollapseChanged";
-// 【第 137 轮】返回转场开始（原生 viewWillAppear 锚点，系统右滑也覆盖）：
-// 发给 JS 打开返回窗口，让玻璃在转场一开始就恢复实时渲染。
-static NSNotificationName const LXNavReturningStartNotification = @"LXNavReturningStart";
 static void LXSetTabBarCollapsed(BOOL collapsed);
 // 【第 75 轮第 3 条】记一次「翻转时刻」。定义在下方「最短驻留」区块里（与那个静态量同处），
 // 这里前置声明是因为 `setTabBarExpanded`（手点展开，定义在本区块**之前**）只有它可用 ——
@@ -7489,10 +7486,6 @@ RCT_EXPORT_MODULE();
                                                  name:LXTabBarCollapseChangedNotification
                                                object:nil];
     [[NSNotificationCenter defaultCenter] addObserver:self
-                                             selector:@selector(handleNavReturningStart:)
-                                                 name:LXNavReturningStartNotification
-                                               object:nil];
-    [[NSNotificationCenter defaultCenter] addObserver:self
                                              selector:@selector(handlePlayerPositionChanged:)
                                                  name:LXPlayerPositionNotificationName
                                                object:nil];
@@ -7515,7 +7508,7 @@ RCT_EXPORT_MODULE();
 - (NSArray<NSString *> *)supportedEvents {
   // screen-size-changed 已移除：iOS 端从未发送该事件（窗口尺寸由 JS 侧 SizeView onLayout 同步），
   // 声明而不发送属于死事件，且避免误导后续接入
-  return @[ @"headphones-disconnected", @"remote-command", @"screen-state", @"tabBarCollapseChanged", @"player-position", @"player-seeked", @"bluetooth-device-changed", @"navReturningStart" ];
+  return @[ @"headphones-disconnected", @"remote-command", @"screen-state", @"tabBarCollapseChanged", @"player-position", @"player-seeked", @"bluetooth-device-changed" ];
 }
 
 // Tab 栏收起状态（原生跟踪器维护，JS 经 tabBarCollapseChanged 事件与 setTabBarExpanded 命令交互）
@@ -7529,13 +7522,6 @@ RCT_EXPORT_MODULE();
   BOOL collapsed = [notification.userInfo[@"collapsed"] boolValue];
   dispatch_async(dispatch_get_main_queue(), ^{
     [self sendEventWithName:@"tabBarCollapseChanged" body:@(collapsed)];
-  });
-}
-
-- (void)handleNavReturningStart:(NSNotification *)notification {
-  if (!self.hasListeners) return;
-  dispatch_async(dispatch_get_main_queue(), ^{
-    [self sendEventWithName:@"navReturningStart" body:@{}];
   });
 }
 
@@ -8529,10 +8515,6 @@ static void LX_UIViewController_viewWillAppear(UIViewController *self, SEL _cmd,
   // （movingToParentViewController / beingPresented）没有冻结帧要刷新，整树重采只会和
   // 新页首次布局抢主线程 —— 用户第 130 轮报的「进入播放详情页卡顿」。
   if (self.movingToParentViewController || self.beingPresented) return;
-  // 【第 137 轮】右滑返回没有 JS 派发前锚点：把「返回开始」发给 JS，让玻璃在转场一开始
-  // 就恢复实时渲染（与返回按钮共用同一个 return window）；冻结帧刷新保留给「仍暂停」
-  // 的玻璃（JS 事件到达前那一拍）。
-  [[NSNotificationCenter defaultCenter] postNotificationName:LXNavReturningStartNotification object:nil];
   LXGlassNotifyRefreshFrozenFrames();
 }
 
