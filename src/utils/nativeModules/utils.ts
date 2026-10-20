@@ -275,6 +275,17 @@ export const onTabBarCollapseChanged = (handler: (collapsed: boolean) => void): 
   }
 }
 
+// 【第 137 轮】返回转场开始（原生 viewWillAppear 锚点，系统右滑手势也覆盖）：
+// JS 据此打开返回窗口 —— 玻璃在转场一开始就恢复实时渲染，与返回按钮共用同一套窗口。
+export const onNavReturningStart = (handler: () => void): (() => void) => {
+  if (!isIOS || !UtilsModule) return () => {}
+  const eventEmitter = new NativeEventEmitter(UtilsModule)
+  const eventListener = eventEmitter.addListener('navReturningStart', () => { handler() })
+  return () => {
+    eventListener.remove()
+  }
+}
+
 // 播放位置（原生歌词时钟 4Hz 外推位置，仅前台播放时发布）：替代 JS 侧桥接轮询
 export const onPlayerPosition = (handler: (position: number, rate: number) => void): (() => void) => {
   if (!isIOS || !UtilsModule) return () => {}
