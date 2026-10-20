@@ -947,12 +947,20 @@ final class LiquidGlassView: MTKView {
 
     // MARK: - Background Capture
 
+    /// 【第 139 轮】返回冻结帧用「本屏根视图 + model 几何」采一次最终 Home 画面。
+    /// 转场在途位移只存在于 render 树，`captureRootView` 按 model 渲染，抓到的就是
+    /// 返回后的静止内容（不会再出现「右→左滑入」或滑动后的错位）。窗口有界，
+    /// 只在冻结刷新那一拍生效；稳态仍按系统版本选路。
+    private var forceRootViewCaptureUntil: TimeInterval = 0
+
     func captureBackground() {
         // 本帧的形态判据只属于本帧（2026-10-01）：analyzeCapture 会重写此标记；
         // 捕获提前返回（节流 / 缺窗口 / backdrop 不可用）时也保持 false，
         // 避免把上一帧的「半成品」印象带进下一次提交。
         lastCaptureHadPartialBlack = false
-        if #available(iOS 26.2, *) {
+        if CACurrentMediaTime() < forceRootViewCaptureUntil {
+            captureRootView()
+        } else if #available(iOS 26.2, *) {
             captureRootView()
         } else {
             captureBackdrop()
@@ -1155,6 +1163,9 @@ final class LiquidGlassView: MTKView {
     /// `afterScreenUpdates:false` 读到转场期间未提交的旧合成，把首拍的正确帧覆盖掉。
     func refreshFrozenFrame(firstTick: Bool) {
         if firstTick {
+            // 冻结帧必须是「返回后的最终画面」：本屏 model 几何根视图采一次，
+            // 不受转场在途位移影响；随后整段返回不再覆盖这张纹理。
+            forceRootViewCaptureUntil = CACurrentMediaTime() + 0.12
             forceFreshOnNextResume = true
             handleResumeFromPause()
             freezeCaptureRetryRemaining = 3

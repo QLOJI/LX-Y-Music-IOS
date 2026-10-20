@@ -145,6 +145,58 @@ public class LiquidGlassEffectView: UIView, AnyVisualEffectView {
     /// 两档合并（旧形态：paused 里或上 collapsed）的后果 = 列表每次滚过收起门限、或每次展开
     /// 都会把正在惯性滑行的列表贴到预测落点，惯性被当场掐断 —— 用户第 72 轮原话：
     /// 「还原上下滑动速度，现在配置后，存在滑动跳动，使用体验很差」。
+    /// 【第 139 轮】恢复瞬间的快照交叉淡化：冻结帧与恢复后的 live 帧即使有微小差异，
+    /// 也不要在同一拍硬换。截整窗（含 CAMetalLayer 的当前合成）后裁到玻璃区域，
+    /// 盖在玻璃上淡出 160ms；前景是 effect view 的兄弟层、且内容静止，不受影响。
+    private static var crossfadeWindowImage: UIImage?
+    private static var crossfadeWindowImageAt: TimeInterval = 0
+
+    private func makeResumeCrossfadeSnapshot() -> UIView? {
+        guard let glass = liquidGlassView, let window = glass.window,
+              glass.bounds.width > 1, glass.bounds.height > 1 else { return nil }
+        let glassRectInWindow = glass.convert(glass.bounds, to: window)
+        guard glassRectInWindow.width > 1, glassRectInWindow.height > 1 else { return nil }
+        // 一次返回里几块玻璃几乎同拍恢复：整窗截图只做一次，按 50ms 窗口复用。
+        let now = CACurrentMediaTime()
+        let image: UIImage
+        if let cached = Self.crossfadeWindowImage, now - Self.crossfadeWindowImageAt < 0.05 {
+            image = cached
+        } else {
+            let format = UIGraphicsImageRendererFormat.default()
+            format.opaque = false
+            let renderer = UIGraphicsImageRenderer(bounds: window.bounds, format: format)
+            image = renderer.image { _ in
+                window.drawHierarchy(in: window.bounds, afterScreenUpdates: false)
+            }
+            Self.crossfadeWindowImage = image
+            Self.crossfadeWindowImageAt = now
+        }
+        let scale = image.scale
+        let pixelRect = CGRect(
+            x: glassRectInWindow.minX * scale,
+            y: glassRectInWindow.minY * scale,
+            width: glassRectInWindow.width * scale,
+            height: glassRectInWindow.height * scale
+        ).integral
+        guard let cgImage = image.cgImage?.cropping(to: pixelRect) else { return nil }
+        let overlay = UIImageView(image: UIImage(cgImage: cgImage, scale: scale, orientation: .up))
+        overlay.frame = glass.convert(glass.bounds, to: self)
+        overlay.contentMode = .scaleToFill
+        overlay.isUserInteractionEnabled = false
+        addSubview(overlay)
+        return overlay
+    }
+
+    private func fadeOutResumeCrossfade(_ snapshot: UIView?) {
+        guard let snapshot else { return }
+        UIView.animate(withDuration: 0.16, delay: 0,
+                       options: [.curveEaseOut, .beginFromCurrentState]) {
+            snapshot.alpha = 0
+        } completion: { _ in
+            snapshot.removeFromSuperview()
+        }
+    }
+
     @objc public func setPaused(_ paused: Bool) {
         freezePaused = paused
         // 恢复（true → false）时先做一次性复位再解除暂停（2026-10-02 用户第 2 条）：
@@ -153,9 +205,12 @@ public class LiquidGlassEffectView: UIView, AnyVisualEffectView {
         // ——用户看到的「返回主界面时玻璃里先是旧画面、过一会儿才跳回当前画面」。
         // 判定「此前确实处于暂停态」用 isPaused 本身：首挂载/背衬重建时 isPaused 已是
         // false，此时不需要也没有旧画面可丢（否则会白白多做一次同步采景）。
+        let resumeCrossfade = (!paused && liquidGlassView?.isPaused == true)
+            ? makeResumeCrossfadeSnapshot() : nil
         if !paused, liquidGlassView?.isPaused == true {
             liquidGlassView?.handleResumeFromPause()
         }
+        fadeOutResumeCrossfade(resumeCrossfade)
         // 冻结（false → true）前【第 66 轮第 1 条】用户原话：「迷你播放器栏和底部 tab 栏透过
         // 的画面，例如正在向下滑动当前列表，然后突然点击进入播放详情页……返回时，向下滑动的
         // 列表还会向下移动一点距离……造成短暂的显示错误并闪一下。」
@@ -197,9 +252,12 @@ public class LiquidGlassEffectView: UIView, AnyVisualEffectView {
         // 早已过期，不复位就是「露出来第一眼是旧画面、过一会儿才跳回当前画面」。
         // 条件是「确实由本档停着」（freezePaused == false）且此前真的处于暂停态；
         // 覆盖冻结档也停着的时候（freezePaused == true）交给 setPaused 的恢复分支。
+        let resumeCrossfade = (!paused && freezePaused == false && liquidGlassView?.isPaused == true)
+            ? makeResumeCrossfadeSnapshot() : nil
         if !paused, freezePaused == false, liquidGlassView?.isPaused == true {
             liquidGlassView?.handleResumeFromPause()
         }
+        fadeOutResumeCrossfade(resumeCrossfade)
         liquidGlassView?.isPaused = freezePaused || paused
     }
 
