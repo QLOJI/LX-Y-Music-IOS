@@ -188,13 +188,18 @@ export const initUnifiedPlayerController = () => {
           case 'loading':
             if (!global.lx.isPlayedStop && playerState.musicInfo.id) startLoadingTimeout()
             global.app_event.playerLoadstart()
-            setStatusText(global.i18n.t('player__loading'))
+            // 【第 133 轮】启动恢复（未点播放）不显示加载文案；点播放后照常。
+            if (global.lx.hasPlayIntent) setStatusText(global.i18n.t('player__loading'))
             break
           case 'buffering':
             // 【第 117 轮】「缓存中」文案如实显示，不受 seek 宽限影响：宽限只用来拦住
             // 「把播放态翻成暂停」这一个副作用（第 105 轮现场）。连文案一起吞掉，用户
             // 看到的就是「缓存中不显示 + 画面像卡死」。
-            setStatusText(global.i18n.t('player__caching'))
+            // 【第 133 轮】启动恢复阶段引擎也会发 buffering，此时用户还没点播放，
+            // 不显示「缓存中」；发起过播放后照常显示。
+            if (global.lx.hasPlayIntent) {
+              setStatusText(global.i18n.t('player__caching'))
+            }
             // 【第 105 轮】seek 引起的补货**不翻播放态**：倒退拖动（甚至拖到 0:00）必然让
             // 引擎重新补货并发一条 buffering —— 若照旧翻 UI（暂停）并把进度冻住，就会出现
             // 用户报的「显示缓存中、声音还在放、进度条随便拖都不生效、暂停键没反应」。

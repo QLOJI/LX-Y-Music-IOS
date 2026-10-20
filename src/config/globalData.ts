@@ -28,6 +28,9 @@ global.lx = {
   isScreenKeepAwake: false,
 
   isPlayedStop: false,
+  // 【第 133 轮】本次启动是否已经发起过播放（play() / 非恢复的 handlePlay）。
+  // 启动恢复只 initTrackInfo，引擎也会发 buffering；在此之前不显示「加载中 / 缓存中」。
+  hasPlayIntent: false,
 
   isEnableLog: true,
   isEnableSyncLog: false,
