@@ -344,6 +344,10 @@ const handlePlay = async() => {
     return
   }
 
+  // 【第 133 轮】真正的播放发起（点歌 / 切歌 / 自动续播）—— 此后允许显示加载/缓存状态。
+  // 上面的启动恢复分支不算：它只是 initTrackInfo，用户还没点播放。
+  global.lx.hasPlayIntent = true
+
   const playMusicInfo = playerState.playMusicInfo
   const musicInfo = playMusicInfo.musicInfo
 
@@ -863,6 +867,8 @@ export const playPrev = async(isAutoToggle = false): Promise<void> => {
  */
 export const play = () => {
   if (playerState.playMusicInfo.musicInfo == null) return
+  // 【第 133 轮】用户 / 自动播放发起：启动恢复阶段不经过这里，状态栏不会显示「缓存中」。
+  global.lx.hasPlayIntent = true
   if (isEmpty()) {
     // 【第 53 轮第 1 条】这里是「恢复上次播放」的**唯一**入口（启动恢复由 init/player/playInfo.ts
     // 的 setTimeout(play) 或用户点播放触发，handleRestorePlay 写入的恢复意图只该在这里被消费），
