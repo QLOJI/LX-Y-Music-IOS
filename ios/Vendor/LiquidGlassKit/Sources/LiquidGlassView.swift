@@ -1130,20 +1130,6 @@ final class LiquidGlassView: MTKView {
         forceFreshBackdropUntil = forceFresh
             ? CACurrentMediaTime() + Self.forceFreshBackdropDuration
             : 0
-        // 【第 135 轮】刚从冻结帧刷新过来：画面已经是刷新过的当前帧，保留它、直接恢复逐帧
-        // 渲染即可。恢复落点再同步重采 + 重画一次，就是小圆球/底部栏返回时那一帧闪。
-        let holdFrozenFrame = !forceFresh && frozenFrameRefreshedAt > 0 &&
-            CACurrentMediaTime() - frozenFrameRefreshedAt < Self.frozenFrameHoldDuration
-        frozenFrameRefreshedAt = 0
-        if holdFrozenFrame {
-            // 【第 136 轮】保留冻结纹理，但必须同步画一帧：恢复显示链路时 CAMetalLayer 的
-            // drawable 可能已被回收，不画会先露出一帧空白——整块玻璃（含收起圆球）一起闪。
-            // 画的是手上那张刷新过的纹理，不重采、不换内容。括号写法：第 67 轮契约要求
-            // 「hasPresentedFrame = false」恰四处（对应四条复位路径），这里只是强制重呈一次。
-            hasPresentedFrame = (false)
-            draw(bounds)
-            return
-        }
         acceptNextCleanCapture = true
         hasPresentedFrame = false
         beginCaptureSettleWindow()
@@ -1171,7 +1157,6 @@ final class LiquidGlassView: MTKView {
         if firstTick {
             forceFreshOnNextResume = true
             handleResumeFromPause()
-            frozenFrameRefreshedAt = CACurrentMediaTime()
             freezeCaptureRetryRemaining = 3
             scheduleFreezeCaptureRetry()
             return
@@ -1180,7 +1165,6 @@ final class LiquidGlassView: MTKView {
         lastCaptureAt = 0
         captureBackground()
         draw(bounds)
-        frozenFrameRefreshedAt = CACurrentMediaTime()
     }
 
     /// 【第 66 轮第 1 条】冻结前的一次性「定格」采景 —— 与 handleResumeFromPause 对称，
@@ -1468,10 +1452,6 @@ final class LiquidGlassView: MTKView {
     private static let forceFreshBackdropDuration: TimeInterval = 0.02
     /// 下一次恢复是否强制提交（只有暂停态冻结帧刷新那一拍会立旗；恢复入口自消费）。
     private var forceFreshOnNextResume = false
-    /// 【第 135 轮】最近一次冻结帧刷新的时刻。恢复落点若离它足够近，说明 CAMetalLayer
-    /// 上已经是刷新过的当前帧 —— 不再同步重采 + 重画（那一拍就是收起态圆球/返回时的闪）。
-    private var frozenFrameRefreshedAt: TimeInterval = 0
-    private static let frozenFrameHoldDuration: TimeInterval = 0.35
 
     /// Captures the background content via CABackdropLayer using drawHierarchy.
     /// Noticeable rendering delay.
