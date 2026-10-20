@@ -9,7 +9,7 @@ import { HEADER_HEIGHT } from './components/Header'
 import { BTN_WIDTH } from './MoreBtn/Btn'
 import { marginLeft } from './constant'
 import Image from '@/components/common/Image'
-import { useStatusbarHeight, useScreenCovered, useAppActive } from '@/store/common/hook'
+import { useStatusbarHeight, useScreenCovered, useAppActive, useNavTransitioning } from '@/store/common/hook'
 import playerState from '@/store/player/state'
 import { useSettingValue } from '@/store/setting/hook'
 import { useLandscapeLayout, getLeftWidth } from '@/utils/landscapeLayout'
@@ -53,7 +53,9 @@ export default memo(({ componentId }: { componentId: string }) => {
   // 【第 76 轮第 3 条】后台门（与竖屏同一条）：App 退到后台时本屏仍挂着、栈顶也没变，
   // 不加这道门自转会在后台一直 60fps 驱动 UI 线程。
   const appActive = useAppActive()
-  const spinVisible = !screenCovered && appActive
+  // 【第 133 轮】同竖屏：转场窗口内不让可见性门把自转停掉（否则切入/切回整段静止）。
+  const navTransitioning = useNavTransitioning()
+  const spinVisible = !screenCovered && appActive || navTransitioning && appActive
   const coverSizeRaw = useSettingValue('playDetail.style.coverSize')
   const coverSize = typeof coverSizeRaw === 'number' && !isNaN(coverSizeRaw) ? coverSizeRaw : 100
   const spinValue = useRef(new Animated.Value(0)).current

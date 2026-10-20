@@ -6,7 +6,7 @@ import playerState from '@/store/player/state'
 import { useWindowSize } from '@/utils/hooks'
 import { useSettingValue } from '@/store/setting/hook'
 import Image, { defaultHeaders } from '@/components/common/Image'
-import { useStatusbarHeight, useScreenCovered, useAppActive } from '@/store/common/hook'
+import { useStatusbarHeight, useScreenCovered, useAppActive, useNavTransitioning } from '@/store/common/hook'
 import { HEADER_HEIGHT } from './components/Header'
 import { createStyle } from '@/utils/tools'
 import CoverLongPressMenu, { type CoverLongPressMenuType } from '@/screens/PlayDetail/components/CoverLongPressMenu'
@@ -126,7 +126,11 @@ export default memo(({ componentId, active = true, coverRegionHeight = 0 }: { co
   // PagerView 保持挂载、RNN 栈顶也没变（active / screenCovered 都不翻）⇒ 自转会在后台
   // 以 60fps 一直驱动 UI 线程。后台不可见 ⇒ 停转，回来按「临时不可见」那条语义续转（相位不跳）。
   const appActive = useAppActive()
-  const spinVisible = active && !screenCovered && appActive
+  // 【第 133 轮】转场窗口内不放停：转场中途账本覆盖门尚未翻转（push 时已盖住、
+  // pop 时还没露出），只看 screenCovered 会让封面在整段切入/切回里静止，转场结束
+  // 才续转 = 用户看到的卡顿。转场期间保持驱动，窗口结束再由可见性门决定去留。
+  const navTransitioning = useNavTransitioning()
+  const spinVisible = active && !screenCovered && appActive || active && navTransitioning && appActive
 
   // 封面 URL：playerMusicInfo.pic 已兼容在线 + 下载两种来源（playInfo.ts setPlayerMusicInfo）。
   // 同时兜底 playMusicInfo.musicInfo.meta.picUrl，保证和参考版 e58d1ab1 的数据入口一致。

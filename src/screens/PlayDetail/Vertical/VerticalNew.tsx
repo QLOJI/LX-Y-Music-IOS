@@ -55,8 +55,35 @@ const estimateSongInfoContentHeight = () => {
   return row(28) + 8 + (4 + row(9)) + (row(16) + 4) + row(14)
 }
 
+// 首帧用的页面容器高度估算（与组件内 estimatedPageHeight 的口径、误差说明同一份）。
+// 抽成模块函数是为了让下面几个 useState 的**初始值**也能用同一套估算：
+// 首帧直接按稳态估算布局，避免「小歌词先按 3 行兜底、实测后再掉档」把封面和歌名顶上去。
+const estimatePageHeight = (
+  winWidth: number,
+  winHeight: number,
+  statusBarHeight: number,
+  isSmallWindow: boolean,
+) => {
+  const featureBtnsHeight = scaleSizeH(scaleSizeW(42)) + (isSmallWindow ? 6 : scaleSizeH(8)) * 2
+  const progressHeight = scaleSizeH(6 * 2 + 7)
+  const infoRowHeight = Math.max(
+    Math.round(setSpText(15) * designTypography.lineHeightRatio),
+    Math.round(setSpText(13) * designTypography.lineHeightRatio),
+  )
+  const controlRowHeight = Math.max(Math.round(winHeight * 0.025), 12) * 2 +
+    Math.min(Math.max(winWidth * 0.18, scaleSizeW(36)), scaleSizeW(72))
+  const playerBarHeight = Math.max(Math.round(winHeight * 0.006), 4) +
+    Math.max(Math.round(winHeight * 0.018), 10) +
+    featureBtnsHeight + progressHeight + infoRowHeight + controlRowHeight
+  return Math.max(0, winHeight - (statusBarHeight + HEADER_HEIGHT) - playerBarHeight)
+}
+
 const VerticalNew = memo(({ componentId }: { componentId: string }) => {
   const [pageIndex, setPageIndex] = useState(0)
+  // 窗口 / 状态栏高度提前读取：首帧布局状态的初始值要用它们算估算（见下面 useState）。
+  const { width: winWidth, height: winHeight } = useWindowSize()
+  const statusBarHeight = useStatusbarHeight()
+  const isSmallWindow = winHeight < 700
   // 正在从左往右滑向歌词页（从封面切到歌词），用于让 LyricPage 提前激活高亮定位
   const pagerViewRef = useRef<PagerView>(null)
   const showLyricRef = useRef(false)
@@ -71,7 +98,10 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
   // 实测到位前的首帧由 estimatedPageHeight 的解析估算顶替（见下方），实测一到立即让位。
   // 稳态仍用 onLayout 实测而不是按字号/行数估算——估算会随 global.lx.fontSize 与各组件
   // 常量漂移而失真，故估算只配当「首帧兜底」。
-  const [pageHeight, setPageHeight] = useState(0)
+  // 首帧直接用解析估算，不等 onLayout：否则小歌词先按 3 行兜底、实测后再掉档，
+  // 信息块高度变化会把歌名和封面一起顶上去再落回来（进入播放详情页的上下跳）。
+  const [pageHeight, setPageHeight] = useState(() =>
+    estimatePageHeight(winWidth, winHeight, statusBarHeight, isSmallWindow))
   const handlePageLayout = useCallback(({ nativeEvent }: LayoutChangeEvent) => {
     const h = Math.round(nativeEvent.layout.height)
     if (h <= 0) return
@@ -89,10 +119,10 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
   // 把它实测出来加进 picContainer 的 paddingTop：paddingTop=M 会让 flex 居中的内容
   // 在 [M, H] 里重新居中，中心恰好下移 M/2，封面落回真正的中线。
   // 必须实测而不是写死：小屏 override（8）、global.lx.fontSize 缩放都会改这个值。
-  const [songInfoOffset, setSongInfoOffset] = useState(0)
+  const [songInfoOffset, setSongInfoOffset] = useState(isSmallWindow ? 8 : scaleSizeH(20))
   // SongInfo 自身的高度（不含上下 margin；上 margin 已由上面的 layout.y 实测，
   // 下 margin 走常量镜像）。封面可用区间与小歌词可用高度共用的输入，同样与 MiniLyric 自身无关。
-  const [songInfoContentHeight, setSongInfoContentHeight] = useState(0)
+  const [songInfoContentHeight, setSongInfoContentHeight] = useState(estimateSongInfoContentHeight())
   const handleSongInfoLayout = useCallback(({ nativeEvent }: LayoutChangeEvent) => {
     const y = Math.round(nativeEvent.layout.y)
     if (y < 0) return
@@ -102,9 +132,6 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
     // 2pt 死区：歌名栏的亚像素级变化不驱动小歌词跟着重排（与页面容器同款防护）。
     setSongInfoContentHeight(prev => (Math.abs(prev - h) < 2 ? prev : h))
   }, [])
-  const { width: winWidth, height: winHeight } = useWindowSize()
-  // 与 HeaderNew 同源的页头高度口径（状态栏 + 6pt）：估算 R 的页头项必须与它逐 pt 一致。
-  const statusBarHeight = useStatusbarHeight()
   const miniLyricAlign = useSettingValue('playDetail.style.miniLyricAlign')
   // 封面尺寸设置：与 Pic 消费的是同一个键（vertical/horizontal 两个 Pic 同源）。
   // 这里读它只有一个用途 —— 推出「自然封面直径 = 只看屏幕与设置、不受布局挤压的尺寸」，
@@ -234,7 +261,6 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
   }, [handleSwitchToLyricPage])
 
   const containerPaddingH = useMemo(() => scaleSizeW(10), [])
-  const isSmallWindow = winHeight < 700
   // 封面页纵向布局（2026-10-01 改为「封面居中」，需求：旋转封面在返回栏与信息栏之间居中）：
   // picPageContainerNew 仍是 space-between（信息块贴底），但 picContainer 改成了
   // flex:1 + justifyContent:'center' —— 它吃掉「信息块以上」的全部剩余空间，封面在其中居中。
@@ -278,22 +304,10 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
   // 且与稳态共用同一封顶语义（min(base×比例, 安全上限, R/2)），不存在反向（先小后大）的跳变来源。
   // 估算 ≤ 0（窗口尺寸未就绪的极端首帧）时返回 0：Pic 视为「未实测」回落旧口径，
   // 绝不把封面先算成 0 或极小再撑大。
-  const estimatedPageHeight = useMemo(() => {
-    // FeatureBtns 的 `paddingVertical: 8`（第 73 轮由 16 减半，用户要求缩小
-    // 「小歌词 ↔ 功能按钮」的间距）：大屏走 createStyle 的 scaleSizeH(8)，小屏是内联覆盖 6、不缩放。
-    const featureBtnsHeight = scaleSizeH(scaleSizeW(42)) + (isSmallWindow ? 6 : scaleSizeH(8)) * 2
-    const progressHeight = scaleSizeH(6 * 2 + 7)
-    const infoRowHeight = Math.max(
-      Math.round(setSpText(15) * designTypography.lineHeightRatio),
-      Math.round(setSpText(13) * designTypography.lineHeightRatio),
-    )
-    const controlRowHeight = Math.max(Math.round(winHeight * 0.025), 12) * 2 +
-      Math.min(Math.max(winWidth * 0.18, scaleSizeW(36)), scaleSizeW(72))
-    const playerBarHeight = Math.max(Math.round(winHeight * 0.006), 4) +
-      Math.max(Math.round(winHeight * 0.018), 10) +
-      featureBtnsHeight + progressHeight + infoRowHeight + controlRowHeight
-    return Math.max(0, winHeight - (statusBarHeight + HEADER_HEIGHT) - playerBarHeight)
-  }, [winHeight, winWidth, statusBarHeight, isSmallWindow])
+  const estimatedPageHeight = useMemo(
+    () => estimatePageHeight(winWidth, winHeight, statusBarHeight, isSmallWindow),
+    [winHeight, winWidth, statusBarHeight, isSmallWindow],
+  )
   // 「自然封面直径」：只看屏幕与设置（屏宽/可用高/coverSize 设置），不受布局挤压 ——
   // 封面在 50%~150% 档要涨到它才第一次碰到布局上限；它也是下面地板值的基准。
   const coverNaturalSize = getCoverNaturalSize(winWidth, winHeight, statusBarHeight, coverSize)
