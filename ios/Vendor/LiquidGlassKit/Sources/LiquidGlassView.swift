@@ -393,50 +393,26 @@ private final class GlassInstanceRegistry {
         return roots.filter { view in !roots.contains { $0 !== view && view.isDescendant(of: $0) } }
     }
 
-    // 【第 130 轮】返回冻结帧改为**整段连续刷新**（60Hz 会话），不再只补 4 拍。
+    // 【第 136 轮】返回冻结帧改为**一次性**刷新（第一拍强制拿当前合成）。
     //
-    // 第 129 轮为了让冻结帧跟上返回动画，刷新期间强制走 captureRootView。但 `layer.render`
-    // 只认 model 值：跑马灯（MarqueeText 的 useNativeDriver）和歌词等只活在 render 树上的
-    // 动画在捕获里永远停在起点 —— 用户看到「玻璃上的歌名不滚动、字体先变淡」，而收尾切回
-    // CABackdrop 又出现一次清晰度/来源变化（「像有一层透镜变了一下」）。
-    // 现在整段返回都用正常的采景路径（26.2+ 仍是 root，其余是 CABackdrop），并按真实
-    // 帧率连续补帧：玻璃暂停期间画面也逐帧跟上，转场结束交回逐帧渲染时来源完全一致。
-    private var frozenRefreshUntil: TimeInterval = 0
-    private var frozenRefreshScheduled = false
-    private var frozenRefreshFirstTick = false
-    private static let frozenRefreshSessionDuration: TimeInterval = 1.2
-    private static let frozenRefreshTickInterval: TimeInterval = 1.0 / 60.0
+    // 第 130 轮的 60Hz 连续会话会在第一拍之后继续用 CABackdrop(afterScreenUpdates:false)
+    // 采景：返回转场期间 App 没有新的提交，后续采到的仍是旧合成，会把第一拍强制拿到的
+    // 正确帧覆盖成「滑动前」那一帧；恢复后再被 live 采样纠正 = 用户看到的「闪一下 /
+    // 从左向右移动一下再重合」。现在只刷第一拍；后续补采交给冻结重试器（只在第一拍可疑时
+    // 触发），并用 0.2s 去重防止 JS 与 viewWillAppear 两个入口重复强制提交。
+    private var lastFrozenRefreshAt: TimeInterval = 0
 
-    /// 返回转场开始：开启/续期一段 60Hz 的冻结帧刷新会话，直到没有暂停态在窗玻璃。
+    /// 返回转场开始：对所有暂停态在窗玻璃做一次强制当前合成刷新。
     func refreshFrozenFrames() {
         guard Thread.isMainThread else {
             DispatchQueue.main.async { [weak self] in self?.refreshFrozenFrames() }
             return
         }
-        frozenRefreshUntil = max(frozenRefreshUntil, CACurrentMediaTime() + Self.frozenRefreshSessionDuration)
-        guard !frozenRefreshScheduled else { return }
-        frozenRefreshScheduled = true
-        frozenRefreshFirstTick = true
-        runFrozenRefreshTick()
-    }
-
-    private func runFrozenRefreshTick() {
-        // 退后台立刻停表：这 1.2s 会话可能在手势中途被系统打断，后台没人看，
-        // 60Hz 采景是纯功耗（省电口径）。
-        guard UIApplication.shared.applicationState == .active else {
-            frozenRefreshScheduled = false
-            return
-        }
-        let firstTick = frozenRefreshFirstTick
-        frozenRefreshFirstTick = false
-        let refreshed = refreshPausedFramesOnce(firstTick: firstTick)
-        guard refreshed, CACurrentMediaTime() < frozenRefreshUntil else {
-            frozenRefreshScheduled = false
-            return
-        }
-        DispatchQueue.main.asyncAfter(deadline: .now() + Self.frozenRefreshTickInterval) { [weak self] in
-            self?.runFrozenRefreshTick()
-        }
+        guard UIApplication.shared.applicationState == .active else { return }
+        let now = CACurrentMediaTime()
+        guard now - lastFrozenRefreshAt >= 0.2 else { return }
+        lastFrozenRefreshAt = now
+        _ = refreshPausedFramesOnce(firstTick: true)
     }
 
     /// 刷新所有暂停态在窗玻璃；返回 true 表示至少刷新了一块。
@@ -1159,7 +1135,15 @@ final class LiquidGlassView: MTKView {
         let holdFrozenFrame = !forceFresh && frozenFrameRefreshedAt > 0 &&
             CACurrentMediaTime() - frozenFrameRefreshedAt < Self.frozenFrameHoldDuration
         frozenFrameRefreshedAt = 0
-        if holdFrozenFrame { return }
+        if holdFrozenFrame {
+            // 【第 136 轮】保留冻结纹理，但必须同步画一帧：恢复显示链路时 CAMetalLayer 的
+            // drawable 可能已被回收，不画会先露出一帧空白——整块玻璃（含收起圆球）一起闪。
+            // 画的是手上那张刷新过的纹理，不重采、不换内容。括号写法：第 67 轮契约要求
+            // 「hasPresentedFrame = false」恰四处（对应四条复位路径），这里只是强制重呈一次。
+            hasPresentedFrame = (false)
+            draw(bounds)
+            return
+        }
         acceptNextCleanCapture = true
         hasPresentedFrame = false
         beginCaptureSettleWindow()
@@ -1178,12 +1162,11 @@ final class LiquidGlassView: MTKView {
         draw(bounds)
     }
 
-    /// 返回转场期间的冻结帧刷新：重采当前背景并同步画出去，**不改变 isPaused**。
+    /// 返回转场开始的一次性冻结帧刷新：重采当前背景并同步画出去，**不改变 isPaused**。
     ///
-    /// 首拍走完整恢复复位（清沿用痕迹 / 干净帧优先提交 / 同步 draw）；后续拍只做
-    /// 「重采 + 同步 present」，不重开沉降/静默窗、不重置全局闸门 —— 60Hz 连续补帧
-    /// 期间每拍都复位会让采景被沿用门反复挂住（画面一顿一顿），也会让多块玻璃
-    /// 同时挤进主线程。采景走正常路径，跑马灯/歌词这些 render 树动画才能被真实采到。
+    /// 走完整恢复复位（清沿用痕迹 / 干净帧优先提交 / 强制新鲜窗口 / 同步 draw）。
+    /// 首拍可疑时由冻结重试器补采（3×40ms）；不再做 60Hz 连续补帧 —— 后续补采会用
+    /// `afterScreenUpdates:false` 读到转场期间未提交的旧合成，把首拍的正确帧覆盖掉。
     func refreshFrozenFrame(firstTick: Bool) {
         if firstTick {
             forceFreshOnNextResume = true
@@ -1488,7 +1471,7 @@ final class LiquidGlassView: MTKView {
     /// 【第 135 轮】最近一次冻结帧刷新的时刻。恢复落点若离它足够近，说明 CAMetalLayer
     /// 上已经是刷新过的当前帧 —— 不再同步重采 + 重画（那一拍就是收起态圆球/返回时的闪）。
     private var frozenFrameRefreshedAt: TimeInterval = 0
-    private static let frozenFrameHoldDuration: TimeInterval = 1.5
+    private static let frozenFrameHoldDuration: TimeInterval = 0.35
 
     /// Captures the background content via CABackdropLayer using drawHierarchy.
     /// Noticeable rendering delay.
