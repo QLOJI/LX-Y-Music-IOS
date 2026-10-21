@@ -19,7 +19,7 @@ import { COMPONENT_IDS } from '@/config/constant'
 import { getStatusBarStyle } from './utils'
 import { beginNavTransitionWindow } from './transitionWindow'
 import { type ListInfoItem } from '@/store/songlist/state'
-import { getCachedBgPicColor, refreshLiquidGlassFrames } from '@/utils/nativeModules/utils'
+import { getCachedBgPicColor, refreshLiquidGlassFrames, prepareLiquidGlassForNavigation } from '@/utils/nativeModules/utils'
 
 // const store = getStore()
 // const getTheme = () => getter('common', 'theme')(store.getState())
@@ -69,6 +69,9 @@ const startPush = (id: COMPONENT_IDS, options: StartPushOptions = {}) => {
     if (stale) commonActions.removeComponentId(stale.id)
   }
   pendingPushes.add(id)
+  // 【第 144 轮】先停稳 + 按 live 同源预采一帧静态画面，再开窗 / 派发 push。
+  // 用户要求「画面不动了才能切换画面动画」；原生在同一主线程里先贴落点再采景。
+  prepareLiquidGlassForNavigation()
   // 玻璃转场窗口：必须在 Navigation.push 之前开，晚一帧就会采到转场中间态
   beginNavTransitionWindow()
   // 安全兜底：即使 push 的 Promise 始终不结算（如 RNN 返回 undefined 或原生转场挂起），
