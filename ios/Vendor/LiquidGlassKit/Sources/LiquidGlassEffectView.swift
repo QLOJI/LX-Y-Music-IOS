@@ -132,6 +132,9 @@ public class LiquidGlassEffectView: UIView, AnyVisualEffectView {
     /// （Tab 栏收起/展开时另一块玻璃完全不可见）时置 true。
     private var hiddenPaused = false
 
+    /// 【第 142 轮】给 Kit 的返回补采节拍用：不可见的玻璃不必在转场里重采。
+    var isVisibilityHidden: Bool { hiddenPaused }
+
     /// 【第 61 轮第 3 条】这条 prop 现在是暂停态的**唯一**来源（原来的覆盖期 ∨ 转场按住期，
     /// 见 navigation/transitionWindow.ts）：第 58～60 轮 LiquidGlassView 还会在重新入窗口时
     /// 无视本值自行恢复渲染（pauseRequested 那条通道），已整体删除——它正是「返回时透过的
@@ -153,6 +156,10 @@ public class LiquidGlassEffectView: UIView, AnyVisualEffectView {
         // ——用户看到的「返回主界面时玻璃里先是旧画面、过一会儿才跳回当前画面」。
         // 判定「此前确实处于暂停态」用 isPaused 本身：首挂载/背衬重建时 isPaused 已是
         // false，此时不需要也没有旧画面可丢（否则会白白多做一次同步采景）。
+        // 【第 142 轮】覆盖冻结档恢复：先用模型根视图采第一帧（不依赖 window server 上一次
+        // 提交），恢复后的加载 / 布局变化再由 live 接手。只给这一档（返回 / push 露出 /
+        // 从无玻璃页回来）；可见性档恢复不加这一步。
+        if !paused { liquidGlassView?.prepareRootCaptureOnResume() }
         if !paused, liquidGlassView?.isPaused == true {
             liquidGlassView?.handleResumeFromPause()
         }
@@ -197,7 +204,7 @@ public class LiquidGlassEffectView: UIView, AnyVisualEffectView {
         // 早已过期，不复位就是「露出来第一眼是旧画面、过一会儿才跳回当前画面」。
         // 条件是「确实由本档停着」（freezePaused == false）且此前真的处于暂停态；
         // 覆盖冻结档也停着的时候（freezePaused == true）交给 setPaused 的恢复分支。
-        if !paused { liquidGlassView?.releaseCaptureHold() }
+        if !paused, freezePaused == false { liquidGlassView?.cancelRootCaptureOnResume() }
         if !paused, freezePaused == false, liquidGlassView?.isPaused == true {
             liquidGlassView?.handleResumeFromPause()
         }

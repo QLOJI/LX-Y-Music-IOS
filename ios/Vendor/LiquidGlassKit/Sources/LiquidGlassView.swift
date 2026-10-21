@@ -339,7 +339,6 @@ private final class GlassInstanceRegistry {
     /// **热路径**：窗口内的续期只写一个时刻就返回 —— 不碰玻璃、不挂定时器、不做任何分配。
     /// 只有「从静止进入滚动」的那一脚要动手：把在屏玻璃提到实时档，并挂上到期回落。
     func noteScrollActivity() {
-        releaseCaptureHolds()
         let now = CACurrentMediaTime()
         let wasActive = now < scrollActiveUntil
         scrollActiveUntil = now + Self.scrollLiveHoldDuration
@@ -428,15 +427,9 @@ private final class GlassInstanceRegistry {
     // 第 130 轮的 60Hz 连续会话会在第一拍之后继续用 CABackdrop(afterScreenUpdates:false)
     // 采景：返回转场期间 App 没有新的提交，后续采到的仍是旧合成，会把第一拍强制拿到的
     // 正确帧覆盖成「滑动前」那一帧；恢复后再被 live 采样纠正 = 用户看到的「闪一下 /
-    // 从左向右移动一下再重合」。现在只刷第一拍；后续补采交给冻结重试器（只在第一拍可疑时
-    // 触发），并用 0.2s 去重防止 JS 与 viewWillAppear 两个入口重复强制提交。
+    // 从左向右移动一下再重合」。现在首拍强制一次；后续补采（第 142 轮起含 100ms 节拍）
+    // 一律改走本屏 model 采景，不再读转场合成；0.2s 去重防止两个入口重复强制提交。
     private var lastFrozenRefreshAt: TimeInterval = 0
-
-    private func releaseCaptureHolds() {
-        for instance in instances.allObjects {
-            (instance as? LiquidGlassView)?.releaseCaptureHold()
-        }
-    }
 
     /// 返回转场开始：对所有暂停态在窗玻璃做一次强制当前合成刷新。
     func refreshFrozenFrames() {
@@ -990,22 +983,11 @@ final class LiquidGlassView: MTKView {
     /// 只在冻结刷新那一拍生效；稳态仍按系统版本选路。
     private var forceRootViewCaptureUntil: TimeInterval = 0
 
-    /// 【第 140 轮】用户下一次交互时解除「保持最终冻结帧」，恢复 live 采景。
-    /// 同时作废返回帧时间戳：收展等「可见性恢复」走的是 live 路径，不能再次命中保持分支。
-    /// 没有保持/时间戳时是空操作（滚动热路径每帧都会走到这里）。
-    func releaseCaptureHold() {
-        let hadHold = holdCapturesUntilInteraction || frozenFrameRefreshedAt > 0
-        holdCapturesUntilInteraction = false
-        frozenFrameRefreshedAt = 0
-        if hadHold { lastCaptureAt = 0 }
-    }
-
     func captureBackground() {
         // 本帧的形态判据只属于本帧（2026-10-01）：analyzeCapture 会重写此标记；
         // 捕获提前返回（节流 / 缺窗口 / backdrop 不可用）时也保持 false，
         // 避免把上一帧的「半成品」印象带进下一次提交。
         lastCaptureHadPartialBlack = false
-        if holdCapturesUntilInteraction { return }
         if CACurrentMediaTime() < forceRootViewCaptureUntil {
             captureRootView()
         } else if #available(iOS 26.2, *) {
@@ -1032,7 +1014,6 @@ final class LiquidGlassView: MTKView {
     ///    背景每帧都在变，30fps 的采景滞后（最多 ~33ms 外加合成队列）在跟手拖动和切页
     ///    动画里肉眼可见。
     func beginLiveCapture() {
-        releaseCaptureHold()
         liveCaptureRequested = true
         consecutiveUniformFrames = 0
         backgroundTexture = nil
@@ -1074,7 +1055,6 @@ final class LiquidGlassView: MTKView {
     /// 的成因，60fps 是这条路径上手调过的上限。
     func setRealtimeCapture(_ realtime: Bool) {
         guard realtimeCaptureRequested != realtime else { return }
-        if realtime { releaseCaptureHold() }
         realtimeCaptureRequested = realtime
         // 会话开始/结束都立刻放行下一次采景：开始的那一刻若正卡在 30fps 的节流窗口里，
         // 第一帧真实内容要再等最多 33ms 才采到 —— 那正是「滑动刚开始时玻璃里还是旧位置
@@ -1134,6 +1114,9 @@ final class LiquidGlassView: MTKView {
     /// 常规采景足够。
     func handleResumeFromPause() {
         consecutiveUniformFrames = 0
+        // 【第 142 轮】恢复落点要进 live：返回期的补采节拍到此为止，之后由逐帧采景接手
+        // （主界面在恢复后发生的加载 / 布局变化必须实时跟上，不再「等用户先滑一下」）。
+        cancelReturnRefreshCadence()
         // 【第 127 轮】恢复（返回 / 回前台）也按实时档跑一段：返回转场与露出动画里
         // 玻璃要和背景同帧跟手，静止档 30fps 会明显一顿一顿。0.9s 后自动落回静止档。
         let resumeNow = CACurrentMediaTime()
@@ -1188,17 +1171,16 @@ final class LiquidGlassView: MTKView {
         forceFreshBackdropUntil = forceFresh
             ? CACurrentMediaTime() + Self.forceFreshBackdropDuration
             : 0
-        let holdFrozenFrame = !forceFresh && frozenFrameRefreshedAt > 0 &&
-            CACurrentMediaTime() - frozenFrameRefreshedAt < Self.frozenFrameHoldDuration
-        frozenFrameRefreshedAt = 0
-        if holdFrozenFrame {
-            // 【第 141 轮】返回落点再采一帧：转场此刻已经结束，本屏处于 model 终态，
-            // 下一段复位里的 captureBackground 因此按本屏根视图采景（前景由排除根隐藏），
-            // 拿到的就是屏幕上真正的那块背景。快速返回不再沿用转场开始时那张（可能早于
-            // 最后一次布局 / 数据刷新），慢速返回走常规路径，两者展示的都是最终画面。
+        // 【第 142 轮】覆盖冻结档的每一次恢复（返回 / push 的新屏露出 / 从无玻璃页回来）
+        // 都先用本屏模型根视图采一帧当前画面：前景已由排除根隐藏，内容与 model 终态一致，
+        // 不依赖 window server 上一次提交（CABackdrop 在刚恢复时可能还是切走前那张 →
+        // 「不滑动就一直是旧画面」）。采完立即进 live，恢复后完成的加载/布局继续跟上。
+        // 可见性档（收展）不置本标记：那条恢复路径不额外做整树采景。
+        let forceRootOnResume = forceRootCaptureOnNextResume
+        forceRootCaptureOnNextResume = false
+        if forceRootOnResume {
             forceRootViewCaptureUntil = CACurrentMediaTime() + 0.12
         }
-        holdCapturesUntilInteraction = false
         acceptNextCleanCapture = true
         hasPresentedFrame = false
         beginCaptureSettleWindow()
@@ -1214,19 +1196,15 @@ final class LiquidGlassView: MTKView {
         // MTKView 在 isPaused == YES 时手动 draw 是官方支持的手动渲染路径（setPaused 也要到
         // 复位之后才把 isPaused 置回 false），所以这一帧一定画得出去；drawable / 渲染描述符
         // 未就绪时 draw(_:) 内部按既有分支安全返回（保持原样等下一 tick，不会崩、不会画错）。
-        // 【第 141 轮】快速返回：上面采到的就是返回后主界面的最终画面，保持到用户下一次
-        // 交互（滚动 / 拖页 / 收展 / 抬起透镜）再恢复 live。收尾不再换帧、不再采景 ——
-        // 置位放在 draw 之前，这一脚的 autoCapture 也不会再采一次（少一次整树渲染）。
-        // 慢速返回（冻结刷新早已超过保持窗口）不置位，与之前一样直接进 live 实时档。
-        if holdFrozenFrame { holdCapturesUntilInteraction = true }
         draw(bounds)
     }
 
-    /// 返回转场开始的一次性冻结帧刷新：重采当前背景并同步画出去，**不改变 isPaused**。
+    /// 返回转场开始的冻结帧刷新：重采当前背景并同步画出去，**不改变 isPaused**。
     ///
-    /// 走完整恢复复位（清沿用痕迹 / 干净帧优先提交 / 强制新鲜窗口 / 同步 draw）。
-    /// 首拍可疑时由冻结重试器补采（3×20ms）；不再做 60Hz 连续补帧 —— 后续补采会用
-    /// `afterScreenUpdates:false` 读到转场期间未提交的旧合成，把首拍的正确帧覆盖掉。
+    /// 首拍走完整恢复复位（清沿用痕迹 / 干净帧优先提交 / 强制新鲜窗口 / 同步 draw），
+    /// 随后按 100ms 节拍补采（第 142 轮，root/model 采景，不读转场合成）；首拍可疑时另有
+    /// 冻结重试器 3×20ms。补采一律用本屏 model 采景 —— 转场期间 `afterScreenUpdates:false`
+    /// 读到的是未提交的旧合成，那正是「右→左滑入」的成因。
     func refreshFrozenFrame(firstTick: Bool) {
         if firstTick {
             // 冻结帧必须是「返回后的最终画面」：本屏 model 几何根视图采一次，
@@ -1234,15 +1212,53 @@ final class LiquidGlassView: MTKView {
             forceRootViewCaptureUntil = CACurrentMediaTime() + 0.12
             forceFreshOnNextResume = true
             handleResumeFromPause()
-            frozenFrameRefreshedAt = CACurrentMediaTime()
             freezeCaptureRetryRemaining = 3
             scheduleFreezeCaptureRetry()
+            startReturnRefreshCadence()
             return
         }
         acceptNextCleanCapture = true
         lastCaptureAt = 0
         captureBackground()
         draw(bounds)
+    }
+
+    /// 见 returnRefreshTicksRemaining 的说明。【第 142 轮】
+    private func startReturnRefreshCadence() {
+        returnRefreshTicksRemaining = Self.returnRefreshMaxTicks
+        scheduleReturnRefreshTick()
+    }
+
+    private func scheduleReturnRefreshTick() {
+        guard returnRefreshTicksRemaining > 0 else { return }
+        returnRefreshTicksRemaining -= 1
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.returnRefreshInterval) { [weak self] in
+            guard let self else { return }
+            guard self.isPaused, self.window != nil,
+                  UIApplication.shared.applicationState == .active else {
+                self.returnRefreshTicksRemaining = 0
+                return
+            }
+            // 收展时不可见的那块玻璃不补采：它露出来之前会走 setHiddenPaused 的恢复复位。
+            if let effectView = self.superview as? LiquidGlassEffectView, effectView.isVisibilityHidden {
+                self.scheduleReturnRefreshTick()
+                return
+            }
+            self.forceRootViewCaptureUntil = CACurrentMediaTime() + 0.12
+            self.acceptNextCleanCapture = true
+            self.lastCaptureAt = 0
+            self.captureBackground()
+            // 本拍已经手动采过：这一脚只负责呈现，别让 draw 的 autoCapture 再整树采一次。
+            let autoCaptureEnabled = self.autoCapture
+            self.autoCapture = false
+            self.draw(self.bounds)
+            self.autoCapture = autoCaptureEnabled
+            self.scheduleReturnRefreshTick()
+        }
+    }
+
+    private func cancelReturnRefreshCadence() {
+        returnRefreshTicksRemaining = 0
     }
 
     /// 【第 66 轮第 1 条】冻结前的一次性「定格」采景 —— 与 handleResumeFromPause 对称，
@@ -1281,8 +1297,7 @@ final class LiquidGlassView: MTKView {
     /// 都不成立，所以这里只做「复位节流 + 采一帧 + 画一帧」。
     /// 渲染档（syncRenderFrameRate）同样不动：暂停态与采景档无关，多调一次只是白算。
     func handlePauseForFreeze() {
-        holdCapturesUntilInteraction = false
-        frozenFrameRefreshedAt = 0
+        cancelReturnRefreshCadence()
         lastCaptureAt = 0
         Self.resetGlobalCaptureGate()
         // 【第 67 轮】定格这一脚要的就是「真正改写 CAMetalLayer」（第 66 轮第 1 条：冻结帧
@@ -1532,11 +1547,32 @@ final class LiquidGlassView: MTKView {
     private static let forceFreshBackdropDuration: TimeInterval = 0.02
     /// 下一次恢复是否强制提交（只有暂停态冻结帧刷新那一拍会立旗；恢复入口自消费）。
     private var forceFreshOnNextResume = false
-    /// 【第 140 轮】返回开始时刷新的最终帧时刻。恢复落点若离它足够近，先保持这张最终帧、
-    /// 暂不采景；等用户下次滚动/拖动/收展再恢复 live。返回收尾不再换帧，也没有无谓采景。
-    private var frozenFrameRefreshedAt: TimeInterval = 0
-    private var holdCapturesUntilInteraction = false
-    private static let frozenFrameHoldDuration: TimeInterval = 1.5
+    /// 【第 142 轮】下一次恢复是否先用模型根视图采第一帧（见 handleResumeFromPause）。
+    private var forceRootCaptureOnNextResume = false
+
+    /// 由 LiquidGlassEffectView.setPaused 的恢复分支置位（覆盖冻结档：返回 / push 后露出 /
+    /// 从无玻璃页回来）。可见性档（收展）恢复不走这里，避免收展时多一次整树采景。
+    func prepareRootCaptureOnResume() {
+        forceRootCaptureOnNextResume = true
+    }
+
+    /// 可见性档（收展）恢复不用这条：清掉可能残留的标记，避免收展动画中间多一次整树采景。
+    func cancelRootCaptureOnResume() {
+        forceRootCaptureOnNextResume = false
+    }
+
+    /// 【第 142 轮】返回转场期间的冻结帧补采节拍。
+    ///
+    /// 现象（用户原话）：「快速滑到最底部歌单正在加载时……快速点击进入播放详情页，然后再
+    /// 返回主界面时，下面液态玻璃透过的画面是正在刷新时下面的空白区域画面……最后返回收尾
+    /// 才闪一下更新」。冻结帧只在转场开始采一次，主界面在转场里加载完成 / 重新布局后
+    /// 内容变了，玻璃要到收尾（或用户滑动）才更新。这里在暂停态下按固定节拍重采
+    /// **模型根视图**（静态、前景已排除，不会重现「右→左滑入」），让玻璃在转场里跟着背景
+    /// 更新；恢复落点由 handleResumeFromPause 取消节拍并进 live。
+    /// 节拍只作用于可见玻璃（收展时不可见的那块跳过），次数与时长都有界。
+    private var returnRefreshTicksRemaining = 0
+    private static let returnRefreshInterval: TimeInterval = 0.1
+    private static let returnRefreshMaxTicks = 6
 
     /// Captures the background content via CABackdropLayer using drawHierarchy.
     /// Noticeable rendering delay.
