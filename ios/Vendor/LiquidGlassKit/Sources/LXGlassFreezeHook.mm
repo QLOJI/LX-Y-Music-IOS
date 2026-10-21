@@ -53,18 +53,3 @@ void LXGlassNotifyRefreshFrozenFrames(void) {
   if (refreshHandler == NULL) return;
   refreshHandler();
 }
-
-// 【第 144 轮】导航切换前的静态预采（App → Kit）。存储侧口径与上面一致：单写者
-// （Kit 侧 GlassInstanceRegistry 初始化时写一次）、之后只读；读取发生在主线程
-// （App 的导航入口），不需要锁、不需要派发。
-static LXGlassPrepareFrozenFramesFn LXGlassPrepareFrozenFramesHandler = NULL;
-
-void LXGlassSetPrepareFrozenFramesFn(LXGlassPrepareFrozenFramesFn fn) {
-  LXGlassPrepareFrozenFramesHandler = fn;
-}
-
-void LXGlassNotifyPrepareFrozenFrames(void) {
-  LXGlassPrepareFrozenFramesFn prepareHandler = LXGlassPrepareFrozenFramesHandler;
-  if (prepareHandler == NULL) return;
-  prepareHandler();
-}

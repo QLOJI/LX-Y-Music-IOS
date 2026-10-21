@@ -132,9 +132,6 @@ public class LiquidGlassEffectView: UIView, AnyVisualEffectView {
     /// （Tab 栏收起/展开时另一块玻璃完全不可见）时置 true。
     private var hiddenPaused = false
 
-    /// 【第 142 轮】给 Kit 的返回补采节拍用：不可见的玻璃不必在转场里重采。
-    var isVisibilityHidden: Bool { hiddenPaused }
-
     /// 【第 61 轮第 3 条】这条 prop 现在是暂停态的**唯一**来源（原来的覆盖期 ∨ 转场按住期，
     /// 见 navigation/transitionWindow.ts）：第 58～60 轮 LiquidGlassView 还会在重新入窗口时
     /// 无视本值自行恢复渲染（pauseRequested 那条通道），已整体删除——它正是「返回时透过的

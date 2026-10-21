@@ -83,25 +83,6 @@ void LXGlassSetRefreshFrozenFramesFn(LXGlassRefreshFrozenFramesFn fn);
 /// 由 App 在返回命令派发前同步/主线程调用：刷新所有暂停态玻璃的冻结帧。
 void LXGlassNotifyRefreshFrozenFrames(void);
 
-//! Vendored addition（第 144 轮）: 导航切换前的「静态预采」桥（App → Kit）。
-//!
-//! 用户原话：「等画面停稳了或者直接静止画面再切入其他画面，增加一个顺序，只有画面不动了
-//! 才能切换画面动画……这样只需要静态显示也足够了」。
-//!
-//! App 在派发 push / pop 命令**之前**、且已把惯性滑行贴到落点之后调用本桥：Kit 对每块
-//! 在窗玻璃用与 live **完全相同的 CABackdrop 采景路径**（强制提交当前合成）取一帧静态
-//! 画面并 present，记为「转场预采帧」。转场开始后的冻结 / 返回刷新直接展示这一帧，不再
-//! 重采转场中间态 —— 与 live 同源同几何，切换前后不会缩放或闪烁。
-//!
-//! 契约与上面三条桥一致：单写者（Kit 注册表初始化时登记一次）、主线程、缺席时为空操作。
-typedef void (*LXGlassPrepareFrozenFramesFn)(void);
-
-/// 注册（传 NULL 注销）。Kit 只在注册表初始化时注册一次。
-void LXGlassSetPrepareFrozenFramesFn(LXGlassPrepareFrozenFramesFn fn);
-
-/// 由 App 在导航命令派发前同步/主线程调用：为所有在窗玻璃预采一帧静态画面。
-void LXGlassNotifyPrepareFrozenFrames(void);
-
 #ifdef __cplusplus
 }
 #endif
