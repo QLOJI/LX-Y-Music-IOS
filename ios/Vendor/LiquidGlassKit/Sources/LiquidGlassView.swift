@@ -988,7 +988,9 @@ final class LiquidGlassView: MTKView {
         // 捕获提前返回（节流 / 缺窗口 / backdrop 不可用）时也保持 false，
         // 避免把上一帧的「半成品」印象带进下一次提交。
         lastCaptureHadPartialBlack = false
-        if CACurrentMediaTime() < forceRootViewCaptureUntil {
+        let forceRootOnce = forceRootCaptureOnce
+        forceRootCaptureOnce = false
+        if forceRootOnce || CACurrentMediaTime() < forceRootViewCaptureUntil {
             captureRootView()
         } else if #available(iOS 26.2, *) {
             captureRootView()
@@ -1179,7 +1181,9 @@ final class LiquidGlassView: MTKView {
         let forceRootOnResume = forceRootCaptureOnNextResume
         forceRootCaptureOnNextResume = false
         if forceRootOnResume {
-            forceRootViewCaptureUntil = CACurrentMediaTime() + 0.12
+            // 只让恢复落点这一帧走模型根视图；随后第一帧 live 用强制提交的 CABackdrop
+            // 接替（见 forceFreshFirstBackdropCapture），不再开 120ms 的整树采景窗口。
+            forceRootCaptureOnce = true
         }
         acceptNextCleanCapture = true
         hasPresentedFrame = false
@@ -1196,7 +1200,18 @@ final class LiquidGlassView: MTKView {
         // MTKView 在 isPaused == YES 时手动 draw 是官方支持的手动渲染路径（setPaused 也要到
         // 复位之后才把 isPaused 置回 false），所以这一帧一定画得出去；drawable / 渲染描述符
         // 未就绪时 draw(_:) 内部按既有分支安全返回（保持原样等下一 tick，不会崩、不会画错）。
-        draw(bounds)
+        if forceRootOnResume {
+            // 这一脚只呈现刚采到的模型帧；关掉 autoCapture，避免同一拍又走一次 CABackdrop。
+            // 恢复落点的 CABackdrop 交给下一拍，并强制提交当前窗口合成（内容与模型帧同源），
+            // 切回 live 时画面不跳（否则快速滑动后返回会闪/像缩放一下）。
+            let autoCaptureEnabled = autoCapture
+            autoCapture = false
+            draw(bounds)
+            autoCapture = autoCaptureEnabled
+            forceFreshFirstBackdropCapture = true
+        } else {
+            draw(bounds)
+        }
     }
 
     /// 返回转场开始的冻结帧刷新：重采当前背景并同步画出去，**不改变 isPaused**。
@@ -1211,6 +1226,9 @@ final class LiquidGlassView: MTKView {
             // 不受转场在途位移影响；随后整段返回不再覆盖这张纹理。
             forceRootViewCaptureUntil = CACurrentMediaTime() + 0.12
             forceFreshOnNextResume = true
+            // 这不是真正的「恢复」：别让遗留的恢复标记把落点逻辑带进来（那会在转场里
+            // 置一次 forceFreshFirstBackdropCapture，补采时强制提交整屏）。
+            forceRootCaptureOnNextResume = false
             handleResumeFromPause()
             freezeCaptureRetryRemaining = 3
             scheduleFreezeCaptureRetry()
@@ -1298,6 +1316,7 @@ final class LiquidGlassView: MTKView {
     /// 渲染档（syncRenderFrameRate）同样不动：暂停态与采景档无关，多调一次只是白算。
     func handlePauseForFreeze() {
         cancelReturnRefreshCadence()
+        forceFreshFirstBackdropCapture = false
         lastCaptureAt = 0
         Self.resetGlobalCaptureGate()
         // 【第 67 轮】定格这一脚要的就是「真正改写 CAMetalLayer」（第 66 轮第 1 条：冻结帧
@@ -1547,8 +1566,21 @@ final class LiquidGlassView: MTKView {
     private static let forceFreshBackdropDuration: TimeInterval = 0.02
     /// 下一次恢复是否强制提交（只有暂停态冻结帧刷新那一拍会立旗；恢复入口自消费）。
     private var forceFreshOnNextResume = false
+    /// 【第 143 轮】覆盖恢复后**第一条 CABackdrop** 必须强制提交当前窗口合成。
+    ///
+    /// 现象（用户原话）：「返回收尾时透过的画面会缩放一下，像是静止时和返回时透镜的倍数
+    /// 不一样……滑动页面返回收尾还会闪一下」。恢复落点先用模型根视图采景（内容与 model
+    /// 终态一致），0.12s 后切回 live；若此刻 `afterScreenUpdates:false` 仍读到切走前那次
+    /// 提交（滑动后尤其明显），透过画面会整体跳到旧滚动位置 —— 相对于根视图那帧就像是
+    /// 缩放/闪一下。这里只给切回 live 的**第一帧**强制提交：窗口此刻已经静止，提交不会
+    /// 露出隐藏态，也不会在恢复同一拍提交整屏（第 134 轮那种闪烁不会再出现）。
+    private var forceFreshFirstBackdropCapture = false
     /// 【第 142 轮】下一次恢复是否先用模型根视图采第一帧（见 handleResumeFromPause）。
     private var forceRootCaptureOnNextResume = false
+    /// 【第 143 轮】下一次采景**只这一帧**走模型根视图（恢复落点用）。用一次性标记而不是
+    /// 时间窗：时间窗会让恢复后头几拍 live 全部做整树渲染（60fps × 两块玻璃 = 十余次
+    /// 全屏渲染挤在 120ms 里），那本身就是可感知的顿挫 / 发烫面。
+    private var forceRootCaptureOnce = false
 
     /// 由 LiquidGlassEffectView.setPaused 的恢复分支置位（覆盖冻结档：返回 / push 后露出 /
     /// 从无玻璃页回来）。可见性档（收展）恢复不走这里，避免收展时多一次整树采景。
@@ -1636,7 +1668,10 @@ final class LiquidGlassView: MTKView {
         var capturedIsUniform = false
         // 恢复/返回头几拍强制提交（见 forceFreshBackdropUntil）：否则快速滑动后切入切回，
         // backdrop 一直是上一次提交的「移动前」画面，收尾才刷新（闪一下）。
-        let forceFreshComposite = CACurrentMediaTime() < forceFreshBackdropUntil
+        // 【第 143 轮】模型采景窗口结束后的第一条 CABackdrop 也强制提交一次（见
+        // forceFreshFirstBackdropCapture）：切回 live 的那一帧必须和根视图那帧同源同位置，
+        // 否则会整体跳一下（观感是缩放 / 闪）。
+        let forceFreshComposite = forceFreshFirstBackdropCapture || CACurrentMediaTime() < forceFreshBackdropUntil
         let capturedTexture = zeroCopyBridge.render { context in
             context.scaleBy(x: scaleCoefficient, y: scaleCoefficient)
 
@@ -1653,6 +1688,7 @@ final class LiquidGlassView: MTKView {
             }
         }
         commitCapturedTexture(capturedTexture, previous: previousTexture, isUniform: capturedIsUniform)
+        forceFreshFirstBackdropCapture = false
 
         blurTexture()
     }
