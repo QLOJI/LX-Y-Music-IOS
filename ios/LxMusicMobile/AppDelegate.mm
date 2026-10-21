@@ -8431,6 +8431,12 @@ static void LXGlassSampleScrollVelocity(UIScrollView *scrollView) {
 // 玻璃冻结前调用（Kit：LXGlassNotifyWillFreeze → 本函数）。
 // 返回 YES = 确实改动了屏幕内容（玻璃据此知道冻结帧必须重采），NO = 没动。
 static BOOL LXGlassSettleDeceleratingScrollView(void) {
+  // 【第 148 轮】导航切换不再「贴落点」：贴落点会在点进详情/设置的那一瞬把正在惯性滑行的
+  // 列表直接挪到预测落点 —— 用户看到主界面向滑动方向跳一下（原话：「滑动然后点击切入其他
+  // 画面，主界面画面向滑动方向跳跃」）。冻结帧改由返回开始那一拍重新采景（Kit 的
+  // refreshFrozenFrame，与 live 同源的 CABackdrop），不再依赖冻结前的落点。
+  // 整段预测 / 记账实现原样保留：以后若要恢复「贴落点」，删掉这一行即可。
+  return NO;
   UIScrollView *scrollView = LXGlassSettleScrollView;
   // 没有可用的列表（App 刚起来、或采样已被清）就别动
   if (scrollView == nil || scrollView.window == nil) return NO;
