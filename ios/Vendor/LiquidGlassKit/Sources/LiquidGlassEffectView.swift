@@ -132,6 +132,11 @@ public class LiquidGlassEffectView: UIView, AnyVisualEffectView {
     /// （Tab 栏收起/展开时另一块玻璃完全不可见）时置 true。
     private var hiddenPaused = false
 
+    /// 【第 149 轮】给「返回期实时化」用：本玻璃是否仍处于覆盖冻结档（返回被取消时据此恢复暂停）。
+    var isFreezePaused: Bool { freezePaused }
+    /// 可见性档当前是否把这块玻璃藏着（返回实时化时跳过不可见玻璃）。
+    var isVisibilityHidden: Bool { hiddenPaused }
+
     /// 【第 61 轮第 3 条】这条 prop 现在是暂停态的**唯一**来源（原来的覆盖期 ∨ 转场按住期，
     /// 见 navigation/transitionWindow.ts）：第 58～60 轮 LiquidGlassView 还会在重新入窗口时
     /// 无视本值自行恢复渲染（pauseRequested 那条通道），已整体删除——它正是「返回时透过的
@@ -147,6 +152,14 @@ public class LiquidGlassEffectView: UIView, AnyVisualEffectView {
     /// 「还原上下滑动速度，现在配置后，存在滑动跳动，使用体验很差」。
     @objc public func setPaused(_ paused: Bool) {
         freezePaused = paused
+        // 【第 149 轮】返回实时化窗口内：prop 重放不得把玻璃重新按住，否则返回中途又变回
+        // 静态帧（用户要求返回时像玻璃一样实时）。窗口结束的恢复由 Kit 的定时器负责。
+        if paused, liquidGlassView?.isLiveReturnActive == true {
+            liquidGlassView?.isPaused = hiddenPaused
+            return
+        }
+        // 返回完成（prop 放开）：结束逐帧强制提交，之后按常规 live 采景。
+        if !paused { liquidGlassView?.endLiveReturnForcedFresh() }
         // 恢复（true → false）时先做一次性复位再解除暂停（2026-10-02 用户第 2 条）：
         // 暂停只是停 draw，CAMetalLayer 上仍留着暂停前那帧（折射的是上一次可见时刻的
         // 背景）。不复位的话，恢复后第一次采景若被判「未就绪」就会把那一帧原样画出去
