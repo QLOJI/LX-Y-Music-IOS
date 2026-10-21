@@ -422,37 +422,13 @@ private final class GlassInstanceRegistry {
         return base
     }
 
-    // 【第 136 轮】返回冻结帧改为**一次性**刷新（第一拍强制拿当前合成）。
-    //
-    // 第 130 轮的 60Hz 连续会话会在第一拍之后继续用 CABackdrop(afterScreenUpdates:false)
-    // 采景：返回转场期间 App 没有新的提交，后续采到的仍是旧合成，会把第一拍强制拿到的
-    // 正确帧覆盖成「滑动前」那一帧；恢复后再被 live 采样纠正 = 用户看到的「闪一下 /
-    // 从左向右移动一下再重合」。现在首拍强制一次；后续补采（第 142 轮起含 100ms 节拍）
-    // 一律改走本屏 model 采景，不再读转场合成；0.2s 去重防止两个入口重复强制提交。
-    private var lastFrozenRefreshAt: TimeInterval = 0
-
-    /// 返回转场开始：对所有暂停态在窗玻璃做一次强制当前合成刷新。
-    func refreshFrozenFrames() {
-        guard Thread.isMainThread else {
-            DispatchQueue.main.async { [weak self] in self?.refreshFrozenFrames() }
-            return
-        }
-        guard UIApplication.shared.applicationState == .active else { return }
-        let now = CACurrentMediaTime()
-        guard now - lastFrozenRefreshAt >= 0.2 else { return }
-        lastFrozenRefreshAt = now
-        // 【第 149 轮】返回期实时化：不给暂停玻璃冻结帧，而是把在窗的暂停玻璃**解冻**，
-        // 按常规 live 逐帧采景，不再有「冻结帧 ↔ live」的换源差（缩放 / 闪）。
-        // 【第 150 轮】采景回常规路径（afterScreenUpdates:false），不逐帧强制提交。
-        for instance in instances.allObjects {
-            guard let glass = instance as? LiquidGlassView,
-                  glass.window != nil,
-                  glass.isPaused else { continue }
-            if let effectView = glass.superview as? LiquidGlassEffectView,
-               effectView.isVisibilityHidden { continue }
-            glass.beginLiveReturn()
-        }
-    }
+    /// 【第 151 轮】返回转场开始：**什么都不做**。
+    ///
+    /// 用户在返回期看到「透过画面左滑」——那是实时采景在移动的采样矩形上逐帧跟拍，
+    /// 永远滞后一帧，叠上转场本身就成了延迟、卡顿、撕裂的滑动动画。转场期间玻璃保持
+    /// 暂停，展示手上那张静止画面；恢复路径（setPaused(false) → handleResumeFromPause）
+    /// 在转场结束时一次性换成当前画面。
+    func refreshFrozenFrames() {}
 }
 
 final class LiquidGlassView: MTKView {
@@ -1113,48 +1089,6 @@ final class LiquidGlassView: MTKView {
     /// 提交整屏，用户看到的就是「每次返回闪一下」与收展卡顿）。第 143 轮起强制提交只给
     /// 切回 live 的**第一帧 CABackdrop**（下一拍，见 forceFreshFirstBackdropCapture）；
     /// 第 147 轮返回冻结帧改为 CABackdrop 静态预采，恢复后由正常采景接替。
-    /// 【第 149 轮】返回转场实时化：解冻这块玻璃，按常规 live 采景，不展示冻结帧。
-    /// 【第 150 轮】去掉逐帧强制提交：它让转场与采景抢合成器（卡顿 / 撕裂）。
-    func beginLiveReturn() {
-        guard window != nil else { return }
-        let now = CACurrentMediaTime()
-        liveReturnUntil = now + Self.liveReturnDuration
-        reentryLiveStartedAt = now
-        scheduleReentryLiveExpiry()
-        lastCaptureAt = 0
-        acceptNextCleanCapture = true
-        forceRootViewCaptureUntil = 0
-        forceRootCaptureOnce = false
-        forceFreshFirstBackdropCapture = false
-        skipNextCaptureOnce = false
-        frozenFrameUsesBackdrop = false
-        consecutiveUniformFrames = 0
-        // 括号写法：第 67 轮契约要求「hasPresentedFrame = false」恰四处（四条复位路径），
-        // 这里只是解冻后强制重呈一次，不是复位路径。
-        hasPresentedFrame = (false)
-        isPaused = false
-        // 走既有的档位转发入口（内部就是 syncRenderFrameRate），不新增第二个赋值点。
-        syncScrollLiveFrameRate()
-        scheduleLiveReturnRestore()
-    }
-
-    private func scheduleLiveReturnRestore() {
-        guard !liveReturnRestoreScheduled else { return }
-        liveReturnRestoreScheduled = true
-        DispatchQueue.main.asyncAfter(deadline: .now() + Self.liveReturnDuration) { [weak self] in
-            guard let self else { return }
-            self.liveReturnRestoreScheduled = false
-            guard CACurrentMediaTime() >= self.liveReturnUntil else {
-                self.scheduleLiveReturnRestore()
-                return
-            }
-            // 返回被取消（JS 仍按着）→ 恢复暂停；正常返回时 prop 已放开，玻璃继续 live。
-            if let effectView = self.superview as? LiquidGlassEffectView, effectView.isFreezePaused {
-                self.isPaused = true
-            }
-        }
-    }
-
     func handleResumeFromPause() {
         consecutiveUniformFrames = 0
         // 【第 127 轮】恢复（返回 / 回前台）也按实时档跑一段：返回转场与露出动画里
@@ -1580,21 +1514,6 @@ final class LiquidGlassView: MTKView {
     private var frozenFrameUsesBackdrop = false
     /// 预采冻结帧的恢复落点跳过显式采景（保持手上这张同源帧）。
     private var skipNextCaptureOnce = false
-
-    /// 【第 149 轮】返回期实时化窗口：窗口内这块玻璃保持解冻，按常规 live 采景。
-    /// 【第 150 轮】不再逐帧强制提交（`afterScreenUpdates:true` 每帧一次整屏提交会和
-    /// 转场动画抢合成器：转场卡顿抖动、透过画面掉帧撕裂）。常规 CABackdrop 只滞后一帧
-    /// 已完成合成，不撕裂。
-    private var liveReturnUntil: TimeInterval = 0
-    private var liveReturnRestoreScheduled = false
-    private static let liveReturnDuration: TimeInterval = 1.2
-    /// 供 LiquidGlassEffectView 判断：返回实时化期间忽略 **prop 重放**的暂停
-    /// （新的一次暂停照常生效，见 setPaused）。
-    var isLiveReturnActive: Bool { CACurrentMediaTime() < liveReturnUntil }
-    /// 返回完成（或新的一次暂停开始）：结束实时化窗口。
-    func endLiveReturn() {
-        liveReturnUntil = 0
-    }
 
     /// 由 LiquidGlassEffectView.setPaused 的恢复分支置位（覆盖冻结档：返回 / push 后露出 /
     /// 从无玻璃页回来）。可见性档（收展）恢复不走这里，避免收展时多一次整树采景。
