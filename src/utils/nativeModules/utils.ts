@@ -48,6 +48,20 @@ export const refreshLiquidGlassFrames = () => {
 }
 
 /**
+ * 【第 144 轮】导航切换前的「先停稳、再切画面」。
+ *
+ * 用户原话：「等画面停稳了或者直接静止画面再切入其他画面……只有画面不动了才能切换画面
+ * 动画……只需要静态显示也足够了」。原生先在主线程把正在惯性滑行的列表贴到预测落点，
+ * 再让每块在窗玻璃用与 live **完全相同的 CABackdrop 采景路径**取一帧静态画面并 present。
+ * 必须在 Navigation.push/pop 派发之前调用：命令随后才到，转场开始时玻璃已有一张与 live
+ * 同源同几何的冻结帧，冻结 / 返回刷新直接展示它，不再采转场中间态。
+ */
+export const prepareLiquidGlassForNavigation = () => {
+  if (!isIOS) return
+  UtilsModule.prepareLiquidGlassForNavigation?.()
+}
+
+/**
  * 把 RNN 的 Toast 浮层窗口提到 App 主窗口之上（2026-10-02 用户第 6 条）。
  *
  * 背景：RNN 的 overlay 不是普通视图，而是独立 UIWindow（RNNOverlayManager →
