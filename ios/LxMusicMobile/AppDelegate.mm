@@ -17,10 +17,6 @@
 // 头里可能还没有这条桥，App 侧会报「undeclared identifier」。这里重复声明一次，
 // 编译不再依赖缓存头的新旧；真正的实现仍由 Kit 的 .mm / Swift 提供。
 extern "C" void LXGlassNotifyRefreshFrozenFrames(void);
-// 【第 144 轮】导航切换前的静态预采（见 Kit 的 LXGlassFreezeHook.h）。
-extern "C" void LXGlassNotifyPrepareFrozenFrames(void);
-// 下方定义的「把惯性滑行贴到预测落点」；本文件前面的导航预采方法要直接调用它。
-static BOOL LXGlassSettleDeceleratingScrollView(void);
 
 @class SceneDelegate;
 #import <Security/Security.h>
@@ -7715,21 +7711,6 @@ RCT_EXPORT_METHOD(refreshLiquidGlassFrames) {
   });
 }
 
-// 【第 144 轮】导航切换前的「先停稳、再切画面」：JS 在派发 push / pop 之前调用。
-// 用户原话：「等画面停稳了或者直接静止画面再切入其他画面……只有画面不动了才能切换画面动画，
-// 这样就不会担心液态玻璃采样不到，这样只需要静态显示也足够了」。
-// 顺序（全部同步在主线程）：
-//   ① 把正在惯性滑行的列表按预测落点贴住（与冻结钩子同一个函数，未在滑行时为空操作）；
-//   ② 让 Kit 对每块在窗玻璃用**与 live 相同的 CABackdrop** 采一帧静态画面并 present。
-// 命令随后才到，转场开始时玻璃已有一张与 live 同源同几何的冻结帧；冻结 / 返回刷新直接
-// 展示它，不再采转场中间态 —— 切换前后不会缩放或闪烁。
-RCT_EXPORT_METHOD(prepareLiquidGlassForNavigation) {
-  dispatch_async(dispatch_get_main_queue(), ^{
-    LXGlassSettleDeceleratingScrollView();
-    LXGlassNotifyPrepareFrozenFrames();
-  });
-}
-
 // Tab 栏手动展开（点击左下角收起按钮）：保持展开直到下一次列表滚动离开顶部
 RCT_EXPORT_METHOD(setTabBarExpanded) {
   dispatch_async(dispatch_get_main_queue(), ^{
@@ -8534,9 +8515,6 @@ static void LX_UIViewController_viewWillAppear(UIViewController *self, SEL _cmd,
   // （movingToParentViewController / beingPresented）没有冻结帧要刷新，整树重采只会和
   // 新页首次布局抢主线程 —— 用户第 130 轮报的「进入播放详情页卡顿」。
   if (self.movingToParentViewController || self.beingPresented) return;
-  // 【第 144 轮】系统边缘返回没有 JS 的派发前锚点：在这一脚先按静态画面预采（与 live 同源），
-  // 随后 refresh 看到预采帧就直接沿用，整段返回展示的是切换前的那张静态画面。
-  LXGlassNotifyPrepareFrozenFrames();
   LXGlassNotifyRefreshFrozenFrames();
 }
 
