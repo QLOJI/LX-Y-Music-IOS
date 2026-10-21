@@ -1183,9 +1183,10 @@ final class LiquidGlassView: MTKView {
             forceRootCaptureOnce = true
         }
         if usedBackdropFrozen { skipNextCaptureOnce = true }
-        // 恢复后的第一帧干净 live 采景立刻接替（不被 120ms 静默窗挂住）。
-        // 预采帧与 live 同源且是转场前的当前画面，接替前后不会变样。
-        acceptNextCleanCapture = true
+        // 【第 148 轮】预采冻结帧与 live 同源：恢复后先让它挂完 120ms 静默窗，别让转场
+        // 收尾那一两拍（合成可能还没完全落地）的 live 采景立刻接替 —— 那一下就是用户
+        // 看到的「返回主界面时闪一下、透过画面和背景短暂不一致」。
+        acceptNextCleanCapture = !usedBackdropFrozen
         hasPresentedFrame = false
         beginCaptureSettleWindow()
         captureBackground()
