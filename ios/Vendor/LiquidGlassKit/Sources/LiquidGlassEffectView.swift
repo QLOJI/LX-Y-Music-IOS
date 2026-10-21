@@ -151,15 +151,16 @@ public class LiquidGlassEffectView: UIView, AnyVisualEffectView {
     /// 都会把正在惯性滑行的列表贴到预测落点，惯性被当场掐断 —— 用户第 72 轮原话：
     /// 「还原上下滑动速度，现在配置后，存在滑动跳动，使用体验很差」。
     @objc public func setPaused(_ paused: Bool) {
+        // 【第 150 轮】判据用「此前已处于冻结档」：同一值的 prop 重放（返回中途）不得把
+        // 玻璃重新按住；而新的一次暂停（切入详情，false → true）必须照常生效并立刻结束
+        // 实时化窗口 —— 否则玻璃会在全屏覆盖下继续 60fps 空转（切入卡顿）。
+        let wasFreezePaused = freezePaused
         freezePaused = paused
-        // 【第 149 轮】返回实时化窗口内：prop 重放不得把玻璃重新按住，否则返回中途又变回
-        // 静态帧（用户要求返回时像玻璃一样实时）。窗口结束的恢复由 Kit 的定时器负责。
-        if paused, liquidGlassView?.isLiveReturnActive == true {
+        if paused, wasFreezePaused, liquidGlassView?.isLiveReturnActive == true {
             liquidGlassView?.isPaused = hiddenPaused
             return
         }
-        // 返回完成（prop 放开）：结束逐帧强制提交，之后按常规 live 采景。
-        if !paused { liquidGlassView?.endLiveReturnForcedFresh() }
+        if !paused || !wasFreezePaused { liquidGlassView?.endLiveReturn() }
         // 恢复（true → false）时先做一次性复位再解除暂停（2026-10-02 用户第 2 条）：
         // 暂停只是停 draw，CAMetalLayer 上仍留着暂停前那帧（折射的是上一次可见时刻的
         // 背景）。不复位的话，恢复后第一次采景若被判「未就绪」就会把那一帧原样画出去
