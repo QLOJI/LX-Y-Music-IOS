@@ -383,15 +383,44 @@ private final class GlassInstanceRegistry {
     /// 每个实例解析为 captureExclusionView（nil → 所在 LiquidGlassEffectView → 实例
     /// 自身）。隐藏父级根即同时覆盖其下所有玻璃的 MTK 输出与玻璃上方的前景内容；
     /// 单独隐藏 MTK 不够——挂在玻璃上方的前景（RN 图标/按钮）也会被截进背景纹理。
+    ///
+    /// 【第 141 轮】排除根再往上收一层：本工程的迷你播放器把玻璃包在**只装玻璃**的
+    /// 绝对定位 wrapper 里（PlayerBar 的 glassHost），封面/标题/歌词/按钮是该 wrapper
+    /// 的**兄弟**——只隐藏 RN 宿主父级仍会把前景截进背景纹理，返回落点的根视图采景
+    /// 于是把「自己的标题/歌词 + 胶囊暗缘」折射成重影与黑边（用户第 141 轮截图）。
+    /// 这里从宿主父级往上找第一个「含其它非零子视图」的祖先（最多 3 层、且不能比
+    /// 玻璃大出一圈），才把整块控件连同前景一起隐藏；找不到就退回原层级，绝不爬到
+    /// 整屏（那会把要采的背景也藏掉）。
     func exclusionRoots(in window: UIWindow?) -> [UIView] {
         var roots: [UIView] = []
         var seen = Set<ObjectIdentifier>()
         for instance in instances.allObjects {
             guard let glass = instance as? LiquidGlassView, glass.window === window else { continue }
-            let root = glass.captureExclusionView ?? (glass.superview as? LiquidGlassEffectView) ?? glass
+            let base = glass.captureExclusionView ?? (glass.superview as? LiquidGlassEffectView) ?? glass
+            let root = Self.resolveExclusionRoot(base, glassBounds: glass.bounds)
             if seen.insert(ObjectIdentifier(root)).inserted { roots.append(root) }
         }
         return roots.filter { view in !roots.contains { $0 !== view && view.isDescendant(of: $0) } }
+    }
+
+    /// 见 exclusionRoots 的第 141 轮说明。纯几何判据，不依赖 RN 层级约定。
+    private static func resolveExclusionRoot(_ base: UIView, glassBounds: CGRect) -> UIView {
+        let maxWidth = glassBounds.width + 96
+        let maxHeight = glassBounds.height + 96
+        var root = base
+        var depth = 0
+        while depth < 3, let parent = root.superview {
+            let bounds = parent.bounds
+            guard bounds.width > 1, bounds.height > 1 else { break }
+            if bounds.width > maxWidth || bounds.height > maxHeight { break }
+            let hasForegroundSibling = parent.subviews.contains { sub in
+                sub !== root && sub.bounds.width > 1 && sub.bounds.height > 1
+            }
+            if hasForegroundSibling { return parent }
+            root = parent
+            depth += 1
+        }
+        return base
     }
 
     // 【第 136 轮】返回冻结帧改为**一次性**刷新（第一拍强制拿当前合成）。
@@ -600,14 +629,15 @@ final class LiquidGlassView: MTKView {
     /// 不补采就整段转场挂着旧纹理。只在这条路径上、只补有限次数，且采到干净帧即停。
     private var freezeCaptureRetryRemaining = 0
 
-    /// 挂一次补采（40ms ≈ 2~3 拍，与合成追上来的时间同量级）。paused 状态下手动
-    /// capture + draw 是 MTKView 官方支持的手动渲染路径，调用方无需先恢复渲染。
+    /// 挂一次补采（【第 141 轮】20ms ≈ 1~2 拍；快速返回要求冻结帧尽快收敛，40ms 在
+    /// 短转场里只剩两次机会）。paused 状态下手动 capture + draw 是 MTKView 官方支持的
+    /// 手动渲染路径，调用方无需先恢复渲染。
     private func scheduleFreezeCaptureRetry() {
         guard acceptNextCleanCapture, freezeCaptureRetryRemaining > 0 else { return }
         freezeCaptureRetryRemaining -= 1
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.04) { [weak self] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) { [weak self] in
             guard let self, self.acceptNextCleanCapture else { return }
-            // 只复位本实例节流：40ms 已跨过全局闸门的 33ms 格，不必再动全局闸门
+            // 只复位本实例节流：20ms 已跨过全局闸门的节拍粒度，不必再动全局闸门
             //（那会多出一处复位点，与「定格四步里的唯一复位」口径冲突）。
             self.lastCaptureAt = 0
             self.captureBackground()
@@ -1162,13 +1192,11 @@ final class LiquidGlassView: MTKView {
             CACurrentMediaTime() - frozenFrameRefreshedAt < Self.frozenFrameHoldDuration
         frozenFrameRefreshedAt = 0
         if holdFrozenFrame {
-            // 保留返回开始刷新的最终 Home 帧，暂不采景；恢复显示链路时重呈一次。
-            // 括号写法：第 67 轮契约要求「hasPresentedFrame = false」恰四处（四条复位路径），
-            // 这里只是强制重呈一次冻结帧，不是复位路径。
-            holdCapturesUntilInteraction = true
-            hasPresentedFrame = (false)
-            draw(bounds)
-            return
+            // 【第 141 轮】返回落点再采一帧：转场此刻已经结束，本屏处于 model 终态，
+            // 下一段复位里的 captureBackground 因此按本屏根视图采景（前景由排除根隐藏），
+            // 拿到的就是屏幕上真正的那块背景。快速返回不再沿用转场开始时那张（可能早于
+            // 最后一次布局 / 数据刷新），慢速返回走常规路径，两者展示的都是最终画面。
+            forceRootViewCaptureUntil = CACurrentMediaTime() + 0.12
         }
         holdCapturesUntilInteraction = false
         acceptNextCleanCapture = true
@@ -1186,13 +1214,18 @@ final class LiquidGlassView: MTKView {
         // MTKView 在 isPaused == YES 时手动 draw 是官方支持的手动渲染路径（setPaused 也要到
         // 复位之后才把 isPaused 置回 false），所以这一帧一定画得出去；drawable / 渲染描述符
         // 未就绪时 draw(_:) 内部按既有分支安全返回（保持原样等下一 tick，不会崩、不会画错）。
+        // 【第 141 轮】快速返回：上面采到的就是返回后主界面的最终画面，保持到用户下一次
+        // 交互（滚动 / 拖页 / 收展 / 抬起透镜）再恢复 live。收尾不再换帧、不再采景 ——
+        // 置位放在 draw 之前，这一脚的 autoCapture 也不会再采一次（少一次整树渲染）。
+        // 慢速返回（冻结刷新早已超过保持窗口）不置位，与之前一样直接进 live 实时档。
+        if holdFrozenFrame { holdCapturesUntilInteraction = true }
         draw(bounds)
     }
 
     /// 返回转场开始的一次性冻结帧刷新：重采当前背景并同步画出去，**不改变 isPaused**。
     ///
     /// 走完整恢复复位（清沿用痕迹 / 干净帧优先提交 / 强制新鲜窗口 / 同步 draw）。
-    /// 首拍可疑时由冻结重试器补采（3×40ms）；不再做 60Hz 连续补帧 —— 后续补采会用
+    /// 首拍可疑时由冻结重试器补采（3×20ms）；不再做 60Hz 连续补帧 —— 后续补采会用
     /// `afterScreenUpdates:false` 读到转场期间未提交的旧合成，把首拍的正确帧覆盖掉。
     func refreshFrozenFrame(firstTick: Bool) {
         if firstTick {
