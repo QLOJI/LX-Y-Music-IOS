@@ -8428,14 +8428,19 @@ static void LXGlassSampleScrollVelocity(UIScrollView *scrollView) {
   LXGlassSettleLastSampleAt = now;
 }
 
+// 【第 152 轮】刹车入口（定义在贴落点后面，避免动到那一段的契约锚点）。
+static BOOL LXGlassBrakeNavScrollView(void);
+
 // 玻璃冻结前调用（Kit：LXGlassNotifyWillFreeze → 本函数）。
 // 返回 YES = 确实改动了屏幕内容（玻璃据此知道冻结帧必须重采），NO = 没动。
 static BOOL LXGlassSettleDeceleratingScrollView(void) {
-  // 【第 148 轮】导航切换不再「贴落点」：贴落点会在点进详情/设置的那一瞬把正在惯性滑行的
-  // 列表直接挪到预测落点 —— 用户看到主界面向滑动方向跳一下（原话：「滑动然后点击切入其他
-  // 画面，主界面画面向滑动方向跳跃」）。冻结帧改由返回开始那一拍重新采景（Kit 的
-  // refreshFrozenFrame，与 live 同源的 CABackdrop），不再依赖冻结前的落点。
-  // 整段预测 / 记账实现原样保留：以后若要恢复「贴落点」，删掉这一行即可。
+  // 【第 152 轮】用户口径：「滑动过程中点击、切入其他画面，就要立即去除惯性，滑轮锁住
+  // 刹车」。冻结前把正在惯性滑行的滚动视图停在**当前**位置（不预测、不外推），冻结帧
+  // 采到的就是用户点下去那一刻看到的画面；返回时列表不会再动，玻璃透过的画面与背景
+  // 天然重合（第 148 轮担心的「贴到预测落点 = 向滑动方向跳一下」也不会发生）。
+  // 历史预测 / 贴落点实现原样保留在下面，不再执行。
+  BOOL braked = LXGlassBrakeNavScrollView();
+  if (braked) return braked;
   return NO;
   UIScrollView *scrollView = LXGlassSettleScrollView;
   // 没有可用的列表（App 刚起来、或采样已被清）就别动
@@ -8480,6 +8485,45 @@ static BOOL LXGlassSettleDeceleratingScrollView(void) {
   // 实测到的衰减比例**留着** —— 它是这个列表（乃至这台设备）的固有属性，多量几串更准。
   LXGlassSettleUserRun = NO;
   return YES;
+}
+
+// 【第 152 轮】刹车：收集窗口里所有正在惯性滑行的滚动视图（纵向列表、横滑 Pager 都算）。
+static void LXGlassCollectDeceleratingScrollViews(UIView *view, NSMutableArray<UIScrollView *> *views) {
+  if ([view isKindOfClass:[UIScrollView class]]) {
+    UIScrollView *scrollView = (UIScrollView *)view;
+    // 手指还按着的时候是用户在拖，不是惯性：硬写偏移会和手势打架。
+    if (scrollView.isDecelerating && !scrollView.isTracking && !scrollView.isDragging) {
+      [views addObject:scrollView];
+    }
+  }
+  for (UIView *subview in view.subviews) {
+    LXGlassCollectDeceleratingScrollViews(subview, views);
+  }
+}
+
+static BOOL LXGlassBrakeNavScrollView(void) {
+  UIWindow *window = LXGlassSettleScrollView.window;
+  if (window == nil) {
+    for (UIWindow *candidate in UIApplication.sharedApplication.windows) {
+      if (candidate.isKeyWindow) { window = candidate; break; }
+    }
+  }
+  NSMutableArray<UIScrollView *> *views = [NSMutableArray array];
+  if (window != nil) LXGlassCollectDeceleratingScrollViews(window, views);
+  BOOL changed = NO;
+  for (UIScrollView *scrollView in views) {
+    CGPoint offset = scrollView.contentOffset;
+    // 按当前位置写一次即打断在途减速（UIKit 的惯用写法），画面一毫米都不挪。
+    [scrollView setContentOffset:CGPointMake(offset.x, offset.y) animated:NO];
+    changed = YES;
+  }
+  if (changed) {
+    LXGlassSettleScrollView = nil;
+    LXGlassSettleVelocity = 0;
+    LXGlassSettleLastSampleAt = 0;
+    LXGlassSettleUserRun = NO;
+  }
+  return changed;
 }
 
 // 把「冻结前贴落点」注册给 LiquidGlassKit（Kit 在把渲染循环暂停之前同步回调进来）。
