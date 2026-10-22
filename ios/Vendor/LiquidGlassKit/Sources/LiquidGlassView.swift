@@ -960,6 +960,12 @@ final class LiquidGlassView: MTKView {
         // 捕获提前返回（节流 / 缺窗口 / backdrop 不可用）时也保持 false，
         // 避免把上一帧的「半成品」印象带进下一次提交。
         lastCaptureHadPartialBlack = false
+        // 【第 152 轮】冻结帧保持期 / 采景源还在做转场：这一帧不采。转场中的窗口合成是
+        // 「左边已经换成新页、右边还是上一页」，采进去就是用户看到的左边那一下闪；
+        // 保持手上那张静止画面，等转场落地后的完整合成再采。
+        // 用户在滚列表（返回后立刻上手）就立即解除保持，别让玻璃在滚动中定格。
+        if CACurrentMediaTime() < frozenFrameHoldUntil, !isScrollLiveActive { return }
+        if isCaptureSourceMoving() { return }
         if skipNextCaptureOnce {
             skipNextCaptureOnce = false
             return
@@ -1094,6 +1100,18 @@ final class LiquidGlassView: MTKView {
         // 【第 127 轮】恢复（返回 / 回前台）也按实时档跑一段：返回转场与露出动画里
         // 玻璃要和背景同帧跟手，静止档 30fps 会明显一顿一顿。0.9s 后自动落回静止档。
         let resumeNow = CACurrentMediaTime()
+        // 【第 152 轮】返回期沿用冻结帧：切入那一刻定格的画面就是返回后的背景（App 侧
+        // 已在冻结前刹车），转场里不重采、不换源。转场没结束就恢复（边缘返回 / 慢速手势）
+        // 时更要禁采：此时合成是「左边已到位、右边还是上一页」，采到就是左边那一下闪。
+        let holdFrozenFrame = freezeFrameLocked || isCaptureSourceMoving()
+        freezeFrameLocked = false
+        if holdFrozenFrame {
+            frozenFrameHoldUntil = resumeNow + Self.frozenFrameHoldDuration
+            forceRootCaptureOnNextResume = false
+            forceFreshFirstBackdropCapture = false
+            skipNextCaptureOnce = false
+            frozenFrameUsesBackdrop = false
+        }
         reentryLiveStartedAt = resumeNow
         scheduleReentryLiveExpiry()
         lastCaptureHadPartialBlack = false
@@ -1147,7 +1165,7 @@ final class LiquidGlassView: MTKView {
         // 收尾或用户开始滑动时造成短暂不一致。
         let usedBackdropFrozen = frozenFrameUsesBackdrop
         frozenFrameUsesBackdrop = false
-        let forceRootOnResume = forceRootCaptureOnNextResume
+        let forceRootOnResume = forceRootCaptureOnNextResume && !holdFrozenFrame
         forceRootCaptureOnNextResume = false
         if forceRootOnResume, !usedBackdropFrozen {
             // 只让恢复落点这一帧走模型根视图；随后第一帧 live 用强制提交的 CABackdrop
@@ -1253,6 +1271,9 @@ final class LiquidGlassView: MTKView {
     func handlePauseForFreeze() {
         forceFreshFirstBackdropCapture = false
         frozenFrameUsesBackdrop = false
+        // 【第 152 轮】这张定格就是返回期要展示的画面（App 侧已刹车，画面不会再动）。
+        freezeFrameLocked = true
+        frozenFrameHoldUntil = 0
         lastCaptureAt = 0
         Self.resetGlobalCaptureGate()
         // 【第 67 轮】定格这一脚要的就是「真正改写 CAMetalLayer」（第 66 轮第 1 条：冻结帧
@@ -1514,6 +1535,12 @@ final class LiquidGlassView: MTKView {
     private var frozenFrameUsesBackdrop = false
     /// 预采冻结帧的恢复落点跳过显式采景（保持手上这张同源帧）。
     private var skipNextCaptureOnce = false
+
+    /// 【第 152 轮】冻结帧锁存：覆盖冻结时定格的那张画面就是返回期展示的画面。
+    private var freezeFrameLocked = false
+    /// 恢复后继续展示冻结帧的窗口：转场收尾那一两拍的半合成画面不采。
+    private var frozenFrameHoldUntil: TimeInterval = 0
+    private static let frozenFrameHoldDuration: TimeInterval = 0.3
 
     /// 由 LiquidGlassEffectView.setPaused 的恢复分支置位（覆盖冻结档：返回 / push 后露出 /
     /// 从无玻璃页回来）。可见性档（收展）恢复不走这里，避免收展时多一次整树采景。
@@ -2015,6 +2042,34 @@ extension UIView {
     /// 最大档 1.1 —— 候选视图太小的话矩形会伸到视图外，缓冲边缘没画到的黑带会被折射进
     /// 玻璃边缘）。都不满足就继续往上找；整条响应链上没有 ⇒ 逐字回退 findRootView()
     /// （宿主被直接塞进窗口、还没有任何控制器接手这类形态）。
+    /// 【第 152 轮】采景源所在的那一屏是否还在做转场 / 其它位移动画（push、pop、边缘返回）。
+    /// 只看祖先方向：列表滚动、Tab 栏收展都不搬这一屏，不会误判。
+    func isCaptureSourceMoving() -> Bool {
+        guard let source = findCaptureSourceView() else { return false }
+        var view: UIView? = source
+        var depth = 0
+        while let current = view, depth < 8 {
+            let model = current.layer
+            if let presentation = model.presentation() {
+                if abs(presentation.position.x - model.position.x) > 0.5 ||
+                   abs(presentation.position.y - model.position.y) > 0.5 ||
+                   abs(presentation.bounds.width - model.bounds.width) > 0.5 ||
+                   abs(presentation.bounds.height - model.bounds.height) > 0.5 {
+                    return true
+                }
+                let inFlight = presentation.transform
+                let settled = model.transform
+                if abs(inFlight.m41 - settled.m41) > 0.5 ||
+                   abs(inFlight.m42 - settled.m42) > 0.5 {
+                    return true
+                }
+            }
+            view = current.superview
+            depth += 1
+        }
+        return false
+    }
+
     func findCaptureSourceView() -> UIView? {
         var responder: UIResponder? = self
         while let current = responder {
