@@ -17,6 +17,10 @@
 // 头里可能还没有这条桥，App 侧会报「undeclared identifier」。这里重复声明一次，
 // 编译不再依赖缓存头的新旧；真正的实现仍由 Kit 的 .mm / Swift 提供。
 extern "C" void LXGlassNotifyRefreshFrozenFrames(void);
+// 【第 153 轮】同口径的本地声明（Pod 头缓存旧了也能编过）。
+extern "C" BOOL LXGlassNotifyWillFreeze(void);
+extern "C" void LXGlassNotifyFreezeInView(void *view);
+extern "C" void LXGlassNotifyScreenSettled(void *view);
 
 @class SceneDelegate;
 #import <Security/Security.h>
@@ -8513,8 +8517,12 @@ static BOOL LXGlassBrakeNavScrollView(void) {
   BOOL changed = NO;
   for (UIScrollView *scrollView in views) {
     CGPoint offset = scrollView.contentOffset;
-    // 按当前位置写一次即打断在途减速（UIKit 的惯用写法），画面一毫米都不挪。
+    // 同位置写一次 + 短暂关掉滚动：两条都是 UIKit 里打断在途减速的惯用写法，
+    // 单靠 setContentOffset 在部分系统版本上会因「值没变」被跳过，惯性继续滑。
+    BOOL scrollEnabled = scrollView.scrollEnabled;
+    scrollView.scrollEnabled = NO;
     [scrollView setContentOffset:CGPointMake(offset.x, offset.y) animated:NO];
+    scrollView.scrollEnabled = scrollEnabled;
     changed = YES;
   }
   if (changed) {
@@ -8577,6 +8585,57 @@ static void LX_UIViewController_viewWillAppear(UIViewController *self, SEL _cmd,
   if (method == nil) return;
   LXOrigViewControllerViewWillAppear = (void (*)(UIViewController *, SEL, BOOL))method_getImplementation(method);
   method_setImplementation(method, (IMP)LX_UIViewController_viewWillAppear);
+}
+
+@end
+
+// ============================================================================
+// 【第 153 轮】导航转场开始 / 结束的原生锚点
+// ============================================================================
+// 用户现场：滑动中切入、返回收尾时玻璃透过的画面还会更新一下（闪）。根因是冻结帧
+// 抓得太晚：JS 的 paused prop 要经过 React 渲染 + 桥，常落在 push 动画开始之后；
+// 返回侧又只能按时间猜「转场结束」，换帧撞在转场尾巴上。
+//
+// UIKit 自带两个准时锚点：
+//   · -viewWillDisappear:：转场开始前（窗口还是这一屏自己的画面）→ 先刹车，再定格；
+//   · -viewDidAppear:：转场真正结束 → 放开导航冻结，按静止后的完整合成恢复采景。
+// 两个回调都不依赖 JS，也不猜时长。
+static void (*LXOrigViewControllerViewWillDisappear)(UIViewController *, SEL, BOOL) = NULL;
+static void (*LXOrigViewControllerViewDidAppear)(UIViewController *, SEL, BOOL) = NULL;
+
+static void LX_UIViewController_viewWillDisappear(UIViewController *self, SEL _cmd, BOOL animated) {
+  UIView *view = self.view;
+  if (view.window != nil) {
+    LXGlassNotifyWillFreeze();
+    LXGlassNotifyFreezeInView((__bridge void *)view);
+  }
+  if (LXOrigViewControllerViewWillDisappear != NULL) {
+    LXOrigViewControllerViewWillDisappear(self, _cmd, animated);
+  }
+}
+
+static void LX_UIViewController_viewDidAppear(UIViewController *self, SEL _cmd, BOOL animated) {
+  if (LXOrigViewControllerViewDidAppear != NULL) {
+    LXOrigViewControllerViewDidAppear(self, _cmd, animated);
+  }
+  LXGlassNotifyScreenSettled((__bridge void *)self.view);
+}
+
+@interface LXGlassNavFreezeSetup : NSObject
+@end
+@implementation LXGlassNavFreezeSetup
+
++ (void)load {
+  Method disappear = class_getInstanceMethod([UIViewController class], @selector(viewWillDisappear:));
+  if (disappear != nil) {
+    LXOrigViewControllerViewWillDisappear = (void (*)(UIViewController *, SEL, BOOL))method_getImplementation(disappear);
+    method_setImplementation(disappear, (IMP)LX_UIViewController_viewWillDisappear);
+  }
+  Method didAppear = class_getInstanceMethod([UIViewController class], @selector(viewDidAppear:));
+  if (didAppear != nil) {
+    LXOrigViewControllerViewDidAppear = (void (*)(UIViewController *, SEL, BOOL))method_getImplementation(didAppear);
+    method_setImplementation(didAppear, (IMP)LX_UIViewController_viewDidAppear);
+  }
 }
 
 @end
