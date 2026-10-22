@@ -311,6 +311,41 @@ private final class GlassInstanceRegistry {
         // 【第 124 轮】返回转场开始：App 在派发 pop 命令之前登记的这一脚会刷新所有
         // 暂停态玻璃的冻结帧（不恢复渲染，见 LXGlassFreezeHook.h 的第三条桥）。
         LXGlassSetRefreshFrozenFramesFn { GlassInstanceRegistry.shared.refreshFrozenFrames() }
+        // 【第 153 轮】导航转场开始 / 结束的锚点：按「哪一屏」冻结 / 放开玻璃。
+        LXGlassSetFreezeInViewFn { view in
+            guard let view else { return }
+            let target = Unmanaged<UIView>.fromOpaque(UnsafeRawPointer(view)).takeUnretainedValue()
+            GlassInstanceRegistry.shared.freezeGlasses(in: target)
+        }
+        LXGlassSetScreenSettledFn { view in
+            guard let view else { return }
+            let target = Unmanaged<UIView>.fromOpaque(UnsafeRawPointer(view)).takeUnretainedValue()
+            GlassInstanceRegistry.shared.screenSettledGlasses(in: target)
+        }
+    }
+
+    /// 冻结这一屏（正在被盖住的源页）里的玻璃：转场开始前调用，窗口还是干净的。
+    func freezeGlasses(in view: UIView) {
+        for instance in instances.allObjects {
+            guard let glass = instance as? LiquidGlassView,
+                  glass.window != nil,
+                  glass.isDescendant(of: view),
+                  let effect = glass.superview as? LiquidGlassEffectView else { continue }
+            effect.pauseForNavigation()
+        }
+    }
+
+    /// 这一屏的转场已经结束：放开导航冻结，按静止后的完整合成恢复采景。
+    func screenSettledGlasses(in view: UIView) {
+        for instance in instances.allObjects {
+            guard let glass = instance as? LiquidGlassView,
+                  glass.isDescendant(of: view) else { continue }
+            // 先记时刻再恢复：恢复路径据此判断「屏幕已经停稳」，不必再等。
+            glass.screenDidSettle()
+            if let effect = glass.superview as? LiquidGlassEffectView {
+                effect.endNavigationFreeze()
+            }
+        }
     }
 
     // MARK: - 【第 73 轮】滚动实时档
@@ -964,7 +999,7 @@ final class LiquidGlassView: MTKView {
         // 「左边已经换成新页、右边还是上一页」，采进去就是用户看到的左边那一下闪；
         // 保持手上那张静止画面，等转场落地后的完整合成再采。
         // 用户在滚列表（返回后立刻上手）就立即解除保持，别让玻璃在滚动中定格。
-        if CACurrentMediaTime() < frozenFrameHoldUntil, !isScrollLiveActive { return }
+        if CACurrentMediaTime() < awaitingScreenSettleUntil, !isScrollLiveActive { return }
         if isCaptureSourceMoving() { return }
         if skipNextCaptureOnce {
             skipNextCaptureOnce = false
@@ -1100,17 +1135,23 @@ final class LiquidGlassView: MTKView {
         // 【第 127 轮】恢复（返回 / 回前台）也按实时档跑一段：返回转场与露出动画里
         // 玻璃要和背景同帧跟手，静止档 30fps 会明显一顿一顿。0.9s 后自动落回静止档。
         let resumeNow = CACurrentMediaTime()
-        // 【第 152 轮】返回期沿用冻结帧：切入那一刻定格的画面就是返回后的背景（App 侧
-        // 已在冻结前刹车），转场里不重采、不换源。转场没结束就恢复（边缘返回 / 慢速手势）
-        // 时更要禁采：此时合成是「左边已到位、右边还是上一页」，采到就是左边那一下闪。
-        let holdFrozenFrame = freezeFrameLocked || isCaptureSourceMoving()
+        // 【第 153 轮】返回期沿用冻结帧：切入那一刻定格的画面就是返回后的背景（App 侧
+        // 已在转场开始前刹车）。转场没结束就恢复（边缘返回 / 慢速手势）时禁采 ——
+        // 此时合成是「左边已到位、右边还是上一页」，采到就是那一下闪。
+        let settledRecently = resumeNow - screenSettledAt < Self.screenSettleRecentDuration
+        let wasFrozen = freezeFrameLocked
+        let waitForScreenSettle = wasFrozen && isCaptureSourceMoving() && !settledRecently
         freezeFrameLocked = false
-        if holdFrozenFrame {
-            frozenFrameHoldUntil = resumeNow + Self.frozenFrameHoldDuration
+        if wasFrozen {
+            // 冻结帧恢复一律同源：不走模型根视图、不强制提交 —— 换源那一下的几何差
+            // 就是用户看到的「缩放 / 闪」。
             forceRootCaptureOnNextResume = false
             forceFreshFirstBackdropCapture = false
             skipNextCaptureOnce = false
             frozenFrameUsesBackdrop = false
+        }
+        if waitForScreenSettle {
+            awaitingScreenSettleUntil = resumeNow + Self.screenSettleTimeout
         }
         reentryLiveStartedAt = resumeNow
         scheduleReentryLiveExpiry()
@@ -1165,7 +1206,7 @@ final class LiquidGlassView: MTKView {
         // 收尾或用户开始滑动时造成短暂不一致。
         let usedBackdropFrozen = frozenFrameUsesBackdrop
         frozenFrameUsesBackdrop = false
-        let forceRootOnResume = forceRootCaptureOnNextResume && !holdFrozenFrame
+        let forceRootOnResume = forceRootCaptureOnNextResume && !waitForScreenSettle
         forceRootCaptureOnNextResume = false
         if forceRootOnResume, !usedBackdropFrozen {
             // 只让恢复落点这一帧走模型根视图；随后第一帧 live 用强制提交的 CABackdrop
@@ -1273,7 +1314,7 @@ final class LiquidGlassView: MTKView {
         frozenFrameUsesBackdrop = false
         // 【第 152 轮】这张定格就是返回期要展示的画面（App 侧已刹车，画面不会再动）。
         freezeFrameLocked = true
-        frozenFrameHoldUntil = 0
+        awaitingScreenSettleUntil = 0
         lastCaptureAt = 0
         Self.resetGlobalCaptureGate()
         // 【第 67 轮】定格这一脚要的就是「真正改写 CAMetalLayer」（第 66 轮第 1 条：冻结帧
@@ -1538,9 +1579,18 @@ final class LiquidGlassView: MTKView {
 
     /// 【第 152 轮】冻结帧锁存：覆盖冻结时定格的那张画面就是返回期展示的画面。
     private var freezeFrameLocked = false
-    /// 恢复后继续展示冻结帧的窗口：转场收尾那一两拍的半合成画面不采。
-    private var frozenFrameHoldUntil: TimeInterval = 0
-    private static let frozenFrameHoldDuration: TimeInterval = 0.3
+    /// 【第 153 轮】所在屏幕最后一次「转场结束」（viewDidAppear）的时刻。
+    private var screenSettledAt: TimeInterval = 0
+    /// 等屏幕停稳的期限：转场没结束就不采景；1s 兜底，避免异常导航把玻璃永久冻住。
+    private var awaitingScreenSettleUntil: TimeInterval = 0
+    private static let screenSettleTimeout: TimeInterval = 1.0
+    private static let screenSettleRecentDuration: TimeInterval = 0.4
+
+    /// App 在目标页 viewDidAppear 时调进来：这一屏的转场已经结束。
+    func screenDidSettle() {
+        screenSettledAt = CACurrentMediaTime()
+        awaitingScreenSettleUntil = 0
+    }
 
     /// 由 LiquidGlassEffectView.setPaused 的恢复分支置位（覆盖冻结档：返回 / push 后露出 /
     /// 从无玻璃页回来）。可见性档（收展）恢复不走这里，避免收展时多一次整树采景。

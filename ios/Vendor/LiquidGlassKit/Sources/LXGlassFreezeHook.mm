@@ -53,3 +53,27 @@ void LXGlassNotifyRefreshFrozenFrames(void) {
   if (refreshHandler == NULL) return;
   refreshHandler();
 }
+
+// 【第 153 轮】按「哪一屏」冻结 / 结束冻结。存储口径同上：单写者、之后只读、主线程。
+static LXGlassFreezeInViewFn LXGlassFreezeInViewHandler = NULL;
+static LXGlassScreenSettledFn LXGlassScreenSettledHandler = NULL;
+
+void LXGlassSetFreezeInViewFn(LXGlassFreezeInViewFn fn) {
+  LXGlassFreezeInViewHandler = fn;
+}
+
+void LXGlassSetScreenSettledFn(LXGlassScreenSettledFn fn) {
+  LXGlassScreenSettledHandler = fn;
+}
+
+void LXGlassNotifyFreezeInView(void *view) {
+  LXGlassFreezeInViewFn fn = LXGlassFreezeInViewHandler;
+  if (!fn) return;
+  fn(view);
+}
+
+void LXGlassNotifyScreenSettled(void *view) {
+  LXGlassScreenSettledFn fn = LXGlassScreenSettledHandler;
+  if (!fn) return;
+  fn(view);
+}

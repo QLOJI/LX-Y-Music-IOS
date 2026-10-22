@@ -83,6 +83,28 @@ void LXGlassSetRefreshFrozenFramesFn(LXGlassRefreshFrozenFramesFn fn);
 /// 由 App 在返回命令派发前同步/主线程调用：刷新所有暂停态玻璃的冻结帧。
 void LXGlassNotifyRefreshFrozenFrames(void);
 
+//! Vendored addition（第 153 轮）: 导航转场开始 / 结束时按「哪一屏」冻结玻璃（App → Kit）。
+//!
+//! 背景：JS 的 paused prop 要经过 React 渲染 + 过桥，常常晚于 push 动画的第一帧；
+//! 冻结帧一旦在动画开始后才采，就与返回后的背景差一截，返回收尾换帧必然闪。
+//! App 在 -viewWillDisappear:（转场开始前、窗口还是干净的）里调第一条桥：
+//! 这一屏里的玻璃按刹车后的画面定格；-viewDidAppear:（转场真正结束）里调第二条：
+//! 放开导航冻结、按静止后的完整合成恢复采景。两条都同步、主线程。
+//!
+//! view 参数按 void * 传递（头文件不引 UIKit）；调用期间对象一定存活。
+typedef void (*LXGlassFreezeInViewFn)(void *view);
+typedef void (*LXGlassScreenSettledFn)(void *view);
+
+/// 注册（传 NULL 注销）。Kit 只在注册表初始化时注册一次。
+void LXGlassSetFreezeInViewFn(LXGlassFreezeInViewFn fn);
+void LXGlassSetScreenSettledFn(LXGlassScreenSettledFn fn);
+
+/// 由 App 在 viewWillDisappear 里同步调用：冻结这一屏里的玻璃（含定格）。
+void LXGlassNotifyFreezeInView(void *view);
+
+/// 由 App 在 viewDidAppear 里同步调用：这一屏的转场已经结束。
+void LXGlassNotifyScreenSettled(void *view);
+
 #ifdef __cplusplus
 }
 #endif

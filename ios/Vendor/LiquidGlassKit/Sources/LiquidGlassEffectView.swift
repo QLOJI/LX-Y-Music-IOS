@@ -132,6 +132,41 @@ public class LiquidGlassEffectView: UIView, AnyVisualEffectView {
     /// （Tab 栏收起/展开时另一块玻璃完全不可见）时置 true。
     private var hiddenPaused = false
 
+    /// 【第 153 轮】导航冻结档：App 在 -viewWillDisappear:（转场开始前）冻结这一屏的玻璃，
+    /// 在 -viewDidAppear:（转场结束）放开。与 JS 的 paused 档分开 —— prop 要过 React 渲染
+    /// 和桥，往往晚于转场第一帧，冻结帧会采在动画中途；这个档由 UIKit 的回调驱动，准时。
+    private var navigationPaused = false
+    private var navigationFreezeToken = 0
+    private static let navigationFreezeFallback: TimeInterval = 1.5
+
+    /// App 在转场开始前调用：先刹车（调用方已做），再把这块玻璃按刹车后的画面定格。
+    func pauseForNavigation() {
+        guard !navigationPaused else { return }
+        navigationPaused = true
+        // 已经被 JS 提前按住（isPaused 为真）也要重新定格：那时 App 还没刹车。
+        let needsCapture = liquidGlassView?.isPaused != true || freezePaused
+        if needsCapture { liquidGlassView?.handlePauseForFreeze() }
+        liquidGlassView?.isPaused = true
+        // 兜底：viewDidAppear 没来（异常导航）也要醒，绝不能让玻璃永久冻住。
+        navigationFreezeToken += 1
+        let token = navigationFreezeToken
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.navigationFreezeFallback) { [weak self] in
+            guard let self, self.navigationPaused, self.navigationFreezeToken == token else { return }
+            self.endNavigationFreeze()
+        }
+    }
+
+    /// App 在转场结束时调用：放开导航冻结（JS 的 paused 档仍为真就继续按住）。
+    func endNavigationFreeze() {
+        guard navigationPaused else { return }
+        navigationPaused = false
+        navigationFreezeToken += 1
+        if !freezePaused, !hiddenPaused, liquidGlassView?.isPaused == true {
+            liquidGlassView?.handleResumeFromPause()
+        }
+        liquidGlassView?.isPaused = freezePaused || hiddenPaused
+    }
+
     /// 【第 61 轮第 3 条】这条 prop 现在是暂停态的**唯一**来源（原来的覆盖期 ∨ 转场按住期，
     /// 见 navigation/transitionWindow.ts）：第 58～60 轮 LiquidGlassView 还会在重新入窗口时
     /// 无视本值自行恢复渲染（pauseRequested 那条通道），已整体删除——它正是「返回时透过的
@@ -181,6 +216,8 @@ public class LiquidGlassEffectView: UIView, AnyVisualEffectView {
         // 两档合成：可见性档为真时，覆盖冻结档解除（回到前台 / 转场结束 / 回到 Home）
         // 不得把这块不可见的玻璃又叫醒逐帧渲染（那是纯白烧的电，第 70 轮第 3 条的发热面）。
         liquidGlassView?.isPaused = paused || hiddenPaused
+        // 【第 153 轮】导航冻结档独立于 JS prop：prop 先放开也不能提前醒。
+        if navigationPaused { liquidGlassView?.isPaused = true }
     }
 
     /// RN bridge entry（RN prop `hiddenPaused`）: power-saving gate for the **visibility**
@@ -206,6 +243,7 @@ public class LiquidGlassEffectView: UIView, AnyVisualEffectView {
             liquidGlassView?.handleResumeFromPause()
         }
         liquidGlassView?.isPaused = freezePaused || paused
+        if navigationPaused { liquidGlassView?.isPaused = true }
     }
 
     /// RN bridge entry: realtime capture session (RN prop `live`), see
