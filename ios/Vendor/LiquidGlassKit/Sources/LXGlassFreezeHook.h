@@ -94,7 +94,7 @@ void LXGlassNotifyRefreshFrozenFrames(void);
 //! view 参数按 void * 传递（头文件不引 UIKit）；调用期间对象一定存活。
 /// recapture = 刚刚刹过车：冻结帧必须按 **model（模型树）** 重采，不能读窗口合成
 ///（合成比滚动位置晚一拍，读到的就是「透过的画面没刹住、上下偏移」）。
-typedef void (*LXGlassFreezeInViewFn)(void *view, BOOL recapture);
+typedef void (*LXGlassFreezeInViewFn)(void *view, int recapture);
 typedef void (*LXGlassScreenSettledFn)(void *view);
 
 /// 注册（传 NULL 注销）。Kit 只在注册表初始化时注册一次。
@@ -102,7 +102,7 @@ void LXGlassSetFreezeInViewFn(LXGlassFreezeInViewFn fn);
 void LXGlassSetScreenSettledFn(LXGlassScreenSettledFn fn);
 
 /// 由 App 在 viewWillDisappear 里同步调用：冻结这一屏里的玻璃（含定格）。
-void LXGlassNotifyFreezeInView(void *view, BOOL recapture);
+void LXGlassNotifyFreezeInView(void *view, int recapture);
 
 /// 由 App 在 viewDidAppear 里同步调用：这一屏的转场已经结束。
 void LXGlassNotifyScreenSettled(void *view);

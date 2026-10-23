@@ -66,7 +66,7 @@ void LXGlassSetScreenSettledFn(LXGlassScreenSettledFn fn) {
   LXGlassScreenSettledHandler = fn;
 }
 
-void LXGlassNotifyFreezeInView(void *view, BOOL recapture) {
+void LXGlassNotifyFreezeInView(void *view, int recapture) {
   LXGlassFreezeInViewFn fn = LXGlassFreezeInViewHandler;
   if (!fn) return;
   fn(view, recapture);

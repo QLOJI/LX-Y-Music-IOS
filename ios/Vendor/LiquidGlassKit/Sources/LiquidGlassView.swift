@@ -315,7 +315,7 @@ private final class GlassInstanceRegistry {
         LXGlassSetFreezeInViewFn { view, recapture in
             guard let view else { return }
             let target = Unmanaged<UIView>.fromOpaque(UnsafeRawPointer(view)).takeUnretainedValue()
-            GlassInstanceRegistry.shared.freezeGlasses(in: target, recapture: recapture)
+            GlassInstanceRegistry.shared.freezeGlasses(in: target, recapture: recapture != 0)
         }
         LXGlassSetScreenSettledFn { view in
             guard let view else { return }
