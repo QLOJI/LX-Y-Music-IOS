@@ -1097,7 +1097,7 @@ final class LiquidGlassView: MTKView {
         // 同一窗口内：窗口里还有滚动视图在动画（分页回位 / 列表惯性）也不采 ——
         // 那是「等了一下之后横向偏一段」的另一条来源。
         if geometryNow < navigationAnimGateUntil,
-           isAnyScrollViewAnimating(),
+           isAnyScrollViewAnimatingCached(),
            !isScrollLiveActive,
            !allowCaptureDuringTransition { return }
         // 【第 160 轮】JS 转场窗口期间一律不采：只有 JS 知道整段窗口，且不依赖动画是否
@@ -2280,6 +2280,19 @@ extension UIView {
     /// 最大档 1.1 —— 候选视图太小的话矩形会伸到视图外，缓冲边缘没画到的黑带会被折射进
     /// 玻璃边缘）。都不满足就继续往上找；整条响应链上没有 ⇒ 逐字回退 findRootView()
     /// （宿主被直接塞进窗口、还没有任何控制器接手这类形态）。
+    /// 【第 169 轮】窗口树遍历的 100ms 缓存：转场后窗口内每帧都遍历整棵窗口树太贵
+    /// （2s 窗口 × 每块玻璃 × 30~60fps）。动画判定只需要保守，不需要逐帧精确。
+    private var scrollAnimCheckedAt: TimeInterval = 0
+    private var scrollAnimCached = false
+
+    private func isAnyScrollViewAnimatingCached() -> Bool {
+        let now = CACurrentMediaTime()
+        if now - scrollAnimCheckedAt < 0.1 { return scrollAnimCached }
+        scrollAnimCheckedAt = now
+        scrollAnimCached = isAnyScrollViewAnimating()
+        return scrollAnimCached
+    }
+
     /// 【第 162 轮】窗口里是否还有滚动视图在动画（presentation 的 contentOffset 与 model
     /// 不一致）。分页程序化回位、列表惯性都走这条；它们在转场后的一小段里会让背景横移。
     func isAnyScrollViewAnimating() -> Bool {
