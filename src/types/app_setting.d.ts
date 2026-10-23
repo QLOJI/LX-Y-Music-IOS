@@ -41,6 +41,16 @@ declare global {
       'playDetail.horizontal.style.lrcFontSize': number
 
       /**
+       * 竖屏当前歌词行缩放（100~150，百分数）
+       */
+      'playDetail.vertical.style.lrcZoom': number
+
+      /**
+       * 横屏当前歌词行缩放（100~150，百分数）
+       */
+      'playDetail.horizontal.style.lrcZoom': number
+
+      /**
        * 播放详情页-是否允许通过歌词调整播放进度
        */
       'playDetail.isShowLyricProgressSetting': boolean

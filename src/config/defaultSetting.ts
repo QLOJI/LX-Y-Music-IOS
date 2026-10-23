@@ -156,6 +156,9 @@ const defaultSetting: LX.AppSetting = {
   'playDetail.style.coverShape': 'circle',
   'playDetail.vertical.style.lrcFontSize': 200,
   'playDetail.horizontal.style.lrcFontSize': 220,
+  // 【第 171 轮】当前播放行缩放（百分数，100~150 → 1.0~1.5 倍）；只作用于激活行。
+  'playDetail.vertical.style.lrcZoom': 100,
+  'playDetail.horizontal.style.lrcZoom': 100,
   'playDetail.isShowLyricProgressSetting': true,
   // 小歌词逐字高亮：当前行按「已唱 / 未唱」两色推进（该行有逐字时间戳时走真实时间轴，
   // 没有则按字符数均分该行时长做线性推进）；关 = 回到整行高亮。
