@@ -86,11 +86,20 @@ const PAGER_DRAG_SILENCE_MS = 2000
  */
 const PAGER_SCROLL_RESYNC_MS = 2000
 
+// 【第 160 轮】相邻页预挂载（与设置页同一套机制，见 SETTING_PRELOAD_NAV_IDS 的注释）：
+// 横滑时 navActiveId 要等 pager 落定才更新，本页在拖动全程都是空的，松手后才挂载 + 再等
+// 一帧 rAF —— 用户看到的就是「下一个画面没加载出来、卡住，滑进去才出来」。
+// 把左邻/右邻页的激活当作预挂载触发点：停在推荐页时歌单页就已经挂上并开始加载数据。
+// 必须是模块级常量（useHomeLazyPage 的订阅依赖引用稳定）。
+const SONGLIST_PRELOAD_NAV_IDS = ['nav_discovery'] as const
+const SEARCH_PRELOAD_NAV_IDS = ['nav_songlist'] as const
+const MYLIST_PRELOAD_NAV_IDS = ['nav_search', 'nav_setting'] as const
+
 const SearchPage = () => (
-  useHomeLazyPage('nav_search', () => <Search />)
+  useHomeLazyPage('nav_search', () => <Search />, { preloadNavIds: SEARCH_PRELOAD_NAV_IDS })
 )
 const SongListPage = () => (
-  useHomeLazyPage('nav_songlist', () => <SongList />)
+  useHomeLazyPage('nav_songlist', () => <SongList />, { preloadNavIds: SONGLIST_PRELOAD_NAV_IDS })
 )
 // 播放历史浮层：容器必须保持透明（只做定位与层级），不去铺不透明主题色底。
 // 浮层出现时由 Main 把 PagerView 隐藏，于是浮层直接透出 Home PageContent 已绘制好的背景层，
@@ -155,7 +164,7 @@ const TXDailyRecPage = () => (
 )
 
 const MylistPage = () => (
-  useHomeLazyPage('nav_love', () => <Mylist />)
+  useHomeLazyPage('nav_love', () => <Mylist />, { preloadNavIds: MYLIST_PRELOAD_NAV_IDS })
 )
 
 const MyPlaylistPage = () => (
