@@ -8,7 +8,19 @@ import { findLineIndexByTime, getCurrentLyricLines, getWordState } from '@/plugi
 import { useTheme } from '@/store/theme/hook'
 import { useIsPlay } from '@/store/player/hook'
 import { createStyle } from '@/utils/tools'
+import commonState from '@/store/common/state'
+import { COMPONENT_IDS } from '@/config/constant'
 import type { LxLyricWord } from '@/plugins/lxLyricPlayer'
+
+/**
+ * 【第 169 轮】播放详情页是否还在栈顶。它被评论 / 设置等压栈页盖住时逐字高亮根本不可见，
+ * 但行内 rAF 仍在按帧算字、setState 重渲染（大歌词 + 小歌词两条链同时跑）。
+ * 这里只做一次「栈顶名字」比较，最便宜；可见时行为逐字不变。
+ */
+const isPlayDetailOnTop = (): boolean => {
+  const ids = commonState.componentIds
+  return ids.length === 0 || String(ids[ids.length - 1]?.name) === COMPONENT_IDS.playDetail
+}
 
 // 逐字（卡拉OK）歌词行渲染器。两种数据来源，同一个出口：
 //
@@ -105,6 +117,11 @@ const KaraokeWords = memo(({
     const myLineIndex = lines.findIndex((l) => l.time === lineTime)
     let raf = 0
     const tick = () => {
+      // 【第 169 轮】被压栈页盖住：不算、不 setState（rAF 本身保持，回来立即续上）。
+      if (!isPlayDetailOnTop()) {
+        raf = requestAnimationFrame(tick)
+        return
+      }
       // audioClock 返回秒，歌词时间为毫秒
       const t = audioClock.getTime() * 1000
       let s = getWordState(words, t - lineTime)
@@ -196,6 +213,11 @@ const KaraokeText = memo(({
     // 行时长兜底 1ms：相邻两行时间戳相同（或末行无下一行时间）时不能除零
     const duration = Math.max(endTime - startTime, 1)
     const tick = () => {
+      // 【第 169 轮】同 KaraokeWords：被盖住时不算、不写 Animated.Value。
+      if (!isPlayDetailOnTop()) {
+        raf = requestAnimationFrame(tick)
+        return
+      }
       // audioClock 返回秒，歌词时间为毫秒
       const elapsed = audioClock.getTime() * 1000 - startTime
       const next = Math.min(Math.max(elapsed / duration, 0), 1)
