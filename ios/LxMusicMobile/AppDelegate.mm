@@ -21,6 +21,7 @@ extern "C" void LXGlassNotifyRefreshFrozenFrames(void);
 extern "C" BOOL LXGlassNotifyWillFreeze(void);
 extern "C" void LXGlassNotifyFreezeInView(void *view);
 extern "C" void LXGlassNotifyScreenSettled(void *view);
+extern "C" void LXGlassNotifyScrollBrake(void);
 
 @class SceneDelegate;
 #import <Security/Security.h>
@@ -8530,6 +8531,8 @@ static BOOL LXGlassBrakeNavScrollView(void) {
     LXGlassSettleVelocity = 0;
     LXGlassSettleLastSampleAt = 0;
     LXGlassSettleUserRun = NO;
+    // 告诉 Kit：画面从这一刻起不会再动了，纹理若比这时刻旧就补采。
+    LXGlassNotifyScrollBrake();
   }
   return changed;
 }
@@ -8636,6 +8639,41 @@ static void LX_UIViewController_viewDidAppear(UIViewController *self, SEL _cmd, 
     LXOrigViewControllerViewDidAppear = (void (*)(UIViewController *, SEL, BOOL))method_getImplementation(didAppear);
     method_setImplementation(didAppear, (IMP)LX_UIViewController_viewDidAppear);
   }
+}
+
+@end
+
+// ============================================================================
+// 【第 154 轮】触摸按下即刹车
+// ============================================================================
+// 用户口径：「刹车还是慢了」。导航要等 JS 派发，而手指按下那一刻是所有路径里最早的。
+// 窗口级 sendEvent 拿到的第一个 Began 事件就刹车：列表当场停在手指按下的位置，
+// 之后无论冻结帧哪一拍采，都与返回后的背景重合。没有在减速的滚动视图时什么都不做。
+static void (*LXOrigWindowSendEvent)(UIWindow *, SEL, UIEvent *) = NULL;
+
+static void LX_UIWindow_sendEvent(UIWindow *self, SEL _cmd, UIEvent *event) {
+  if (event.type == UIEventTypeTouches) {
+    for (UITouch *touch in event.allTouches) {
+      if (touch.phase == UITouchPhaseBegan) {
+        LXGlassBrakeNavScrollView();
+        break;
+      }
+    }
+  }
+  if (LXOrigWindowSendEvent != NULL) {
+    LXOrigWindowSendEvent(self, _cmd, event);
+  }
+}
+
+@interface LXGlassTouchBrakeSetup : NSObject
+@end
+@implementation LXGlassTouchBrakeSetup
+
++ (void)load {
+  Method method = class_getInstanceMethod([UIWindow class], @selector(sendEvent:));
+  if (method == nil) return;
+  LXOrigWindowSendEvent = (void (*)(UIWindow *, SEL, UIEvent *))method_getImplementation(method);
+  method_setImplementation(method, (IMP)LX_UIWindow_sendEvent);
 }
 
 @end
