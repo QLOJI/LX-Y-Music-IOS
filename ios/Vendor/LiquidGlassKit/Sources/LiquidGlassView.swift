@@ -1155,6 +1155,10 @@ final class LiquidGlassView: MTKView {
     /// 不整段旁路节流：三块玻璃各自每帧调 drawHierarchy 是上一轮「整条底部区域掉帧」
     /// 的成因，60fps 是这条路径上手调过的上限。
     func setRealtimeCapture(_ realtime: Bool) {
+        // 【第 166 轮】横滑 Pager / 点 tab 切页（live 档）也是「用户开始交互」：
+        // 解除返回后的保持冻结帧，页面内容变了玻璃要跟上。纵向滚动另有
+        // isScrollLiveActive 那条路，这里只补横向这一路。
+        if realtime { holdFrozenFrameAfterReturn = false }
         guard realtimeCaptureRequested != realtime else { return }
         realtimeCaptureRequested = realtime
         // 会话开始/结束都立刻放行下一次采景：开始的那一刻若正卡在 30fps 的节流窗口里，
