@@ -1014,7 +1014,12 @@ final class LiquidGlassView: MTKView {
         // 用户在滚列表（返回后立刻上手）就立即解除保持，别让玻璃在滚动中定格。
         if navigationFrozen, !allowCaptureDuringTransition { return }
         if CACurrentMediaTime() < awaitingScreenSettleUntil, !isScrollLiveActive, !allowCaptureDuringTransition { return }
-        if isCaptureSourceMoving(), !allowCaptureDuringTransition { return }
+        // 返回收起后的这一段：玻璃自己 / 底栏容器 / 所属那屏只要还有位移动画就不采
+        // —— 模型几何与屏幕位置不一致时采到的内容会横向跳一下。只在转场结束前后的
+        // 窗口内生效，普通滚动时底栏收展不在这里拦（否则滚动会卡顿）。
+        if CACurrentMediaTime() < navigationAnimGateUntil,
+           isGlassOrAncestorAnimating(),
+           !allowCaptureDuringTransition { return }
         if skipNextCaptureOnce {
             skipNextCaptureOnce = false
             return
@@ -1599,14 +1604,18 @@ final class LiquidGlassView: MTKView {
     private var awaitingScreenSettleUntil: TimeInterval = 0
     private static let screenSettleTimeout: TimeInterval = 1.0
     private static let screenSettleRecentDuration: TimeInterval = 0.4
-    /// 【第 154 轮】转场结束后再等两帧：viewDidAppear 时窗口合成可能还差最后一拍。
-    private static let postSettleCaptureHold: TimeInterval = 0.05
+    /// 【第 154/158 轮】转场结束后继续禁采一段时间：viewDidAppear 之后底栏的收起/展开
+    /// 动画（220ms）与分页回位可能才开始，这一段的模型几何与屏幕位置不一致，采进去就是
+    /// 「透过画面向左跳一下再跳回来」。0.3s 盖住它们；用户开始滚动时立即解除。
+    private static let postSettleCaptureHold: TimeInterval = 0.3
 
     /// 【第 154 轮】转场期间只禁采、不暂停渲染：玻璃继续把手上那张纹理画出去（静止），
     /// 但不采新帧。暂停/恢复本身也会让画面在转场里变一次，静止切入时的封面闪就是这么来的。
     private var navigationFrozen = false
     /// 【第 157 轮】返回开始那一拍按 model 重锁冻结帧时，放行一次采景。
     private var allowCaptureDuringTransition = false
+    /// 【第 158 轮】转场结束前后：这段窗口里祖先还在做位移动画就不采景。
+    private var navigationAnimGateUntil: TimeInterval = 0
 
     /// 返回开始：按模型树重采一张当前背景当作冻结帧（见注册表的 refreshFrozenFrames）。
     func refreshFrozenFrameFromModel() {
@@ -1642,6 +1651,8 @@ final class LiquidGlassView: MTKView {
         let now = CACurrentMediaTime()
         screenSettledAt = now
         awaitingScreenSettleUntil = now + Self.postSettleCaptureHold
+        // 收起/展开动画可能比禁采期更晚才收尾：这 1s 内只要还在搬就不采。
+        navigationAnimGateUntil = now + 1.0
     }
 
     /// 由 LiquidGlassEffectView.setPaused 的恢复分支置位（覆盖冻结档：返回 / push 后露出 /
@@ -2144,6 +2155,28 @@ extension UIView {
     /// 最大档 1.1 —— 候选视图太小的话矩形会伸到视图外，缓冲边缘没画到的黑带会被折射进
     /// 玻璃边缘）。都不满足就继续往上找；整条响应链上没有 ⇒ 逐字回退 findRootView()
     /// （宿主被直接塞进窗口、还没有任何控制器接手这类形态）。
+    /// 【第 158 轮】玻璃自己或任一祖先（底栏容器 / 所在那屏 / 导航容器）是否还在做位移动画。
+    /// 转场刚结束时底栏的收起/展开、页面回位都发生在这一段：模型几何与屏幕上的位置不一致，
+    /// 此时采到的内容会在玻璃里横向跳一下。
+    func isGlassOrAncestorAnimating() -> Bool {
+        var view: UIView? = self
+        var depth = 0
+        while let current = view, depth < 12 {
+            let model = current.layer
+            if let presentation = model.presentation() {
+                if abs(presentation.position.x - model.position.x) > 0.5 ||
+                   abs(presentation.position.y - model.position.y) > 0.5 ||
+                   abs(presentation.bounds.width - model.bounds.width) > 0.5 ||
+                   abs(presentation.bounds.height - model.bounds.height) > 0.5 {
+                    return true
+                }
+            }
+            view = current.superview
+            depth += 1
+        }
+        return false
+    }
+
     /// 【第 152 轮】采景源所在的那一屏是否还在做转场 / 其它位移动画（push、pop、边缘返回）。
     /// 只看祖先方向：列表滚动、Tab 栏收展都不搬这一屏，不会误判。
     func isCaptureSourceMoving() -> Bool {
