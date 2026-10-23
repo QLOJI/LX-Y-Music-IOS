@@ -1,4 +1,5 @@
 import commonActions from '@/store/common/action'
+import { setLiquidGlassNavTransition } from '@/utils/nativeModules/utils'
 
 /**
  * 导航转场窗口（push / pop **两侧共用**）：底部两块液态玻璃的「按住门」。
@@ -79,6 +80,8 @@ let navRefreezeTimer: ReturnType<typeof setTimeout> | null = null
  *  暂停/恢复，正是要治的那种「旧画面闪一下」）。两个动作都在同一个同步块里，
  *  组件重渲染时看到的已经是最终组合。 */
 export const beginNavTransitionWindow = (direction: NavTransitionDirection = 'push') => {
+  // 【第 160 轮】原生硬闸：整段转场窗口内不采任何新帧（1s 兜底自动过期）。
+  setLiquidGlassNavTransition(true)
   if (navTransitionTimer) clearTimeout(navTransitionTimer)
   if (navRefreezeTimer) clearTimeout(navRefreezeTimer)
   navRefreezeTimer = null
