@@ -20,6 +20,14 @@ import { getStatusBarStyle } from './utils'
 import { beginNavTransitionWindow } from './transitionWindow'
 import { type ListInfoItem } from '@/store/songlist/state'
 import { getCachedBgPicColor, refreshLiquidGlassFrames } from '@/utils/nativeModules/utils'
+import { subscribePagerDrag } from '@/utils/homeTabScroll'
+
+// 【第 157 轮】首页横滑会话期间禁止切入其它界面（用户口径：左右滑动过程中不能进入
+// 播放详情页及其它页面）。与底部玻璃 live 档同一个信号源（Main 的
+// onPageScrollStateChanged → emitPagerDrag），'dragging' 起、'idle' 止，覆盖松手后
+// 的吸附动画。横向滑动时底下的页面还在变，此时压栈必然让冻结帧与背景错位。
+let pagerSwipeActive = false
+subscribePagerDrag((dragging) => { pagerSwipeActive = dragging })
 
 // const store = getStore()
 // const getTheme = () => getter('common', 'theme')(store.getState())
@@ -61,6 +69,8 @@ interface StartPushOptions {
 // 之后（采到的是本屏自己、静止的），返回侧已经可以放行，于是 pop 侧改成**放行**：
 // 采景门在转场第一帧翻、玻璃立刻按当前画面重采并整段实时跟。push 侧不动。
 const startPush = (id: COMPONENT_IDS, options: StartPushOptions = {}) => {
+  // 横滑会话期间不接收任何压栈（见文件上方 pagerSwipeActive 的说明）。
+  if (pagerSwipeActive) return false
   if (pendingPushes.has(id)) return false
   if (isTopScreen(id)) {
     if (!options.allowSameTop && !options.recoverStaleTop) return false
