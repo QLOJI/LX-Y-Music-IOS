@@ -582,6 +582,13 @@ final class LiquidGlassView: MTKView {
     /// 取 0.5 只为滤掉浮点噪声与亚像素抖动，避免稳态下被误触发、反复重开窗口。
     private static let captureGeometryEpsilon: CGFloat = 0.5
 
+    /// 【第 162 轮】采景基准尺寸连续多久没变才允许采景。底栏收起/展开由 React 逐帧改
+    /// 宽度（布局驱动，presentation 与 model 一致），祖先动画门看不出来；这段时间采进去
+    /// 的画面会整体偏约 1/3，下一帧又对齐 —— 用户看到的「等了一下，画面左移一瞬再回来」。
+    private static let geometryStableHold: TimeInterval = 0.12
+    private var lastObservedBaseSize = CGSize.zero
+    private var lastObservedBaseSizeAt: TimeInterval = 0
+
     /// 采景矩形**刚变大**、且这一帧还没被提交（2026-10-11，第 56 轮第 1 条）。
     ///
     /// 第 52 轮的第五锚点只做到「尺寸变化 ⇒ 开沉降窗口」，而窗口**只允许沿用**——
@@ -1023,6 +1030,29 @@ final class LiquidGlassView: MTKView {
         // 捕获提前返回（节流 / 缺窗口 / backdrop 不可用）时也保持 false，
         // 避免把上一帧的「半成品」印象带进下一次提交。
         lastCaptureHadPartialBlack = false
+        // 【第 162 轮】记录「采景基准尺寸」的变化时刻（每一拍都观察，即使下面会提前返回）。
+        let geometryNow = CACurrentMediaTime()
+        let baseSize = captureBaseSize
+        if lastObservedBaseSize == .zero {
+            lastObservedBaseSize = baseSize
+            lastObservedBaseSizeAt = geometryNow
+        } else if abs(baseSize.width - lastObservedBaseSize.width) > 0.5 ||
+                  abs(baseSize.height - lastObservedBaseSize.height) > 0.5 {
+            lastObservedBaseSize = baseSize
+            lastObservedBaseSizeAt = geometryNow
+        }
+        // 转场结束后的窗口内：底栏还在逐帧改尺寸就不采（布局驱动的动画，祖先动画门看不见）。
+        // 用户已经开始滚列表就不拦：那种一帧偏移在滚动里看不出来，而冻住会明显卡顿。
+        if geometryNow < navigationAnimGateUntil,
+           geometryNow - lastObservedBaseSizeAt < Self.geometryStableHold,
+           !isScrollLiveActive,
+           !allowCaptureDuringTransition { return }
+        // 同一窗口内：窗口里还有滚动视图在动画（分页回位 / 列表惯性）也不采 ——
+        // 那是「等了一下之后横向偏一段」的另一条来源。
+        if geometryNow < navigationAnimGateUntil,
+           isAnyScrollViewAnimating(),
+           !isScrollLiveActive,
+           !allowCaptureDuringTransition { return }
         // 【第 160 轮】JS 转场窗口期间一律不采：只有 JS 知道整段窗口，且不依赖动画是否
         // 可见（快照 / 自定义转场同样挡住）。抓在转场中间的那一帧就是「透过画面整体
         // 平移一段再回来」。用户已经在滚列表就不拦（转场早已结束）。
@@ -1675,8 +1705,8 @@ final class LiquidGlassView: MTKView {
         let now = CACurrentMediaTime()
         screenSettledAt = now
         awaitingScreenSettleUntil = now + Self.postSettleCaptureHold
-        // 收起/展开动画可能比禁采期更晚才收尾：这 1s 内只要还在搬就不采。
-        navigationAnimGateUntil = now + 1.0
+        // 收起/展开动画可能比禁采期更晚才收尾：这 2s 内只要还在搬、或尺寸还在变，就不采。
+        navigationAnimGateUntil = now + 2.0
     }
 
     /// 由 LiquidGlassEffectView.setPaused 的恢复分支置位（覆盖冻结档：返回 / push 后露出 /
@@ -2179,6 +2209,29 @@ extension UIView {
     /// 最大档 1.1 —— 候选视图太小的话矩形会伸到视图外，缓冲边缘没画到的黑带会被折射进
     /// 玻璃边缘）。都不满足就继续往上找；整条响应链上没有 ⇒ 逐字回退 findRootView()
     /// （宿主被直接塞进窗口、还没有任何控制器接手这类形态）。
+    /// 【第 162 轮】窗口里是否还有滚动视图在动画（presentation 的 contentOffset 与 model
+    /// 不一致）。分页程序化回位、列表惯性都走这条；它们在转场后的一小段里会让背景横移。
+    func isAnyScrollViewAnimating() -> Bool {
+        guard let window else { return false }
+        var found = false
+        func walk(_ view: UIView) {
+            if found { return }
+            if let scrollView = view as? UIScrollView {
+                let model = scrollView.contentOffset
+                if let presentation = scrollView.layer.presentation() {
+                    let visible = presentation.bounds.origin
+                    if abs(visible.x - model.x) > 1.0 || abs(visible.y - model.y) > 1.0 {
+                        found = true
+                        return
+                    }
+                }
+            }
+            for subview in view.subviews { walk(subview) }
+        }
+        walk(window)
+        return found
+    }
+
     /// 【第 158 轮】玻璃自己或任一祖先（底栏容器 / 所在那屏 / 导航容器）是否还在做位移动画。
     /// 转场刚结束时底栏的收起/展开、页面回位都发生在这一段：模型几何与屏幕上的位置不一致，
     /// 此时采到的内容会在玻璃里横向跳一下。
