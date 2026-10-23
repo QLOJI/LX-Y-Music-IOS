@@ -391,6 +391,12 @@ private final class GlassInstanceRegistry {
         guard !wasActive else { return }
         syncScrollLiveFrameRate()
         scheduleScrollExpiry()
+        // 【第 168 轮】滚动刚开始：把每块玻璃的单实例节流清零，第一帧立刻按当前画面采，
+        // 不再等完上一段静止档最多 33ms 的窗口 —— 用户看到的「滑动开头延迟一下」正是它。
+        // 放在三段（短路 → 转发 → 挂定时器）之后：那三行是契约锚点，必须保持原样相邻。
+        for instance in instances.allObjects {
+            (instance as? LiquidGlassView)?.primeLiveCapture()
+        }
     }
 
     /// 窗口到期后把在屏玻璃落回静止档。与 reentry 窗口同形态（见 LiquidGlassView 的
@@ -403,6 +409,16 @@ private final class GlassInstanceRegistry {
             guard let self else { return }
             self.scrollExpiryScheduled = false
             if CACurrentMediaTime() < self.scrollActiveUntil {
+                self.scheduleScrollExpiry()
+                return
+            }
+            // 【第 168 轮】松手后的回弹 / 吸附是弹簧动画，App 的 userDriven 通知可能已经停了：
+            // 到期前看一眼窗口里还有没有滚动视图在动（presentation 与 model 不一致），
+            // 有就再续一拍。只在真的还在动时多花这几拍，停手后照旧立即落回静止档。
+            if self.instances.allObjects.contains(where: {
+                ($0 as? LiquidGlassView)?.isAnyScrollViewAnimating() == true
+            }) {
+                self.scrollActiveUntil = CACurrentMediaTime() + Self.scrollLiveHoldDuration
                 self.scheduleScrollExpiry()
                 return
             }
@@ -852,6 +868,13 @@ final class LiquidGlassView: MTKView {
         syncRenderFrameRate()
     }
 
+    /// 【第 168 轮】滚动会话开始：清掉本实例的采景节流，让第一帧立刻能采。
+    /// 只动节流账本，不动全局名额/档位（那两处各有唯一入口与契约计数）。
+    fileprivate func primeLiveCapture() {
+        lastCaptureAt = 0
+        consecutiveUniformFrames = 0
+    }
+
     /// Whether to automatically capture superview on each frame.
     /// Set to false for manual control via `captureBackground()`.
     var autoCapture: Bool = true
@@ -1033,6 +1056,10 @@ final class LiquidGlassView: MTKView {
     private var forceRootViewCaptureUntil: TimeInterval = 0
 
     func captureBackground() {
+        // 【第 168 轮】后台 / 非活跃：不采景。JS 的 paused 本该已经停掉渲染循环，但 prop
+        // 可能晚到或被丢弃；采景是这里最贵的一步（26.2+ / 透镜是整屏 layer.render），
+        // 原生再兜一道，后台发热直接归零，回到前台第一拍恢复。
+        guard UIApplication.shared.applicationState == .active else { return }
         // 本帧的形态判据只属于本帧（2026-10-01）：analyzeCapture 会重写此标记；
         // 捕获提前返回（节流 / 缺窗口 / backdrop 不可用）时也保持 false，
         // 避免把上一帧的「半成品」印象带进下一次提交。
