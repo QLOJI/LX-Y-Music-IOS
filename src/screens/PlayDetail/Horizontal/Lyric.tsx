@@ -6,7 +6,7 @@ import {
   type NativeSyntheticEvent,
   type NativeScrollEvent,
   type LayoutChangeEvent, TouchableOpacity,
-  PanResponder,
+  PanResponder, Animated, Easing,
 } from 'react-native'
 import { type Line, useLrcPlay, useLrcSet, useLrcWordsMap } from '@/plugins/lyric'
 import type { LxLyricWord } from '@/plugins/lxLyricPlayer'
@@ -59,8 +59,22 @@ const LrcLine = memo(
     const textAlign = useSettingValue('playDetail.style.align')
     const isActive = activeLine == lineNum
     const isPlayed = lineNum < activeLine
+    // 【第 171 轮】当前播放行缩放（1.0~1.5）：只动 transform，不改字号/行高/换行；
+    // 围绕行中心缩放、位置不动。过渡时长取换行动画的同一口径（一行为
+    // getReturnDuration(lineHeight)，正常换行即 120ms 档），新旧两行同速过渡。
+    const lrcZoomSetting = useSettingValue('playDetail.horizontal.style.lrcZoom')
+    const zoom = Math.min(150, Math.max(100, lrcZoomSetting)) / 100
+    const lineScale = useRef(new Animated.Value(isActive ? zoom : 1)).current
     const size = lrcFontSize / 10
     const lineHeight = setSpText(size) * 1.3
+    useEffect(() => {
+      Animated.timing(lineScale, {
+        toValue: isActive ? zoom : 1,
+        duration: getReturnDuration(lineHeight),
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      }).start()
+    }, [isActive, zoom, lineHeight, lineScale])
     // 有逐字时间轴的行始终用卡拉OK渲染器（非激活时静态显示未播放颜色）：
     // 嵌套 Text 与纯文本的换行断点不同，若激活时才切换渲染器，行高会在切行瞬间突变，
     // 造成抖动且实测高度与累计偏移基准不一致、高亮行偏离中心。
@@ -90,6 +104,7 @@ const LrcLine = memo(
         accessibilityLabel={line.text || undefined}
       >
         <View style={styles.line} onLayout={handleLayout}>
+          <Animated.View style={{ transform: [{ scale: lineScale }] }}>
           {words
             ? (
               <KaraokeLyric
@@ -150,6 +165,7 @@ const LrcLine = memo(
               </AnimatedColorText>
             )
           })}
+          </Animated.View>
         </View>
       </TouchableOpacity>
     )

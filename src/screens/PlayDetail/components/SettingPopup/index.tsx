@@ -6,6 +6,7 @@ import { useI18n } from '@/lang'
 import SettingVolume from './settings/SettingVolume'
 import SettingPlaybackRate from './settings/SettingPlaybackRate'
 import SettingLrcFontSize from './settings/SettingLrcFontSize'
+import SettingLrcZoom from './settings/SettingLrcZoom'
 import SettingLrcAlign from './settings/SettingLrcAlign'
 import SettingMiniLyricAlign from './settings/SettingMiniLyricAlign'
 import SettingMiniLyricKaraoke from './settings/SettingMiniLyricKaraoke'
@@ -48,6 +49,8 @@ export default forwardRef<SettingPopupType, SettingPopupProps>(({ direction, ...
           <SettingPlaybackRate />
           <SettingSoundEffect />
           <SettingLrcFontSize direction={direction} />
+          {/* 【第 171 轮】当前歌词行缩放紧跟字体大小：同属大歌词的字号类设置 */}
+          <SettingLrcZoom direction={direction} />
           <SettingCoverSize />
           <SettingLrcAlign />
           <SettingMiniLyricAlign />

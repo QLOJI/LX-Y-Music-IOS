@@ -8,6 +8,8 @@ import {
   type NativeSyntheticEvent,
   TouchableOpacity,
   PanResponder,
+  Animated,
+  Easing,
 } from 'react-native'
 // import { useLayout } from '@/utils/hooks'
 import { type Line, useLrcPlay, useLrcSet, useLrcWordsMap, anchorLyric as lrcAnchorToTime, findLineIndexByTime } from '@/plugins/lyric'
@@ -68,6 +70,20 @@ const LrcLine = memo(
     const lrcFontSize = useSettingValue('playDetail.vertical.style.lrcFontSize')
     const textAlign = useSettingValue('playDetail.style.align')
     const isActive = activeLine == lineNum
+    // 【第 171 轮】当前播放行缩放（1.0~1.5）：只动 transform，不改字号/行高/换行，
+    // 因此列表的累计高度与居中定位完全不变；缩放围绕行视图中心，位置固定在中间。
+    // 换行时新旧两行同时过渡，时长与换行滑动同源（RETURN_TO_ACTIVE_MS），观感一致。
+    const lrcZoomSetting = useSettingValue('playDetail.vertical.style.lrcZoom')
+    const zoom = Math.min(150, Math.max(100, lrcZoomSetting)) / 100
+    const lineScale = useRef(new Animated.Value(isActive ? zoom : 1)).current
+    useEffect(() => {
+      Animated.timing(lineScale, {
+        toValue: isActive ? zoom : 1,
+        duration: RETURN_TO_ACTIVE_MS,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      }).start()
+    }, [isActive, zoom, lineScale])
     const size = lrcFontSize / 10
     const lineHeight = setSpText(size) * 1.3
     // 有逐字时间轴的行始终用卡拉OK渲染器（非激活时静态显示未播放颜色）：
@@ -103,6 +119,7 @@ const LrcLine = memo(
         accessibilityLabel={line.text || undefined}
       >
         <View style={[styles.line, isSmallWindow && { paddingTop: 6, paddingBottom: 6 }]} onLayout={handleLayout}>
+          <Animated.View style={{ transform: [{ scale: lineScale }] }}>
           {words
             ? (
               <KaraokeLyric
@@ -164,6 +181,7 @@ const LrcLine = memo(
               </AnimatedColorText>
             )
           })}
+          </Animated.View>
         </View>
       </TouchableOpacity>
     )

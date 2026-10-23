@@ -8,6 +8,8 @@ import {
   type TextStyle,
   type ViewStyle,
   View,
+  Animated,
+  Easing,
 } from 'react-native'
 import Text from '@/components/common/Text'
 import KaraokeLyric from './KaraokeLyric'
@@ -133,6 +135,36 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0 }: MiniLyricProps) =>
   const textAlign = useSettingValue('playDetail.style.miniLyricAlign')
   // 小歌词逐字高亮（设置项）：关闭时整行高亮（当前行一种颜色、其余一种颜色）
   const isKaraoke = useSettingValue('playDetail.isMiniLyricKaraoke')
+  // 【第 171 轮】当前播放行缩放（1.0~1.5）：大歌词与小歌词共用同一个设置项。
+  // 只动 transform（不改字号/行高/换行），围绕行中心缩放；过渡时长与「换行跟随」
+  // 同源（LINE_CHANGE_GLIDE_MS），新旧两行同速交接。
+  const lrcZoomSetting = useSettingValue('playDetail.vertical.style.lrcZoom')
+  const zoom = Math.min(150, Math.max(100, lrcZoomSetting)) / 100
+  const scaleValuesRef = useRef(new Map<number, Animated.Value>())
+  const getLineScale = useCallback((index: number): Animated.Value => {
+    let value = scaleValuesRef.current.get(index)
+    if (value == null) {
+      value = new Animated.Value(index === activeLine ? zoom : 1)
+      scaleValuesRef.current.set(index, value)
+    }
+    return value
+  }, [activeLine, zoom])
+  const prevActiveLineRef = useRef(activeLine)
+  useEffect(() => {
+    const prev = prevActiveLineRef.current
+    prevActiveLineRef.current = activeLine
+    const animate = (index: number, toValue: number) => {
+      if (index < 0) return
+      Animated.timing(getLineScale(index), {
+        toValue,
+        duration: LINE_CHANGE_GLIDE_MS,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      }).start()
+    }
+    animate(prev, 1)
+    animate(activeLine, zoom)
+  }, [activeLine, zoom, getLineScale])
   // 是否允许通过歌词手动定位（既有设置位：控制定位浮层的显隐）
   const isShowLyricProgress = useSettingValue('playDetail.isShowLyricProgressSetting')
   const { height: winHeight } = useWindowSize()
@@ -522,6 +554,7 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0 }: MiniLyricProps) =>
         accessibilityRole="button"
         accessibilityLabel={item.text || undefined}
       >
+        <Animated.View style={{ transform: [{ scale: getLineScale(index) }] }}>
         {
           // 逐字高亮：有逐字时间戳走真实时间轴，没有则按字符数均分该行时长（KaraokeLyric 内部区分）。
           // 仅激活行开启动画，其余行走静态整行配色（不为屏幕外的行跑 rAF）。
@@ -564,9 +597,10 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0 }: MiniLyricProps) =>
             {item.extendedLyrics?.[0] || BLANK}
           </Text>
         )}
+        </Animated.View>
       </Pressable>
     )
-  }, [activeLine, wordsByIndex, lyricLines, isKaraoke, baseRowHeight, rowHeights, textStyle, translationStyle, activeColor, inactiveColor, handlePress, handleLongPress])
+  }, [activeLine, wordsByIndex, lyricLines, isKaraoke, baseRowHeight, rowHeights, textStyle, translationStyle, activeColor, inactiveColor, handlePress, handleLongPress, getLineScale])
 
   const getKey = useCallback((_item: Line, index: number) => `${index}`, [])
   // 定高行：getItemLayout 精确（不需要像大歌词那样动态测量），虚拟化窗口与滚动目标都以它为准
