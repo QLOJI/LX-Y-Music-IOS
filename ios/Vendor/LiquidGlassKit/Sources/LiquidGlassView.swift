@@ -484,30 +484,13 @@ private final class GlassInstanceRegistry {
         return base
     }
 
-    /// 【第 157 轮】返回命令派发前：给暂停态玻璃按 **model** 重锁一次冻结帧。
+    /// 【第 170 轮】返回前不再按 model 重锁冻结帧。
     ///
-    /// 现象：切入与切回时透过的画面差几像素（上下偏移）。冻结帧是在推页那一拍采的，
-    /// 而列表在刹车之后还可能再落几像素；返回时背景已到最终位置，冻结帧落后 → 偏移。
-    /// 返回开始这一刻主界面已经静止，按模型树采一帧就是返回后的真实背景，比推页时
-    /// 那一张更准。只处理**暂停态**玻璃（返回侧按住门覆盖的正是它们），不碰其它屏。
-    private var lastFrozenRefreshAt: TimeInterval = 0
-
-    func refreshFrozenFrames() {
-        guard Thread.isMainThread else {
-            DispatchQueue.main.async { [weak self] in self?.refreshFrozenFrames() }
-            return
-        }
-        guard UIApplication.shared.applicationState == .active else { return }
-        let now = CACurrentMediaTime()
-        guard now - lastFrozenRefreshAt >= 0.2 else { return }
-        lastFrozenRefreshAt = now
-        for instance in instances.allObjects {
-            guard let glass = instance as? LiquidGlassView,
-                  glass.window != nil,
-                  glass.isPaused else { continue }
-            glass.refreshFrozenFrameFromModel()
-        }
-    }
+    /// 第 157 轮引入它是为了修「上下差几像素」，但模型帧和 live 的 CABackdrop（iOS ≤26.1）
+    /// 不是同一个采样源：返回后第一次横向滑动解锁、第一帧 live 接替时发生换源，用户看到
+    /// 就是「玻璃闪一下」。现在冻结帧统一在推页时按 **live 同源**采（见 beginNavigationFreeze），
+    /// 返回期间由 holdFrozenFrameAfterReturn 保持，解锁时换的是同源同内容的帧，不再闪。
+    func refreshFrozenFrames() {}
 }
 
 final class LiquidGlassView: MTKView {
@@ -611,6 +594,20 @@ final class LiquidGlassView: MTKView {
     private static let geometryStableHold: TimeInterval = 0.12
     private var lastObservedBaseSize = CGSize.zero
     private var lastObservedBaseSizeAt: TimeInterval = 0
+
+    /// 【第 169 轮】窗口树遍历的 100ms 缓存：转场后窗口内每帧都遍历整棵窗口树太贵
+    /// （2s 窗口 × 每块玻璃 × 30~60fps）。动画判定只需要保守，不需要逐帧精确。
+    /// 必须放在类体内（扩展里不能有存储属性，private 也跨不进类）。
+    private var scrollAnimCheckedAt: TimeInterval = 0
+    private var scrollAnimCached = false
+
+    private func isAnyScrollViewAnimatingCached() -> Bool {
+        let now = CACurrentMediaTime()
+        if now - scrollAnimCheckedAt < 0.1 { return scrollAnimCached }
+        scrollAnimCheckedAt = now
+        scrollAnimCached = isAnyScrollViewAnimating()
+        return scrollAnimCached
+    }
 
     /// 采景矩形**刚变大**、且这一帧还没被提交（2026-10-11，第 56 轮第 1 条）。
     ///
@@ -1746,10 +1743,10 @@ final class LiquidGlassView: MTKView {
         // 上一屏刚结束的禁采窗口不能挡住这次的定格补采。
         awaitingScreenSettleUntil = 0
         if recapture {
-            // 刚刹过车：必须按 **model** 采。窗口合成比滚动位置晚一拍，
-            // 读合成就是「列表停了、透过画面还在刹车前的位置（上下偏移）」。
-            // 模型树里的滚动位置在刹车那一刻已经是最终值。
-            forceRootCaptureOnce = true
+            // 刚刹过车：此刻窗口还没开始动，按 **live 同源**采一帧（iOS ≤26.1 是 CABackdrop，
+            // 与后续实时采景同一个采样源）。第 155 轮曾强制走模型根视图，虽然更「准」，
+            // 但返回后第一次滑动解锁时换源会闪一下；刹车发生在手指按下那一拍、这里已经
+            // 过了几十毫秒，窗口合成早已是刹车后的位置，同源采同样准确。
             handlePauseForFreeze()
         }
         freezeFrameLocked = true
@@ -2280,19 +2277,6 @@ extension UIView {
     /// 最大档 1.1 —— 候选视图太小的话矩形会伸到视图外，缓冲边缘没画到的黑带会被折射进
     /// 玻璃边缘）。都不满足就继续往上找；整条响应链上没有 ⇒ 逐字回退 findRootView()
     /// （宿主被直接塞进窗口、还没有任何控制器接手这类形态）。
-    /// 【第 169 轮】窗口树遍历的 100ms 缓存：转场后窗口内每帧都遍历整棵窗口树太贵
-    /// （2s 窗口 × 每块玻璃 × 30~60fps）。动画判定只需要保守，不需要逐帧精确。
-    private var scrollAnimCheckedAt: TimeInterval = 0
-    private var scrollAnimCached = false
-
-    private func isAnyScrollViewAnimatingCached() -> Bool {
-        let now = CACurrentMediaTime()
-        if now - scrollAnimCheckedAt < 0.1 { return scrollAnimCached }
-        scrollAnimCheckedAt = now
-        scrollAnimCached = isAnyScrollViewAnimating()
-        return scrollAnimCached
-    }
-
     /// 【第 162 轮】窗口里是否还有滚动视图在动画（presentation 的 contentOffset 与 model
     /// 不一致）。分页程序化回位、列表惯性都走这条；它们在转场后的一小段里会让背景横移。
     func isAnyScrollViewAnimating() -> Bool {
