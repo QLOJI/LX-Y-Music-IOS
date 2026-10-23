@@ -8,6 +8,7 @@
 #import <React/RCTLinkingManager.h>
 #import <React/RCTScrollView.h>
 #import <objc/runtime.h>
+#import <QuartzCore/QuartzCore.h>
 #import <ReactNativeNavigation/ReactNativeNavigation.h>
 // 【第 66 轮第 1 条】玻璃「冻结前」的回调口：vendored LiquidGlassKit 在把渲染循环暂停
 // 之前同步回调进来（注册在文件下方的 LXGlassFreezeSettleSetup，+load 早于 main）。
@@ -19,7 +20,7 @@
 extern "C" void LXGlassNotifyRefreshFrozenFrames(void);
 // 【第 153 轮】同口径的本地声明（Pod 头缓存旧了也能编过）。
 extern "C" BOOL LXGlassNotifyWillFreeze(void);
-extern "C" void LXGlassNotifyFreezeInView(void *view, BOOL recapture);
+extern "C" void LXGlassNotifyFreezeInView(void *view, int recapture);
 extern "C" void LXGlassNotifyScreenSettled(void *view);
 
 @class SceneDelegate;
@@ -8519,7 +8520,7 @@ static BOOL LXGlassBrakeNavScrollView(void) {
     if (scrollView.isTracking || scrollView.isDragging) continue;
     CGPoint model = scrollView.contentOffset;
     CGPoint visible = model;
-    CALayer *presentation = scrollView.layer.presentation();
+    CALayer *presentation = [scrollView.layer presentationLayer];
     if (presentation != nil) visible = presentation.bounds.origin;
     // 惯性减速，或程序化 / 分页动画（model 已到终点、屏幕上还在走）。
     BOOL moving = scrollView.isDecelerating ||
@@ -8621,7 +8622,7 @@ static void LX_UIViewController_viewWillDisappear(UIViewController *self, SEL _c
     BOOL braked = LXGlassNotifyWillFreeze();
     CFTimeInterval now = CACurrentMediaTime();
     BOOL recapture = braked || (LXGlassLastBrakeAt > 0 && now - LXGlassLastBrakeAt < 0.5);
-    LXGlassNotifyFreezeInView((__bridge void *)view, recapture);
+    LXGlassNotifyFreezeInView((__bridge void *)view, recapture ? 1 : 0);
   }
   if (LXOrigViewControllerViewWillDisappear != NULL) {
     LXOrigViewControllerViewWillDisappear(self, _cmd, animated);
