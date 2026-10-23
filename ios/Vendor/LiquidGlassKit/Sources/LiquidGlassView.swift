@@ -582,6 +582,13 @@ final class LiquidGlassView: MTKView {
     /// 取 0.5 只为滤掉浮点噪声与亚像素抖动，避免稳态下被误触发、反复重开窗口。
     private static let captureGeometryEpsilon: CGFloat = 0.5
 
+    /// 【第 164 轮】返回结束后继续沿用冻结帧，直到用户真正开始滚动。
+    ///
+    /// 多次现场表明：返回后任何一次自动换帧（哪怕已经过了转场/布局/滚动动画的检测门）
+    /// 都可能把「偏一段」的合成换上去。返回开始那一帧已经按 model 重锁过，内容就是当前
+    /// 主界面；不动它就不会有任何偏移。用户一滚动立即解除，回到实时采景。
+    private var holdFrozenFrameAfterReturn = false
+
     /// 【第 162 轮】采景基准尺寸连续多久没变才允许采景。底栏收起/展开由 React 逐帧改
     /// 宽度（布局驱动，presentation 与 model 一致），祖先动画门看不出来；这段时间采进去
     /// 的画面会整体偏约 1/3，下一帧又对齐 —— 用户看到的「等了一下，画面左移一瞬再回来」。
@@ -1030,6 +1037,11 @@ final class LiquidGlassView: MTKView {
         // 捕获提前返回（节流 / 缺窗口 / backdrop 不可用）时也保持 false，
         // 避免把上一帧的「半成品」印象带进下一次提交。
         lastCaptureHadPartialBlack = false
+        // 【第 164 轮】返回结束后保持冻结帧：用户真正开始滚动之前不采任何新帧。
+        if holdFrozenFrameAfterReturn {
+            if isScrollLiveActive { holdFrozenFrameAfterReturn = false }
+            else if !allowCaptureDuringTransition { return }
+        }
         // 【第 162 轮】记录「采景基准尺寸」的变化时刻（每一拍都观察，即使下面会提前返回）。
         let geometryNow = CACurrentMediaTime()
         let baseSize = captureBaseSize
@@ -1380,6 +1392,8 @@ final class LiquidGlassView: MTKView {
     /// 都不成立，所以这里只做「复位节流 + 采一帧 + 画一帧」。
     /// 渲染档（syncRenderFrameRate）同样不动：暂停态与采景档无关，多调一次只是白算。
     func handlePauseForFreeze() {
+        // 新的冻结（导航 / 退后台）会重采定格帧，返回后的“保持”不再需要。
+        holdFrozenFrameAfterReturn = false
         forceFreshFirstBackdropCapture = false
         frozenFrameUsesBackdrop = false
         // 【第 152 轮】这张定格就是返回期要展示的画面（App 侧已刹车，画面不会再动）。
@@ -1683,6 +1697,8 @@ final class LiquidGlassView: MTKView {
 
     func beginNavigationFreeze(recapture: Bool) {
         guard !navigationFrozen else { return }
+        // 新的转场接管：返回后的「保持冻结帧」到此结束（本次转场按自己的节奏走）。
+        holdFrozenFrameAfterReturn = false
         // 上一屏刚结束的禁采窗口不能挡住这次的定格补采。
         awaitingScreenSettleUntil = 0
         if recapture {
@@ -1697,6 +1713,17 @@ final class LiquidGlassView: MTKView {
     }
 
     func endNavigationFreeze() {
+        // 只有真的经历过导航冻结的玻璃才进入「保持冻结帧」：首次挂载等路径照旧正常采景。
+        // 透镜（Tab 栏药丸）不在此列：它要跟着点击/拖动换背景，冻结会露旧图。
+        if navigationFrozen {
+            var view: UIView? = superview
+            var insideLens = false
+            while let current = view {
+                if current is LiquidLensView { insideLens = true; break }
+                view = current.superview
+            }
+            if !insideLens { holdFrozenFrameAfterReturn = true }
+        }
         navigationFrozen = false
     }
 
