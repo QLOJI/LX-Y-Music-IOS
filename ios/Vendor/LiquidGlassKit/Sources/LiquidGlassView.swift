@@ -453,13 +453,30 @@ private final class GlassInstanceRegistry {
         return base
     }
 
-    /// 【第 151 轮】返回转场开始：**什么都不做**。
+    /// 【第 157 轮】返回命令派发前：给暂停态玻璃按 **model** 重锁一次冻结帧。
     ///
-    /// 用户在返回期看到「透过画面左滑」——那是实时采景在移动的采样矩形上逐帧跟拍，
-    /// 永远滞后一帧，叠上转场本身就成了延迟、卡顿、撕裂的滑动动画。转场期间玻璃保持
-    /// 暂停，展示手上那张静止画面；恢复路径（setPaused(false) → handleResumeFromPause）
-    /// 在转场结束时一次性换成当前画面。
-    func refreshFrozenFrames() {}
+    /// 现象：切入与切回时透过的画面差几像素（上下偏移）。冻结帧是在推页那一拍采的，
+    /// 而列表在刹车之后还可能再落几像素；返回时背景已到最终位置，冻结帧落后 → 偏移。
+    /// 返回开始这一刻主界面已经静止，按模型树采一帧就是返回后的真实背景，比推页时
+    /// 那一张更准。只处理**暂停态**玻璃（返回侧按住门覆盖的正是它们），不碰其它屏。
+    private var lastFrozenRefreshAt: TimeInterval = 0
+
+    func refreshFrozenFrames() {
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async { [weak self] in self?.refreshFrozenFrames() }
+            return
+        }
+        guard UIApplication.shared.applicationState == .active else { return }
+        let now = CACurrentMediaTime()
+        guard now - lastFrozenRefreshAt >= 0.2 else { return }
+        lastFrozenRefreshAt = now
+        for instance in instances.allObjects {
+            guard let glass = instance as? LiquidGlassView,
+                  glass.window != nil,
+                  glass.isPaused else { continue }
+            glass.refreshFrozenFrameFromModel()
+        }
+    }
 }
 
 final class LiquidGlassView: MTKView {
@@ -995,9 +1012,9 @@ final class LiquidGlassView: MTKView {
         // 「左边已经换成新页、右边还是上一页」，采进去就是用户看到的左边那一下闪；
         // 保持手上那张静止画面，等转场落地后的完整合成再采。
         // 用户在滚列表（返回后立刻上手）就立即解除保持，别让玻璃在滚动中定格。
-        if navigationFrozen { return }
-        if CACurrentMediaTime() < awaitingScreenSettleUntil, !isScrollLiveActive { return }
-        if isCaptureSourceMoving() { return }
+        if navigationFrozen, !allowCaptureDuringTransition { return }
+        if CACurrentMediaTime() < awaitingScreenSettleUntil, !isScrollLiveActive, !allowCaptureDuringTransition { return }
+        if isCaptureSourceMoving(), !allowCaptureDuringTransition { return }
         if skipNextCaptureOnce {
             skipNextCaptureOnce = false
             return
@@ -1588,6 +1605,18 @@ final class LiquidGlassView: MTKView {
     /// 【第 154 轮】转场期间只禁采、不暂停渲染：玻璃继续把手上那张纹理画出去（静止），
     /// 但不采新帧。暂停/恢复本身也会让画面在转场里变一次，静止切入时的封面闪就是这么来的。
     private var navigationFrozen = false
+    /// 【第 157 轮】返回开始那一拍按 model 重锁冻结帧时，放行一次采景。
+    private var allowCaptureDuringTransition = false
+
+    /// 返回开始：按模型树重采一张当前背景当作冻结帧（见注册表的 refreshFrozenFrames）。
+    func refreshFrozenFrameFromModel() {
+        guard window != nil else { return }
+        allowCaptureDuringTransition = true
+        forceRootCaptureOnce = true
+        handlePauseForFreeze()
+        allowCaptureDuringTransition = false
+        freezeFrameLocked = true
+    }
 
     func beginNavigationFreeze(recapture: Bool) {
         guard !navigationFrozen else { return }
