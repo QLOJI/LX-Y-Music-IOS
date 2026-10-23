@@ -76,9 +76,15 @@ const LrcLine = memo(
     const lrcZoomSetting = useSettingValue('playDetail.vertical.style.lrcZoom')
     const zoom = Math.min(150, Math.max(100, lrcZoomSetting)) / 100
     const lineScale = useRef(new Animated.Value(isActive ? zoom : 1)).current
+    // 【第 172 轮】目标值没变就不启动动画：歌词装载时几百行同时挂载，旧写法会给每一行
+    // 起一次 Animated.timing（toValue 与初值相同），把歌词加载/首屏拖慢。
+    const appliedScaleRef = useRef(isActive ? zoom : 1)
     useEffect(() => {
+      const target = isActive ? zoom : 1
+      if (appliedScaleRef.current === target) return
+      appliedScaleRef.current = target
       Animated.timing(lineScale, {
-        toValue: isActive ? zoom : 1,
+        toValue: target,
         duration: RETURN_TO_ACTIVE_MS,
         easing: Easing.out(Easing.cubic),
         useNativeDriver: true,

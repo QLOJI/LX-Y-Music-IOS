@@ -67,9 +67,14 @@ const LrcLine = memo(
     const lineScale = useRef(new Animated.Value(isActive ? zoom : 1)).current
     const size = lrcFontSize / 10
     const lineHeight = setSpText(size) * 1.3
+    // 【第 172 轮】同竖屏：目标值没变就不起动画，避免歌词装载时逐行启动几百个 timing。
+    const appliedScaleRef = useRef(isActive ? zoom : 1)
     useEffect(() => {
+      const target = isActive ? zoom : 1
+      if (appliedScaleRef.current === target) return
+      appliedScaleRef.current = target
       Animated.timing(lineScale, {
-        toValue: isActive ? zoom : 1,
+        toValue: target,
         duration: getReturnDuration(lineHeight),
         easing: Easing.out(Easing.cubic),
         useNativeDriver: true,
