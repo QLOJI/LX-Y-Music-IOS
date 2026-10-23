@@ -63,9 +63,11 @@ interface LineProps {
   onPress: (index: number) => void
   isSmallWindow?: boolean
   wordsByIndex: ReadonlyArray<LxLyricWord[] | null>
+  /** 【第 173 轮】歌词页是否为当前页：隐藏页不跑逐字 rAF（不可见，纯耗电）。 */
+  pageActive: boolean
 }
 const LrcLine = memo(
-  ({ line, lineNum, activeLine, onLayout, onPress, isSmallWindow, wordsByIndex }: LineProps) => {
+  ({ line, lineNum, activeLine, onLayout, onPress, isSmallWindow, wordsByIndex, pageActive }: LineProps) => {
     const theme = useTheme()
     const lrcFontSize = useSettingValue('playDetail.vertical.style.lrcFontSize')
     const textAlign = useSettingValue('playDetail.style.align')
@@ -139,7 +141,7 @@ const LrcLine = memo(
                 words={words}
                 lineTime={line.time}
                 size={size}
-                isActive={isActive}
+                isActive={isActive && pageActive}
                 playedColor={colors[0]}
                 inactiveColor={theme['c-450']}
               />
@@ -201,7 +203,9 @@ const LrcLine = memo(
       prevProps.wordsByIndex === nextProps.wordsByIndex &&
       // onLayout 引用稳定（useCallback），无需比较；isSmallWindow 变化时必须放行更新，
       // 否则小屏/大屏切换后行内边距不刷新。
-      prevProps.isSmallWindow === nextProps.isSmallWindow
+      prevProps.isSmallWindow === nextProps.isSmallWindow &&
+      // 【第 173 轮】页面可见性变化必须放行：否则隐藏/显示时无法启停逐字 rAF。
+      prevProps.pageActive === nextProps.pageActive
     )
   },
 )
@@ -1121,8 +1125,8 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
   // useCallback 稳定 renderItem：依赖项均为稳定引用或低频变化值（line 每行切换变化一次），
   // 配合 LrcLine 的 memo 比较器，行切换时只有新旧激活两行重渲染。
   const renderItem: FlatListType['renderItem'] = useCallback(({ item, index }: { item: Line, index: number }) => {
-    return <LrcLine line={item} lineNum={index} activeLine={line} onLayout={handleLineLayout} onPress={handleLinePress} isSmallWindow={isSmallWindow} wordsByIndex={wordsByIndex} />
-  }, [line, handleLineLayout, handleLinePress, isSmallWindow, wordsByIndex])
+    return <LrcLine line={item} lineNum={index} activeLine={line} onLayout={handleLineLayout} onPress={handleLinePress} isSmallWindow={isSmallWindow} wordsByIndex={wordsByIndex} pageActive={active} />
+  }, [line, handleLineLayout, handleLinePress, isSmallWindow, wordsByIndex, active])
   const getkey: FlatListType['keyExtractor'] = (_item, index) => `${index}`
 
   const handlePageLayout = useCallback(({ nativeEvent }: LayoutChangeEvent) => {

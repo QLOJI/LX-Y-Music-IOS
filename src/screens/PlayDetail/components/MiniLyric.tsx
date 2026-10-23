@@ -125,9 +125,11 @@ export interface MiniLyricProps {
    * 不传（= 0）时几何与旧行为完全一致。
    */
   bleedH?: number
+  /** 【第 173 轮】封面页是否为当前页：隐藏时不跑逐字 rAF / 换行跟随（不可见，纯耗电）。 */
+  visible?: boolean
 }
 
-const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0 }: MiniLyricProps) => {
+const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: MiniLyricProps) => {
   const theme = useTheme()
   const { line: activeLine } = useLrcPlay()
   const lyricLines = useLrcSet()
@@ -189,6 +191,8 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0 }: MiniLyricProps) =>
   const isOverlayShownRef = useRef(false)
   const activeLineRef = useRef(activeLine)
   activeLineRef.current = activeLine
+  const visibleRef = useRef(visible)
+  visibleRef.current = visible
 
   // 三个尺寸常量（模块级 calcMetrics，与 getMiniLyricRowHeight 共享同一份算式）
   const metrics = useMemo(() => calcMetrics(), [])
@@ -355,6 +359,9 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0 }: MiniLyricProps) =>
 
   // 播放行自动跟随：跨行距离很远（进度条 seek / 恢复播放）时直接落位，不做长距离快速滑动
   const followActiveLine = useCallback((index: number) => {
+    // 【第 173 轮】封面页不可见（歌词页在前台）时不跑换行跟随：每行一次 200ms 的
+    // scrollTo 动画在隐藏页里纯属白烧。可见性走 ref，避免改动契约钉住的 effect 形状。
+    if (!visibleRef.current) return
     const info = scrollInfoRef.current
     const offset = getScrollOffset(index)
     if (info && Math.abs(offset - info.contentOffset.y) > worstRowHeight * FAR_JUMP_ROWS) {
@@ -390,6 +397,14 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0 }: MiniLyricProps) =>
     if (isPauseScrollRef.current) return
     followActiveLine(activeLine)
   }, [activeLine, followActiveLine])
+
+  // 【第 173 轮】从歌词页切回封面页：隐藏期间 followActiveLine 直接返回、没跟过，
+  // 这里按当前行补一次定位（远距离由它内部的无动画落位分支处理）。
+  useEffect(() => {
+    if (!visible) return
+    if (activeLineRef.current < 0 || isPauseScrollRef.current) return
+    followActiveLine(activeLineRef.current)
+  }, [visible, followActiveLine])
 
   // 复位只在「歌词数组真的换了一份」时跑（useLrcSet 只在换歌 / 歌词就绪 / 歌词源刷新时换引用，
   // 换行不换引用）。【第 22 轮】依赖刻意走 ref、只写 [lyricLines]：resetScroll 的依赖链里有
@@ -558,7 +573,8 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0 }: MiniLyricProps) =>
         {
           // 逐字高亮：有逐字时间戳走真实时间轴，没有则按字符数均分该行时长（KaraokeLyric 内部区分）。
           // 仅激活行开启动画，其余行走静态整行配色（不为屏幕外的行跑 rAF）。
-          isKaraoke && isActive
+          // 【第 173 轮】页面隐藏时不跑逐字 rAF（活跃行退回静态整行配色，不可见）。
+          isKaraoke && isActive && visible
             ? (
               <KaraokeLyric
                 words={words}
@@ -600,7 +616,7 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0 }: MiniLyricProps) =>
         </Animated.View>
       </Pressable>
     )
-  }, [activeLine, wordsByIndex, lyricLines, isKaraoke, baseRowHeight, rowHeights, textStyle, translationStyle, activeColor, inactiveColor, handlePress, handleLongPress, getLineScale])
+  }, [activeLine, wordsByIndex, lyricLines, isKaraoke, baseRowHeight, rowHeights, textStyle, translationStyle, activeColor, inactiveColor, handlePress, handleLongPress, getLineScale, visible])
 
   const getKey = useCallback((_item: Line, index: number) => `${index}`, [])
   // 定高行：getItemLayout 精确（不需要像大歌词那样动态测量），虚拟化窗口与滚动目标都以它为准

@@ -439,6 +439,8 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
                     只含与 MiniLyric 自身无关的量，小歌词高度不再参与自己的上限计算
                     （旧口径的闪烁反馈环，见上方 pageHeight 注释）；未就绪时传 undefined。 */}
                 <MiniLyric
+                  // 【第 173 轮】封面页可见性：隐藏时不跑逐字 rAF / 换行跟随。
+                  visible={pageIndex === 0 || isComingCoverRef.current}
                   maxHeight={miniLyricMaxHeight}
                   // 小歌词用负 margin 把自己左右各外扩这么多，frame 顶到屏幕边缘：
                   // 定位浮层（绝对定位，左右 0）因此和大歌词一样贴到右缘，虚线右端与播放三角
