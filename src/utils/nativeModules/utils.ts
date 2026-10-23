@@ -48,6 +48,19 @@ export const refreshLiquidGlassFrames = () => {
 }
 
 /**
+ * 【第 160 轮】转场窗口硬闸：窗口内原生死死按住采景（不采任何新帧）。
+ *
+ * 返回收尾「透过画面整体平移一段再回来」= 转场中间采到的一帧。UIKit 外观回调的时机
+ * 与动画是否可见都不可靠（快照式/自定义转场时，真实视图可能一动不动），只有 JS 的
+ * beginNavTransitionWindow 知道整段窗口的起止。
+ */
+export const setLiquidGlassNavTransition = (active: boolean): void => {
+  if (!isIOS) return
+  if (typeof UtilsModule?.setLiquidGlassNavTransition != 'function') return
+  UtilsModule.setLiquidGlassNavTransition(active)
+}
+
+/**
  * 把 RNN 的 Toast 浮层窗口提到 App 主窗口之上（2026-10-02 用户第 6 条）。
  *
  * 背景：RNN 的 overlay 不是普通视图，而是独立 UIWindow（RNNOverlayManager →
