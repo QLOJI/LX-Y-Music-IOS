@@ -58,7 +58,16 @@ export default memo(({ componentId }: { componentId: string }) => {
   const spinVisible = !screenCovered && appActive || navTransitioning && appActive
   const coverSizeRaw = useSettingValue('playDetail.style.coverSize')
   const coverSize = typeof coverSizeRaw === 'number' && !isNaN(coverSizeRaw) ? coverSizeRaw : 100
-  const spinValue = useRef(new Animated.Value(0)).current
+  // 【第 163 轮】同竖屏：初值取当前播放相位，避免首次挂载时从 0° 跳到当前角度。
+  const initialSpinPhase = (() => {
+    if (allowSpin) {
+      const position = playerState.progress.nowPlayTime
+      const cycle = SPIN_CYCLE_DURATION / 1000
+      if (Number.isFinite(position) && position > 0) return (position % cycle) / cycle
+    }
+    return 0
+  })()
+  const spinValue = useRef(new Animated.Value(initialSpinPhase)).current
   const animationRef = useRef<Animated.CompositeAnimation | null>(null)
   const isAnimating = useRef(false)
   const isUnmounted = useRef(false)

@@ -183,7 +183,18 @@ export default memo(({ componentId, active = true, coverRegionHeight = 0 }: { co
   // 这里改为 stopAnimation -> 取当前角度 -> 重新 timing 的可靠循环方式。
   // 启停由两个门控决定（见下面两个 effect）：播放态 × 可见性；
   // 停即取消动画（cancel），恢复驱动时按已播进度重新起算角度。
-  const spinValue = useRef(new Animated.Value(0)).current
+  // 【第 163 轮】初值直接取当前播放相位：从首页进入详情页时本组件是首次挂载，
+  // 旧写法先画 0°、effect 再把值设到当前相位 ⇒ 用户看到「从初始位置跳到当前角度」。
+  // 关自转/方形时仍从 0 起（方形不允许带角度）。
+  const initialSpinPhase = (() => {
+    if (allowSpin) {
+      const position = playerState.progress.nowPlayTime
+      const cycle = SPIN_CYCLE_DURATION / 1000
+      if (Number.isFinite(position) && position > 0) return (position % cycle) / cycle
+    }
+    return 0
+  })()
+  const spinValue = useRef(new Animated.Value(initialSpinPhase)).current
   const animationRef = useRef<Animated.CompositeAnimation | null>(null)
   const isAnimating = useRef(false)
   const isUnmounted = useRef(false)
