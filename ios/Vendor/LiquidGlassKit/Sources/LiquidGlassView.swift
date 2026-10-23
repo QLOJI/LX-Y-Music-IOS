@@ -1620,6 +1620,9 @@ final class LiquidGlassView: MTKView {
     /// 返回开始：按模型树重采一张当前背景当作冻结帧（见注册表的 refreshFrozenFrames）。
     func refreshFrozenFrameFromModel() {
         guard window != nil else { return }
+        // 屏幕还在搬（边缘返回手势 / screenPopped 落在转场中）就先不重锁：模型渲染本身
+        // 没问题，但这条路径的窗口合成回退会把移动中的背景采进来，正是那次横向跳。
+        guard !isGlassOrAncestorAnimating() else { return }
         allowCaptureDuringTransition = true
         forceRootCaptureOnce = true
         handlePauseForFreeze()
@@ -2168,6 +2171,16 @@ extension UIView {
                    abs(presentation.position.y - model.position.y) > 0.5 ||
                    abs(presentation.bounds.width - model.bounds.width) > 0.5 ||
                    abs(presentation.bounds.height - model.bounds.height) > 0.5 {
+                    return true
+                }
+                // 转场大多用 transform 平移/缩放：只看 position 会漏掉，采到移动中的背景
+                // 就是「透过的画面整体左移一段再回来」。
+                let inFlight = presentation.transform
+                let settled = model.transform
+                if abs(inFlight.m41 - settled.m41) > 0.5 ||
+                   abs(inFlight.m42 - settled.m42) > 0.5 ||
+                   abs(inFlight.m11 - settled.m11) > 0.01 ||
+                   abs(inFlight.m22 - settled.m22) > 0.01 {
                     return true
                 }
             }
