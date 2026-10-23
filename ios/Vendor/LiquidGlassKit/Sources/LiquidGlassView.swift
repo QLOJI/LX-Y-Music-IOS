@@ -322,29 +322,34 @@ private final class GlassInstanceRegistry {
             let target = Unmanaged<UIView>.fromOpaque(UnsafeRawPointer(view)).takeUnretainedValue()
             GlassInstanceRegistry.shared.screenSettledGlasses(in: target)
         }
+        // 【第 154 轮】App 在触摸按下那一刻刹车：记下时刻，冻结时据此决定要不要补采。
+        LXGlassSetScrollBrakeFn { GlassInstanceRegistry.shared.noteScrollBrake() }
     }
 
-    /// 冻结这一屏（正在被盖住的源页）里的玻璃：转场开始前调用，窗口还是干净的。
+    /// 最近一次真正刹停惯性（有滚动视图被停住）的时刻。
+    private(set) var lastBrakeAt: TimeInterval = 0
+
+    func noteScrollBrake() {
+        lastBrakeAt = CACurrentMediaTime()
+    }
+
+    /// 转场开始：这一屏的玻璃从这一刻起停止采景（不暂停渲染，画面保持静止）。
     func freezeGlasses(in view: UIView) {
         for instance in instances.allObjects {
             guard let glass = instance as? LiquidGlassView,
                   glass.window != nil,
-                  glass.isDescendant(of: view),
-                  let effect = glass.superview as? LiquidGlassEffectView else { continue }
-            effect.pauseForNavigation()
+                  glass.isDescendant(of: view) else { continue }
+            glass.beginNavigationFreeze()
         }
     }
 
-    /// 这一屏的转场已经结束：放开导航冻结，按静止后的完整合成恢复采景。
+    /// 这一屏的转场已经结束：允许采景，但再等两帧让最终合成落地。
     func screenSettledGlasses(in view: UIView) {
         for instance in instances.allObjects {
             guard let glass = instance as? LiquidGlassView,
                   glass.isDescendant(of: view) else { continue }
-            // 先记时刻再恢复：恢复路径据此判断「屏幕已经停稳」，不必再等。
             glass.screenDidSettle()
-            if let effect = glass.superview as? LiquidGlassEffectView {
-                effect.endNavigationFreeze()
-            }
+            glass.endNavigationFreeze()
         }
     }
 
@@ -999,6 +1004,7 @@ final class LiquidGlassView: MTKView {
         // 「左边已经换成新页、右边还是上一页」，采进去就是用户看到的左边那一下闪；
         // 保持手上那张静止画面，等转场落地后的完整合成再采。
         // 用户在滚列表（返回后立刻上手）就立即解除保持，别让玻璃在滚动中定格。
+        if navigationFrozen { return }
         if CACurrentMediaTime() < awaitingScreenSettleUntil, !isScrollLiveActive { return }
         if isCaptureSourceMoving() { return }
         if skipNextCaptureOnce {
@@ -1581,15 +1587,39 @@ final class LiquidGlassView: MTKView {
     private var freezeFrameLocked = false
     /// 【第 153 轮】所在屏幕最后一次「转场结束」（viewDidAppear）的时刻。
     private var screenSettledAt: TimeInterval = 0
-    /// 等屏幕停稳的期限：转场没结束就不采景；1s 兜底，避免异常导航把玻璃永久冻住。
+    /// 禁采期限：转场中 / 刚结束那一两拍不采景。
     private var awaitingScreenSettleUntil: TimeInterval = 0
     private static let screenSettleTimeout: TimeInterval = 1.0
     private static let screenSettleRecentDuration: TimeInterval = 0.4
+    /// 【第 154 轮】转场结束后再等两帧：viewDidAppear 时窗口合成可能还差最后一拍。
+    private static let postSettleCaptureHold: TimeInterval = 0.05
 
-    /// App 在目标页 viewDidAppear 时调进来：这一屏的转场已经结束。
-    func screenDidSettle() {
-        screenSettledAt = CACurrentMediaTime()
+    /// 【第 154 轮】转场期间只禁采、不暂停渲染：玻璃继续把手上那张纹理画出去（静止），
+    /// 但不采新帧。暂停/恢复本身也会让画面在转场里变一次，静止切入时的封面闪就是这么来的。
+    private var navigationFrozen = false
+
+    func beginNavigationFreeze() {
+        guard !navigationFrozen else { return }
+        // 上一屏刚结束的禁采窗口不能挡住这次的定格补采。
         awaitingScreenSettleUntil = 0
+        // 刚刚刹过车（刹车发生在手指按下那一刻），而纹理可能还是刹车前采的：
+        // 此刻窗口还没开始动，补采一帧才能保证冻结画面 = 返回后的背景。
+        if GlassInstanceRegistry.shared.lastBrakeAt > lastCaptureAt {
+            handlePauseForFreeze()
+        }
+        freezeFrameLocked = true
+        navigationFrozen = true
+    }
+
+    func endNavigationFreeze() {
+        navigationFrozen = false
+    }
+
+    /// App 在目标页 viewDidAppear 时调进来：这一屏的转场已经结束（再等两帧落地）。
+    func screenDidSettle() {
+        let now = CACurrentMediaTime()
+        screenSettledAt = now
+        awaitingScreenSettleUntil = now + Self.postSettleCaptureHold
     }
 
     /// 由 LiquidGlassEffectView.setPaused 的恢复分支置位（覆盖冻结档：返回 / push 后露出 /

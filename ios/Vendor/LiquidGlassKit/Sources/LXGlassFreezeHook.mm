@@ -77,3 +77,16 @@ void LXGlassNotifyScreenSettled(void *view) {
   if (!fn) return;
   fn(view);
 }
+
+// 【第 154 轮】触摸按下那一刻的刹车时刻。存储口径同上。
+static LXGlassScrollBrakeFn LXGlassScrollBrakeHandler = NULL;
+
+void LXGlassSetScrollBrakeFn(LXGlassScrollBrakeFn fn) {
+  LXGlassScrollBrakeHandler = fn;
+}
+
+void LXGlassNotifyScrollBrake(void) {
+  LXGlassScrollBrakeFn fn = LXGlassScrollBrakeHandler;
+  if (!fn) return;
+  fn();
+}

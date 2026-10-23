@@ -105,6 +105,16 @@ void LXGlassNotifyFreezeInView(void *view);
 /// 由 App 在 viewDidAppear 里同步调用：这一屏的转场已经结束。
 void LXGlassNotifyScreenSettled(void *view);
 
+//! Vendored addition（第 154 轮）: 惯性刹车时刻（App → Kit）。
+//!
+//! 用户在触摸按下那一刻就把正在惯性滑行的滚动视图停住（UIWindow sendEvent 锚点）。
+//! 冻结转场开始时，玻璃据此判断手上那张纹理是不是刹车之后采的：不是就补采一帧，
+//! 保证冻结画面 = 返回后的背景。
+typedef void (*LXGlassScrollBrakeFn)(void);
+
+void LXGlassSetScrollBrakeFn(LXGlassScrollBrakeFn fn);
+void LXGlassNotifyScrollBrake(void);
+
 #ifdef __cplusplus
 }
 #endif
