@@ -167,6 +167,12 @@ export default memo(({ componentId }: { componentId: string }) => {
     }
   }, [isPlay, allowSpin, spinVisible, startAnimation, stopAnimation])
 
+  // 【第 161 轮】同竖屏：被压栈页盖住时保持自转，避免返回时停/起造成的停顿。
+  useEffect(() => {
+    // 同竖屏：续驱不占启停门控的契约计数位。
+    if (allowSpin && isPlay && appActive) startAnimation()
+  }, [isPlay, allowSpin, appActive, screenCovered, navTransitioning, startAnimation])
+
   // 形状切到「方形」或把自转开关关掉：除停驱动外还必须**把角度归零**。
   // stopAnimation 只停不归零（它要保住「暂停/不可见期间相位不推进、恢复时按已播进度重锚」
   // 的语义，归零会破坏它）；而唯一会归零的切歌 effect 只依赖 musicId —— 于是「圆形 → 方形」

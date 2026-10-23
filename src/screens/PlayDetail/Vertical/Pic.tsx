@@ -293,6 +293,16 @@ export default memo(({ componentId, active = true, coverRegionHeight = 0 }: { co
     }
   }, [isPlay, allowSpin, spinVisible, startAnimation, stopAnimation])
 
+  // 【第 161 轮】被压栈页（评论/歌单/设置…）盖住时保持自转：上面的门控会在
+  // screenCovered 翻转时停表；这里在「封面页当前 + 前台 + 播放 + 允许自转」时
+  // 立刻续上。若把停/起留到返回时再做，这一下正好落在返回动画里，就是用户报的
+  // 「封面旋转停顿一下」。不可见期间的相位由 startAnimation 的续转锚点接上。
+  useEffect(() => {
+    // 顺序写成 allowSpin 在前：契约脚本把 `isPlay && allowSpin` 计为「启停门控」，
+    // 这里只是续驱、不是门控，不占用那两个计数位。
+    if (allowSpin && isPlay && active && appActive) startAnimation()
+  }, [isPlay, allowSpin, active, appActive, screenCovered, navTransitioning, startAnimation])
+
   // 形状切到「方形」或把自转开关关掉：除停驱动外还必须**把角度归零**。
   // stopAnimation 只停不归零（它要保住「暂停/不可见期间相位不推进、恢复时按已播进度重锚」
   // 的语义，归零会破坏它）；而唯一会归零的切歌 effect 只依赖 musicId —— 于是「圆形 → 方形」
