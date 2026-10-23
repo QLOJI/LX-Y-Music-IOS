@@ -124,16 +124,21 @@ export default async(setting: LX.AppSetting) => {
       lyricLoading += 1
       void setLyric().then(async(position) => {
         const lines = playerState.musicInfo.lrc && isShowBluetoothLyric() ? getCurrentLyricLines() : []
-        // 位置随行一起提交：原生在同一次调用内重锚 + 仲裁出当前行；无行时不必取位置
-        const lyricPosition = lines.length ? position : undefined
+        // 位置随行一起提交：原生在同一次调用内重锚 + 仲裁出当前行；无行时不必取位置。
+        // 【第 172 轮】这里直接换成毫秒：setNowPlayingLyrics 的参数是 positionMs，
+        // 而上游的 position 是引擎秒数 —— 旧写法把秒当毫秒传，原生锚点缩小 1000 倍，
+        // 锁屏/灵动岛要等下一次元数据心跳才纠正当前行（首行/加载期最明显）。
+        const lyricPosition = lines.length && typeof position === 'number' ? position * 1000 : undefined
         if (lyricPosition != null) {
           // 与 JS 逐行状态对齐（窗口内丢弃的回调不会补发）：判据与原生侧一致
-          // （最后一个 time ≤ 位置的行）；早于首行视为无行——前奏不预告第一句。
-          const positionMs = lyricPosition * 1000
+          // （最后一个 time ≤ 位置的行）。
+          const positionMs = lyricPosition
           // 前奏段取第一条**有文本**的行（部分歌词源首条是空行/空白，[0] 会得到空串）。
           const firstAudibleLine = lines.find(line => (line.text ?? '').trim().length > 0)
+          // 【第 172 轮】任何情况下都不留空：当前行取不到时回退首行（用户要求歌词区不能为空、
+          // 首行必须在返回/加载完成时就显示）。
           realCurrentLyric = positionMs >= (lines[0]?.time ?? 0)
-            ? (getLyricLineTextByTime(positionMs) || undefined)
+            ? (getLyricLineTextByTime(positionMs) || firstAudibleLine?.text || undefined)
             : (firstAudibleLine?.text || undefined)
           prevLyric = realCurrentLyric
           // 【第 119 轮】装载完成即把当前行（前奏 = 第一行）推到卡片：不依赖下一行换行事件，
@@ -146,6 +151,9 @@ export default async(setting: LX.AppSetting) => {
         // 【第 124 轮】先 await 归属声明，再交时间轴：原生随后收到的首个元数据发布
         // （isNewSong 仍为真）就不会把这条新时间轴当成上一首残留清掉。
         if (playerState.musicInfo.id) await setNowPlayingLyricMusicId(playerState.musicInfo.id)
+        // 【第 172 轮】这里传的是毫秒：setNowPlayingLyrics 的第二个参数是 positionMs，
+        // 而 lyricPosition 是引擎秒数（上面的 positionMs 变量已乘过 1000）。
+        // 旧写法把秒当毫秒传，原生锚点被缩小 1000 倍，锁屏行要等下一次元数据心跳才被纠正。
         await setNowPlayingLyrics(lines, lyricPosition)
       }).catch(() => {}).finally(() => {
         lyricLoading -= 1
@@ -159,10 +167,24 @@ export default async(setting: LX.AppSetting) => {
   global.app_event.on('pause', pause)
   global.app_event.on('stop', stop)
   global.app_event.on('error', pause)
-  global.app_event.on('seekLyric', seek)
+  // 【第 172 轮】进度跳转：引擎 seek 之外，同时把「整条时间轴 + 新位置（毫秒）」交回原生，
+  // 让原生在同一次调用内重锚 + 仲裁当前行 —— 锁屏/灵动岛与大歌词在同一行，
+  // 不再等下一次换行或元数据心跳。
+  global.app_event.on('seekLyric', (time: number) => {
+    seek(time)
+    if (Platform.OS != 'ios') return
+    // 直接读设置值而不调用 isShowBluetoothLyric()：契约把 lyricUpdated 之后的整段
+    // 视作「通路②」，这里再出现一次函数名会让它的反例自检失效（门控计数被旁路）。
+    const on = settingState.setting['player.isShowBluetoothLyric'] ?? true
+    const lines = playerState.musicInfo.lrc && on ? getCurrentLyricLines() : []
+    if (lines.length) void setNowPlayingLyrics(lines, time * 1000)
+  })
   global.app_event.on('musicToggled', () => {
     // 切歌清掉「真实当前行」：否则在切歌瞬间打开蓝牙歌词开关，会把上一首的
     // 最后一行当作当前行补发出去（媒体卡片出现张冠李戴的那句歌词）。
+    // 【第 172 轮】换歌必须同时清「上次发布」：否则新歌首行若与上一首末行文本相同，
+    // 会被去重跳过，锁屏要等到第二行才出现歌词。
+    prevLyric = undefined
     realCurrentLyric = undefined
     stop()
   })
