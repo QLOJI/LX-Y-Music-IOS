@@ -19,9 +19,8 @@
 extern "C" void LXGlassNotifyRefreshFrozenFrames(void);
 // 【第 153 轮】同口径的本地声明（Pod 头缓存旧了也能编过）。
 extern "C" BOOL LXGlassNotifyWillFreeze(void);
-extern "C" void LXGlassNotifyFreezeInView(void *view);
+extern "C" void LXGlassNotifyFreezeInView(void *view, BOOL recapture);
 extern "C" void LXGlassNotifyScreenSettled(void *view);
-extern "C" void LXGlassNotifyScrollBrake(void);
 
 @class SceneDelegate;
 #import <Security/Security.h>
@@ -8492,19 +8491,18 @@ static BOOL LXGlassSettleDeceleratingScrollView(void) {
   return YES;
 }
 
-// 【第 152 轮】刹车：收集窗口里所有正在惯性滑行的滚动视图（纵向列表、横滑 Pager 都算）。
-static void LXGlassCollectDeceleratingScrollViews(UIView *view, NSMutableArray<UIScrollView *> *views) {
+// 【第 152/155 轮】刹车：收集窗口里所有滚动视图（纵向列表、横滑 Pager 都算）。
+static void LXGlassCollectScrollViews(UIView *view, NSMutableArray<UIScrollView *> *views) {
   if ([view isKindOfClass:[UIScrollView class]]) {
-    UIScrollView *scrollView = (UIScrollView *)view;
-    // 手指还按着的时候是用户在拖，不是惯性：硬写偏移会和手势打架。
-    if (scrollView.isDecelerating && !scrollView.isTracking && !scrollView.isDragging) {
-      [views addObject:scrollView];
-    }
+    [views addObject:(UIScrollView *)view];
   }
   for (UIView *subview in view.subviews) {
-    LXGlassCollectDeceleratingScrollViews(subview, views);
+    LXGlassCollectScrollViews(subview, views);
   }
 }
+
+// 最近一次真正刹停画面的时刻：冻结时据此决定是否按 model 重采。
+static CFTimeInterval LXGlassLastBrakeAt = 0;
 
 static BOOL LXGlassBrakeNavScrollView(void) {
   UIWindow *window = LXGlassSettleScrollView.window;
@@ -8514,15 +8512,23 @@ static BOOL LXGlassBrakeNavScrollView(void) {
     }
   }
   NSMutableArray<UIScrollView *> *views = [NSMutableArray array];
-  if (window != nil) LXGlassCollectDeceleratingScrollViews(window, views);
+  if (window != nil) LXGlassCollectScrollViews(window, views);
   BOOL changed = NO;
   for (UIScrollView *scrollView in views) {
-    CGPoint offset = scrollView.contentOffset;
-    // 同位置写一次 + 短暂关掉滚动：两条都是 UIKit 里打断在途减速的惯用写法，
-    // 单靠 setContentOffset 在部分系统版本上会因「值没变」被跳过，惯性继续滑。
+    // 手指还按着的时候是用户在拖，不是惯性：硬写偏移会和手势打架。
+    if (scrollView.isTracking || scrollView.isDragging) continue;
+    CGPoint model = scrollView.contentOffset;
+    CGPoint visible = model;
+    CALayer *presentation = scrollView.layer.presentation();
+    if (presentation != nil) visible = presentation.bounds.origin;
+    // 惯性减速，或程序化 / 分页动画（model 已到终点、屏幕上还在走）。
+    BOOL moving = scrollView.isDecelerating ||
+      fabs(visible.x - model.x) > 1.0 || fabs(visible.y - model.y) > 1.0;
+    if (!moving) continue;
+    // 停在**当前可见**位置：惯性时与 model 一致；分页动画停在半路，不会跳回终点。
     BOOL scrollEnabled = scrollView.scrollEnabled;
     scrollView.scrollEnabled = NO;
-    [scrollView setContentOffset:CGPointMake(offset.x, offset.y) animated:NO];
+    [scrollView setContentOffset:CGPointMake(visible.x, visible.y) animated:NO];
     scrollView.scrollEnabled = scrollEnabled;
     changed = YES;
   }
@@ -8531,8 +8537,9 @@ static BOOL LXGlassBrakeNavScrollView(void) {
     LXGlassSettleVelocity = 0;
     LXGlassSettleLastSampleAt = 0;
     LXGlassSettleUserRun = NO;
-    // 告诉 Kit：画面从这一刻起不会再动了，纹理若比这时刻旧就补采。
-    LXGlassNotifyScrollBrake();
+    LXGlassLastBrakeAt = CACurrentMediaTime();
+    // 立即提交这一拍：后面的 model 补采虽然不读合成，但 live 路径要尽快显示停住后的画面。
+    [CATransaction flush];
   }
   return changed;
 }
@@ -8609,8 +8616,12 @@ static void (*LXOrigViewControllerViewDidAppear)(UIViewController *, SEL, BOOL) 
 static void LX_UIViewController_viewWillDisappear(UIViewController *self, SEL _cmd, BOOL animated) {
   UIView *view = self.view;
   if (view.window != nil) {
-    LXGlassNotifyWillFreeze();
-    LXGlassNotifyFreezeInView((__bridge void *)view);
+    // 刚刹过车（手指按下时刹的）：冻结帧必须按 model 重采 —— 窗口合成比滚动位置
+    // 晚一拍，读合成就是「列表停了、透过的画面还停在刹车前（上下偏移）」。
+    BOOL braked = LXGlassNotifyWillFreeze();
+    CFTimeInterval now = CACurrentMediaTime();
+    BOOL recapture = braked || (LXGlassLastBrakeAt > 0 && now - LXGlassLastBrakeAt < 0.5);
+    LXGlassNotifyFreezeInView((__bridge void *)view, recapture);
   }
   if (LXOrigViewControllerViewWillDisappear != NULL) {
     LXOrigViewControllerViewWillDisappear(self, _cmd, animated);
