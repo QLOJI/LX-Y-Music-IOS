@@ -312,34 +312,25 @@ private final class GlassInstanceRegistry {
         // 暂停态玻璃的冻结帧（不恢复渲染，见 LXGlassFreezeHook.h 的第三条桥）。
         LXGlassSetRefreshFrozenFramesFn { GlassInstanceRegistry.shared.refreshFrozenFrames() }
         // 【第 153 轮】导航转场开始 / 结束的锚点：按「哪一屏」冻结 / 放开玻璃。
-        LXGlassSetFreezeInViewFn { view in
+        LXGlassSetFreezeInViewFn { view, recapture in
             guard let view else { return }
             let target = Unmanaged<UIView>.fromOpaque(UnsafeRawPointer(view)).takeUnretainedValue()
-            GlassInstanceRegistry.shared.freezeGlasses(in: target)
+            GlassInstanceRegistry.shared.freezeGlasses(in: target, recapture: recapture)
         }
         LXGlassSetScreenSettledFn { view in
             guard let view else { return }
             let target = Unmanaged<UIView>.fromOpaque(UnsafeRawPointer(view)).takeUnretainedValue()
             GlassInstanceRegistry.shared.screenSettledGlasses(in: target)
         }
-        // 【第 154 轮】App 在触摸按下那一刻刹车：记下时刻，冻结时据此决定要不要补采。
-        LXGlassSetScrollBrakeFn { GlassInstanceRegistry.shared.noteScrollBrake() }
-    }
-
-    /// 最近一次真正刹停惯性（有滚动视图被停住）的时刻。
-    private(set) var lastBrakeAt: TimeInterval = 0
-
-    func noteScrollBrake() {
-        lastBrakeAt = CACurrentMediaTime()
     }
 
     /// 转场开始：这一屏的玻璃从这一刻起停止采景（不暂停渲染，画面保持静止）。
-    func freezeGlasses(in view: UIView) {
+    func freezeGlasses(in view: UIView, recapture: Bool) {
         for instance in instances.allObjects {
             guard let glass = instance as? LiquidGlassView,
                   glass.window != nil,
                   glass.isDescendant(of: view) else { continue }
-            glass.beginNavigationFreeze()
+            glass.beginNavigationFreeze(recapture: recapture)
         }
     }
 
@@ -1598,13 +1589,15 @@ final class LiquidGlassView: MTKView {
     /// 但不采新帧。暂停/恢复本身也会让画面在转场里变一次，静止切入时的封面闪就是这么来的。
     private var navigationFrozen = false
 
-    func beginNavigationFreeze() {
+    func beginNavigationFreeze(recapture: Bool) {
         guard !navigationFrozen else { return }
         // 上一屏刚结束的禁采窗口不能挡住这次的定格补采。
         awaitingScreenSettleUntil = 0
-        // 刚刚刹过车（刹车发生在手指按下那一刻），而纹理可能还是刹车前采的：
-        // 此刻窗口还没开始动，补采一帧才能保证冻结画面 = 返回后的背景。
-        if GlassInstanceRegistry.shared.lastBrakeAt > lastCaptureAt {
+        if recapture {
+            // 刚刹过车：必须按 **model** 采。窗口合成比滚动位置晚一拍，
+            // 读合成就是「列表停了、透过画面还在刹车前的位置（上下偏移）」。
+            // 模型树里的滚动位置在刹车那一刻已经是最终值。
+            forceRootCaptureOnce = true
             handlePauseForFreeze()
         }
         freezeFrameLocked = true

@@ -92,7 +92,9 @@ void LXGlassNotifyRefreshFrozenFrames(void);
 //! 放开导航冻结、按静止后的完整合成恢复采景。两条都同步、主线程。
 //!
 //! view 参数按 void * 传递（头文件不引 UIKit）；调用期间对象一定存活。
-typedef void (*LXGlassFreezeInViewFn)(void *view);
+/// recapture = 刚刚刹过车：冻结帧必须按 **model（模型树）** 重采，不能读窗口合成
+///（合成比滚动位置晚一拍，读到的就是「透过的画面没刹住、上下偏移」）。
+typedef void (*LXGlassFreezeInViewFn)(void *view, BOOL recapture);
 typedef void (*LXGlassScreenSettledFn)(void *view);
 
 /// 注册（传 NULL 注销）。Kit 只在注册表初始化时注册一次。
@@ -100,20 +102,10 @@ void LXGlassSetFreezeInViewFn(LXGlassFreezeInViewFn fn);
 void LXGlassSetScreenSettledFn(LXGlassScreenSettledFn fn);
 
 /// 由 App 在 viewWillDisappear 里同步调用：冻结这一屏里的玻璃（含定格）。
-void LXGlassNotifyFreezeInView(void *view);
+void LXGlassNotifyFreezeInView(void *view, BOOL recapture);
 
 /// 由 App 在 viewDidAppear 里同步调用：这一屏的转场已经结束。
 void LXGlassNotifyScreenSettled(void *view);
-
-//! Vendored addition（第 154 轮）: 惯性刹车时刻（App → Kit）。
-//!
-//! 用户在触摸按下那一刻就把正在惯性滑行的滚动视图停住（UIWindow sendEvent 锚点）。
-//! 冻结转场开始时，玻璃据此判断手上那张纹理是不是刹车之后采的：不是就补采一帧，
-//! 保证冻结画面 = 返回后的背景。
-typedef void (*LXGlassScrollBrakeFn)(void);
-
-void LXGlassSetScrollBrakeFn(LXGlassScrollBrakeFn fn);
-void LXGlassNotifyScrollBrake(void);
 
 #ifdef __cplusplus
 }
