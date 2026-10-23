@@ -1037,6 +1037,14 @@ final class LiquidGlassView: MTKView {
         // 捕获提前返回（节流 / 缺窗口 / backdrop 不可用）时也保持 false，
         // 避免把上一帧的「半成品」印象带进下一次提交。
         lastCaptureHadPartialBlack = false
+        // 【第 167 轮】live 会话（横向拖动 / 点 tab 切页）本身就是「用户已经上手」：
+        // 立刻结束返回后的全部保护（冻结帧保持、转场后窗口、静默期）。否则这些闸会把
+        // 旧帧一路带到下一页，等 Pager 吸附完才放行 —— 就是用户看到的「慢」和换帧闪。
+        if realtimeCaptureRequested {
+            holdFrozenFrameAfterReturn = false
+            navigationAnimGateUntil = 0
+            awaitingScreenSettleUntil = 0
+        }
         // 【第 164 轮】返回结束后保持冻结帧：用户真正开始滚动之前不采任何新帧。
         if holdFrozenFrameAfterReturn {
             if isScrollLiveActive { holdFrozenFrameAfterReturn = false }
@@ -1070,6 +1078,7 @@ final class LiquidGlassView: MTKView {
         // 平移一段再回来」。用户已经在滚列表就不拦（转场早已结束）。
         if GlassInstanceRegistry.shared.isNavigationTransitionActive,
            !isScrollLiveActive,
+           !realtimeCaptureRequested,
            !allowCaptureDuringTransition { return }
         // 【第 152 轮】冻结帧保持期 / 采景源还在做转场：这一帧不采。转场中的窗口合成是
         // 「左边已经换成新页、右边还是上一页」，采进去就是用户看到的左边那一下闪；
@@ -1158,7 +1167,11 @@ final class LiquidGlassView: MTKView {
         // 【第 166 轮】横滑 Pager / 点 tab 切页（live 档）也是「用户开始交互」：
         // 解除返回后的保持冻结帧，页面内容变了玻璃要跟上。纵向滚动另有
         // isScrollLiveActive 那条路，这里只补横向这一路。
-        if realtime { holdFrozenFrameAfterReturn = false }
+        if realtime {
+            holdFrozenFrameAfterReturn = false
+            navigationAnimGateUntil = 0
+            awaitingScreenSettleUntil = 0
+        }
         guard realtimeCaptureRequested != realtime else { return }
         realtimeCaptureRequested = realtime
         // 会话开始/结束都立刻放行下一次采景：开始的那一刻若正卡在 30fps 的节流窗口里，
