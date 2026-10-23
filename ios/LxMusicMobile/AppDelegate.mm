@@ -22,6 +22,7 @@ extern "C" void LXGlassNotifyRefreshFrozenFrames(void);
 extern "C" BOOL LXGlassNotifyWillFreeze(void);
 extern "C" void LXGlassNotifyFreezeInView(void *view, int recapture);
 extern "C" void LXGlassNotifyScreenSettled(void *view);
+extern "C" void LXGlassNotifyNavTransition(int active);
 
 @class SceneDelegate;
 #import <Security/Security.h>
@@ -7713,6 +7714,14 @@ RCT_EXPORT_METHOD(screenUnkeepAwake) {
 RCT_EXPORT_METHOD(refreshLiquidGlassFrames) {
   dispatch_async(dispatch_get_main_queue(), ^{
     LXGlassNotifyRefreshFrozenFrames();
+  });
+}
+
+// 【第 160 轮】JS 转场窗口（beginNavTransitionWindow）：窗口内原生死死按住采景。
+// 只有 JS 知道整段窗口的确切起止，且不受「动画是否可见 / 快照式转场」影响。
+RCT_EXPORT_METHOD(setLiquidGlassNavTransition:(BOOL)active) {
+  dispatch_async(dispatch_get_main_queue(), ^{
+    LXGlassNotifyNavTransition(active ? 1 : 0);
   });
 }
 
