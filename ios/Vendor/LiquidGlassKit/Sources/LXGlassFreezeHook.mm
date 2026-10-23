@@ -77,3 +77,15 @@ void LXGlassNotifyScreenSettled(void *view) {
   if (!fn) return;
   fn(view);
 }
+
+static LXGlassNavTransitionFn LXGlassNavTransitionHandler = NULL;
+
+void LXGlassSetNavTransitionFn(LXGlassNavTransitionFn fn) {
+  LXGlassNavTransitionHandler = fn;
+}
+
+void LXGlassNotifyNavTransition(int active) {
+  LXGlassNavTransitionFn fn = LXGlassNavTransitionHandler;
+  if (!fn) return;
+  fn(active);
+}

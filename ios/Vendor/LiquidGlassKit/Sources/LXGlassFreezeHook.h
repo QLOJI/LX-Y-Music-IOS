@@ -107,6 +107,16 @@ void LXGlassNotifyFreezeInView(void *view, int recapture);
 /// 由 App 在 viewDidAppear 里同步调用：这一屏的转场已经结束。
 void LXGlassNotifyScreenSettled(void *view);
 
+//! Vendored addition（第 160 轮）: JS 转场窗口（beginNavTransitionWindow）驱动的硬闸。
+//!
+//! 只有 JS 确切知道「现在整段转场窗口开着」。窗口内原生一律不采景 —— 不依赖
+//! UIKit 外观回调的时机，也不依赖动画是否可见（快照式转场同样挡住）。转场结束后
+//! JS 再放开；1s 兜底自动过期。
+typedef void (*LXGlassNavTransitionFn)(int active);
+
+void LXGlassSetNavTransitionFn(LXGlassNavTransitionFn fn);
+void LXGlassNotifyNavTransition(int active);
+
 #ifdef __cplusplus
 }
 #endif

@@ -322,6 +322,21 @@ private final class GlassInstanceRegistry {
             let target = Unmanaged<UIView>.fromOpaque(UnsafeRawPointer(view)).takeUnretainedValue()
             GlassInstanceRegistry.shared.screenSettledGlasses(in: target)
         }
+        // 【第 160 轮】JS 转场窗口：窗口内一律不采景（唯一能准确覆盖整段转场的信号）。
+        LXGlassSetNavTransitionFn { active in
+            GlassInstanceRegistry.shared.noteNavTransition(active: active != 0)
+        }
+    }
+
+    /// JS 转场窗口的硬闸期限（窗口 420ms + 余量；每次开窗/续期都重新计时）。
+    private var navTransitionGateUntil: TimeInterval = 0
+
+    var isNavigationTransitionActive: Bool { CACurrentMediaTime() < navTransitionGateUntil }
+
+    func noteNavTransition(active: Bool) {
+        let now = CACurrentMediaTime()
+        // JS 的窗口是 420ms；留 180ms 余量盖住最后几拍合成。
+        navTransitionGateUntil = active ? now + 0.6 : now + 0.1
     }
 
     /// 转场开始：这一屏的玻璃从这一刻起停止采景（不暂停渲染，画面保持静止）。
@@ -1008,6 +1023,12 @@ final class LiquidGlassView: MTKView {
         // 捕获提前返回（节流 / 缺窗口 / backdrop 不可用）时也保持 false，
         // 避免把上一帧的「半成品」印象带进下一次提交。
         lastCaptureHadPartialBlack = false
+        // 【第 160 轮】JS 转场窗口期间一律不采：只有 JS 知道整段窗口，且不依赖动画是否
+        // 可见（快照 / 自定义转场同样挡住）。抓在转场中间的那一帧就是「透过画面整体
+        // 平移一段再回来」。用户已经在滚列表就不拦（转场早已结束）。
+        if GlassInstanceRegistry.shared.isNavigationTransitionActive,
+           !isScrollLiveActive,
+           !allowCaptureDuringTransition { return }
         // 【第 152 轮】冻结帧保持期 / 采景源还在做转场：这一帧不采。转场中的窗口合成是
         // 「左边已经换成新页、右边还是上一页」，采进去就是用户看到的左边那一下闪；
         // 保持手上那张静止画面，等转场落地后的完整合成再采。
