@@ -179,6 +179,28 @@ export const useAppActive = () => {
 }
 
 /**
+ * 【第 174 轮】App 处于 iOS `inactive`（下拉控制中心/通知中心、系统弹窗、切换器预览）：
+ * 界面仍然看得见，只是不是 active。封面自转这类**可见的装饰动画**在 inactive 时应继续，
+ * 只有真正 `background`（回桌面/锁屏）才停。与 useAppActive 分开是因为后者把 inactive
+ * 也当不可见（对玻璃渲染、轮询是对的，对可见动画不对）。
+ */
+export const useAppInactive = () => {
+  const [value, update] = useState(() => AppState.currentState === 'inactive')
+
+  useEffect(() => {
+    update(AppState.currentState === 'inactive')
+    const subscription = AppState.addEventListener('change', (nextState) => {
+      update(nextState === 'inactive')
+    })
+    return () => {
+      subscription.remove()
+    }
+  }, [])
+
+  return value
+}
+
+/**
  * 首页 PagerView 是否正处于**真实手势**拖动会话中（2026-10-02 用户第 2/9 条）。
  *
  * 数据源是既有的轻量高频通道 `utils/homeTabScroll` 的 PagerDrag 信号：Main 在
