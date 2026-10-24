@@ -238,6 +238,13 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
 
     const handleComponentIdsChange = (ids: CommonState['componentIds']) => {
       const commentCovered = !!ids.find(item => item.name === COMPONENT_IDS.comment)
+      // 【第 175 轮】本屏重新成为栈顶：把上一段被盖住期间可能残留的 PagerView 锁 /
+      // 进度条拖动锁一并清掉 —— 否则「被压栈页盖住时取消的手势」会把锁带回来，
+      // 表现为详情页所有触摸都没反应。与回前台那条自愈同口径。
+      if (isScreenOnTop(ids) && !commentCovered) {
+        clearPagerLatch()
+        setIsProgressDragging(false)
+      }
       // 本屏被压栈页盖住或评论页全屏覆盖：没有可见的歌词页，先熄掉常亮。
       if (!isScreenOnTop(ids) || commentCovered) {
         screenUnkeepAwake()
