@@ -8,19 +8,7 @@ import { findLineIndexByTime, getCurrentLyricLines, getWordState } from '@/plugi
 import { useTheme } from '@/store/theme/hook'
 import { useIsPlay } from '@/store/player/hook'
 import { createStyle } from '@/utils/tools'
-import commonState from '@/store/common/state'
-import { COMPONENT_IDS } from '@/config/constant'
 import type { LxLyricWord } from '@/plugins/lxLyricPlayer'
-
-/**
- * 【第 169 轮】播放详情页是否还在栈顶。它被评论 / 设置等压栈页盖住时逐字高亮根本不可见，
- * 但行内 rAF 仍在按帧算字、setState 重渲染（大歌词 + 小歌词两条链同时跑）。
- * 这里只做一次「栈顶名字」比较，最便宜；可见时行为逐字不变。
- */
-const isPlayDetailOnTop = (): boolean => {
-  const ids = commonState.componentIds
-  return ids.length === 0 || String(ids[ids.length - 1]?.name) === COMPONENT_IDS.playDetail
-}
 
 // 逐字（卡拉OK）歌词行渲染器。两种数据来源，同一个出口：
 //
@@ -98,14 +86,13 @@ const KaraokeWords = memo(({
   const lines = getCurrentLyricLines()
 
   useEffect(() => {
-    // 非激活行静态渲染：停掉 rAF、进度归零（全部字用未播放颜色）。
+    // 非激活行静态渲染：停掉 rAF。
     // 激活/非激活共用同一渲染器是为了让行的换行布局恒定——若激活时才切换渲染器，
     // 嵌套 Text 与纯文本的换行断点不同，行高会在切行瞬间突变（抖动 + 居中偏移）。
-    if (!isActive) {
-      stateRef.current = { index: -1, progress: 0 }
-      setState(stateRef.current)
-      return
-    }
+    // 【第 177 轮】这里不再把 state 归零：非激活行的 playedColor 与 inactiveColor 本就
+    // 相同（见调用方），归零不可见；而归零会让「被压栈页盖住 → 返回」的第一帧
+    // 从「全未唱」闪一下再跳回当前进度。
+    if (!isActive) return
     // 暂停即停帧（cancel，不是让循环空转）：audioClock 暂停期间不再推进，tick 只会逐帧
     // 算出同一状态，但帧请求照样逐帧唤醒 JS 线程——这个循环的唤醒成本固定在整屏歌词行数上，
     // 暂停时不省就是白烧。这里【不清零逐字状态】：已唱的字要保持亮着（归零会让整行瞬间褪色、
@@ -117,11 +104,8 @@ const KaraokeWords = memo(({
     const myLineIndex = lines.findIndex((l) => l.time === lineTime)
     let raf = 0
     const tick = () => {
-      // 【第 169 轮】被压栈页盖住：不算、不 setState（rAF 本身保持，回来立即续上）。
-      if (!isPlayDetailOnTop()) {
-        raf = requestAnimationFrame(tick)
-        return
-      }
+      // 【第 177 轮】可见性由调用方的 isActive 表达（被评论 / 设置盖住时父级会把
+      // isActive 置 false，本 effect 直接 cancelAnimationFrame，不再逐帧空转）。
       // audioClock 返回秒，歌词时间为毫秒
       const t = audioClock.getTime() * 1000
       let s = getWordState(words, t - lineTime)
@@ -146,7 +130,9 @@ const KaraokeWords = memo(({
       }
       raf = requestAnimationFrame(tick)
     }
-    raf = requestAnimationFrame(tick)
+    // 先同步算一帧再进 rAF 循环：从「被盖住」恢复时，当前进度在本次 effect 内就位，
+    // 不会先画一帧旧状态。
+    tick()
     return () => { cancelAnimationFrame(raf) }
   }, [words, lineTime, isActive, isPlay])
 
@@ -200,12 +186,9 @@ const KaraokeText = memo(({
   const isPlay = useIsPlay()
 
   useEffect(() => {
-    if (!isActive) {
-      // 非激活行不需要动画：进度归零（全部字用未播放色）并停掉 rAF，屏幕外的行不白跑
-      lastProgressRef.current = 0
-      progress.setValue(0)
-      return
-    }
+    // 【第 177 轮】非激活只停 rAF、不归零：调用方在非激活行上 played/inactive 两色相同，
+    // 归零不可见；归零反而会让「被盖住 → 返回」的第一帧从 0 跳回当前进度。
+    if (!isActive) return
     // 暂停即停帧（原因同 KaraokeWords）；同样【保留当前高亮进度】，不清零——
     // 归零会让暂停瞬间已唱部分整段褪色、恢复后再一次性跳回来。
     if (!isPlay) return
@@ -213,11 +196,7 @@ const KaraokeText = memo(({
     // 行时长兜底 1ms：相邻两行时间戳相同（或末行无下一行时间）时不能除零
     const duration = Math.max(endTime - startTime, 1)
     const tick = () => {
-      // 【第 169 轮】同 KaraokeWords：被盖住时不算、不写 Animated.Value。
-      if (!isPlayDetailOnTop()) {
-        raf = requestAnimationFrame(tick)
-        return
-      }
+      // 【第 177 轮】同 KaraokeWords：可见性已由调用方的 isActive 承载。
       // audioClock 返回秒，歌词时间为毫秒
       const elapsed = audioClock.getTime() * 1000 - startTime
       const next = Math.min(Math.max(elapsed / duration, 0), 1)
@@ -227,7 +206,8 @@ const KaraokeText = memo(({
       }
       raf = requestAnimationFrame(tick)
     }
-    raf = requestAnimationFrame(tick)
+    // 同 KaraokeWords：先同步算一帧，恢复可见时第一帧就是当前进度。
+    tick()
     return () => { cancelAnimationFrame(raf) }
   }, [startTime, endTime, isActive, isPlay, progress, text])
 

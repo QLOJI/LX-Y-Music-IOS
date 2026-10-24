@@ -22,7 +22,7 @@ import { updateSetting } from '@/core/common'
 import { useTheme } from '@/store/theme/hook'
 import { useSettingValue } from '@/store/setting/hook'
 import { useIsPlay } from '@/store/player/hook'
-import { useComponentIds } from '@/store/common/hook'
+import { useComponentIds, useNavReturning } from '@/store/common/hook'
 import { COMPONENT_IDS } from '@/config/constant'
 import { AnimatedColorText } from '@/components/common/Text'
 import { setSpText } from '@/utils/pixelRatio'
@@ -65,11 +65,13 @@ interface LineProps {
   wordsByIndex: ReadonlyArray<LxLyricWord[] | null>
   /** 【第 173 轮】歌词页是否为当前页：隐藏页不跑逐字 rAF（不可见，纯耗电）。 */
   pageActive: boolean
+  /** 【第 177 轮】详情页是否在栈顶（或正在返回）：被评论/设置盖住时停逐字 rAF。 */
+  pageOnTop: boolean
   /** 【第 175 轮】歌词文本框宽度（用于对齐边锚定的缩放补偿）。 */
   lineWidth: number
 }
 const LrcLine = memo(
-  ({ line, lineNum, activeLine, onLayout, onPress, isSmallWindow, wordsByIndex, pageActive, lineWidth }: LineProps) => {
+  ({ line, lineNum, activeLine, onLayout, onPress, isSmallWindow, wordsByIndex, pageActive, pageOnTop, lineWidth }: LineProps) => {
     const theme = useTheme()
     const lrcFontSize = useSettingValue('playDetail.vertical.style.lrcFontSize')
     const textAlign = useSettingValue('playDetail.style.align')
@@ -157,7 +159,7 @@ const LrcLine = memo(
                 words={words}
                 lineTime={line.time}
                 size={size}
-                isActive={isActive && pageActive}
+                isActive={isActive && pageActive && pageOnTop}
                 playedColor={colors[0]}
                 inactiveColor={theme['c-450']}
               />
@@ -240,6 +242,10 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
   // 用途同横屏：不可见时停掉下面的每帧滚动循环（省电降温，见该循环 effect 的门控说明）。
   const ids = useComponentIds()
   const panelVisible = String(ids[ids.length - 1]?.name) === COMPONENT_IDS.playDetail
+  // 【第 177 轮】逐字 rAF 的可见性门：返回动画一开始（navReturning）就放行，
+  // 不让高亮在整段返回转场里停在「未唱」状态；被压栈页盖住且不在转场时才真正停帧。
+  const navReturning = useNavReturning()
+  const lyricTickEnabled = panelVisible || navReturning
   // 逐字时间轴（与 lyricLines 同序）：第 i 项为第 i 行歌词的逐字数组；无逐字（纯 LRC）为 null。
   // 激活行据此走逐字卡拉OK渲染，否则退回整行高亮。
   const wordsByIndex = useLrcWordsMap()
@@ -1146,8 +1152,8 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
   // useCallback 稳定 renderItem：依赖项均为稳定引用或低频变化值（line 每行切换变化一次），
   // 配合 LrcLine 的 memo 比较器，行切换时只有新旧激活两行重渲染。
   const renderItem: FlatListType['renderItem'] = useCallback(({ item, index }: { item: Line, index: number }) => {
-    return <LrcLine line={item} lineNum={index} activeLine={line} onLayout={handleLineLayout} onPress={handleLinePress} isSmallWindow={isSmallWindow} wordsByIndex={wordsByIndex} pageActive={active} lineWidth={lyricContentWidth} />
-  }, [line, handleLineLayout, handleLinePress, isSmallWindow, wordsByIndex, active, lyricContentWidth])
+    return <LrcLine line={item} lineNum={index} activeLine={line} onLayout={handleLineLayout} onPress={handleLinePress} isSmallWindow={isSmallWindow} wordsByIndex={wordsByIndex} pageActive={active} pageOnTop={lyricTickEnabled} lineWidth={lyricContentWidth} />
+  }, [line, handleLineLayout, handleLinePress, isSmallWindow, wordsByIndex, active, lyricTickEnabled, lyricContentWidth])
   const getkey: FlatListType['keyExtractor'] = (_item, index) => `${index}`
 
   const handlePageLayout = useCallback(({ nativeEvent }: LayoutChangeEvent) => {

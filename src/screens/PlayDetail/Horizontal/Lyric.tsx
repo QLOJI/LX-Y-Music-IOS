@@ -14,7 +14,7 @@ import { createStyle } from '@/utils/tools'
 import { updateSetting } from '@/core/common'
 import { useTheme } from '@/store/theme/hook'
 import { useSettingValue } from '@/store/setting/hook'
-import { useSafeAreaBottom, useComponentIds } from '@/store/common/hook'
+import { useSafeAreaBottom, useComponentIds, useNavReturning } from '@/store/common/hook'
 import { useIsPlay } from '@/store/player/hook'
 import playerState from '@/store/player/state'
 import { COMPONENT_IDS } from '@/config/constant'
@@ -51,9 +51,11 @@ interface LineProps {
   onLayout: (lineNum: number, height: number, width: number, isPlayed: boolean, isActive: boolean) => void
   onPress: (index: number) => void
   wordsByIndex: ReadonlyArray<LxLyricWord[] | null>
+  /** 【第 177 轮】详情页是否在栈顶（或正在返回）：被压栈页盖住时停逐字 rAF。 */
+  pageOnTop: boolean
 }
 const LrcLine = memo(
-  ({ line, lineNum, activeLine, onLayout, onPress, wordsByIndex }: LineProps) => {
+  ({ line, lineNum, activeLine, onLayout, onPress, wordsByIndex, pageOnTop }: LineProps) => {
     const theme = useTheme()
     const lrcFontSize = useSettingValue('playDetail.horizontal.style.lrcFontSize')
     const textAlign = useSettingValue('playDetail.style.align')
@@ -123,7 +125,7 @@ const LrcLine = memo(
                 words={words}
                 lineTime={line.time}
                 size={size}
-                isActive={isActive}
+                isActive={isActive && pageOnTop}
                 playedColor={colors[0]}
                 inactiveColor={theme['c-350']}
               />
@@ -199,6 +201,9 @@ export default () => {
   // 判据与 useScreenCovered / useHomeCovered 同源（都是拿栈顶条目比）。
   const ids = useComponentIds()
   const panelVisible = String(ids[ids.length - 1]?.name) === COMPONENT_IDS.playDetail
+  // 【第 177 轮】同竖屏：返回动画一开始就放行逐字 rAF，盖住且不在转场时才停。
+  const navReturning = useNavReturning()
+  const lyricTickEnabled = panelVisible || navReturning
   // 逐字时间轴（与 lyricLines 同序）：第 i 项为第 i 行歌词的逐字数组；无逐字（纯 LRC）为 null。
   // 激活行据此走逐字卡拉OK渲染，否则退回整行高亮。
   const wordsByIndex = useLrcWordsMap()
@@ -948,7 +953,7 @@ export default () => {
   }, [lyricLines, handleScrollToActive])
 
   const renderItem: FlatListType['renderItem'] = ({ item, index }) => {
-    return <LrcLine line={item} lineNum={index} activeLine={line} onLayout={handleLineLayout} onPress={handleLinePress} wordsByIndex={wordsByIndex} />
+    return <LrcLine line={item} lineNum={index} activeLine={line} onLayout={handleLineLayout} onPress={handleLinePress} wordsByIndex={wordsByIndex} pageOnTop={lyricTickEnabled} />
   }
   // 与竖屏一致用行索引作 key：切歌时行组件按 key 复用、仅 props 更新，
   // 避免把 text 拼进 key 导致切歌时整表卸载重建（行内动画状态也要重挂）。

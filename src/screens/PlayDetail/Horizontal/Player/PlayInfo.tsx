@@ -4,6 +4,7 @@ import { StyleSheet, View } from 'react-native'
 import Progress from '@/components/player/Progress'
 import Status from './Status'
 import { useProgress } from '@/store/player/hook'
+import { useNavTransitioning, usePlayDetailOnTop } from '@/store/common/hook'
 import { useTheme } from '@/store/theme/hook'
 import { createStyle } from '@/utils/tools'
 import Text from '@/components/common/Text'
@@ -24,7 +25,9 @@ const PlayTimeMax = memo(({ timeStr }: { timeStr: string }) => {
 
 export default () => {
   const theme = useTheme()
-  const { maxPlayTimeStr, nowPlayTimeStr, progress, maxPlayTime } = useProgress()
+  // 【第 177 轮】同竖屏：被压栈页盖住时停掉 4Hz 进度更新，转场窗口内照常。
+  const visible = usePlayDetailOnTop() || useNavTransitioning()
+  const { maxPlayTimeStr, nowPlayTimeStr, progress, maxPlayTime } = useProgress(visible)
   const buffered = useBufferProgress()
   // console.log('render playInfo')
 

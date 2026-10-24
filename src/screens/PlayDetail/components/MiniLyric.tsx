@@ -20,6 +20,8 @@ import { useTheme } from '@/store/theme/hook'
 import { createStyle } from '@/utils/tools'
 import { scaleSizeH, scaleSizeW, setSpText } from '@/utils/pixelRatio'
 import { useWindowSize } from '@/utils/hooks'
+import { useComponentIds, useNavReturning } from '@/store/common/hook'
+import { COMPONENT_IDS } from '@/config/constant'
 import playerState from '@/store/player/state'
 import { IDLE_RETURN_MS, LINE_CHANGE_GLIDE_MS, RETURN_TO_ACTIVE_MS } from '@/screens/PlayDetail/lyricAnimation'
 
@@ -137,6 +139,12 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
   const textAlign = useSettingValue('playDetail.style.miniLyricAlign')
   // 小歌词逐字高亮（设置项）：关闭时整行高亮（当前行一种颜色、其余一种颜色）
   const isKaraoke = useSettingValue('playDetail.isMiniLyricKaraoke')
+  // 【第 177 轮】详情页被评论 / 设置等压栈页盖住时，小歌词的逐字 rAF 也停掉；
+  // 返回动画一开始（navReturning）就放行，避免高亮在转场里停在旧帧。
+  const ids = useComponentIds()
+  const navReturning = useNavReturning()
+  const pageOnTop = ids.length === 0 || String(ids[ids.length - 1]?.name) === COMPONENT_IDS.playDetail
+  const karaokeVisible = pageOnTop || navReturning
   // 【第 171 轮】当前播放行缩放（1.0~1.5）：大歌词与小歌词共用同一个设置项。
   // 只动 transform（不改字号/行高/换行），围绕行中心缩放；过渡时长与「换行跟随」
   // 同源（LINE_CHANGE_GLIDE_MS），新旧两行同速交接。
@@ -600,7 +608,7 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
           // 逐字高亮：有逐字时间戳走真实时间轴，没有则按字符数均分该行时长（KaraokeLyric 内部区分）。
           // 仅激活行开启动画，其余行走静态整行配色（不为屏幕外的行跑 rAF）。
           // 【第 173 轮】页面隐藏时不跑逐字 rAF（活跃行退回静态整行配色，不可见）。
-          isKaraoke && isActive && visible
+          isKaraoke && isActive && visible && karaokeVisible
             ? (
               <KaraokeLyric
                 words={words}
@@ -642,7 +650,7 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
         </Animated.View>
       </Pressable>
     )
-  }, [activeLine, wordsByIndex, lyricLines, isKaraoke, baseRowHeight, rowHeights, textStyle, translationStyle, activeColor, inactiveColor, handlePress, handleLongPress, getLineScale, getLineShift, visible])
+  }, [activeLine, wordsByIndex, lyricLines, isKaraoke, baseRowHeight, rowHeights, textStyle, translationStyle, activeColor, inactiveColor, handlePress, handleLongPress, getLineScale, getLineShift, visible, karaokeVisible])
 
   const getKey = useCallback((_item: Line, index: number) => `${index}`, [])
   // 定高行：getItemLayout 精确（不需要像大歌词那样动态测量），虚拟化窗口与滚动目标都以它为准

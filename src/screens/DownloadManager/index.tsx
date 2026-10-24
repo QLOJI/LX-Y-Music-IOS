@@ -5,6 +5,7 @@ import Header from './Header'
 import ListItem from './ListItem'
 import DownloadPathBar from './DownloadPathBar'
 import { useDownloadTasks } from '@/store/download/hook'
+import { useAppActive, useScreenCovered } from '@/store/common/hook'
 import { createStyle, getRowInfo } from '@/utils/tools'
 import { setComponentId } from '@/core/common'
 import { removeTask } from '@/core/download'
@@ -17,7 +18,11 @@ export default memo(({ componentId }: { componentId: string }) => {
     setComponentId(COMPONENT_IDS.DOWNLOAD_MANAGER, componentId)
   }, [componentId])
 
-  const tasks = useDownloadTasks()
+  // 【第 177 轮】被别的页压栈 / 退后台时不再跟 250ms 进度更新（本页仍挂载但不可见）；
+  // 重新可见时 hook 补一拍快照，进度不会停在旧值。
+  const covered = useScreenCovered(componentId)
+  const appActive = useAppActive()
+  const tasks = useDownloadTasks(!covered && appActive)
 
   // 列数响应式（对齐 OnlineList）：iPad 横屏/分屏时双列，避免下载卡片在超宽屏
   // 上被拉成一行很长、左右大片留白；竖屏保持单列零回归。
