@@ -46,15 +46,16 @@ export default {
     state.statusText = statusText
     global.state_event.playStateTextChanged(statusText)
   },
-  setNowPlayTime(time: number, allowBackward = false) {
-    // 【第 179 轮】自动位置在开局 6 秒内不许回退（与原生 Now Playing elapsed 的
-    // 「开头几秒不许回退」同口径）。起播/缓冲窗口里原生时钟可能先外推到前面，
-    // 随后慢校准/引擎重锚用真值拉回 —— 直接写下去就是用户看到的
-    // 「0:05 → 0:02 → 0:05」。用户主动 seek 传 allowBackward=true（那是用户意图）；
-    // 切歌 / 重播先 setProgress(0, 0) 归零，prev 回到 0，不会误伤；跳到 <1s 放行
-    // （整首重播）。
+  setNowPlayTime(time: number) {
+    // 【第 185 轮】自动位置在开局 6 秒内**一律**不许回退（与原生 Now Playing elapsed 的
+    // 「开头几秒不许回退」同口径）。179 留了 allowBackward 给用户 seek，但起播阶段有
+    // 调用带 true 混进来，导致 0:03→0:02、0:04→0:03 又回来了。现在分层：
+    //   · 本函数只接收自动位置（4Hz 快路径 / 慢校准 / 引擎重锚），无条件回退守卫；
+    //   · 用户主动 seek 走 core/player/progress.ts 的 setUserProgress → store.setProgress，
+    //     不经过这里，任何方向都照常生效。
+    // 切歌 / 重播先 setProgress(0, 0) 归零，prev 回到 0；跳到 <1s 放行（整首重播）。
     const prevTime = state.progress.nowPlayTime
-    if (!allowBackward && prevTime > 0.5 && prevTime < 6 && time >= 1 && time < prevTime - 0.3) return
+    if (prevTime > 0.5 && prevTime < 6 && time >= 1 && time < prevTime - 0.3) return
     // 已播时间不得越过总时长（需求：「歌曲实际播放时间不能超过进度条上的总时长」）。
     // 为什么必须钳在这一处，而不是逐个调用点：
     //   1) 4Hz 原生位置快路径发布的是**歌词时钟外推值**（AppDelegate 里
@@ -76,6 +77,18 @@ export default {
     // 不钳会让进度条冲过 100%（对齐 REF store/player/action 的 calcProgress 兜底）。
     state.progress.progress = state.progress.maxPlayTime ? clamp01(time / state.progress.maxPlayTime) : 0
 
+    global.state_event.playProgressChanged({ ...state.progress })
+  },
+  /** 用户主动 seek 的进度写入：与 setNowPlayTime 同一条时长钳制，但**不经过**
+   *  「开局自动位置不回退」守卫（回退是用户意图）；总时长不变。 */
+  setProgressTime(currentTime: number) {
+    let time = currentTime
+    if (state.progress.maxPlayTime > 0 && time > state.progress.maxPlayTime) {
+      time = state.progress.maxPlayTime
+    }
+    state.progress.nowPlayTime = time
+    state.progress.nowPlayTimeStr = formatPlayTime2(time)
+    state.progress.progress = state.progress.maxPlayTime ? clamp01(time / state.progress.maxPlayTime) : 0
     global.state_event.playProgressChanged({ ...state.progress })
   },
   setMaxplayTime(time: number) {
