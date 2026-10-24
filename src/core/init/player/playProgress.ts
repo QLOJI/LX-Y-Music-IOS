@@ -1,6 +1,7 @@
 import { updateListMusics } from '@/core/list'
 import { playNext } from '@/core/player/player'
 import { setMaxplayTime, setNowPlayTime, setUserProgress } from '@/core/player/progress'
+import { setPlaybackConfirmed } from '@/core/player/playbackGate'
 import { getTimelineDuration } from '@/core/player/timeline'
 import { setCurrentTime, getDuration, getPosition, getPositionStamped, getPlaybackEngineState, isEngineOnMusic } from '@/plugins/player/utils'
 import { formatPlayTime2 } from '@/utils/common'
@@ -165,6 +166,7 @@ export default () => {
       const wasBufferingHold = isBufferingHold
       isBufferingHold = isBuffering
       engineConfirmedPlaying = !isBuffering && engineState === 'playing' && !!playerState.isPlay
+      setPlaybackConfirmed(engineConfirmedPlaying)
       if (engineConfirmedPlaying && fastPathEnabledAt === 0) {
         fastPathEnabledAt = Date.now() + FAST_PATH_STARTUP_DELAY_MS
       }
@@ -359,6 +361,7 @@ export default () => {
       seekHoldUntil = 0
       engineConfirmedPlaying = true
       isBufferingHold = false
+      setPlaybackConfirmed(true)
       // 新曲首次确认在播：快路径先让位给 1Hz 引擎真值，等原生时钟重锚完成。
       if (fastPathEnabledAt === 0) fastPathEnabledAt = Date.now() + FAST_PATH_STARTUP_DELAY_MS
       // 【第 179 轮】过时快照只用来做「引擎已确认在播」的判定，不再把旧位置写进
@@ -432,6 +435,7 @@ export default () => {
       case 'loading': {
         engineConfirmedPlaying = false
         isBufferingHold = true
+        setPlaybackConfirmed(false)
         startBuffering()
         // 与慢校准缓冲分支同一冻结策略：有锚点 → 自冻结在当前位置（seek 缓冲期
         // getPosition 回报的是 seek 目标，不可采信）；无锚点（恢复进度起播/新歌
@@ -453,6 +457,7 @@ export default () => {
       case 'stopped':
         engineConfirmedPlaying = false
         isBufferingHold = false
+        setPlaybackConfirmed(false)
         // 真实暂停/停止才清看门狗（上游 handlePause 语义：waiting 引发的 pause
         // 要保留看门狗与重试预算——我们的事件订阅天然区分真实 paused 与 buffering）
         clearBufferTimeout()
@@ -753,6 +758,7 @@ export default () => {
     pullBackCount = 0
     engineConfirmedPlaying = false
     isBufferingHold = false
+    setPlaybackConfirmed(false)
     fastPathEnabledAt = 0
     autoPausedForBuffering = false
     // 注意：这里**不**动 audioClock / nowPlayTime / maxPlayTime —— 进度条归零由
