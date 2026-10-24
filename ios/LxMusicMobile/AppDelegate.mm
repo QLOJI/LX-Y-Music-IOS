@@ -1408,8 +1408,20 @@ static void LXHandleTrackPlayerLifecycleNotification(NSNotification *notificatio
   NSString *event = [userInfo[@"event"] isKindOfClass:[NSString class]] ? userInfo[@"event"] : @"";
   NSNumber *position = [userInfo[@"position"] isKindOfClass:[NSNumber class]] ? userInfo[@"position"] : nil;
 
-  if ([event isEqualToString:@"destroy"] || [event isEqualToString:@"reset"]) {
+  if ([event isEqualToString:@"destroy"]) {
     LXClearNowPlayingInfo();
+    return;
+  }
+  if ([event isEqualToString:@"reset"]) {
+    // 【第 176 轮】reset 是每次装载新曲前的例行停止（RNTP 的 reset 方法），不是会话
+    // 结束。旧写法走整卡清空：主线程忙时这条通知会晚于「歌词时间轴 + 首行」到达，
+    // 把刚显示的首行连同整条时间轴一起抹掉 —— 用户看到「首行显示约 1 秒后变空白」。
+    // 这里只把播放态与位置归零，标题 / 歌词时间轴 / 卡片内容保留；真正的换歌清理由
+    // 随后元数据里的 musicId 归属判定负责，会话销毁（destroy）仍整卡清空。
+    LXSetNowPlayingPlaybackState(MPNowPlayingPlaybackStateStopped, @{
+      @"elapsedTime": @0,
+      @"playbackRate": @0,
+    });
     return;
   }
 
@@ -1536,6 +1548,12 @@ static void LXSetNowPlayingInfo(NSDictionary *metadata) {
     if (musicId.length > 0 && LXNowPlayingMusicId.length > 0) {
       isNewSong = ![musicId isEqualToString:LXNowPlayingMusicId];
     }
+    // 【第 176 轮】无 id 的音源（部分平台 id 就是 null）不得用标题推断换歌：
+    // 「名称 - 歌手」与「名称」两种格式在同一次播放里会互相翻转，一次误判就把
+    // 已装载的歌词时间轴清掉、把 artist 擦成空 —— 锁屏/灵动岛首行消失或显示约
+    // 1 秒后变空白（本轮用户现场）。时间轴在时一律不认标题换歌；真正的换歌由
+    // 新歌词的 setNowPlayingLyrics 整条替换（无歌词则传空数组清掉）。
+    if (musicId.length == 0 && LXNowPlayingHasLyricTimeline()) isNewSong = NO;
     if (musicId.length > 0) LXNowPlayingMusicId = [musicId copy];
 
     if (title != nil) info[MPMediaItemPropertyTitle] = title;
@@ -1809,6 +1827,24 @@ static void LXSetNowPlayingStatusText(NSString *text) {
       LXNowPlayingLyricStep();
       return;
     }
+    // 【第 176 轮】时间轴在、锚点还没就绪：step 会按「无锚点」早退，撤销状态文案后
+    // 卡片就空着。这里直接落到第一条有文本的行（与时间轴装载时的兜底同口径）。
+    if (LXNowPlayingLyricLines.count > 0) {
+      NSString *firstText = nil;
+      for (NSDictionary *item in LXNowPlayingLyricLines) {
+        NSString *lineText = [item[@"text"] isKindOfClass:[NSString class]] ? item[@"text"] : nil;
+        if (lineText.length > 0) { firstText = lineText; break; }
+      }
+      NSString *currentArtist = [LXNowPlayingInfoCache[MPMediaItemPropertyArtist] isKindOfClass:[NSString class]]
+        ? LXNowPlayingInfoCache[MPMediaItemPropertyArtist]
+        : nil;
+      if (firstText.length > 0 && ![currentArtist isEqualToString:firstText]) {
+        LXNowPlayingInfoCache[MPMediaItemPropertyArtist] = firstText;
+        LXApplyNowPlayingInfo();
+        LXForceNowPlayingCardRepaint();
+      }
+      return;
+    }
     NSString *statusArtist = [LXNowPlayingInfoCache[MPMediaItemPropertyArtist] isKindOfClass:[NSString class]]
       ? LXNowPlayingInfoCache[MPMediaItemPropertyArtist]
       : nil;
@@ -1834,6 +1870,11 @@ static void LXSetNowPlayingCurrentLine(NSString *text) {
   @synchronized (LXLyricLock()) {
     if (LXNowPlayingStatusText.length > 0) return;
     NSString *line = [text isKindOfClass:[NSString class]] ? text : @"";
+    // 【第 176 轮】空串不得覆盖已显示的时间轴行：LRC 里的空白行 / 解析器重置会把
+    // artist 刷成空，卡片要等下一句有文本的行才恢复（用户报的「显示约 1 秒后变空白」）。
+    // 真正要清行的两条路（关闭蓝牙歌词 / 清空时间轴）都走 setNowPlayingLyrics([])，
+    // 空时间轴时这里不会拦。
+    if (line.length == 0 && LXNowPlayingHasLyricTimeline()) return;
     NSString *currentArtist = [LXNowPlayingInfoCache[MPMediaItemPropertyArtist] isKindOfClass:[NSString class]]
       ? LXNowPlayingInfoCache[MPMediaItemPropertyArtist]
       : nil;
