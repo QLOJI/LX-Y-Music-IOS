@@ -1624,7 +1624,10 @@ static void LXSetNowPlayingInfo(NSDictionary *metadata) {
       // 【第 102 轮第 3 条】同上一处（播放态发布）：开头 6 秒内不许回退。
       double advancedElapsedInfo = LXAdvanceElapsedToNowSec(elapsedTime.doubleValue, snapshotAtMs, advanceRate.doubleValue, nowMs);
       NSNumber *cachedElapsedInfo = info[MPNowPlayingInfoPropertyElapsedPlaybackTime];
-      if ([cachedElapsedInfo isKindOfClass:[NSNumber class]] && cachedElapsedInfo.doubleValue < 6.0 &&
+      // 【第 189 轮】换歌必须允许 elapsed 归零/回到恢复点：上一首在 <6 秒时留下的
+      // 缓存值不该把新歌首发的 0 顶回 0:03（用户报「有概率不从 0:00 开始」）。
+      // 同曲内的开头 6 秒防回退保持不变。
+      if (!isNewSong && [cachedElapsedInfo isKindOfClass:[NSNumber class]] && cachedElapsedInfo.doubleValue < 6.0 &&
           advancedElapsedInfo < cachedElapsedInfo.doubleValue) {
         advancedElapsedInfo = cachedElapsedInfo.doubleValue;
       }
