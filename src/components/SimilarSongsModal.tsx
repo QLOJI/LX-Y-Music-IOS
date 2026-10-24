@@ -142,7 +142,10 @@ export default forwardRef<SimilarSongsModalType, {}>((props, ref) => {
   const handleHide = useCallback(() => {
     requestIdRef.current += 1
     loadingRef.current = false
-    setVisible(false)
+    // 【第 176 轮】关闭时不在这里卸载 Popup：Popup 内部是 RN Modal，关闭瞬间整棵
+    // 卸载会跳过 Modal 的 300ms 淡出/延迟卸载保护，残留的 RCTModalHostView 会吞掉
+    // 整页触摸（概率性「播放详情页锁死」，退出重进才恢复）。Modal 自己会按
+    // visible=false 在 300ms 后卸掉原生宿主；外壳常驻的成本只有一棵空 React 树。
   }, [])
 
   return visible ? (
