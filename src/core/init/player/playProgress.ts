@@ -1,6 +1,6 @@
 import { updateListMusics } from '@/core/list'
 import { playNext } from '@/core/player/player'
-import { setMaxplayTime, setNowPlayTime } from '@/core/player/progress'
+import { setMaxplayTime, setNowPlayTime, setUserProgress } from '@/core/player/progress'
 import { getTimelineDuration } from '@/core/player/timeline'
 import { setCurrentTime, getDuration, getPosition, getPositionStamped, getPlaybackEngineState, isEngineOnMusic } from '@/plugins/player/utils'
 import { formatPlayTime2 } from '@/utils/common'
@@ -580,8 +580,8 @@ export default () => {
       mediaBuffer.playTime = time
       startBuffering()
     }
-    // 用户主动 seek：允许任何方向（包括回退），不经过开局单调守卫。
-    setNowPlayTime(time, true)
+    // 用户主动 seek：走 store.setProgress（任何方向都允许），不经过开局单调守卫。
+    setUserProgress(time)
     // seek→歌词时序（对齐上游 usePlayProgress.setProgress 的前半段）：发起时只跳进度条、
     // 歌词不动——时钟继续外推当前（旧）位置，歌词跟着正在出声的音频走。上游还有后半段
     // 「显式重锚」：setCurrentTime resolve 后发 app_event.seekLyric(落点)（core/lyric.seek
@@ -607,7 +607,7 @@ export default () => {
       if (playerState.musicInfo.id != musicId) return
       if (genAtSeek != seekGen) return
       if (targetPosition > 0) {
-        setNowPlayTime(targetPosition, true)
+        setUserProgress(targetPosition)
         seekTargetPosition = targetPosition
         seekHoldUntil = Date.now() + 2000
         // 【seek 完成后的显式重锚，补回上面说的后半段】resolve 时引擎位置已到达落点，
