@@ -1,4 +1,4 @@
-import { memo } from 'react'
+import { memo, useRef } from 'react'
 import { StyleSheet, View } from 'react-native'
 import Button from '@/components/common/Button'
 
@@ -11,8 +11,9 @@ import Text from '@/components/common/Text'
 import { Icon } from '@/components/common/Icon'
 import { designRadius, designSpacing } from '@/theme/DesignTokens'
 import { scaleSizeW } from '@/utils/pixelRatio'
-import { handleCollect, handlePlay } from './listAction'
+import { handleCollect, handlePlay, handleUncollect } from './listAction'
 import songlistState from '@/store/songlist/state'
+import { useMyList } from '@/store/list/hook'
 import { useI18n } from '@/lang'
 import { useListInfo } from './state'
 
@@ -22,6 +23,11 @@ export default memo(({ onBack }: { onBack?: () => void }) => {
   const buttonRadius = useButtonRadius()
   const t = useI18n()
   const info = useListInfo()
+  const myList = useMyList()
+  const busyRef = useRef(false)
+  // 收藏状态绑定「来源 + 歌单编号」：兼容历史数据里 source__id 的写法。
+  const isCollected = !!info.id && !!info.source && myList.some(l => l.source === info.source &&
+    (String(l.sourceListId) === String(info.id) || String(l.sourceListId) === `${info.source}__${info.id}`))
 
   const handlePlayAll = () => {
     // 兜底：歌单 id/source 来自 useListInfo()（由 SonglistDetail 的 Provider 提供）。
@@ -44,8 +50,13 @@ export default memo(({ onBack }: { onBack?: () => void }) => {
       toast('歌单信息未就绪，请稍后重试')
       return
     }
+    if (busyRef.current) return
+    busyRef.current = true
     const name = songlistState.listDetailInfo.info?.name || info.name || '未命名歌单'
-    void handleCollect(info.id, info.source, name)
+    void (isCollected
+      ? handleUncollect(info.id, info.source)
+      : handleCollect(info.id, info.source, name)
+    ).finally(() => { busyRef.current = false })
   }
 
   return (
@@ -91,9 +102,19 @@ export default memo(({ onBack }: { onBack?: () => void }) => {
           borderRadius: buttonRadius(44),
         })}
       >
-        <Text style={{ ...styles.controlBtnText, color: theme['c-primary-font'] }}>
-          {t('collect_songlist')}
-        </Text>
+        <View style={styles.primaryContent}>
+          {/* 【第 187 轮】左侧小红心与「喜欢」同一套图标/色：已收藏实心红，未收藏空心。 */}
+          <Icon
+            name={isCollected ? 'love-filled' : 'love'}
+            size={14}
+            color={isCollected ? theme['c-liked'] : theme['c-350']}
+          />
+          <Text style={{ ...styles.controlBtnText, marginLeft: 6, color: theme['c-primary-font'] }}>
+            {t('collect_songlist')}
+          </Text>
+          {/* 与「图标宽 + 间距」等宽的对称留白，让文字本身居中。 */}
+          <View style={{ width: scaleSizeW(14) + 6 }} />
+        </View>
       </Button>
       <Button
         onPress={onBack}

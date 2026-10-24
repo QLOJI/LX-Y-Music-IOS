@@ -1,9 +1,9 @@
-import { createList } from '@/core/list'
+import { createList, removeUserList } from '@/core/list'
 import { getListDetail, getListDetailAll } from '@/core/songlist'
 import { refreshDefaultList, stageOnlineListToDefault } from '@/core/playListToDefault'
 import listState from '@/store/list/state'
 import syncSourceList from '@/core/syncSourceList'
-import { confirmDialog, toMD5, toast } from '@/utils/tools'
+import { toMD5, toast } from '@/utils/tools'
 import { type Source } from '@/store/songlist/state'
 
 const getListId = (id: string, source: LX.OnlineSource) => `${source}__${id}`
@@ -58,17 +58,19 @@ export const handlePlay = async(
   }
 }
 
+/** 收藏判定：按「来源 + 歌单编号」找，兼容旧数据里 `source__id` 的写法。 */
+export const findCollectedList = (id: string, source: Source) => {
+  const legacyId = getListId(id, source)
+  return listState.userList.find(l => l.source === source &&
+    (String(l.sourceListId) === String(id) || String(l.sourceListId) === legacyId))
+}
+
 export const handleCollect = async(id: string, source: Source, name: string) => {
   const listId = getListId(id, source)
 
-  const targetList = listState.userList.find((l) => l.sourceListId == listId)
+  // 已收藏：直接按现有源歌单同步（不再弹「已在列表中」的确认框，按钮本身会走取消收藏）。
+  const targetList = findCollectedList(id, source)
   if (targetList) {
-    const confirm = await confirmDialog({
-      message: global.i18n.t('duplicate_list_tip', { name: targetList.name }),
-      cancelButtonText: global.i18n.t('list_import_part_button_cancel'),
-      confirmButtonText: global.i18n.t('confirm_button_text'),
-    })
-    if (!confirm) return
     void syncSourceList(targetList)
     return
   }
@@ -88,5 +90,17 @@ export const handleCollect = async(id: string, source: Source, name: string) => 
     toast(global.i18n.t('collect_success'))
   } catch (err: any) {
     toast(`收藏失败：${err?.message || '请稍后重试'}`)
+  }
+}
+
+/** 【第 187 轮】取消收藏：按来源 + 歌单编号找到「我的列表」里的那份并删除（会走现有同步链路）。 */
+export const handleUncollect = async(id: string, source: Source) => {
+  const targetList = findCollectedList(id, source)
+  if (!targetList) return
+  try {
+    await removeUserList([targetList.id])
+    toast(global.i18n.t('list_edit_action_tip_remove_success'))
+  } catch (err: any) {
+    toast(`取消收藏失败：${err?.message || '请稍后重试'}`)
   }
 }
