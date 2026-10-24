@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 
 import commonState, { type InitState as CommonState } from '@/store/common/state'
+import { useHomeCovered } from '@/store/common/hook'
+import { HomePageVisibleContext } from '@/store/common/pageVisibility'
 import type { NAV_ID_Type } from '@/config/constant'
 
 // 改这两项设置时，被「设置」浮层盖住的列表页需要隐藏，返回时才按新样式重建列表。
@@ -46,6 +48,11 @@ export const useHomeLazyPage = (
   const [visible, setVisible] = useState(() => (
     commonState.navActiveId == navId || !!preloadNavIds?.includes(commonState.navActiveId)
   ))
+  // 【第 186 轮】本页是否「真的在眼前」：当前 nav 就是本页，且 Home 没被压栈页盖住。
+  // 与 visible 不同 —— visible 一旦访问过就永远为 true（保持挂载），这个值用于停掉
+  // 离屏页里的跑马灯 / 正在播放图标等连续动画。
+  const [navActive, setNavActive] = useState(() => commonState.navActiveId == navId)
+  const homeCovered = useHomeCovered()
 
   // render 只在挂载时求值一次：与原来 useMemo(() => <Xxx />, []) 的行为一致
   // （render 由调用方以稳定闭包传入，此处 [] 依赖即等价）。
@@ -57,6 +64,7 @@ export const useHomeLazyPage = (
 
     const handleNavIdUpdate = (id: CommonState['navActiveId']) => {
       currentId = id
+      setNavActive(id == navId)
       if (id == navId || preloadNavIds?.includes(id)) {
         // 延后一帧挂载：切页瞬间的布局/滚动更稳，与原实现保持一致。
         requestAnimationFrame(() => {
@@ -94,5 +102,11 @@ export const useHomeLazyPage = (
     // 若调用方传了内联数组，这里也只会多几次廉价的订阅往返，不会出错。
   }, [navId, preloadNavIds, hideWhenSettingActive])
 
-  return visible ? component : null
+  return visible
+    ? (
+      <HomePageVisibleContext.Provider value={navActive && !homeCovered}>
+        {component}
+      </HomePageVisibleContext.Provider>
+      )
+    : null
 }
