@@ -4,6 +4,7 @@ import settingState from '@/store/setting/state'
 // 【第 48 轮】起播首发的时长兜底：元数据 interval 是**纯 JS 数据**，起播第 0 帧就已知，
 // 不必等引擎上报（nativeFlac 流式路径的引擎时长恒为 0），见下方两处 duration 注释。
 import { getMusicIntervalDuration } from '@/core/player/timeline'
+import { isPlaybackConfirmed } from '@/core/player/playbackGate'
 import {
   getNativeFlacTrackId,
   resetNativeFlacPlayback,
@@ -79,7 +80,9 @@ export const loadPlaybackResource = async({
           //（seek 恢复曲的引擎时长可信）。
           duration: playbackInfo.duration > 0 ? playbackInfo.duration : getMusicIntervalDuration(musicInfo),
           elapsedTime: playbackInfo.position,
-          playbackRate: settingState.setting['player.playbackRate'],
+          // 【第 188 轮】起播首发一律 0 速率：此刻引擎刚打开、还没确认出声，
+          // 正速率会让原生锁屏时钟从 0 开始外推（0:05 后回退的根因）。
+          playbackRate: isPlaybackConfirmed() ? settingState.setting['player.playbackRate'] : 0,
         })
         return
       } catch (err) {

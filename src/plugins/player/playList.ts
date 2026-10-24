@@ -8,6 +8,7 @@ import {
 import { getPositionStamped, elapsedSnapshotFields, isEngineOnMusic } from './utils'
 import playerState from '@/store/player/state'
 import { getTimelineDuration } from '@/core/player/timeline'
+import { isPlaybackConfirmed } from '@/core/player/playbackGate'
 import {
   formatNowPlayingTitleLine,
   getCurrentTrack,
@@ -142,12 +143,17 @@ const updateMetaInfo = async(mInfo: LX.Player.MusicInfo, lyric?: string, isPlayi
   //      「把 0 当真实位置、把歌词锚点钉回第 0 行」）：缺字段时系统同样渲染 -:--。
   //      取不到带戳快照时退回 **JS 侧进度位置**，且不带戳 —— 原生按「就是现在」处理，
   //      既不外推也不把锚点回放到过去：字段永远在，位置也不说谎。
-  const stampedSnapshot = await getPositionStamped().catch(() => null)
+  // 【第 188 轮】引擎未确认在播（取链/缓冲期）时不要引擎快照：锁屏/灵动岛的
+  // elapsed 与原生锚点会跟着 seek 目标/外推值先跳到 0:05，随后再被真值拉回。
+  // 未确认时直接用 UI 进度（与播放详情页同源，起播段是 0/恢复位置），并让
+  // playbackRate 发 0，让原生时钟保持冻结；确认后再发真值与快照。
+  const playbackConfirmed = isPlaybackConfirmed()
+  const stampedSnapshot = playbackConfirmed ? await getPositionStamped().catch(() => null) : null
   // 【第 119 轮·追加】引擎身份门控：切歌后新歌 URL 还没装载时，位置桥仍读上一首的引擎；
   // 把它的末尾位置当成本曲 elapsedTime 发布，会把原生歌词锚点直接推到整首末尾 ——
   // 卡片先显示第一行、随后整段歌词跳到末行/消失。不是本曲的引擎就用 JS 侧位置。
   const engineMusic = playerState.playMusicInfo.musicInfo
-  const stamped = engineMusic != null && !isEngineOnMusic(engineMusic) ? null : stampedSnapshot
+  const stamped = !playbackConfirmed || (engineMusic != null && !isEngineOnMusic(engineMusic)) ? null : stampedSnapshot
   const elapsedSeconds = Number.isFinite(playerState.progress.nowPlayTime) && playerState.progress.nowPlayTime > 0
     ? playerState.progress.nowPlayTime
     : 0
@@ -166,7 +172,7 @@ const updateMetaInfo = async(mInfo: LX.Player.MusicInfo, lyric?: string, isPlayi
     duration: resolveMetadataDuration(state.prevDuration),
     ...elapsedFields,
     ...(Platform.OS == 'ios'
-      ? { playbackRate: isPlaying ? settingState.setting['player.playbackRate'] : 0 }
+      ? { playbackRate: isPlaying && playbackConfirmed ? settingState.setting['player.playbackRate'] : 0 }
       : {}),
   }
   await updateCurrentTrackMetadata(metadata)

@@ -5,6 +5,7 @@ import { updateMetaData } from './playList'
 import { initUnifiedPlayerEngine, onUnifiedPlayerEvent } from './engine'
 import { getNativeFlacTrackId, setNativeFlacRate } from './nativeFlac'
 import { isSeekRecently, markSeekIntent } from '@/core/init/player/playProgress'
+import { setPlaybackConfirmed } from '@/core/player/playbackGate'
 import { getPositionStamped, elapsedSnapshotFields, isEmpty, isEngineOnMusic, setStop } from './utils'
 // 【第 39 轮第 4 条】播放真正开始时的音量落地（带渐入预约时走斜坡）——见 volumeFade.ts
 import { applyVolumeOnPlayStart } from './volumeFade'
@@ -230,6 +231,9 @@ export const initUnifiedPlayerController = () => {
             setStatusText('')
             if (event.driver == 'nativeFlac') {
               global.lx.playerTrackId = getNativeFlacTrackId()
+              // 【第 188 轮】nativeFlac 的 playing 是「出声即发」：先确认已真正在播，
+              // 随后的元数据发布才允许带正速率/引擎快照，锁屏时钟不会在缓冲期先跑。
+              setPlaybackConfirmed(true)
               // 每次 playing 都恢复音量；高码率音质的“seek 冻结静音”由进度模块的 catchUp
               // 轮询持续维持，不再依赖全局静音标志，避免标志泄漏到其它音质导致“没声音”。
               // 【第 39 轮第 4 条】改走 applyVolumeOnPlayStart：有渐入预约（setPlay 刚按下播放）
