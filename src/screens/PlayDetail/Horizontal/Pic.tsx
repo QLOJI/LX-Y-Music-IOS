@@ -71,6 +71,9 @@ export default memo(({ componentId }: { componentId: string }) => {
     return 0
   })()
   const spinValue = useRef(new Animated.Value(initialSpinPhase)).current
+  // 【第 176 轮】同竖屏：首帧角度用于首次起转，避免挂载时归零后重锚造成跳变。
+  const initialPhaseRef = useRef(initialSpinPhase)
+  const neverStartedRef = useRef(true)
   const animationRef = useRef<Animated.CompositeAnimation | null>(null)
   const isAnimating = useRef(false)
   const isUnmounted = useRef(false)
@@ -139,7 +142,11 @@ export default memo(({ componentId }: { componentId: string }) => {
       // 接力点不重锚，避免进度更新的粒度在接力瞬间造成微小回跳。
       const recorded = resumePhaseRef.current
       resumePhaseRef.current = null
-      const from = reanchor ? (recorded ?? getSpinPhase()) : 0
+      // 【第 176 轮】首次起转从首帧角度接上（不重锚）；之后才按原有语义重锚/续转。
+      const from = neverStartedRef.current
+        ? initialPhaseRef.current
+        : (reanchor ? (recorded ?? getSpinPhase()) : 0)
+      neverStartedRef.current = false
       spinValue.setValue(from)
       // 相位锚点从这一帧起算：readSpinPhase 之后按「from + 已过时间/周期」推算
       phaseAnchorRef.current = { phase: from, at: Date.now() }
@@ -201,6 +208,8 @@ export default memo(({ componentId }: { componentId: string }) => {
     resumePhaseRef.current = null
     phaseAnchorRef.current = null
     spinValue.setValue(0)
+    // 首帧角度同步归零：首次起转必须从画面上这个 0° 接上（见竖屏同处说明）。
+    initialPhaseRef.current = 0
   }, [allowSpin, stopAnimation, spinValue])
 
   // 切歌：重置角度并按新歌的播放位置起转。
@@ -208,13 +217,21 @@ export default memo(({ componentId }: { componentId: string }) => {
   // 历史写法把 isPlay 放进依赖，导致每次暂停/恢复都 setValue(0) 归零，
   // 恢复播放时封面角度会肉眼可见地跳一下（本轮一并修掉）。
   const musicId = musicInfo.id
+  const didMountMusicRef = useRef(false)
   useEffect(() => {
+    // 【第 176 轮】首次挂载不重置：首帧画的就是 initialSpinPhase，这里若 setValue(0)，
+    // startAnimation 再重锚到当前播放相位，就是用户看到的「进详情页 0° → 当前角度」。
+    if (!didMountMusicRef.current) {
+      didMountMusicRef.current = true
+      return
+    }
     stopAnimation()
     // 切歌：把「续转相位」与锚点一并作废 —— 那是上一首歌的角度，新歌必须按它自己的
     // 播放位置起算（下面 setValue(0) + startAnimation 会重锚）
     resumePhaseRef.current = null
     phaseAnchorRef.current = null
     spinValue.setValue(0)
+    initialPhaseRef.current = 0
     if (isPlay && allowSpin && spinVisible && musicId) {
       startAnimation()
     }
