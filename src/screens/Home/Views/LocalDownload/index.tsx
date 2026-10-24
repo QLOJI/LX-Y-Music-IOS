@@ -18,7 +18,7 @@ import downloadActions from '@/store/download/action'
 import { mkdir, readDir, unlink, stat } from '@/utils/fs'
 import { sizeFormate } from '@/utils'
 import { designRadius, designSpacing, designTypography } from '@/theme/DesignTokens'
-import { useBottomOverlayInset } from '@/store/common/hook'
+import { useAppActive, useBottomOverlayInset, useHomeCovered, useNavActiveId } from '@/store/common/hook'
 import { useAboveMiniPlayerBottom } from '@/utils/tabBarCollapse'
 import PageTopInset from '@/components/common/PageTopInset'
 import DetailPageTitle from '@/components/common/DetailPageTitle'
@@ -174,7 +174,13 @@ export default memo(() => {
   // 底部悬浮层（迷你播放器 + 底部 Tab + 安全区）统一避让高度
   const bottomInset = useBottomOverlayInset()
   const downloadPathSetting = useSettingValue('download.path')
-  const tasks = useDownloadTasks()
+  // 【第 177 轮】不可见就不跟 250ms 的下载进度重渲染：本页是常驻挂载的 Home 子页，
+  // 切到别的 tab / 被播放详情等压栈页盖住 / 退后台时列表根本看不见。
+  // 重新可见时 hook 会补一拍快照（见 store/download/hook.ts），不会停在旧数据。
+  const navActiveId = useNavActiveId()
+  const homeCovered = useHomeCovered()
+  const appActive = useAppActive()
+  const tasks = useDownloadTasks(navActiveId === 'nav_local_download' && !homeCovered && appActive)
   const playMusicInfo = usePlayMusicInfo()
 
   const [tab, setTab] = useState<TabId>('download')
@@ -191,8 +197,10 @@ export default memo(() => {
   )
 
   // 读取已完成下载文件的真实大小（progress.total 在某些场景为 0，导致页面上不显示大小）
+  // 依赖只用这份 key（含 filePath）：以前把 completedTasks 也放进去，而它随每次
+  // 下载进度更新都是新数组 ⇒ 250ms 重建一次依赖，对全部已完成文件重跑 stat。
   const completedKey = useMemo(
-    () => completedTasks.map(task => task.id).join(','),
+    () => completedTasks.map(task => `${task.id}:${task.filePath}`).join(','),
     [completedTasks],
   )
   useEffect(() => {
@@ -222,7 +230,7 @@ export default memo(() => {
     return () => {
       active = false
     }
-  }, [completedKey, completedTasks])
+  }, [completedKey])
 
   // 扫描下载路径下的「本地」文件夹
   const scanLocalDir = useCallback(async() => {

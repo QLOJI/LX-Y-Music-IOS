@@ -42,6 +42,7 @@ import { stageOnlineListToDefault } from '@/core/playListToDefault'
 import { addTempPlayList } from '@/core/player/tempPlayList'
 import { useHorizontalMode } from '@/utils/hooks'
 import { usePlayMusicInfo } from '@/store/player/hook'
+import { useHomeCovered, useNavActiveId } from '@/store/common/hook'
 import playerState from '@/store/player/state'
 import {
   getWebDAVConfig,
@@ -309,6 +310,14 @@ export default memo(() => {
   // 「按钮圆角」：配置页按钮、搜索输入框与图标按钮的行内覆盖（静态 borderRadius 原样保留作兜底）
   const buttonRadius = useButtonRadius()
   const playMusicInfo = usePlayMusicInfo()
+  // 【第 177 轮】本页是否真的可见：切到别的 Home tab / 被播放详情等压栈页盖住时，
+  // 封面续巡（15s~5min 的网络 + setState 循环）不该继续跑。
+  const homeCovered = useHomeCovered()
+  const navActiveId = useNavActiveId()
+  const pageActive = navActiveId === 'nav_webdav' && !homeCovered
+  // 给 setTimeout 回调/网络收尾读的即时镜像（那些地方在 useCallback [] 里，拿不到最新闭包）
+  const pageActiveRef = useRef(pageActive)
+  pageActiveRef.current = pageActive
   const [activeTab, setActiveTab] = useState<ActiveTab>('list')
   const [loading, setLoading] = useState(false)
   // 下拉刷新动画只认「用户真的下拉过」（用户第 16 轮第 7 条）。
@@ -588,9 +597,14 @@ export default memo(() => {
       // 【第 42 轮第 2 条】后台不排期：退后台时连已排的那一发也一并收掉（见下面的 AppState
       // 监听），名单留在 coverFollowupSongs 里，回前台立刻补一发 —— 后台一遍封面网络巡都不跑。
       if (AppState.currentState !== 'active') return
+      // 【第 177 轮】不可见（别的 tab / 被压栈页盖住）同样不排期；名单留着，
+      // 本页重新可见时由下面的 pageActive effect 补发（回本页不会丢封面巡检）。
+      if (!pageActiveRef.current) return
       cancelCoverFollowup()
       coverFollowupTimer.current = setTimeout(() => {
         coverFollowupTimer.current = null
+        // 定时器到点时再核一次：排期后用户可能已经切走。
+        if (!pageActiveRef.current) return
         coverFollowupSongs.current = null
         prefetchCovers(failed, { auto: true })
       }, delay)
@@ -1028,9 +1042,23 @@ export default memo(() => {
   // 两条不重不漏。prefetchCovers 内部按列表顺序入队、每批 20 首推进，天然是「由上到下秒加载」。
   // 【第 31 轮·图一】这两条入口现在都走 loadConfig，而 loadConfig 会置位 forceCoverRefresh ——
   // 即「进列表」按强制刷新处理（用户需求：进入 WebDAV 歌单界面也要刷新该列表下所有歌曲的在线封面）。
+  // 【第 177 轮】重新可见时补发不可见期间挂起的封面续巡。
+  // 不可见时 prefetchCovers 只记账不排期（见上面的 pageActiveRef 检查），名单一直留着。
+  useEffect(() => {
+    if (!pageActive) return
+    const pending = coverFollowupSongs.current
+    if (!pending?.length) return
+    coverFollowupSongs.current = null
+    prefetchCovers(pending, { auto: true })
+  }, [pageActive, prefetchCovers])
+
   useEffect(() => {
     const handleNavChange = (id: string) => {
-      if (id !== 'nav_webdav') return
+      if (id !== 'nav_webdav') {
+        // 【第 177 轮】离开本页：收掉已排期的续巡（名单留着，回来时补发）。
+        cancelCoverFollowup()
+        return
+      }
       void loadConfig()
     }
     global.state_event.on('navActiveIdUpdated', handleNavChange)
