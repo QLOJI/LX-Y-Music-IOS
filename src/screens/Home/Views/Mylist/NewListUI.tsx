@@ -164,8 +164,6 @@ const PlaylistCard = memo(({
   onDragMove,
   onDragRelease,
   onDragCancel,
-  onTouchStart,
-  onTouchEnd,
 }: {
   item: ListItemInfo
   userListIndex: number
@@ -182,8 +180,6 @@ const PlaylistCard = memo(({
   onDragMove: (dy: number) => void
   onDragRelease: () => void
   onDragCancel: () => void
-  onTouchStart: () => void
-  onTouchEnd: () => void
 }) => {
   const theme = useTheme()
   const buttonOpacity = useSettingValue('theme.buttonOpacity')
@@ -219,7 +215,6 @@ const PlaylistCard = memo(({
         onMoveShouldSetPanResponder: () => true,
         onMoveShouldSetPanResponderCapture: () => true,
         onPanResponderGrant: () => {
-          onTouchStart()
           clearLongPressTimer()
           isActivatedRef.current = false
           currentDyRef.current = 0
@@ -240,7 +235,6 @@ const PlaylistCard = memo(({
           onDragMove(gs.dy - activationDyRef.current)
         },
         onPanResponderRelease: () => {
-          onTouchEnd()
           clearLongPressTimer()
           if (isActivatedRef.current) {
             isActivatedRef.current = false
@@ -248,7 +242,6 @@ const PlaylistCard = memo(({
           }
         },
         onPanResponderTerminate: () => {
-          onTouchEnd()
           clearLongPressTimer()
           if (isActivatedRef.current) {
             isActivatedRef.current = false
@@ -271,7 +264,7 @@ const PlaylistCard = memo(({
         // 让出），所以要取反 —— 激活时返回 false（拒绝），未激活时返回 true（让出）。
         onPanResponderTerminationRequest: () => !isActivatedRef.current,
       }),
-    [userListIndex, onLongPressStart, onDragMove, onDragRelease, onDragCancel, onTouchStart, onTouchEnd],
+    [userListIndex, onLongPressStart, onDragMove, onDragRelease, onDragCancel],
   )
 
   const handleShowMenu = () => {
@@ -417,7 +410,6 @@ export default memo(() => {
   const [refreshing, setRefreshing] = useState(false)
   const [hasError, setHasError] = useState(false)
   const [showMusicList, setShowMusicList] = useState(false)
-  const [isTouchingDragHandle, setIsTouchingDragHandle] = useState(false)
   const isFirstLoadRef = useRef(true)
   // 成功加载过一次之后就不再整页切「加载失败」：第 30 轮起刷新更频繁（进页面 / 返回都刷），
   // 一次网络抖动不该把用户已经看到的列表抹掉；首载就失败才给重试入口。
@@ -727,7 +719,6 @@ export default memo(() => {
     targetIndexRef.current = index
     lastTargetRef.current = index
     setDraggingIndex(index)
-    setIsTouchingDragHandle(true)
     const anim = animsRef.current[index]
     if (!anim) return
     Animated.parallel([
@@ -818,7 +809,6 @@ export default memo(() => {
     targetIndexRef.current = null
     lastTargetRef.current = null
     setDraggingIndex(null)
-    setIsTouchingDragHandle(false)
     if (from == null) return
     resetAllAnims()
     if (to != null && to !== from) {
@@ -831,17 +821,8 @@ export default memo(() => {
     targetIndexRef.current = null
     lastTargetRef.current = null
     setDraggingIndex(null)
-    setIsTouchingDragHandle(false)
     resetAllAnims()
   }, [resetAllAnims])
-
-  const handleTouchStart = useCallback(() => {
-    setIsTouchingDragHandle(true)
-  }, [])
-
-  const handleTouchEnd = useCallback(() => {
-    setIsTouchingDragHandle(false)
-  }, [])
 
   const showMenu = useCallback((item: ListItemInfo, index: number, position: Position) => {
     const listInfo = allList.find(l => l.id === item.id)
@@ -883,8 +864,6 @@ export default memo(() => {
         onDragMove={handleDragMove}
         onDragRelease={handleDragRelease}
         onDragCancel={handleDragCancel}
-        onTouchStart={handleTouchStart}
-        onTouchEnd={handleTouchEnd}
       />
     )
   }
@@ -940,7 +919,10 @@ export default memo(() => {
                 refreshing={refreshing}
                 onRefresh={() => { setRefreshing(true); void refreshListInfo(false) }}
                 colors={[theme['c-primary-font']]}
-                enabled={!isTouchingDragHandle}
+                // 【第 179 轮】只在「拖动排序已激活」时禁用下拉刷新。
+                // 旧写法按「手指是否接触卡片」禁用，而接触标志是每个手势都 setState 的
+                // 整页状态 ⇒ 正常下滑每碰一次列表就整表重渲染两次（起/落），列表抖动。
+                enabled={draggingIndex == null}
               />
             }
           />
