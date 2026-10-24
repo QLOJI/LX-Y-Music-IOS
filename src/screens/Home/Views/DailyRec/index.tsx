@@ -25,6 +25,7 @@ import { setNavActiveId } from '@/core/common'
 import PageTopInset from '@/components/common/PageTopInset'
 import DetailPageTitle from '@/components/common/DetailPageTitle'
 import SwipeBackArea from '@/components/common/SwipeBackArea'
+import { useRecoverablePager } from '../useRecoverablePager'
 
 // 一行里的列数（含标题列）= 1 + 2 个主 tab + （「推荐歌曲」下的 2 个子模式 chip）：
 // songs 模式 5、playlists 模式 3；再经「最多同时显示 4 个」（含标题）收敛（用户第 18 轮第 1 条）——
@@ -186,6 +187,22 @@ export default memo(() => {
   }, [])
 
   const pagerViewRef = useRef<PagerView>(null)
+  const activeIndexRef = useRef(activeTab === 'songs' ? 0 : 1)
+  activeIndexRef.current = activeTab === 'songs' ? 0 : 1
+  // 【第 184 轮】与酷狗/QQ 日推共用恢复链；本页已有「进入即非动画落 page1」的复位，
+  // 所以关掉 hook 的进页复位，避免两边各发一次。
+  const {
+    pagerKey,
+    trackPageSwitch,
+    notifyPageSelected,
+    clearPagerLatch,
+    onPageScroll,
+    onPageScrollStateChanged,
+  } = useRecoverablePager(pagerViewRef, {
+    navId: 'nav_daily_rec',
+    activeIndexRef,
+    resyncOnEnter: false,
+  })
   const [selectedPlaylist, setSelectedPlaylist] = useState<ListInfoItem | null>(null)
   const selectedPlaylistRef = useRef(selectedPlaylist)
   selectedPlaylistRef.current = selectedPlaylist
@@ -221,15 +238,18 @@ export default memo(() => {
   const handleTabChange = (newTab: 'songs' | 'playlists') => {
     if (activeTab === newTab) return
     setActiveTab(newTab)
+    // 保留契约要求的「按语义 id 映射页位」字面量；恢复链只布防、不重复发 setPage。
     pagerViewRef.current?.setPage(newTab === 'songs' ? 0 : 1)
+    trackPageSwitch(newTab === 'songs' ? 0 : 1)
   }
 
   const onPageSelected = useCallback((event: PagerViewOnPageSelectedEvent) => {
+    notifyPageSelected()
     const newTab = event.nativeEvent.position === 0 ? 'songs' : 'playlists'
     if (newTab !== activeTab) {
       setActiveTab(newTab)
     }
-  }, [activeTab])
+  }, [activeTab, notifyPageSelected])
 
   const handleOpenDetail = useCallback((playlistInfo: ListInfoItem) => {
     setSelectedPlaylist(playlistInfo)
@@ -290,7 +310,14 @@ export default memo(() => {
   }, [])
 
   return (
-    <View style={{ flex: 1 }}>
+    <View
+      style={{ flex: 1 }}
+      // 触摸起点：先抹平库私有 isScrolling 闩锁（返回 false = 不截胡）。
+      onStartShouldSetResponderCapture={() => {
+        clearPagerLatch()
+        return false
+      }}
+    >
       <View style={[{ flex: 1 }, selectedPlaylist ? { opacity: 0 } : null]} pointerEvents={selectedPlaylist ? 'none' : 'auto'}>
         {/* 页头必须在这层「变暗层」**里面**（用户第 33 轮第 6 条：点歌单后原标题/封面重叠）。
             以前它在外面，打开歌单详情（页内浮层，见下方 absoluteFill 的 SonglistDetail）时
@@ -301,10 +328,14 @@ export default memo(() => {
             同仓 MyPlaylist / KgPlaylist / TxPlaylist 的 index 都是这个范式，此处对齐。 */}
         {pageHeader}
         <PagerView
+          // 原生实例彻底不响应时的最后兜底：换 key 重挂（initialPage 仍落在当前 tab）。
+          key={pagerKey}
           ref={pagerViewRef}
           style={{ flex: 1 }}
           initialPage={activeTab === 'songs' ? 0 : 1}
           onPageSelected={onPageSelected}
+          onPageScroll={onPageScroll}
+          onPageScrollStateChanged={onPageScrollStateChanged}
           scrollEnabled
         >
           <View key="1">

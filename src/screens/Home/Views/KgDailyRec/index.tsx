@@ -1,4 +1,4 @@
-import { memo, useRef, useState, useCallback, useEffect } from 'react'
+import { memo, useRef, useState, useCallback } from 'react'
 import { TouchableOpacity, View, ScrollView } from 'react-native'
 import Text from '@/components/common/Text'
 import { createStyle } from '@/utils/tools'
@@ -8,10 +8,10 @@ import PagerView, { type PagerViewOnPageSelectedEvent } from 'react-native-pager
 import RecSongs from './RecSongs'
 import { BorderWidths } from '@/theme'
 import { setNavActiveId } from '@/core/common'
-import commonState from '@/store/common/state'
 import PageTopInset from '@/components/common/PageTopInset'
 import DetailPageTitle from '@/components/common/DetailPageTitle'
 import SwipeBackArea from '@/components/common/SwipeBackArea'
+import { useRecoverablePager } from '../useRecoverablePager'
 
 type TabType = 'recommend' | 'everyday'
 
@@ -70,85 +70,18 @@ const Tabs = ({
 export default memo(() => {
   const [activeTab, setActiveTab] = useState<TabType>('recommend')
   const pagerViewRef = useRef<PagerView>(null)
-  // 【第 182 轮】react-native-pager-view 6.7.1 的私有 isScrolling 在拖动手势被取消时
-  // 可能永久停在 true，之后它在 capture 阶段抢走页面里的每次按压/移动 —— 表现为
-  // 「整页点击、滑动都没反应」。Home / 播放详情页早有针对这个缺口的自愈，本页是
-  // 嵌套的内层 PagerView，一直没有。在「确定没有手势」的时机抹平（纯 JS 字段）。
-  const clearPagerLatch = useCallback(() => {
-    const pager = pagerViewRef.current as unknown as { isScrolling?: boolean } | null
-    if (pager?.isScrolling) pager.isScrolling = false
-  }, [])
-  // 【第 183 轮】切 tab 的恢复链 + 手势静默看门狗。
-  //
-  // 网易日推每次进入都会发一次**非动画** setPageWithoutAnimation，酷狗只有动画 setPage。
-  // 6.7.1 的原生 Manager 在 `animated && animating` 时直接丢弃 setPage；而 goTo 的
-  // 600ms 恢复补丁只有在 goTo 真被调用时才布防 —— 所以一次丢失 completion 的过渡就能让
-  // 后续点击全部被丢弃、并可能把 userInteractionEnabled 停在 NO。恢复链：
-  //   动画 setPage → 600ms 没落页 → 非动画 setPageWithoutAnimation（绕开 animating 闸门，
-  //   且会走完整 goTo/completion 复位交互）→ 再 700ms 仍没落页 → 重挂 PagerView。
-  const pendingIndexRef = useRef<number | null>(null)
-  const switchFallbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const switchRemountTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const clearSwitchTimers = useCallback(() => {
-    if (switchFallbackTimerRef.current) {
-      clearTimeout(switchFallbackTimerRef.current)
-      switchFallbackTimerRef.current = null
-    }
-    if (switchRemountTimerRef.current) {
-      clearTimeout(switchRemountTimerRef.current)
-      switchRemountTimerRef.current = null
-    }
-  }, [])
-  const [pagerKey, setPagerKey] = useState(0)
-  const activeTabRef = useRef(activeTab)
-  activeTabRef.current = activeTab
-  const requestPage = useCallback((index: number) => {
-    clearSwitchTimers()
-    pendingIndexRef.current = index
-    pagerViewRef.current?.setPage(index)
-    switchFallbackTimerRef.current = setTimeout(() => {
-      switchFallbackTimerRef.current = null
-      if (pendingIndexRef.current !== index) return
-      // 非动画直达：绕过 Manager 的 animating 闸门；goTo 即使越界/丢 completion，
-      // 构建期补丁会在 600ms 内恢复交互。
-      pagerViewRef.current?.setPageWithoutAnimation(index)
-      switchRemountTimerRef.current = setTimeout(() => {
-        switchRemountTimerRef.current = null
-        if (pendingIndexRef.current !== index) return
-        // 原生实例已经完全不响应：重挂 PagerView（initialPage 用当前 tab）。
-        pendingIndexRef.current = null
-        setPagerKey(k => k + 1)
-      }, 700)
-    }, 600)
-  }, [clearSwitchTimers])
-  // 手势静默看门狗：库只在 willEndDragging/didEndDecelerating 发状态，手势被系统取消时
-  // 两个都不来。真实拖动每帧都有 onPageScroll，2s 无活动即判定取消、抹平 JS 闩锁。
-  const pagerActivityAtRef = useRef(0)
-  const pagerWatchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const pageScrollStateRef = useRef<'idle' | 'dragging' | 'settling'>('idle')
-  const clearPagerWatchdog = useCallback(() => {
-    if (pagerWatchdogRef.current) {
-      clearTimeout(pagerWatchdogRef.current)
-      pagerWatchdogRef.current = null
-    }
-  }, [])
-  const armPagerWatchdogRef = useRef<() => void>(() => {})
-  const armPagerWatchdog = useCallback(() => {
-    clearPagerWatchdog()
-    pagerWatchdogRef.current = setTimeout(() => {
-      pagerWatchdogRef.current = null
-      if (Date.now() - pagerActivityAtRef.current < 2000) {
-        armPagerWatchdogRef.current()
-        return
-      }
-      clearPagerLatch()
-    }, 2000)
-  }, [clearPagerWatchdog, clearPagerLatch])
-  armPagerWatchdogRef.current = armPagerWatchdog
-  useEffect(() => () => {
-    clearSwitchTimers()
-    clearPagerWatchdog()
-  }, [clearSwitchTimers, clearPagerWatchdog])
+  const activeIndexRef = useRef(TABS.findIndex((t) => t.id === activeTab))
+  activeIndexRef.current = TABS.findIndex((t) => t.id === activeTab)
+  // 【第 184 轮】统一的可恢复 PagerView：动画切页 → 非动画兜底 → 重挂；
+  // 外加手势静默看门狗与进页非动画复位（与 QQ / 网易日推共用）。
+  const {
+    pagerKey,
+    requestPage,
+    notifyPageSelected,
+    clearPagerLatch,
+    onPageScroll,
+    onPageScrollStateChanged,
+  } = useRecoverablePager(pagerViewRef, { navId: 'nav_kg_daily_rec', activeIndexRef })
 
   const t = useI18n()
 
@@ -162,35 +95,14 @@ export default memo(() => {
   const onPageSelected = useCallback(
     (event: PagerViewOnPageSelectedEvent) => {
       // 落页 = 手势确定结束：撤掉恢复链、抹平可能残留的库私有闩锁。
-      pendingIndexRef.current = null
-      clearSwitchTimers()
-      clearPagerWatchdog()
-      clearPagerLatch()
+      notifyPageSelected()
       const newTab = TABS[event.nativeEvent.position]?.id || 'recommend'
       if (newTab !== activeTab) {
         setActiveTab(newTab)
       }
     },
-    [activeTab, clearPagerLatch, clearPagerWatchdog, clearSwitchTimers],
+    [activeTab, notifyPageSelected],
   )
-
-  // 【第 183 轮】重新进入本页（同网易日推）：先做一次非动画落页。
-  // 这不是每次都要切页 —— 目标是给原生 pager 一次走完整 goTo/completion 的机会，
-  // 把上一次会话可能残留的 animating / userInteractionEnabled 复位。
-  useEffect(() => {
-    let prevId: string = commonState.navActiveId
-    const handleNavIdUpdate = (id: string) => {
-      const prev = prevId
-      prevId = id
-      if (id !== 'nav_kg_daily_rec' || prev === id) return
-      requestAnimationFrame(() => {
-        const index = TABS.findIndex((t) => t.id === activeTabRef.current)
-        pagerViewRef.current?.setPageWithoutAnimation(index)
-      })
-    }
-    global.state_event.on('navActiveIdUpdated', handleNavIdUpdate)
-    return () => { global.state_event.off('navActiveIdUpdated', handleNavIdUpdate) }
-  }, [])
 
   const handleBackToDiscovery = useCallback(() => {
     setNavActiveId('nav_discovery')
@@ -236,23 +148,8 @@ export default memo(() => {
           style={{ flex: 1 }}
           initialPage={TABS.findIndex((t) => t.id === activeTab)}
           onPageSelected={onPageSelected}
-          onPageScroll={() => {
-            // 任一帧滚动都是「原生还在动」的证据，看门狗据此区分取消与拖动。
-            pagerActivityAtRef.current = Date.now()
-          }}
-          onPageScrollStateChanged={({ nativeEvent }: { nativeEvent: { pageScrollState: string } }) => {
-            const state = nativeEvent.pageScrollState as 'idle' | 'dragging' | 'settling'
-            pageScrollStateRef.current = state
-            if (state === 'dragging') {
-              pagerActivityAtRef.current = Date.now()
-              armPagerWatchdog()
-              return
-            }
-            if (state === 'idle') {
-              clearPagerWatchdog()
-              clearPagerLatch()
-            }
-          }}
+          onPageScroll={onPageScroll}
+          onPageScrollStateChanged={onPageScrollStateChanged}
           scrollEnabled
         >
           <View key="recommend">

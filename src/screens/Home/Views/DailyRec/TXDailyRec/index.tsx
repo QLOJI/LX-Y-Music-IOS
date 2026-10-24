@@ -16,6 +16,7 @@ import { setNavActiveId } from '@/core/common'
 import PageTopInset from '@/components/common/PageTopInset'
 import DetailPageTitle from '@/components/common/DetailPageTitle'
 import SwipeBackArea from '@/components/common/SwipeBackArea'
+import { useRecoverablePager } from '../../useRecoverablePager'
 
 type TabType = 'home' | 'radar' | 'songlist' | 'newsong'
 
@@ -86,6 +87,17 @@ const Tabs = ({
 export default memo(() => {
   const [activeTab, setActiveTab] = useState<TabType>('home')
   const pagerViewRef = useRef<PagerView>(null)
+  const activeIndexRef = useRef(TABS.findIndex((t) => t.id === activeTab))
+  activeIndexRef.current = TABS.findIndex((t) => t.id === activeTab)
+  // 【第 184 轮】与酷狗/网易日推共用恢复链：动画切页 → 非动画兜底 → 重挂 + 手势看门狗。
+  const {
+    pagerKey,
+    requestPage,
+    notifyPageSelected,
+    clearPagerLatch,
+    onPageScroll,
+    onPageScrollStateChanged,
+  } = useRecoverablePager(pagerViewRef, { navId: 'nav_tx_daily_rec', activeIndexRef })
   const [selectedPlaylist, setSelectedPlaylist] = useState<ListInfoItem | null>(null)
   const selectedPlaylistRef = useRef(selectedPlaylist)
   selectedPlaylistRef.current = selectedPlaylist
@@ -95,17 +107,18 @@ export default memo(() => {
     if (activeTab === newTab) return
     setActiveTab(newTab)
     const tabIndex = TABS.findIndex((t) => t.id === newTab)
-    pagerViewRef.current?.setPage(tabIndex)
+    requestPage(tabIndex)
   }
 
   const onPageSelected = useCallback(
     (event: PagerViewOnPageSelectedEvent) => {
+      notifyPageSelected()
       const newTab = TABS[event.nativeEvent.position]?.id || 'home'
       if (newTab !== activeTab) {
         setActiveTab(newTab)
       }
     },
-    [activeTab],
+    [activeTab, notifyPageSelected],
   )
 
   const handleOpenDetail = useCallback((playlistInfo: ListInfoItem) => {
@@ -160,7 +173,14 @@ export default memo(() => {
   )
 
   return (
-    <View style={{ flex: 1 }}>
+    <View
+      style={{ flex: 1 }}
+      // 触摸起点：先抹平库私有 isScrolling 闩锁（返回 false = 不截胡）。
+      onStartShouldSetResponderCapture={() => {
+        clearPagerLatch()
+        return false
+      }}
+    >
       <View
         style={[{ flex: 1 }, selectedPlaylist ? { opacity: 0 } : null]}
         pointerEvents={selectedPlaylist ? 'none' : 'auto'}
@@ -174,10 +194,14 @@ export default memo(() => {
             同仓 MyPlaylist / KgPlaylist / TxPlaylist 的 index 都是这个范式，此处对齐。 */}
         {pageHeader}
         <PagerView
+          // 原生实例彻底不响应时的最后兜底：换 key 重挂（initialPage 仍落在当前 tab）。
+          key={pagerKey}
           ref={pagerViewRef}
           style={{ flex: 1 }}
           initialPage={TABS.findIndex((t) => t.id === activeTab)}
           onPageSelected={onPageSelected}
+          onPageScroll={onPageScroll}
+          onPageScrollStateChanged={onPageScrollStateChanged}
           scrollEnabled
         >
           <View key="home">
