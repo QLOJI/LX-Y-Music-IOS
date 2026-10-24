@@ -377,12 +377,19 @@ export default memo(() => {
   const clearanceMax = useListBottomClearance()
   const clearanceFloor = useListBottomClearanceFloor()
   const [scrollMetrics, setScrollMetrics] = useState({ viewport: 0, rows: 0 })
-  // 【第 77 轮第 1 条】再按实测内容高收口（见 resolveListBottomClearance）：内容比视口高出
-  // 一点就足够把预留收到收起态那一档，不必一直按展开态留出那条 76pt 的 tab 栏层。
-  const listClearance = useMemo(
-    () => resolveListBottomClearance(clearanceMax, clearanceFloor, scrollMetrics.viewport, scrollMetrics.rows),
-    [clearanceMax, clearanceFloor, scrollMetrics],
-  )
+  // 【第 179 轮】末尾避让只在**首次测量稳定**时收口一次，之后不再随 rows 变化。
+  //
+  // 第 77 轮为了少留空白改成「按实测内容高收口」，但这个值是每帧 useMemo 跟着
+  // scrollMetrics.rows 变的。FlatList 是虚拟列表：滑到底部时才把页脚（FeatureGrid）
+  // 和最后一批行测量完，rows 当场变化 → paddingBottom 变 → contentSize 变 →
+  // iOS 把 contentOffset 夹回 → 正好在「底部碰撞」处反复抖。设置页用 ScrollView
+  // 一次测量完，所以没有这个问题（这正是用户说的「参考设置界面的碰撞修复」）。
+  // 现在：首次拿到有效 viewport/rows 后收口一次并冻结；只有用户增删歌单（数据变化）
+  // 或改字体/底距设置时才允许重新收口。
+  const [listClearance, setListClearance] = useState(clearanceMax)
+  const metricsRef = useRef(scrollMetrics)
+  metricsRef.current = scrollMetrics
+  const clearanceSettledRef = useRef(false)
   const t = useI18n()
 
   // 加载失败时的「点击重试」按钮：底色是硬编码的 rgba 常量（不是主题 token），
@@ -485,6 +492,43 @@ export default memo(() => {
   }, [listVisibility])
 
   const userLists = useMemo(() => allList.filter(l => l.id !== LIST_IDS.DEFAULT && l.id !== LIST_IDS.LOVE && isListVisible(l.id)), [allList, isListVisible])
+
+  // 【第 179 轮】末尾避让的「一次性收口」调度（见上方 listClearance 的说明）：
+  //   · 首次拿到有效 viewport/rows → 收口一次，之后滚动引起的 rows 变化一律忽略；
+  //   · 用户增删歌单 → 解除冻结，等新的内容尺寸测量后重算一次；
+  //   · 字体/底距设置变化 → 用当前已稳定的 metrics 立即重算一次。
+  const prevClearanceMaxRef = useRef(clearanceMax)
+  const prevClearanceFloorRef = useRef(clearanceFloor)
+  // 初值取当前条数：首帧就带着已加载的歌单时不算「增删」，首轮测量即可收口。
+  const prevUserListCountRef = useRef(userLists.length)
+  useEffect(() => {
+    const countChanged = prevUserListCountRef.current !== userLists.length
+    const settingChanged = prevClearanceMaxRef.current !== clearanceMax ||
+      prevClearanceFloorRef.current !== clearanceFloor
+    prevUserListCountRef.current = userLists.length
+    prevClearanceMaxRef.current = clearanceMax
+    prevClearanceFloorRef.current = clearanceFloor
+    if (countChanged) {
+      // 内容结构变了：等下一次 onContentSizeChange 的新 rows，别用旧值收口。
+      clearanceSettledRef.current = false
+      return
+    }
+    if (settingChanged) {
+      const { viewport, rows } = metricsRef.current
+      if (!(viewport > 0) || !(rows > 0)) {
+        clearanceSettledRef.current = false
+        return
+      }
+      clearanceSettledRef.current = true
+      setListClearance(resolveListBottomClearance(clearanceMax, clearanceFloor, viewport, rows))
+      return
+    }
+    if (clearanceSettledRef.current) return
+    const { viewport, rows } = metricsRef.current
+    if (!(viewport > 0) || !(rows > 0)) return
+    clearanceSettledRef.current = true
+    setListClearance(resolveListBottomClearance(clearanceMax, clearanceFloor, viewport, rows))
+  }, [scrollMetrics, clearanceMax, clearanceFloor, userLists.length])
 
   if (animsRef.current.length !== userLists.length) {
     if (animsRef.current.length < userLists.length) {
