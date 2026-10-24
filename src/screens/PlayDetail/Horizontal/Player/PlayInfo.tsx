@@ -26,7 +26,10 @@ const PlayTimeMax = memo(({ timeStr }: { timeStr: string }) => {
 export default () => {
   const theme = useTheme()
   // 【第 177 轮】同竖屏：被压栈页盖住时停掉 4Hz 进度更新，转场窗口内照常。
-  const visible = usePlayDetailOnTop() || useNavTransitioning()
+  // 同竖屏：两个 hook 分开无条件调用，禁止 `a() || b()` 短路 hook。
+  const onTop = usePlayDetailOnTop()
+  const transitioning = useNavTransitioning()
+  const visible = onTop || transitioning
   const { maxPlayTimeStr, nowPlayTimeStr, progress, maxPlayTime } = useProgress(visible)
   const buffered = useBufferProgress()
   // console.log('render playInfo')

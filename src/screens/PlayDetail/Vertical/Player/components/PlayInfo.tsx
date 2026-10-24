@@ -30,7 +30,12 @@ export default () => {
   // 每拍 setState + 进度条 Animated.timing 在完全不可见时纯属耗电。
   // 转场窗口内照常更新（push 进来时账本还没翻，pop 时账本要等 screenPopped），
   // 重新可见时 useProgress 重订阅会先同步一次最新值，不会停在旧进度。
-  const visible = usePlayDetailOnTop() || useNavTransitioning()
+  // 两个 hook 必须**无条件各调一次**再合并：写成 `a() || b()` 会短路掉 b 的
+  // hook 调用，两次渲染的 hook 数量不同 → Fatal「Rendered more hooks than during
+  // the previous render」（报在后续的 useBufferProgress 上）。
+  const onTop = usePlayDetailOnTop()
+  const transitioning = useNavTransitioning()
+  const visible = onTop || transitioning
   const { maxPlayTimeStr, nowPlayTimeStr, progress, maxPlayTime } = useProgress(visible)
   const buffered = useBufferProgress()
 
