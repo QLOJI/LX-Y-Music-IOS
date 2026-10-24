@@ -94,6 +94,9 @@ export default memo(({ componentId }: { componentId: string }) => {
   // 都重跑一次（那里会把 isUnmounted 置 true，等于把自转永久关掉），所以只镜像读最新值。
   const spinVisibleRef = useRef(spinVisible)
   spinVisibleRef.current = spinVisible
+  // 【第 190 轮】同竖屏：播放/暂停按离开时的实际相位续转，不按播放位置重锚。
+  const isPlayRef = useRef(isPlay)
+  isPlayRef.current = isPlay
 
   const createAnimation = useCallback((value: number) => {
     return Animated.timing(spinValue, {
@@ -167,7 +170,7 @@ export default memo(({ componentId }: { componentId: string }) => {
     // 实际相位，供恢复可见时无缝续转（见 resumePhaseRef 的完整说明）。
     // 其余停法（暂停、切歌、关自转、卸载）不记：它们各自的恢复语义是「按播放位置重锚」
     // 或「归零」，吃了这份相位反而会破坏原有语义。
-    if (!spinVisibleRef.current) resumePhaseRef.current = readSpinPhase()
+    if (!spinVisibleRef.current || !isPlayRef.current) resumePhaseRef.current = readSpinPhase()
     // 锚点作废：驱动停了相位不再推进，留着它会把「停住的这段时间」也算进相位里
     phaseAnchorRef.current = null
     animationRef.current?.stop()

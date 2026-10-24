@@ -10,6 +10,7 @@ import SettingLrcZoom from './settings/SettingLrcZoom'
 import SettingLrcAlign from './settings/SettingLrcAlign'
 import SettingMiniLyricAlign from './settings/SettingMiniLyricAlign'
 import SettingMiniLyricKaraoke from './settings/SettingMiniLyricKaraoke'
+import SettingLyricProgress from './settings/SettingLyricProgress'
 import SettingCoverSpin from '@/screens/PlayDetail/components/SettingPopup/settings/SettingCoverSpin.tsx'
 import SettingCoverShape from './settings/SettingCoverShape'
 import SettingCoverSize from './settings/SettingCoverSize'
@@ -56,6 +57,8 @@ export default forwardRef<SettingPopupType, SettingPopupProps>(({ direction, ...
           <SettingMiniLyricAlign />
           {/* 逐字高亮紧邻小歌词对齐：同属小歌词展示设置 */}
           <SettingMiniLyricKaraoke />
+          {/* 歌词拖动定位浮层开关：同属歌词交互设置 */}
+          <SettingLyricProgress />
           <SettingCoverSpin />
           {/* 方形封面置于旋转开关之后：两者互斥，紧邻便于用户对照（方形时旋转被忽略） */}
           <SettingCoverShape />

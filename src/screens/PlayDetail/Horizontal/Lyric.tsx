@@ -53,9 +53,11 @@ interface LineProps {
   wordsByIndex: ReadonlyArray<LxLyricWord[] | null>
   /** 【第 177 轮】详情页是否在栈顶（或正在返回）：被压栈页盖住时停逐字 rAF。 */
   pageOnTop: boolean
+  /** 【第 190 轮】歌词文本框实测宽度（换行边界 + 缩放锚点补偿）。 */
+  lineWidth: number
 }
 const LrcLine = memo(
-  ({ line, lineNum, activeLine, onLayout, onPress, wordsByIndex, pageOnTop }: LineProps) => {
+  ({ line, lineNum, activeLine, onLayout, onPress, wordsByIndex, pageOnTop, lineWidth }: LineProps) => {
     const theme = useTheme()
     const lrcFontSize = useSettingValue('playDetail.horizontal.style.lrcFontSize')
     const textAlign = useSettingValue('playDetail.style.align')
@@ -82,6 +84,23 @@ const LrcLine = memo(
         useNativeDriver: true,
       }).start()
     }, [isActive, zoom, lineHeight, lineScale])
+    // 【第 190 轮】与大歌词竖屏同口径：文本块按实测宽度排版，激活行按 lineWidth/zoom
+    // 排版（缩放后正好铺满原宽），超出即自动换行，两端不再被裁；对齐仍由 textAlign 决定。
+    const alignmentSign = textAlign === 'left' ? 1 : textAlign === 'right' ? -1 : 0
+    const blockWidth = lineWidth > 0 ? (isActive && zoom > 1 ? lineWidth / zoom : lineWidth) : 0
+    const lineShift = useMemo(() => {
+      if (!alignmentSign || lineWidth <= 0) return null
+      if (isActive && zoom > 1) {
+        return lineScale.interpolate({
+          inputRange: [1, zoom],
+          outputRange: [alignmentSign * (lineWidth / zoom - lineWidth) / 2, 0],
+        })
+      }
+      return lineScale.interpolate({
+        inputRange: [1, 1.5],
+        outputRange: [0, alignmentSign * lineWidth * 0.25],
+      })
+    }, [lineScale, lineWidth, alignmentSign, isActive, zoom])
     // 有逐字时间轴的行始终用卡拉OK渲染器（非激活时静态显示未播放颜色）：
     // 嵌套 Text 与纯文本的换行断点不同，若激活时才切换渲染器，行高会在切行瞬间突变，
     // 造成抖动且实测高度与累计偏移基准不一致、高亮行偏离中心。
@@ -111,7 +130,10 @@ const LrcLine = memo(
         accessibilityLabel={line.text || undefined}
       >
         <View style={styles.line} onLayout={handleLayout}>
-          <Animated.View style={{ transform: [{ scale: lineScale }] }}>
+          <Animated.View style={[
+            { transform: lineShift ? [{ translateX: lineShift }, { scale: lineScale }] : [{ scale: lineScale }], alignSelf: 'center' },
+            blockWidth > 0 ? { width: blockWidth } : null,
+          ]}>
           {words
             ? (
               <KaraokeLyric
@@ -183,7 +205,8 @@ const LrcLine = memo(
       prevProps.activeLine != nextProps.lineNum &&
       nextProps.activeLine != nextProps.lineNum &&
       prevProps.onPress === nextProps.onPress &&
-      prevProps.wordsByIndex === nextProps.wordsByIndex
+      prevProps.wordsByIndex === nextProps.wordsByIndex &&
+      prevProps.lineWidth === nextProps.lineWidth
     )
   },
 )
@@ -269,6 +292,8 @@ export default () => {
   // 列表可视高度 state：同时驱动 contentContainerStyle 的上下留白（50% 视高），
   // 保证歌词第一行/最后一行也能滚动到正中央。
   const [listHeight, setListHeight] = useState(0)
+  // 【第 190 轮】歌词文本框实测宽度：换行边界按它算（容器已去掉左右 20pt 内边距）。
+  const [listWidth, setListWidth] = useState(0)
   // 回正定时器：进入/切歌后布局（spaceComponent / 行高）尚未完成时，防抖在测量完成后重新精确居中一次。
   const recentreTimerRef = useRef<NodeJS.Timeout | null>(null)
 
@@ -420,9 +445,9 @@ export default () => {
       lastContinuousIndexRef.current = index
     } else {
       const currentOffset = scrollInfoRef.current.contentOffset.y
-      // 回位/跟随滑动时长按距离线性增长并夹在 [120,300]（同 lyricAnimation.getReturnDuration）：
-      // 近距离不拖沓、远距离不猛冲；不再内联这套 clamp 魔数。
-      const duration = getReturnDuration(targetOffset - currentOffset)
+      // 【第 190 轮】回位时长统一为固定 RETURN_TO_ACTIVE_MS（与竖屏大歌词、小歌词同源）：
+      // 原先按距离取 [120,300]，最上端/最下端回中距离最长，比中段明显慢一拍。
+      const duration = RETURN_TO_ACTIVE_MS
       try {
         scrollCancelRef.current = scrollTo(
           flatListRef.current,
@@ -680,6 +705,10 @@ export default () => {
         clearTimeout(pendingInitialScrollTimerRef.current)
         pendingInitialScrollTimerRef.current = null
       }
+      if (scrollCancelRef.current) {
+        scrollCancelRef.current()
+        scrollCancelRef.current = null
+      }
     }
   }, [])
 
@@ -719,6 +748,11 @@ export default () => {
   // 两行及以上的歌词行真实高度约 71pt，每行少算约 17pt，偏移随播放逐行偏小，
   // 高亮行越来越靠下（与竖屏同源问题，iPad 横屏同样存在）。
   useEffect(() => {
+    // 切歌时取消仍在跑的固定时长回位（scrollTo 是 10ms 定时步进，不取消会跟下面的归零抢偏移）。
+    if (scrollCancelRef.current) {
+      scrollCancelRef.current()
+      scrollCancelRef.current = null
+    }
     // linesRef.current = lyricLines
     lyricScrollLayoutRef.current.reset()
     lineRef.current.prevLine = 0
@@ -884,7 +918,9 @@ export default () => {
   // 同时同步 state 驱动 contentContainerStyle 上下留白（50% 视高）。
   const handleListLayout = useCallback(({ nativeEvent }: LayoutChangeEvent) => {
     const h = nativeEvent.layout.height
+    const w = Math.round(nativeEvent.layout.width)
     if (h <= 0) return
+    if (w > 0) setListWidth(prev => prev === w ? prev : w)
     if (listHeightRef.current !== h) {
       listHeightRef.current = h
       setListHeight(h)
@@ -953,7 +989,7 @@ export default () => {
   }, [lyricLines, handleScrollToActive])
 
   const renderItem: FlatListType['renderItem'] = ({ item, index }) => {
-    return <LrcLine line={item} lineNum={index} activeLine={line} onLayout={handleLineLayout} onPress={handleLinePress} wordsByIndex={wordsByIndex} pageOnTop={lyricTickEnabled} />
+    return <LrcLine line={item} lineNum={index} activeLine={line} onLayout={handleLineLayout} onPress={handleLinePress} wordsByIndex={wordsByIndex} pageOnTop={lyricTickEnabled} lineWidth={listWidth} />
   }
   // 与竖屏一致用行索引作 key：切歌时行组件按 key 复用、仅 props 更新，
   // 避免把 text 拼进 key 导致切歌时整表卸载重建（行内动画状态也要重挂）。

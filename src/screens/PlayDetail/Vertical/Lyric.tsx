@@ -18,6 +18,7 @@ import { getPosition } from '@/plugins/player'
 import { LyricScrollLayout } from '@/utils/lyricScroll'
 import { audioClock } from '@/core/player/audioClock'
 import { createStyle } from '@/utils/tools'
+import { scrollTo } from '@/utils/scroll'
 import { updateSetting } from '@/core/common'
 import { useTheme } from '@/store/theme/hook'
 import { useSettingValue } from '@/store/setting/hook'
@@ -96,17 +97,27 @@ const LrcLine = memo(
         useNativeDriver: true,
       }).start()
     }, [isActive, zoom, lineScale])
-    // 【第 175 轮】缩放锚点跟随对齐方式：居左锚左缘、居右锚右缘、居中锚中心。
-    // RN 0.73 没有 transformOrigin，用「居中缩放 + 平移补偿」实现：
-    // 居中缩放会把左缘推出去 W*(S-1)/2，居左补 +该值（右缘同理取负）。
+    // 【第 190 轮】换行边界 = 实测文本宽度（lineWidth，渲染侧按设备实宽传入）。
+    // 激活行要放大到 zoom 倍：文本块先按 lineWidth/zoom 排版，超出就自动换行，
+    // 缩放后正好铺满 lineWidth，两端不会再被屏幕裁掉。非激活行按原宽排版。
     const alignmentSign = textAlign === 'left' ? 1 : textAlign === 'right' ? -1 : 0
+    const blockWidth = lineWidth > 0 ? (isActive && zoom > 1 ? lineWidth / zoom : lineWidth) : 0
+    // 缩放锚点跟随对齐：居左锚左缘、居右锚右缘、居中锚中心。块宽变了，补偿量也要按块宽算。
+    // 激活行：块宽 W/zoom，缩放后右/左缘补回 (W/zoom*s − W)/2（s=zoom 时为 0）。
+    // 非激活行：可能是刚退场的行，仍在 zoom→1 的回缩动画里，沿用原全宽补偿避免右/左缘瞬间露边。
     const lineShift = useMemo(() => {
       if (!alignmentSign || lineWidth <= 0) return null
+      if (isActive && zoom > 1) {
+        return lineScale.interpolate({
+          inputRange: [1, zoom],
+          outputRange: [alignmentSign * (lineWidth / zoom - lineWidth) / 2, 0],
+        })
+      }
       return lineScale.interpolate({
         inputRange: [1, 1.5],
         outputRange: [0, alignmentSign * lineWidth * 0.25],
       })
-    }, [lineScale, lineWidth, alignmentSign])
+    }, [lineScale, lineWidth, alignmentSign, isActive, zoom])
     const lineTransform = lineShift
       ? [{ translateX: lineShift }, { scale: lineScale }]
       : [{ scale: lineScale }]
@@ -145,7 +156,10 @@ const LrcLine = memo(
         accessibilityLabel={line.text || undefined}
       >
         <View style={[styles.line, isSmallWindow && { paddingTop: 6, paddingBottom: 6 }]} onLayout={handleLayout}>
-          <Animated.View style={{ transform: lineTransform }}>
+          <Animated.View style={[
+            { transform: lineTransform, alignSelf: 'center' },
+            blockWidth > 0 ? { width: blockWidth } : null,
+          ]}>
           {words
             ? (
               <KaraokeLyric
@@ -278,6 +292,8 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
   const lyricScrollLayoutRef = useRef(new LyricScrollLayout(isSmallWindow ? 40 : 54))
   const scrollCancelRef = useRef<(() => void) | null>(null)
   const scrollYRef = useRef(0)
+  // 最近的完整滚动信息：固定时长回位动画（scrollTo）要用它的内容高/视口高做边界钳制。
+  const scrollInfoRef = useRef<NativeSyntheticEvent<NativeScrollEvent>['nativeEvent'] | null>(null)
   // 连续滚动指数平滑：rAF 算出的目标 offset 不直接写入列表，而是让跟随值按固定速率收敛到目标。
   // 逐字歌词「句内停住」模式下两句之间没有间隙时，切行瞬间目标会从当前行中心硬跳到下一行中心
   // （长句换行后行高更大、跳变越明显），行高测量后的回正修正同样是硬跳；
@@ -480,6 +496,18 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
       return
     }
     try {
+      if (!force) {
+        // 【第 190 轮】暂停 / 循环未跑时的回位也走固定时长动画（与横屏大歌词、小歌词同一个
+        // RETURN_TO_ACTIVE_MS）；原生的 animated:true 时长随距离变化，最上端/最下端回中更慢。
+        const info = scrollInfoRef.current
+        if (info) {
+          scrollCancelRef.current = scrollTo(flatListRef.current, info, targetOffset, RETURN_TO_ACTIVE_MS, () => {
+            scrollCancelRef.current = null
+          })
+          lastScrolledLineRef.current = index
+          return
+        }
+      }
       // force=true（切回歌词页 / 切歌 / 初次加载 / 拖动 / 点击）时立即定位，不用动画，避免高亮行“姗姗来迟”。
       flatListRef.current.scrollToOffset({ offset: targetOffset, animated: !force })
       lastScrolledLineRef.current = index
@@ -790,6 +818,10 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
         clearTimeout(pendingInitialScrollTimerRef.current)
         pendingInitialScrollTimerRef.current = null
       }
+      if (scrollCancelRef.current) {
+        scrollCancelRef.current()
+        scrollCancelRef.current = null
+      }
     }
   }, [])
 
@@ -862,6 +894,11 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
   // 逐行偏小、高亮行越来越靠下（用户录屏中的现象：高亮行从居中一路漂到屏幕下方）。
   // active 同理：切页只应重新定位，不该清空缓存（下面的 [active] effect 负责定位）。
   useEffect(() => {
+    // 切歌时取消仍在跑的固定时长回位（scrollTo 是 10ms 定时步进，不取消会跟下面的归零抢偏移）。
+    if (scrollCancelRef.current) {
+      scrollCancelRef.current()
+      scrollCancelRef.current = null
+    }
     lyricScrollLayoutRef.current.reset()
     lastScrolledLineRef.current = -1
     lineRef.current.prevLine = 0
@@ -1054,6 +1091,7 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
   const handleScroll = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
     const nativeEvent = e.nativeEvent
     scrollYRef.current = nativeEvent.contentOffset.y
+    scrollInfoRef.current = nativeEvent
     // 仅手动定位期间喂浮层：自动跟随期间每帧都有一次 scrollToOffset → onScroll，
     // 此时浮层是隐藏的，喂它只会白白让一个看不见的组件每帧重渲染。
     // dragStartOffsetRef 只在 handleScrollBeginDrag 里赋值、在收起浮层的每条路径上都清空，

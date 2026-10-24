@@ -106,14 +106,14 @@ export default memo(({ onBack }: { onBack?: () => void }) => {
           {/* 【第 187 轮】左侧小红心与「喜欢」同一套图标/色：已收藏实心红，未收藏空心。 */}
           <Icon
             name={isCollected ? 'love-filled' : 'love'}
-            size={14}
+            size={17}
             color={isCollected ? theme['c-liked'] : theme['c-350']}
           />
           <Text style={{ ...styles.controlBtnText, marginLeft: 6, color: theme['c-primary-font'] }}>
             {t('collect_songlist')}
           </Text>
           {/* 与「图标宽 + 间距」等宽的对称留白，让文字本身居中。 */}
-          <View style={{ width: scaleSizeW(14) + 6 }} />
+          <View style={{ width: scaleSizeW(17) + 6 }} />
         </View>
       </Button>
       <Button

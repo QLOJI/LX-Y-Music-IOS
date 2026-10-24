@@ -4,6 +4,7 @@ import {
   Pressable,
   type NativeScrollEvent,
   type NativeSyntheticEvent,
+  type LayoutChangeEvent,
   type StyleProp,
   type TextStyle,
   type ViewStyle,
@@ -201,6 +202,11 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
   activeLineRef.current = activeLine
   const visibleRef = useRef(visible)
   visibleRef.current = visible
+  // 【第 190 轮】当前行因换行多占的高度：{ 行号, 额外高度 }。行号不匹配时视为 0，
+  // 换行/切歌首帧就不会吃到上一行的旧高度。宽度按 lyricContentWidth/zoom 排版，
+  // 超过边界自动换行；高度由该行内容 onLayout 实测回填（见 renderItem）。
+  const [activeWrap, setActiveWrap] = useState<{ line: number, extra: number }>({ line: -1, extra: 0 })
+  const activeWrapExtra = activeWrap.line === activeLine ? activeWrap.extra : 0
 
   // 三个尺寸常量（模块级 calcMetrics，与 getMiniLyricRowHeight 共享同一份算式）
   const metrics = useMemo(() => calcMetrics(), [])
@@ -218,9 +224,11 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
   const worstRowHeight = baseRowHeight + (songHasTranslation ? translationSlot : 0)
   const rowHeights = useMemo(
     () => lyricLines.map((line, index) =>
-      baseRowHeight + (index === activeLine && hasRealTranslation(line) ? translationSlot : 0),
+      baseRowHeight +
+      (index === activeLine && hasRealTranslation(line) ? translationSlot : 0) +
+      (index === activeLine ? activeWrapExtra : 0),
     ),
-    [lyricLines, activeLine, baseRowHeight, translationSlot],
+    [lyricLines, activeLine, baseRowHeight, translationSlot, activeWrapExtra],
   )
   // 每行在内容坐标系里的起点（前缀和）。滚动目标、getItemLayout、定位浮层三处同源，
   // 保证「虚线指向的行」=「列表居中行」=「滚动目标行」永远一致。
@@ -298,18 +306,26 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
   const getLineShift = useCallback((index: number, scale: Animated.Value) => {
     // 居中：不需要补偿；居左/居右：把「居中缩放」推出去的那半段宽度补回来，
     // 锚点落在同侧边缘（RN 0.73 没有 transformOrigin）。
+    // 【第 190 轮】激活行的排版宽度是 W/zoom（换行用），锚点补偿按这个块宽算：
+    // 输出从「块宽缩放后与 W 的差」收回到 0，缩放全程贴住同侧边缘。
     if (!alignmentSign || lyricContentWidth <= 0) return null
-    const key = `${index}:${alignmentSign}:${lyricContentWidth}`
+    const wrapped = index === activeLine && zoom > 1
+    const key = `${index}:${alignmentSign}:${lyricContentWidth}:${wrapped ? zoom : 1}`
     let value = shiftValuesRef.current.get(key)
     if (value == null) {
-      value = scale.interpolate({
-        inputRange: [1, 1.5],
-        outputRange: [0, alignmentSign * lyricContentWidth * 0.25],
-      })
+      value = wrapped
+        ? scale.interpolate({
+          inputRange: [1, zoom],
+          outputRange: [alignmentSign * (lyricContentWidth / zoom - lyricContentWidth) / 2, 0],
+        })
+        : scale.interpolate({
+          inputRange: [1, 1.5],
+          outputRange: [0, alignmentSign * lyricContentWidth * 0.25],
+        })
       shiftValuesRef.current.set(key, value)
     }
     return value
-  }, [alignmentSign, lyricContentWidth])
+  }, [alignmentSign, lyricContentWidth, activeLine, zoom])
 
   const textStyle = useMemo<StyleProp<TextStyle>>(() => ({ textAlign, lineHeight: metrics.lineHeight }), [textAlign, metrics.lineHeight])
   const translationStyle = useMemo<StyleProp<TextStyle>>(
@@ -433,6 +449,14 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
     if (activeLineRef.current < 0 || isPauseScrollRef.current) return
     followActiveLine(activeLineRef.current)
   }, [visible, followActiveLine])
+
+  // 【第 190 轮】当前行换行后实测高度回填，行前缀偏移随之变化：把当前行重新对回窗口正中。
+  // 手动定位期间不抢滚动（用户拖动/回位动画优先）。
+  useEffect(() => {
+    if (activeWrap.line !== activeLine || activeWrap.extra <= 0) return
+    if (isPauseScrollRef.current || !visibleRef.current) return
+    animateToLine(activeLine, LINE_CHANGE_GLIDE_MS)
+  }, [activeWrap, activeLine, animateToLine])
 
   // 复位只在「歌词数组真的换了一份」时跑（useLrcSet 只在换歌 / 歌词就绪 / 歌词源刷新时换引用，
   // 换行不换引用）。【第 22 轮】依赖刻意走 ref、只写 [lyricLines]：resetScroll 的依赖链里有
@@ -588,6 +612,18 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
     const words = wordsByIndex[index] ?? null
     // 该行的结束时间 = 下一行的起始时间（末行没有下一行时给一个固定时长兜底）
     const endTime = lyricLines[index + 1]?.time ?? item.time + 4000
+    // 【第 190 轮】换行边界：激活行放大后要铺满原宽，所以先按 W/zoom 排版；
+    // 非激活行保持原宽（单行省略）。超过边界由 Text 自动换行（激活行不再限行数）。
+    const rowWidth = lyricContentWidth > 0
+      ? (isActive && zoom > 1 ? lyricContentWidth / zoom : lyricContentWidth)
+      : 0
+    const handleWrapLayout = isActive
+      ? ({ nativeEvent }: LayoutChangeEvent) => {
+        const expected = metrics.lineHeight + (hasRealTranslation(item) ? metrics.translationHeight + metrics.gap : 0)
+        const extra = Math.max(0, Math.round(nativeEvent.layout.height - expected))
+        setActiveWrap(prev => prev.line === index && prev.extra === extra ? prev : { line: index, extra })
+      }
+      : undefined
     return (
       <Pressable
         // 行高逐行化（第 16 轮第 8 条）：当前行带翻译时这一行更高，其余行只占行盒 + 净间距
@@ -598,11 +634,16 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
         accessibilityLabel={item.text || undefined}
       >
         <Animated.View
-          style={{
-            transform: getLineShift(index, getLineScale(index))
-              ? [{ translateX: getLineShift(index, getLineScale(index)) }, { scale: getLineScale(index) }]
-              : [{ scale: getLineScale(index) }],
-          }}
+          onLayout={handleWrapLayout}
+          style={[
+            {
+              transform: getLineShift(index, getLineScale(index))
+                ? [{ translateX: getLineShift(index, getLineScale(index)) }, { scale: getLineScale(index) }]
+                : [{ scale: getLineScale(index) }],
+              alignSelf: 'center',
+            },
+            rowWidth > 0 ? { width: rowWidth } : null,
+          ]}
         >
         {
           // 逐字高亮：有逐字时间戳走真实时间轴，没有则按字符数均分该行时长（KaraokeLyric 内部区分）。
@@ -619,7 +660,9 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
                 size={BASE_FONT_SIZE}
                 style={textStyle}
                 isActive
-                numberOfLines={1}
+                // 【第 190 轮】当前行允许换行：缩放后的宽度由 rowWidth（W/zoom）约束，
+                // 原来的定高单行会让长句两端被屏幕裁掉。
+                numberOfLines={isActive ? undefined : 1}
                 playedColor={activeColor}
                 inactiveColor={inactiveColor}
               />
@@ -629,7 +672,7 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
                 size={BASE_FONT_SIZE}
                 color={isActive ? activeColor : inactiveColor}
                 style={textStyle}
-                numberOfLines={1}
+                numberOfLines={isActive ? undefined : 1}
               >
                 {item.text || BLANK}
               </Text>
@@ -650,7 +693,7 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
         </Animated.View>
       </Pressable>
     )
-  }, [activeLine, wordsByIndex, lyricLines, isKaraoke, baseRowHeight, rowHeights, textStyle, translationStyle, activeColor, inactiveColor, handlePress, handleLongPress, getLineScale, getLineShift, visible, karaokeVisible])
+  }, [activeLine, wordsByIndex, lyricLines, isKaraoke, baseRowHeight, rowHeights, textStyle, translationStyle, activeColor, inactiveColor, handlePress, handleLongPress, getLineScale, getLineShift, visible, karaokeVisible, zoom, lyricContentWidth, metrics])
 
   const getKey = useCallback((_item: Line, index: number) => `${index}`, [])
   // 定高行：getItemLayout 精确（不需要像大歌词那样动态测量），虚拟化窗口与滚动目标都以它为准
