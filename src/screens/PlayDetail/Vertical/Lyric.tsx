@@ -65,9 +65,11 @@ interface LineProps {
   wordsByIndex: ReadonlyArray<LxLyricWord[] | null>
   /** 【第 173 轮】歌词页是否为当前页：隐藏页不跑逐字 rAF（不可见，纯耗电）。 */
   pageActive: boolean
+  /** 【第 175 轮】歌词文本框宽度（用于对齐边锚定的缩放补偿）。 */
+  lineWidth: number
 }
 const LrcLine = memo(
-  ({ line, lineNum, activeLine, onLayout, onPress, isSmallWindow, wordsByIndex, pageActive }: LineProps) => {
+  ({ line, lineNum, activeLine, onLayout, onPress, isSmallWindow, wordsByIndex, pageActive, lineWidth }: LineProps) => {
     const theme = useTheme()
     const lrcFontSize = useSettingValue('playDetail.vertical.style.lrcFontSize')
     const textAlign = useSettingValue('playDetail.style.align')
@@ -92,6 +94,20 @@ const LrcLine = memo(
         useNativeDriver: true,
       }).start()
     }, [isActive, zoom, lineScale])
+    // 【第 175 轮】缩放锚点跟随对齐方式：居左锚左缘、居右锚右缘、居中锚中心。
+    // RN 0.73 没有 transformOrigin，用「居中缩放 + 平移补偿」实现：
+    // 居中缩放会把左缘推出去 W*(S-1)/2，居左补 +该值（右缘同理取负）。
+    const alignmentSign = textAlign === 'left' ? 1 : textAlign === 'right' ? -1 : 0
+    const lineShift = useMemo(() => {
+      if (!alignmentSign || lineWidth <= 0) return null
+      return lineScale.interpolate({
+        inputRange: [1, 1.5],
+        outputRange: [0, alignmentSign * lineWidth * 0.25],
+      })
+    }, [lineScale, lineWidth, alignmentSign])
+    const lineTransform = lineShift
+      ? [{ translateX: lineShift }, { scale: lineScale }]
+      : [{ scale: lineScale }]
     const size = lrcFontSize / 10
     const lineHeight = setSpText(size) * 1.3
     // 有逐字时间轴的行始终用卡拉OK渲染器（非激活时静态显示未播放颜色）：
@@ -127,7 +143,7 @@ const LrcLine = memo(
         accessibilityLabel={line.text || undefined}
       >
         <View style={[styles.line, isSmallWindow && { paddingTop: 6, paddingBottom: 6 }]} onLayout={handleLayout}>
-          <Animated.View style={{ transform: [{ scale: lineScale }] }}>
+          <Animated.View style={{ transform: lineTransform }}>
           {words
             ? (
               <KaraokeLyric
@@ -205,7 +221,8 @@ const LrcLine = memo(
       // 否则小屏/大屏切换后行内边距不刷新。
       prevProps.isSmallWindow === nextProps.isSmallWindow &&
       // 【第 173 轮】页面可见性变化必须放行：否则隐藏/显示时无法启停逐字 rAF。
-      prevProps.pageActive === nextProps.pageActive
+      prevProps.pageActive === nextProps.pageActive &&
+      prevProps.lineWidth === nextProps.lineWidth
     )
   },
 )
@@ -232,6 +249,10 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
   // 不再用 winHeight - HEADER_HEIGHT 估算：后者未扣除状态栏高和底部 Player
   // 控制区高，导致 FlatList 被撑得比歌词页还大，下方被 PagerView 裁剪或顶上去。
   const [pageHeight, setPageHeight] = useState(winHeight > 0 ? Math.max(0, winHeight - 180) : 0)
+  // 【第 175 轮】歌词文本框宽度（列表宽 - 左右 contentContainer 内边距）：
+  // 缩放锚点补偿要用它（见 LrcLine 的 lineShift）。
+  const [lyricBoxWidth, setLyricBoxWidth] = useState(0)
+  const lyricContentWidth = Math.max(0, lyricBoxWidth - (isSmallWindow ? 24 : 40))
   // 用 ref 持有最新页面高度：handleScrollToActive 内部多处依赖 pageHeight 计算居中偏移，
   // 而 [active] effect 里延迟的 re-center（rAF / getPosition().then）闭包捕获的是旧渲染的
   // pageHeight（初始估算 winHeight-180），此时真实高度（onLayout）可能尚未到来，
@@ -1125,8 +1146,8 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
   // useCallback 稳定 renderItem：依赖项均为稳定引用或低频变化值（line 每行切换变化一次），
   // 配合 LrcLine 的 memo 比较器，行切换时只有新旧激活两行重渲染。
   const renderItem: FlatListType['renderItem'] = useCallback(({ item, index }: { item: Line, index: number }) => {
-    return <LrcLine line={item} lineNum={index} activeLine={line} onLayout={handleLineLayout} onPress={handleLinePress} isSmallWindow={isSmallWindow} wordsByIndex={wordsByIndex} pageActive={active} />
-  }, [line, handleLineLayout, handleLinePress, isSmallWindow, wordsByIndex, active])
+    return <LrcLine line={item} lineNum={index} activeLine={line} onLayout={handleLineLayout} onPress={handleLinePress} isSmallWindow={isSmallWindow} wordsByIndex={wordsByIndex} pageActive={active} lineWidth={lyricContentWidth} />
+  }, [line, handleLineLayout, handleLinePress, isSmallWindow, wordsByIndex, active, lyricContentWidth])
   const getkey: FlatListType['keyExtractor'] = (_item, index) => `${index}`
 
   const handlePageLayout = useCallback(({ nativeEvent }: LayoutChangeEvent) => {
@@ -1161,6 +1182,11 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
         keyExtractor={getkey}
         onContentSizeChange={handleContentSizeChange}
         style={{ height: pageHeight > 0 ? pageHeight : pagerHeight, width: '100%' }}
+        // 【第 175 轮】量一次列表宽度：缩放锚点补偿按「文本可用宽度」算。
+        onLayout={({ nativeEvent }) => {
+          const w = Math.round(nativeEvent.layout.width)
+          if (w > 0) setLyricBoxWidth(prev => prev === w ? prev : w)
+        }}
         // 歌词列表从顶部排布，当前行由 scrollToOffset(viewPosition 0.5) 定位到【中央】；
         // 不再用 justifyContent:'center' 整体垂直居中——那样是把整个列表当成一个块居中，
         // 歌词少时会整页被顶到中间、上下同时露白（即用户反馈的“被空白遮住 / 下面空白”）。

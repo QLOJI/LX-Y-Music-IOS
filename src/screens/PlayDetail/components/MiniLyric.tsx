@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   FlatList,
   Pressable,
@@ -282,6 +282,26 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
   // 歌词文本的左右内缩（pt，屏幕坐标系）：自己那份基准内缩 + 外层为对齐加的内边距
   // （外层内边距由根节点的负 margin 抵消掉了，文本要把它补回来，左缘才与歌名同一条竖线）
   const lineInsetH = useMemo(() => bleedH + scaleSizeW(BASE_LINE_INSET_H), [bleedH])
+  // 【第 175 轮】列表宽度（量一次）：缩放锚点补偿按「文本可用宽度」算。
+  const [listWidth, setListWidth] = useState(0)
+  const lyricContentWidth = Math.max(0, listWidth - lineInsetH * 2)
+  const alignmentSign = textAlign === 'left' ? 1 : textAlign === 'right' ? -1 : 0
+  const shiftValuesRef = useRef(new Map<string, any>())
+  const getLineShift = useCallback((index: number, scale: Animated.Value) => {
+    // 居中：不需要补偿；居左/居右：把「居中缩放」推出去的那半段宽度补回来，
+    // 锚点落在同侧边缘（RN 0.73 没有 transformOrigin）。
+    if (!alignmentSign || lyricContentWidth <= 0) return null
+    const key = `${index}:${alignmentSign}:${lyricContentWidth}`
+    let value = shiftValuesRef.current.get(key)
+    if (value == null) {
+      value = scale.interpolate({
+        inputRange: [1, 1.5],
+        outputRange: [0, alignmentSign * lyricContentWidth * 0.25],
+      })
+      shiftValuesRef.current.set(key, value)
+    }
+    return value
+  }, [alignmentSign, lyricContentWidth])
 
   const textStyle = useMemo<StyleProp<TextStyle>>(() => ({ textAlign, lineHeight: metrics.lineHeight }), [textAlign, metrics.lineHeight])
   const translationStyle = useMemo<StyleProp<TextStyle>>(
@@ -569,7 +589,13 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
         accessibilityRole="button"
         accessibilityLabel={item.text || undefined}
       >
-        <Animated.View style={{ transform: [{ scale: getLineScale(index) }] }}>
+        <Animated.View
+          style={{
+            transform: getLineShift(index, getLineScale(index))
+              ? [{ translateX: getLineShift(index, getLineScale(index)) }, { scale: getLineScale(index) }]
+              : [{ scale: getLineScale(index) }],
+          }}
+        >
         {
           // 逐字高亮：有逐字时间戳走真实时间轴，没有则按字符数均分该行时长（KaraokeLyric 内部区分）。
           // 仅激活行开启动画，其余行走静态整行配色（不为屏幕外的行跑 rAF）。
@@ -616,7 +642,7 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
         </Animated.View>
       </Pressable>
     )
-  }, [activeLine, wordsByIndex, lyricLines, isKaraoke, baseRowHeight, rowHeights, textStyle, translationStyle, activeColor, inactiveColor, handlePress, handleLongPress, getLineScale, visible])
+  }, [activeLine, wordsByIndex, lyricLines, isKaraoke, baseRowHeight, rowHeights, textStyle, translationStyle, activeColor, inactiveColor, handlePress, handleLongPress, getLineScale, getLineShift, visible])
 
   const getKey = useCallback((_item: Line, index: number) => `${index}`, [])
   // 定高行：getItemLayout 精确（不需要像大歌词那样动态测量），虚拟化窗口与滚动目标都以它为准
@@ -639,6 +665,11 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
         keyExtractor={getKey}
         getItemLayout={getItemLayout}
         style={styles.list}
+        // 【第 175 轮】量一次列表宽度：缩放锚点补偿按「文本可用宽度」算。
+        onLayout={({ nativeEvent }) => {
+          const w = Math.round(nativeEvent.layout.width)
+          if (w > 0) setListWidth(prev => prev === w ? prev : w)
+        }}
         // 上下留白按首行/末行真实高度给：行号 i 居中 ⇔ 滚动偏移 = 该行中心 − 窗口中心
         //（见 getScrollOffset），定位浮层的基准线（容器 50%）因此永远压在窗口正中那一行上。
         // 左右内缩放在 contentContainer（而不是容器 padding）上：容器 padding 会把

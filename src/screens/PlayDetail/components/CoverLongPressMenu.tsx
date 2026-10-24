@@ -1,4 +1,4 @@
-import { useCallback, useImperativeHandle, useRef, useState, forwardRef } from 'react'
+import { useCallback, useImperativeHandle, useRef, forwardRef } from 'react'
 import type { View } from 'react-native'
 import Menu, { type MenuType, type Menus } from '@/components/common/Menu'
 import { addTask } from '@/core/download'
@@ -48,15 +48,13 @@ const menus: Menus = [
 
 export default forwardRef<CoverLongPressMenuType, CoverLongPressMenuProps>(({ anchorRef, musicInfo }, ref) => {
   const menuRef = useRef<MenuType>(null)
-  const [visible, setVisible] = useState(false)
 
   useImperativeHandle(ref, () => ({
     show() {
       const anchor = anchorRef.current
       if (!anchor || !musicInfo) return
       anchor.measure((x, y, w, h, px, py) => {
-        setVisible(true)
-        // 等 Menu 挂载进 Modal 之后再 show（Menu 内部再等一帧才 setVisible(true)）
+        // Menu 常驻（见文件末尾注释），直接 show 即可
         requestAnimationFrame(() => {
           menuRef.current?.show({ x: px, y: py, w, h })
         })
@@ -64,7 +62,6 @@ export default forwardRef<CoverLongPressMenuType, CoverLongPressMenuProps>(({ an
     },
     hide() {
       menuRef.current?.hide()
-      setVisible(false)
     },
   }), [anchorRef, musicInfo])
 
@@ -92,7 +89,8 @@ export default forwardRef<CoverLongPressMenuType, CoverLongPressMenuProps>(({ an
     }
   }, [musicInfo])
 
-  return visible
-    ? <Menu ref={menuRef} menus={menus} onPress={handleMenuPress} onHide={() => { setVisible(false) }} />
-    : null
+  // 【第 174 轮】Menu 常驻、只用 ref 显隐：条件卸载会跳过 Modal 的 300ms 延迟卸载保护，
+  // 残留的 RCTModalHostView 会吞掉**整页**触摸（概率性「播放详情页锁死」，
+  // 退出重进才恢复）。Menu 自带的 Modal 本来就设计为常驻，这里不要再用 visible 包一层。
+  return <Menu ref={menuRef} menus={menus} onPress={handleMenuPress} onHide={() => {}} />
 })

@@ -10,6 +10,7 @@ import { BTN_WIDTH } from './MoreBtn/Btn'
 import { marginLeft } from './constant'
 import Image from '@/components/common/Image'
 import { useStatusbarHeight, useScreenCovered, useAppActive, useNavTransitioning } from '@/store/common/hook'
+import { useAppInactive } from '@/store/common/hook'
 import playerState from '@/store/player/state'
 import { useSettingValue } from '@/store/setting/hook'
 import { useLandscapeLayout, getLeftWidth } from '@/utils/landscapeLayout'
@@ -55,7 +56,9 @@ export default memo(({ componentId }: { componentId: string }) => {
   const appActive = useAppActive()
   // 【第 133 轮】同竖屏：转场窗口内不让可见性门把自转停掉（否则切入/切回整段静止）。
   const navTransitioning = useNavTransitioning()
-  const spinVisible = !screenCovered && appActive || navTransitioning && appActive
+  // 【第 174 轮】inactive 时界面仍可见：自转继续；background 才停。
+  const appInactive = useAppInactive()
+  const spinVisible = !screenCovered && appActive || navTransitioning && appActive || !screenCovered && appInactive
   const coverSizeRaw = useSettingValue('playDetail.style.coverSize')
   const coverSize = typeof coverSizeRaw === 'number' && !isNaN(coverSizeRaw) ? coverSizeRaw : 100
   // 【第 163 轮】同竖屏：初值取当前播放相位，避免首次挂载时从 0° 跳到当前角度。

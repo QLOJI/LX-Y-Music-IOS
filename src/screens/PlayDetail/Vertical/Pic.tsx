@@ -7,6 +7,7 @@ import { useWindowSize } from '@/utils/hooks'
 import { useSettingValue } from '@/store/setting/hook'
 import Image, { defaultHeaders } from '@/components/common/Image'
 import { useStatusbarHeight, useScreenCovered, useAppActive, useNavTransitioning } from '@/store/common/hook'
+import { useAppInactive } from '@/store/common/hook'
 import { HEADER_HEIGHT } from './components/Header'
 import { createStyle } from '@/utils/tools'
 import CoverLongPressMenu, { type CoverLongPressMenuType } from '@/screens/PlayDetail/components/CoverLongPressMenu'
@@ -130,7 +131,11 @@ export default memo(({ componentId, active = true, coverRegionHeight = 0 }: { co
   // pop 时还没露出），只看 screenCovered 会让封面在整段切入/切回里静止，转场结束
   // 才续转 = 用户看到的卡顿。转场期间保持驱动，窗口结束再由可见性门决定去留。
   const navTransitioning = useNavTransitioning()
-  const spinVisible = active && !screenCovered && appActive || active && navTransitioning && appActive
+  // 【第 174 轮】inactive（下拉控制中心/通知中心/切换器预览）界面仍可见：自转继续；
+  // 只有 background（回桌面/锁屏）才停。keep-alive effect 仍只认 appActive，
+  // 这里由 spinVisible 的第三个分支负责起转。
+  const appInactive = useAppInactive()
+  const spinVisible = active && !screenCovered && appActive || active && navTransitioning && appActive || active && !screenCovered && appInactive
 
   // 封面 URL：playerMusicInfo.pic 已兼容在线 + 下载两种来源（playInfo.ts setPlayerMusicInfo）。
   // 同时兜底 playMusicInfo.musicInfo.meta.picUrl，保证和参考版 e58d1ab1 的数据入口一致。

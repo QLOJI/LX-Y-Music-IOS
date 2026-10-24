@@ -86,6 +86,15 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
   const isSmallWindow = winHeight < 700
   // 正在从左往右滑向歌词页（从封面切到歌词），用于让 LyricPage 提前激活高亮定位
   const pagerViewRef = useRef<PagerView>(null)
+  // 【第 174 轮】PagerView（react-native-pager-view 6.7.1）的私有 isScrolling 在拖动手势
+  // 被取消时可能永久停在 true：之后它在 capture 阶段抢走页面里的每次按压，表现为
+  // 「详情页所有按钮、歌词滑动都没反应」，退出重进（重挂 PagerView）才好。Home 早有针对
+  // 这个缺口的自愈，详情页一直没有。这里在「确定没有手势」的时机把它抹平（纯 JS 字段，
+  // 正常路径下库自己已写成 false，这里是空操作）。
+  const clearPagerLatch = useCallback(() => {
+    const pager = pagerViewRef.current as unknown as { isScrolling?: boolean } | null
+    if (pager?.isScrolling) pager.isScrolling = false
+  }, [])
   const showLyricRef = useRef(false)
   const playlistRef = useRef<PlayerPlaylistType>(null)
   const [pagerHeight, setPagerHeight] = useState(0)
@@ -149,6 +158,8 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
   const [isProgressDragging, setIsProgressDragging] = useState(false)
 
   const onPageSelected = ({ nativeEvent }: PagerViewOnPageSelectedEvent) => {
+    // 【第 174 轮】落页即无手势：清掉可能残留的 isScrolling 锁。
+    clearPagerLatch()
     setPageIndex(nativeEvent.position)
     showLyricRef.current = nativeEvent.position === 1
     // 页面选择完成后：滑向封面页，取消标记并通知子组件更新
@@ -208,6 +219,10 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
     let appstateListener = AppState.addEventListener('change', (state) => {
       switch (state) {
         case 'active':
+          // 【第 174 轮】回前台：清掉 PagerView 可能卡住的 isScrolling 与进度条拖动锁定，
+          // 右侧/下方的滑动与点击恢复正常（详情页「锁死」的一条自愈路径）。
+          clearPagerLatch()
+          setIsProgressDragging(false)
           // 回前台补齐常亮：只有「歌词页在显示 + 本屏可见（未被评论页盖住）」才点亮。
           if (
             showLyricRef.current &&
@@ -391,10 +406,22 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
   return (
     <>
       <Header pageIndex={pageIndex} />
-      <View style={styles.container}>
+      {/* 【第 174 轮】触摸起点预防性清理 PagerView 的 isScrolling 锁（与 Home 同法）：
+          手指刚落下时一定没有手势在跑，此刻抹平不会打断任何东西；返回 false = 不截胡。 */}
+      <View
+        style={styles.container}
+        onStartShouldSetResponderCapture={() => {
+          clearPagerLatch()
+          return false
+        }}
+      >
         <PagerView
           onPageSelected={onPageSelected}
           onPageScroll={handlePageScroll}
+          // 【第 174 轮】idle = 手势确定结束：清锁，防止取消的手势让它永久停在 dragging。
+          onPageScrollStateChanged={({ nativeEvent }: { nativeEvent: { pageScrollState: string } }) => {
+            if (nativeEvent.pageScrollState === 'idle') clearPagerLatch()
+          }}
           style={styles.pagerView}
           ref={pagerViewRef}
           scrollEnabled={!isProgressDragging}
