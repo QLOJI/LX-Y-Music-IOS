@@ -2070,10 +2070,13 @@ static void LXNowPlayingLyricStep(void) {
     // 时钟落后于 JS（artist 是更靠后的一行，含前奏窗口的 found < 0）：保留 JS 文本、
     // 只把游标推上去。**绝不回退文本**——回退就是用户看到的「跳回上一句」。
     // 典型来源：updateMetaData 有 500ms 发布冷却，JS 已换行而锚点尚未推进。
-    // 【第 116 轮】「领先」只认「该行时间已经到（容差 500ms = 发布冷却 + 锚点落后）」：
-    // JS 逐行通路在前奏段写下的下一行（时间还没到）不算领先 —— 否则首行永远没机会显示。
+    // 【第 116 轮】「领先」只认「该行时间已经到」：JS 逐行通路在前奏段写下的下一行
+    // （时间还没到）不算领先 —— 否则首行（「歌手 - 歌名」这条头行）永远没机会显示。
+    // 【第 175 轮】容差 500ms → 150ms：JS 引擎按 offset 100ms 提前换行，150ms 足够
+    // 接纳它的领先；500ms 则会把「离下一行还有半秒」的前奏/短头行直接跳过去，
+    // 用户看到的就是第一行不显示、换行也像被提前吞掉。
     BOOL artistLineTimeReached = artistLine >= 0 &&
-      [[LXNowPlayingLyricLines[(NSUInteger)artistLine] objectForKey:@"time"] doubleValue] <= positionMs + 500.0;
+      [[LXNowPlayingLyricLines[(NSUInteger)artistLine] objectForKey:@"time"] doubleValue] <= positionMs + 150.0;
     if (artistLine >= 0 && artistLine > found) {
       if (artistLineTimeReached) {
         LXNowPlayingLyricIndex = artistLine;
