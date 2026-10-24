@@ -1,4 +1,4 @@
-import { setNowPlayingStatusText } from '@/utils/nativeModules/nowPlaying'
+import { setNowPlayingCurrentLine, setNowPlayingStatusText } from '@/utils/nativeModules/nowPlaying'
 import playerState from '@/store/player/state'
 import settingState from '@/store/setting/state'
 import { Platform } from 'react-native'
@@ -25,7 +25,14 @@ const isShowBluetoothLyric = () => settingState.setting['player.isShowBluetoothL
 export const syncNowPlayingStatusText = () => {
   if (Platform.OS != 'ios') return
   const text = isShowBluetoothLyric() ? (playerState.statusText ?? '') : ''
-  void setNowPlayingStatusText(text)
+  void setNowPlayingStatusText(text).then(() => {
+    // 【第 175 轮】状态文案撤销后，原生会按当前时钟仲裁一次；但歌词刚装载时
+    // （状态「加载中/缓存中」恰好覆盖首行推送）时钟可能还没到首行 —— 这里把
+    // JS 的当前行再补推一次，保证首行/当前行立刻回到卡片，而不是等下一行。
+    if (text.length === 0 && playerState.lastLyric) {
+      void setNowPlayingCurrentLine(playerState.lastLyric)
+    }
+  })
 }
 
 export default () => {
