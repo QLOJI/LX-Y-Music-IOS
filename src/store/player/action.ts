@@ -5,6 +5,9 @@ import state from './state'
 type PlayerMusicInfoKeys = keyof LX.Player.MusicInfo
 const musicInfoKeys: PlayerMusicInfoKeys[] = Object.keys(state.musicInfo) as PlayerMusicInfoKeys[]
 
+// 【第 189 轮】最近一次用户主动 seek 的时刻：只有它允许自动位置回退的宽限窗口。
+let lastUserSeekAt = 0
+
 export default {
   updatePlayIndex(playIndex: number, playerPlayIndex: number) {
     state.playInfo.playIndex = playIndex
@@ -54,8 +57,12 @@ export default {
     //   · 用户主动 seek 走 core/player/progress.ts 的 setUserProgress → store.setProgress，
     //     不经过这里，任何方向都照常生效。
     // 切歌 / 重播先 setProgress(0, 0) 归零，prev 回到 0；跳到 <1s 放行（整首重播）。
+    // 【第 189 轮】不再只限开局 6 秒：任何时刻的**自动**位置都不回退；
+    // 用户主动 seek 后 2 秒的宽限窗口内允许引擎落点校正（那是用户意图）。
+    // 归零/整首重播（<1s）永远放行。
     const prevTime = state.progress.nowPlayTime
-    if (prevTime > 0.5 && prevTime < 6 && time >= 1 && time < prevTime - 0.3) return
+    if (prevTime > 0.5 && time >= 1 && time < prevTime - 0.3 &&
+        Date.now() - lastUserSeekAt > 2000) return
     // 已播时间不得越过总时长（需求：「歌曲实际播放时间不能超过进度条上的总时长」）。
     // 为什么必须钳在这一处，而不是逐个调用点：
     //   1) 4Hz 原生位置快路径发布的是**歌词时钟外推值**（AppDelegate 里
@@ -82,6 +89,7 @@ export default {
   /** 用户主动 seek 的进度写入：与 setNowPlayTime 同一条时长钳制，但**不经过**
    *  「开局自动位置不回退」守卫（回退是用户意图）；总时长不变。 */
   setProgressTime(currentTime: number) {
+    lastUserSeekAt = Date.now()
     let time = currentTime
     if (state.progress.maxPlayTime > 0 && time > state.progress.maxPlayTime) {
       time = state.progress.maxPlayTime
@@ -100,6 +108,8 @@ export default {
     global.state_event.playProgressChanged({ ...state.progress })
   },
   setProgress(currentTime: number, totalTime: number) {
+    // 用户 seek / 切歌归零都从这里进来：前者需要宽限窗口，后者本身写 0（放行）。
+    lastUserSeekAt = Date.now()
     // 与 setNowPlayTime 同一条不变量：已播时间不得越过总时长（切歌的 setProgress(0,0)
     // 不受影响——totalTime 为 0 时不钳）。
     if (totalTime > 0 && currentTime > totalTime) currentTime = totalTime
