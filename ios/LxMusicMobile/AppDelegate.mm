@@ -715,6 +715,8 @@ static BOOL LXIsReceivingRemoteControlEvents = NO;
 static NSString * const LXTrackPlayerLifecycleNotificationName = @"LXTrackPlayerLifecycle";
 static id LXTrackPlayerLifecycleObserver = nil;
 static id LXNowPlayingApplicationObserver = nil;
+// 【第 188 轮】锁屏/切后台时把原生歌词钟降频（前台 20Hz / 后台 10Hz）。
+static id LXNowPlayingResignObserver = nil;
 // 【第 23 轮】屏幕亮度观察者（锁屏卡片歌词时钟的「亮度证据」熄屏门，见文件后部时钟区块）
 static id LXScreenBrightnessObserver = nil;
 static NSString * const LXRemoteCommandNotificationName = @"LXRemoteCommand";
@@ -742,6 +744,7 @@ static void LXClearNowPlayingLyricLines(void);
 static void LXReanchorNowPlayingLyric(double elapsedMs, double snapshotAtMs, double ageMs);
 static void LXNowPlayingLyricStep(void);
 static void LXStartNowPlayingLyricTimer(void);
+static void LXUpdateNowPlayingLyricTickRate(void);
 static void LXSyncNowPlayingLyricTimer(void);
 // 【第 23 轮】亮度证据记录（定义在文件后部时钟区块；亮度观察者 / 回前台两处调用）
 static void LXRememberScreenBrightness(void);
@@ -769,6 +772,11 @@ static NSNotificationName const LXPlayerPreloadNextNotificationName = @"LXPreloa
 // 停一会、隔几句又同步"）；冻结在最后已知位置才能与音频保持一致。
 // 定义在文件前部：生命周期通知处理器（歌词驱动区块之前）即需读写。
 static BOOL LXNowPlayingClockHold = NO;
+// 【第 188 轮】起播冻结：JS 在引擎**确认出声前**发布的元数据/状态速率是 0。
+// 它与普通 state 事件的 hold 分开存，避免后续一次「Playing」状态发布把起播冻结清掉
+// （那会让原生时钟在取链/缓冲期按墙钟外推，锁屏时间先跑到 0:05 再回退）。
+// 只有正速率发布（= JS 已确认在播）才把它清掉。
+static BOOL LXNowPlayingStartupHold = NO;
 // 【第 58 轮第 4 条】Now Playing 抑制闸门。勾选「与其他应用同时播放」时期望**当场撤下**锁屏 /
 // 灵动岛的媒体卡（用户原话「勾选上『与其他应用同时播放』选项……立即取消锁屏和灵动岛界面，
 // 取消勾选后再次播放音乐，继续占用锁屏和灵动岛界面」）。闸门落在唯一的发布出口
@@ -1315,7 +1323,14 @@ static void LXSetNowPlayingPlaybackState(MPNowPlayingPlaybackState state, NSDict
   // 原生歌词时钟在控制中心/锁屏永远冻结在锚点行（歌词不实时同步）。
   // 以 play/pause 发布为准解除/置位冻结；TrackPlayer 路径的 state 事件携带
   // 同一引擎状态，仍会照常更新该标志，两条路径一致不冲突。
-  LXNowPlayingClockHold = (state != MPNowPlayingPlaybackStatePlaying);
+  // 【第 188 轮】状态发布也带速率：Playing + 0 = JS 未确认出声（取链/缓冲），
+  // Playing + 正速率 = 已确认。起播冻结必须由这里维护，不能只靠元数据 ——
+  // playStatus 在 UI 一按播放就会先发一次 Playing(rate 0)。
+  NSNumber *preflightRate = [options[@"playbackRate"] isKindOfClass:[NSNumber class]] ? options[@"playbackRate"] : nil;
+  if (state == MPNowPlayingPlaybackStatePlaying && preflightRate != nil) {
+    LXNowPlayingStartupHold = preflightRate.doubleValue <= 0;
+  }
+  LXNowPlayingClockHold = (state != MPNowPlayingPlaybackStatePlaying) || LXNowPlayingStartupHold;
 
   // 播放/暂停/停止切换时同步时钟生命周期：暂停/停止即停钟（20Hz 在非播放态是
   // 净唤醒，锁屏后台耗电），恢复播放时重建。放在早退（无标题）之前——即使元数据
@@ -1389,6 +1404,7 @@ static void LXClearNowPlayingInfo(void) {
     LXNowPlayingArtworkRetryPath = nil;
     LXNowPlayingInfoCache = nil;
     LXNowPlayingState = MPNowPlayingPlaybackStateStopped;
+    LXNowPlayingStartupHold = NO;
     LXNowPlayingMusicId = nil;
     LXNowPlayingElapsedSnapshotAtMs = 0;
     // 【第 50 轮】整卡片清空时一并撤销状态文案覆盖：停止 / 退出后残留的「缓存中…」
@@ -1470,6 +1486,8 @@ static void LXRegisterTrackPlayerLifecycleObserver(void) {
       // 通知都不发）；先记录、再按证据重评熄屏门——熄屏期间停掉的歌词时钟在这里补建。
       LXRememberScreenBrightness();
       LXSyncNowPlayingLyricTimer();
+      // 【第 188 轮】回前台恢复 20Hz；锁屏/后台 10Hz（见 LXUpdateNowPlayingLyricTickRate）。
+      LXUpdateNowPlayingLyricTickRate();
       if (LXNowPlayingInfoCache.count == 0) return;
       // 【用户第 16 轮第 9 条】只有**真的在播放**时才重新激活音频会话。
       // 旧实现在这里无条件 setActive:YES：LX 手动暂停着（或已被其他音频打断、停着）时，
@@ -1483,6 +1501,14 @@ static void LXRegisterTrackPlayerLifecycleObserver(void) {
         [[AVAudioSession sharedInstance] setActive:YES error:nil];
       }
       LXApplyNowPlayingInfo();
+    }];
+  }
+
+  // 【第 188 轮】锁屏/切后台：把原生歌词钟从 20Hz 降到 10Hz（原 40Hz 的重复定时器
+  // 在锁屏/灵动岛场景是持续唤醒源）。前台回到 20Hz 由上面的 active 观察者负责。
+  if (LXNowPlayingResignObserver == nil) {
+    LXNowPlayingResignObserver = [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationWillResignActiveNotification object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification * _Nonnull note) {
+      LXUpdateNowPlayingLyricTickRate();
     }];
   }
 
@@ -1615,6 +1641,7 @@ static void LXSetNowPlayingInfo(NSDictionary *metadata) {
     // 逐行歌词元数据现在携带正速率，任何一次换行都能把时钟自愈回正常外推。
     if (playbackRate != nil && playbackRate.doubleValue > 0) {
       LXNowPlayingClockHold = NO;
+      LXNowPlayingStartupHold = NO;
       // 【第 47 轮】播放态同源补齐（**单向** Stopped → Playing）。
       // 用户原话：「现在存在播放开始了但是歌词和进度条和时间都没有加载出来的问题」。
       // 病根：队列 reset / 引擎切换会走 LXClearNowPlayingInfo，把 LXNowPlayingState 置成
@@ -1635,6 +1662,11 @@ static void LXSetNowPlayingInfo(NSDictionary *metadata) {
       if (LXNowPlayingState == MPNowPlayingPlaybackStateStopped) {
         LXNowPlayingState = MPNowPlayingPlaybackStatePlaying;
       }
+    } else if (playbackRate != nil) {
+      // 【第 188 轮】JS 明确发 0 速率：引擎还没确认出声（取链/缓冲）或用户暂停。
+      // 冻结时钟与 1Hz 对表，锁屏时间停在最后确认的位置，不随墙钟外推超前。
+      LXNowPlayingStartupHold = YES;
+      LXNowPlayingClockHold = YES;
     }
 
     // 【第 124 轮】换歌清时间轴之前先看归属：歌词（缓存命中的歌尤其快）可能已经在新歌的
@@ -1975,6 +2007,21 @@ static void LXNowPlayingLyricStep(void) {
         ? LXNowPlayingLyricAnchorElapsedMs
         : LXNowPlayingLyricAnchorElapsedMs + ((CACurrentMediaTime() * 1000.0) - LXNowPlayingLyricAnchorSystemMs) * rate);
 
+    // 【第 188 轮】开局前 6 秒自动位置不回退（与元数据/JS 同口径）：原生时钟在起播
+    // 窗口可能先外推到前面，引擎重锚后位置变低；直接把低值写回卡片就是
+    // 0:05 → 0:02。保持缓存里的较大值，等音频追上。用户 seek 走状态/元数据发布
+    // （那两条有自己的通道），不靠这一拍降值。
+    if (!paused) {
+      NSNumber *cachedElapsedForHold = LXNowPlayingInfoCache[MPNowPlayingInfoPropertyElapsedPlaybackTime];
+      if ([cachedElapsedForHold isKindOfClass:[NSNumber class]]) {
+        double cachedSec = cachedElapsedForHold.doubleValue;
+        double positionSec = positionMs / 1000.0;
+        if (cachedSec > 0.5 && cachedSec < 6.0 && positionSec >= 1.0 && positionSec < cachedSec - 0.3) {
+          positionMs = cachedSec * 1000.0;
+        }
+      }
+    }
+
     // 【第 125 轮】最后 10 秒 URL 预取的原生触发点（每首一次，与前后台无关）。
     // JS 的 playProgressChanged 只在 App active 时发布：锁屏 / 灵动岛 / 切后台时
     // 一条进度拍都没有，预取整条失联（用户实测：只有主界面进度条在时才预取）。
@@ -2190,6 +2237,20 @@ static void LXStartNowPlayingLyricTimer(void) {
   dispatch_source_set_event_handler(timer, ^{ LXNowPlayingLyricStep(); });
   dispatch_resume(timer);
   LXNowPlayingLyricTimer = timer;
+  // 【第 188 轮】创建行保留 0.025（契约锚点），实际稳态由下面按前后台重设：
+  // 前台 20Hz（换行 ≤50ms，肉眼无差）、锁屏/后台 10Hz。原 40Hz 在锁屏/灵动岛
+  // 场景是持续唤醒源，且行级歌词并不需要 40Hz。
+  LXUpdateNowPlayingLyricTickRate();
+}
+
+static void LXUpdateNowPlayingLyricTickRate(void) {
+  if (LXNowPlayingLyricTimer == nil) return;
+  BOOL active = [UIApplication sharedApplication].applicationState == UIApplicationStateActive;
+  double interval = active ? 0.05 : 0.1;
+  dispatch_source_set_timer(LXNowPlayingLyricTimer,
+                            dispatch_time(DISPATCH_TIME_NOW, (int64_t)(interval * NSEC_PER_SEC)),
+                            (uint64_t)(interval * NSEC_PER_SEC),
+                            (uint64_t)(0.01 * NSEC_PER_SEC));
 }
 
 // 停止歌词时钟（无歌词 / 停播 / 蓝牙歌词关闭时调用）。
@@ -2246,8 +2307,11 @@ static void LXSyncNowPlayingLyricTimer(void) {
   // 也会落到 0，而那时 App 明明是前台可见的 —— 光按亮度停钟会把前台 4Hz 位置事件一起停掉
   //（时钟同时是进度条位置事件的唯一源），用户看到的是「进度条变成一秒一格」。所以：
   // 只要 App 是前台 active，就**不认**熄屏判断；只有退到后台 / inactive 时才允许按亮度停钟。
+  // 【第 188 轮】外推冻结（起播未确认 / 缓冲 / 暂停）时不跑时钟：它此刻既不推进
+  // 位置也不做 1Hz 对表，留着只是纯唤醒。解除冻结的那一拍（正速率元数据或
+  // Playing+正速率状态发布）会重新调用本函数把钟起回来。
   BOOL foregroundActive = [UIApplication sharedApplication].applicationState == UIApplicationStateActive;
-  if (LXNowPlayingState == MPNowPlayingPlaybackStatePlaying && (foregroundActive || !LXIsScreenTrustedOff())) {
+  if (LXNowPlayingState == MPNowPlayingPlaybackStatePlaying && !LXNowPlayingClockHold && (foregroundActive || !LXIsScreenTrustedOff())) {
     LXStartNowPlayingLyricTimer();
   } else {
     LXStopNowPlayingLyricTimer();
