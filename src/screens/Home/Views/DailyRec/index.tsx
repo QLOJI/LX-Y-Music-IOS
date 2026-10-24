@@ -86,7 +86,7 @@ const Tabs = ({
       >
         <Text
           style={[styles.tabText, { borderBottomColor: activeTab === 'playlists' ? theme['c-primary-font-active'] : 'transparent' }]}
-          color={theme['c-font']}
+          color={activeTab === 'playlists' ? theme['c-primary-font'] : theme['c-font']}
           // 单行 + 放不下自动缩字号：不换行（换行会撑破行高、破坏「同一高度」）、不裁字
           numberOfLines={1}
           adjustsFontSizeToFit
@@ -106,7 +106,7 @@ const Tabs = ({
       >
         <Text
           style={[styles.tabText, { borderBottomColor: activeTab === 'songs' ? theme['c-primary-font-active'] : 'transparent' }]}
-          color={theme['c-font']}
+          color={activeTab === 'songs' ? theme['c-primary-font'] : theme['c-font']}
           numberOfLines={1}
           adjustsFontSizeToFit
           minimumFontScale={0.75}
@@ -176,6 +176,9 @@ export default memo(() => {
   // PagerView 的 initialPage 仍按语义 id 映射（`activeTab === 'songs' ? 0 : 1`，见下方 render），
   // 初值一变落点自然跟着变，映射本身不用动（也仍然与 tab 渲染顺序解耦）。
   const [activeTab, setActiveTab] = useState<'songs' | 'playlists'>('playlists')
+  // 【第 187 轮】歌曲页首次切过去才挂载，之后常驻不卸载：每次进入本页只加载一次，
+  // 切 tab 不重复请求。默认停在歌单页时不提前拉歌曲列表。
+  const [songsMounted, setSongsMounted] = useState(activeTab === 'songs')
   const [isStylized, setIsStylized] = useState(false)
   const [showStylizedModal, setShowStylizedModal] = useState(false)
   const [stylizedSelection, setStylizedSelection] = useState<StylizedSelection>(null)
@@ -185,6 +188,10 @@ export default memo(() => {
       if (data) setStylizedSelection(data)
     })
   }, [])
+
+  useEffect(() => {
+    if (activeTab === 'songs') setSongsMounted(true)
+  }, [activeTab])
 
   const pagerViewRef = useRef<PagerView>(null)
   const activeIndexRef = useRef(activeTab === 'songs' ? 0 : 1)
@@ -339,7 +346,9 @@ export default memo(() => {
           scrollEnabled
         >
           <View key="1">
-            {(activeTab === 'songs') && (
+            {/* 【第 187 轮】首次切到歌曲页才挂载，之后常驻：切 tab 不再卸载/重挂，
+                每次进入本页只加载一次；手动下拉刷新或风格化输入变化才重新加载。 */}
+            {songsMounted && (
               <RecSongs
                 isStylized={isStylized}
                 stylizedSelection={stylizedSelection}

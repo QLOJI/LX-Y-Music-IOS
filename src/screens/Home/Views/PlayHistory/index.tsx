@@ -5,7 +5,7 @@ import Text from '@/components/common/Text'
 import Popup, { type PopupType } from '@/components/common/Popup'
 import { Icon } from '@/components/common/Icon'
 import { playOnlineList } from '@/core/list'
-import { getPlayHistoryByRange } from '@/core/player/playHistory'
+import { getPlayHistoryByRange, getPlayHistoryDays } from '@/core/player/playHistory'
 import { setNavActiveId } from '@/core/common'
 import commonState from '@/store/common/state'
 import { useI18n } from '@/lang'
@@ -100,6 +100,8 @@ export default memo(() => {
   const [pickerEndDate, setPickerEndDate] = useState(endDate)
   const [pickerMonth, setPickerMonth] = useState(parseDateText(startDate) ?? new Date())
   const [list, setList] = useState<HistoryMusicInfo[]>([])
+  // 【第 187 轮】有播放记录的日期集合：日历只允许选这些天（今天例外，始终可用）。
+  const [availableDays, setAvailableDays] = useState<Set<string>>(() => new Set())
   const playerMusicInfo = usePlayerMusicInfo()
   const theme = useTheme()
   const buttonOpacity = useSettingValue('theme.buttonOpacity')
@@ -132,17 +134,46 @@ export default memo(() => {
       })
   }, [endDate, isRange, startDate])
 
+  const loadAvailableDays = useCallback(() => {
+    void getPlayHistoryDays().then(days => { setAvailableDays(days) }).catch(() => {})
+  }, [])
+
   useEffect(() => {
     loadHistory()
   }, [loadHistory])
 
   useEffect(() => {
-    const handleUpdate = () => { loadHistory() }
+    loadAvailableDays()
+  }, [loadAvailableDays])
+
+  useEffect(() => {
+    const handleUpdate = () => {
+      loadAvailableDays()
+      loadHistory()
+    }
     global.app_event.on('playHistoryUpdated', handleUpdate)
     return () => {
       global.app_event.off('playHistoryUpdated', handleUpdate)
     }
-  }, [loadHistory])
+  }, [loadAvailableDays, loadHistory])
+
+  // 日期是否可选：未来一律不可；今天始终可选（本日正常展示）；过去只有真的有记录才可选。
+  const isDateAvailable = useCallback((dateText: string) => {
+    const today = getTodayText()
+    if (dateText > today) return false
+    if (dateText === today) return true
+    return availableDays.has(dateText)
+  }, [availableDays])
+
+  const earliestAvailableDay = useMemo(() => {
+    const today = getTodayText()
+    let min: string | null = null
+    for (const day of availableDays) {
+      if (day > today) continue
+      if (min == null || day < min) min = day
+    }
+    return min
+  }, [availableDays])
 
   const applyDate = useCallback((nextStart: string, nextEnd = '') => {
     const start = parseDateText(nextStart)
@@ -151,18 +182,35 @@ export default memo(() => {
       toast('日期格式：YYYY-MM-DD')
       return
     }
-    setStartDate(toDateText(start))
-    setEndDate(end ? toDateText(end) : '')
+    const startText = toDateText(start)
+    const endText = end ? toDateText(end) : ''
+    if (!isDateAvailable(startText) || (endText && !isDateAvailable(endText))) {
+      toast('该日期没有播放记录')
+      return
+    }
+    setStartDate(startText)
+    setEndDate(endText)
     popupRef.current?.setVisible(false)
-  }, [])
+  }, [isDateAvailable])
 
+  // 左右切日自动跳过没有记录的日期：今天始终是上限（也是兜底可用日）。
   const changeDay = useCallback((offset: number) => {
     if (isRange) return
-    const next = getNextDateText(startDate, offset)
-    if (offset > 0 && next > getTodayText()) return
-    setStartDate(next)
-    setEndDate('')
-  }, [isRange, startDate])
+    const today = getTodayText()
+    if (offset > 0 && startDate >= today) return
+    if (offset < 0 && (!earliestAvailableDay || startDate <= earliestAvailableDay)) return
+    let next = startDate
+    for (let i = 0; i < 400; i++) {
+      next = getNextDateText(next, offset)
+      if (offset > 0 && next > today) return
+      if (offset < 0 && earliestAvailableDay && next < earliestAvailableDay) return
+      if (isDateAvailable(next)) {
+        setStartDate(next)
+        setEndDate('')
+        return
+      }
+    }
+  }, [earliestAvailableDay, isDateAvailable, isRange, startDate])
 
   const openDateSelector = useCallback(() => {
     setPickerMode(isRange ? 'range' : 'single')
@@ -173,6 +221,7 @@ export default memo(() => {
   }, [endDate, isRange, startDate])
 
   const handlePickDate = useCallback((dateText: string) => {
+    if (!isDateAvailable(dateText)) return
     if (pickerMode === 'single') {
       setPickerStartDate(dateText)
       setPickerEndDate('')
@@ -191,7 +240,7 @@ export default memo(() => {
     } else {
       setPickerEndDate(dateText)
     }
-  }, [pickerEndDate, pickerMode, pickerStartDate])
+  }, [isDateAvailable, pickerEndDate, pickerMode, pickerStartDate])
 
   const handleApplyPicker = useCallback(() => {
     if (pickerMode === 'single') {
@@ -202,6 +251,12 @@ export default memo(() => {
   }, [applyDate, pickerEndDate, pickerMode, pickerStartDate])
 
   const monthDays = useMemo(() => getMonthDays(pickerMonth), [pickerMonth])
+  // 未来月份没有可选日期：不让翻到当前月之后。
+  const canGoNextMonth = (() => {
+    const now = new Date()
+    return pickerMonth.getFullYear() < now.getFullYear() ||
+      (pickerMonth.getFullYear() === now.getFullYear() && pickerMonth.getMonth() < now.getMonth())
+  })()
 
   const handlePlayList = useCallback((index: number) => {
     void playOnlineList('play_history', list, index)
@@ -230,13 +285,13 @@ export default memo(() => {
             // 图标圆钮 38×38：按自身高度 38 折算半高，行内覆盖「按钮圆角」
             borderRadius: buttonRadius(38),
           }}
-          disabled={isRange}
+          disabled={isRange || !earliestAvailableDay || startDate <= earliestAvailableDay}
           onPress={() => { changeDay(-1) }}
         >
           <Icon
             name="chevron-left"
             size={19}
-            color={isRange ? theme['c-300'] : theme['c-primary']}
+            color={isRange || !earliestAvailableDay || startDate <= earliestAvailableDay ? theme['c-300'] : theme['c-primary']}
           />
         </TouchableOpacity>
         <TouchableOpacity
@@ -353,8 +408,15 @@ export default memo(() => {
               <Icon name="chevron-left" size={16} color={theme['c-font']} />
             </TouchableOpacity>
             <Text style={styles.monthTitle}>{getMonthText(pickerMonth)}</Text>
-            <TouchableOpacity style={[styles.monthBtn, { borderRadius: buttonRadius(42) /* 月切换按钮 42×42：按自身高度 42 折算半高 */ }]} onPress={() => { setPickerMonth(month => changeMonth(month, 1)) }}>
-              <Icon name="chevron-right" size={16} color={theme['c-font']} />
+            <TouchableOpacity
+              disabled={!canGoNextMonth}
+              style={[styles.monthBtn, { borderRadius: buttonRadius(42) /* 月切换按钮 42×42：按自身高度 42 折算半高 */ }]}
+              onPress={() => {
+                if (!canGoNextMonth) return
+                setPickerMonth(month => changeMonth(month, 1))
+              }}
+            >
+              <Icon name="chevron-right" size={16} color={canGoNextMonth ? theme['c-font'] : theme['c-300']} />
             </TouchableOpacity>
           </View>
 
@@ -365,14 +427,16 @@ export default memo(() => {
           </View>
 
           <View style={styles.dayGrid}>
-            {monthDays.map(({ date, dateText, isCurrentMonth }) => {
-              const isStart = dateText === pickerStartDate
-              const isEnd = dateText === pickerEndDate
-              const isInRange = pickerMode === 'range' && pickerEndDate && dateText > pickerStartDate && dateText < pickerEndDate
-              const active = isStart || isEnd
+            {monthDays.map(({ date, dateText }) => {
+              const available = isDateAvailable(dateText)
+              const isStart = available && dateText === pickerStartDate
+              const isEnd = available && dateText === pickerEndDate
+              const isInRange = available && pickerMode === 'range' && pickerEndDate && dateText > pickerStartDate && dateText < pickerEndDate
+              const active = available && (isStart || isEnd)
               return (
                 <TouchableOpacity
                   key={dateText}
+                  disabled={!available}
                   style={{
                     ...styles.dayCell,
                     // 日期格选中/范围内底色随「按钮透明度」淡出；transparent 分支保持原样
@@ -388,11 +452,11 @@ export default memo(() => {
                 >
                   <Text
                     color={
-                      active
-                        ? theme['c-primary-font']
-                        : isCurrentMonth
-                          ? theme['c-font']
-                          : theme['c-300']
+                      !available
+                        ? theme['c-300']
+                        : active
+                          ? theme['c-primary-font']
+                          : theme['c-font']
                     }
                   >
                     {date.getDate().toString()}

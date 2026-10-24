@@ -67,14 +67,21 @@ export const useRecoverablePager = (
     }
   }, [])
 
-  /** 只登记目标页并布防恢复链，不自己发 setPage（给必须保留原 setPage 字面量的页面用）。 */
-  const trackPageSwitch = useCallback((index: number) => {
+  // 当前原生滚动状态 + 过渡中暂存的切页请求：点击必须等 pager 空闲再发 setPage，
+  // 否则会与正在跑的过渡重叠 —— 动画被吞或 setPage 被 Manager 丢弃，用户看到
+  // 「点了不切 / 没有左右滑动动画」。空闲时发的 setPage 与手动滑动走同一条动画。
+  const scrollStateRef = useRef<'idle' | 'dragging' | 'settling'>('idle')
+  const pendingRequestRef = useRef<number | null>(null)
+
+  /** 只布防恢复链（600ms 非动画 → 700ms 重挂），不自己发 setPage。 */
+  const armFallback = useCallback((index: number) => {
     clearSwitchTimers()
     pendingIndexRef.current = index
     fallbackTimerRef.current = setTimeout(() => {
       fallbackTimerRef.current = null
       if (pendingIndexRef.current !== index) return
       // 非动画直达：绕过 Manager 的 animating 闸门；补丁会在此刻清 animating 并恢复交互。
+      pendingRequestRef.current = null
       pagerRef.current?.setPageWithoutAnimation?.(index)
       remountTimerRef.current = setTimeout(() => {
         remountTimerRef.current = null
@@ -84,12 +91,30 @@ export const useRecoverablePager = (
         setPagerKey(k => k + 1)
       }, 700)
     }, 600)
-  }, [clearSwitchTimers])
+  }, [clearSwitchTimers, pagerRef])
+
+  /** 只登记目标页并布防恢复链，不自己发 setPage（给必须保留原 setPage 字面量的页面用）。 */
+  const trackPageSwitch = useCallback((index: number) => {
+    armFallback(index)
+  }, [armFallback])
+
+  const sendPage = useCallback((index: number) => {
+    pendingIndexRef.current = index
+    pagerRef.current?.setPage?.(index)
+    armFallback(index)
+  }, [armFallback, pagerRef])
 
   const requestPage = useCallback((index: number) => {
-    pagerRef.current?.setPage?.(index)
-    trackPageSwitch(index)
-  }, [pagerRef, trackPageSwitch])
+    pendingRequestRef.current = index
+    if (scrollStateRef.current === 'idle') {
+      pendingRequestRef.current = null
+      sendPage(index)
+      return
+    }
+    // 过渡中（dragging / settling）：先记账，等 idle 再发动画切页；
+    // idle 万一丢失，600ms 后由 armFallback 非动画兜底。
+    armFallback(index)
+  }, [armFallback, sendPage])
 
   // ---- 手势静默看门狗 ----
   const activityAtRef = useRef(0)
@@ -122,6 +147,7 @@ export const useRecoverablePager = (
   /** 页面 onPageSelected 的第一行调用：撤恢复链、清看门狗与 JS 闩锁。 */
   const notifyPageSelected = useCallback(() => {
     pendingIndexRef.current = null
+    pendingRequestRef.current = null
     clearSwitchTimers()
     clearWatchdog()
     clearPagerLatch()
@@ -132,7 +158,8 @@ export const useRecoverablePager = (
   }, [])
 
   const onPageScrollStateChanged = useCallback((e: { nativeEvent: { pageScrollState: string } }) => {
-    const state = e.nativeEvent.pageScrollState
+    const state = e.nativeEvent.pageScrollState as 'idle' | 'dragging' | 'settling'
+    scrollStateRef.current = state
     if (state === 'dragging') {
       activityAtRef.current = Date.now()
       armWatchdog()
@@ -141,8 +168,14 @@ export const useRecoverablePager = (
     if (state === 'idle') {
       clearWatchdog()
       clearPagerLatch()
+      // 过渡期间点击的 tab：现在空闲了，用动画补发（与手动滑动同一条路径）。
+      const queued = pendingRequestRef.current
+      if (queued != null) {
+        pendingRequestRef.current = null
+        sendPage(queued)
+      }
     }
-  }, [armWatchdog, clearWatchdog, clearPagerLatch])
+  }, [armWatchdog, clearWatchdog, clearPagerLatch, sendPage])
 
   // 重新进入本页：一次非动画落页，给原生实例走完整 goTo/completion 的复位机会。
   useEffect(() => {

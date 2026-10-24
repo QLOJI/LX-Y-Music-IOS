@@ -70,7 +70,8 @@ const Tabs = ({
               styles.tabText,
               { borderBottomColor: activeTab === tab.id ? theme['c-primary-font-active'] : 'transparent' },
             ]}
-            color={theme['c-font']}
+            // 【第 187 轮】选中 tab 用主题的选中按钮字体色（c-primary-font）。
+            color={activeTab === tab.id ? theme['c-primary-font'] : theme['c-font']}
             // 单行 + 放不下自动缩字号：不换行（换行会撑破行高、破坏「同一高度」）、不裁字
             numberOfLines={1}
             adjustsFontSizeToFit
