@@ -1,7 +1,7 @@
 import playerActions from '@/store/player/action'
 
-export const setNowPlayTime = (time: number) => {
-  playerActions.setNowPlayTime(time)
+export const setNowPlayTime = (time: number, allowBackward = false) => {
+  playerActions.setNowPlayTime(time, allowBackward)
 }
 
 export const setMaxplayTime = (time: number) => {

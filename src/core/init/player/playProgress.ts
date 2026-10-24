@@ -64,6 +64,16 @@ const savePlayInfoNow = (liveTimeSeconds?: number) => {
 // 播放中的周期性落盘（2s 节流，第 75 轮确认必须保留后台执行能力）
 const delaySavePlayInfo = throttleBackgroundTimer(savePlayInfoNow, 2000)
 
+/**
+ * 【第 179 轮】位置快照的「过时」门槛。
+ *
+ * getPositionStamped 的 position 是**查询发出那一刻**的引擎位置。起播 / 切歌时 JS 线程
+ * 被歌词解析、首屏渲染占满，Promise 可能几百 ms 后才 resolve —— 直接把这份旧位置发布
+ * 出去，就会把已经走到 0:05 的进度条写回 0:02，下一拍 4Hz 又跳回 0:05（用户报的
+ * 「0-5 → 5-2 → 2-5」）。超过门槛的慢校准整拍放弃：1s 后下一拍重新取，期间快路径
+ * （原生 4Hz，事件本身有序）继续驱动 UI。正常桥接往返远低于该值，不受影响。 */
+const POSITION_SNAPSHOT_STALE_MS = 700
+
 export default () => {
   // const updateMusicInfo = useCommit('list', 'updateMusicInfo')
 
@@ -116,6 +126,8 @@ export default () => {
     void getPositionStamped().then(async stamped => {
       const position = stamped.position
       if (!position || id != playerState.musicInfo.id) return
+      // 【第 179 轮】过时快照不发布（见 POSITION_SNAPSHOT_STALE_MS 的说明）。
+      if (Date.now() - calibStartedAt > POSITION_SNAPSHOT_STALE_MS) return
       // 【第 119 轮】引擎身份门控：切歌后新歌的 URL 还没装载时，位置桥读到的仍是上一首的
       // 引擎 —— 把它的末尾位置发布进新歌进度条，就是「跳到下一首的最后一秒」；那个假位置
       // 又会让 ended 被误判成「用户拖到了末尾」再跳一首。不是本曲的引擎一律不采信。
@@ -330,13 +342,20 @@ export default () => {
       seekHoldUntil = 0
       engineConfirmedPlaying = true
       isBufferingHold = false
-      audioClock.setAnchor(stamped.position * 1000, settingState.setting['player.playbackRate'], true)
-      setNowPlayTime(stamped.position)
-      // 【第 87 轮第 1 条】「引擎确认在播」这一拍立即落盘：自动切歌后 store 会被 setProgress(0)
-      // 重置，若只靠 2s 节流 + 后台边沿，用户在「下一首播了一段后强杀」时，记录可能还停在
-      // 归零那一刻（下次启动就是 0）。这一拍的位置是引擎真相，写下去即「这一首 + 当前位置」。
-      savePlayInfoNow()
-      anchorLyricToEngineTime(stamped.position * 1000)
+      // 【第 179 轮】过时快照只用来做「引擎已确认在播」的判定，不再把旧位置写进
+      // audioClock / 进度条 / 落盘（否则起播忙时会出现 0:05 → 0:02 的回退）；
+      // 位置交给下面的原生重锚（它带 snapshotAt/ageMs，不惧 JS 延迟）与随后的
+      // 4Hz 快路径。
+      const snapshotStale = Date.now() - calibStartedAt > POSITION_SNAPSHOT_STALE_MS
+      if (!snapshotStale) {
+        audioClock.setAnchor(stamped.position * 1000, settingState.setting['player.playbackRate'], true)
+        setNowPlayTime(stamped.position)
+        // 【第 87 轮第 1 条】「引擎确认在播」这一拍立即落盘：自动切歌后 store 会被 setProgress(0)
+        // 重置，若只靠 2s 节流 + 后台边沿，用户在「下一首播了一段后强杀」时，记录可能还停在
+        // 归零那一刻（下次启动就是 0）。这一拍的位置是引擎真相，写下去即「这一首 + 当前位置」。
+        savePlayInfoNow()
+        anchorLyricToEngineTime(stamped.position * 1000)
+      }
       const ageMs = stamped.snapshotAt > 0 ? 0 : Math.max(0, Date.now() - calibStartedAt - stamped.ageMs)
       void reanchorNowPlayingLyric(stamped.position * 1000, stamped.snapshotAt, ageMs)
       void syncNowPlayingState('play')
@@ -561,7 +580,8 @@ export default () => {
       mediaBuffer.playTime = time
       startBuffering()
     }
-    setNowPlayTime(time)
+    // 用户主动 seek：允许任何方向（包括回退），不经过开局单调守卫。
+    setNowPlayTime(time, true)
     // seek→歌词时序（对齐上游 usePlayProgress.setProgress 的前半段）：发起时只跳进度条、
     // 歌词不动——时钟继续外推当前（旧）位置，歌词跟着正在出声的音频走。上游还有后半段
     // 「显式重锚」：setCurrentTime resolve 后发 app_event.seekLyric(落点)（core/lyric.seek
@@ -587,7 +607,7 @@ export default () => {
       if (playerState.musicInfo.id != musicId) return
       if (genAtSeek != seekGen) return
       if (targetPosition > 0) {
-        setNowPlayTime(targetPosition)
+        setNowPlayTime(targetPosition, true)
         seekTargetPosition = targetPosition
         seekHoldUntil = Date.now() + 2000
         // 【seek 完成后的显式重锚，补回上面说的后半段】resolve 时引擎位置已到达落点，
