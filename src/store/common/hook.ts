@@ -326,6 +326,18 @@ export const useHomeCovered = () => {
 }
 
 /**
+ * 【第 177 轮】播放详情页是否是当前栈顶（按**名字**判断，不按 componentId ——
+ * 横屏模式把 playDetail 注册了两次，按 id 用 useScreenCovered 会误判「被覆盖」）。
+ * 用于「被评论 / 设置等压栈页盖住时，停止看不见的高频 UI 更新」；返回动画开始后
+ * 由 useNavReturning 放行，不在这里处理。
+ * componentIds 为空（启动早期）时 fail-open，宁可多更新一帧也不冻住。
+ */
+export const usePlayDetailOnTop = () => {
+  const ids = useComponentIds()
+  return ids.length === 0 || String(ids[ids.length - 1]?.name) === COMPONENT_IDS.playDetail
+}
+
+/**
  * 「传入 componentId 的屏幕」是否被压栈页覆盖：栈顶不是自己即被覆盖。
  * componentId 未知（调用方未传）时恒 false（不门控，行为与旧版一致）——
  * 用于 PlayerBar 这类多屏复用组件：Home 实例传 home 的 id，专辑页实例
