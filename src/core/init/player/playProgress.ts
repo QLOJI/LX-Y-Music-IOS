@@ -98,6 +98,13 @@ export default () => {
   // 快路径仅在慢路径确认引擎在播后启用；缓冲 hold / seek 窗口 / 拖动期间冻结。
   let engineConfirmedPlaying = false
   let isBufferingHold = false
+  // 【第 187 轮】4Hz 快路径的起播延迟：它发布的是**原生歌词时钟外推值**，而原生时钟在
+  // 起播/缓冲期可能已经跑在前面（正速率元数据会解除时钟冻结）。等引擎确认在播后再由
+  // 慢校准把原生时钟重锚到真实位置，这个延迟窗口只让 1Hz 的引擎真值驱动 UI ——
+  // 用户看到的是 0、1、2… 每秒前进，而不是先跳到 0:05 再冻住等音频追上。
+  // 缓冲结束（wasBufferingHold 下降沿）也重新布防一次，覆盖中途缓冲。
+  const FAST_PATH_STARTUP_DELAY_MS = 1000
+  let fastPathEnabledAt = 0
   // 【第 115 轮】缓冲自动暂停的恢复侦测：controller 对真实断流先发 pause 再发 playerWaiting，
   // UI 收成暂停；引擎续播的 playing 事件一旦丢失（AVPlayer 对无状态变化的恢复不发事件），
   // UI 就永远停在暂停、按键语义反转。等待期保留慢校准，按引擎真相把 UI 拉回播放态。
@@ -145,7 +152,8 @@ export default () => {
         seekHoldUntil = 0
       }
 
-      setNowPlayTime(position)
+      // 【第 187 轮】位置发布移到「引擎状态确认非缓冲」之后（见下）。这里的 position
+      // 在起播/缓冲期可能是 seek 目标或原生外推超前值，先写进 UI 就是 0:05 → 0:02 的根源。
 
       // 先检查引擎状态：buffering 期间音频没有真正渲染，getPosition() 返回的是
       // seek 目标而非实际播放位置。此时冻结 audioClock（scrollToActiveContinuous
@@ -157,6 +165,9 @@ export default () => {
       const wasBufferingHold = isBufferingHold
       isBufferingHold = isBuffering
       engineConfirmedPlaying = !isBuffering && engineState === 'playing' && !!playerState.isPlay
+      if (engineConfirmedPlaying && fastPathEnabledAt === 0) {
+        fastPathEnabledAt = Date.now() + FAST_PATH_STARTUP_DELAY_MS
+      }
 
       if (!playerState.isPlay) {
         // 【第 115 轮】缓冲自动暂停的自动恢复：引擎已恢复出声但 playing 事件丢失时，
@@ -181,6 +192,8 @@ export default () => {
       // 这里（下面 isBuffering 分支直接 return），本边沿每个缓冲期只触发一次；本拍的
       // 慢校准锚定/探针照常执行（同拍重复重锚无害，最多多一次桥接往返）。
       if (wasBufferingHold && engineConfirmedPlaying) {
+        // 缓冲结束：原生时钟可能又在缓冲期外推超前，重新等一次重锚完成再放开 4Hz。
+        fastPathEnabledAt = Date.now() + FAST_PATH_STARTUP_DELAY_MS
         syncFromEngine(playerState.musicInfo.id)
       }
 
@@ -196,6 +209,10 @@ export default () => {
         return
       }
 
+      // 【第 187 轮】只有「引擎确认在播且不在缓冲」的这一拍才把位置写进 UI。
+      // 起播等待/缓冲期的 position 不可信（seek 目标 / 外推超前值），先写就是回退与
+      // 「跳到 0:05 再冻住」的根源。
+      setNowPlayTime(position)
       audioClock.setAnchor(position * 1000, settingState.setting['player.playbackRate'], playerState.isPlay)
       // 回传引擎真实位置：重锚原生歌词/位置时钟（控制中心/灵动岛歌词与进度 UI 同源
       // 校准）。nativeFlac 路径带原生时钟戳精确回放；AVPlayer 路径无原生戳——快照
@@ -342,6 +359,8 @@ export default () => {
       seekHoldUntil = 0
       engineConfirmedPlaying = true
       isBufferingHold = false
+      // 新曲首次确认在播：快路径先让位给 1Hz 引擎真值，等原生时钟重锚完成。
+      if (fastPathEnabledAt === 0) fastPathEnabledAt = Date.now() + FAST_PATH_STARTUP_DELAY_MS
       // 【第 179 轮】过时快照只用来做「引擎已确认在播」的判定，不再把旧位置写进
       // audioClock / 进度条 / 落盘（否则起播忙时会出现 0:05 → 0:02 的回退）；
       // 位置交给下面的原生重锚（它带 snapshotAt/ageMs，不惧 JS 延迟）与随后的
@@ -734,6 +753,7 @@ export default () => {
     pullBackCount = 0
     engineConfirmedPlaying = false
     isBufferingHold = false
+    fastPathEnabledAt = 0
     autoPausedForBuffering = false
     // 注意：这里**不**动 audioClock / nowPlayTime / maxPlayTime —— 进度条归零由
     // setPlayMusicInfo 的 store 层 setProgress(0, 0) 完成，重复归零只会让 UI 多抖一次。
@@ -861,6 +881,9 @@ export default () => {
     // 位置上限（position ≤ maxPlayTime）也不在这里钳：统一由 setNowPlayTime 收口，
     // 免得三条路径各钳一次、口径还不一致。
     if (!position) return
+    // 【第 187 轮】起播/缓冲结束后的 1s 窗口内不采用原生外推值：等慢校准把原生时钟
+    // 重锚到引擎真值，避免快路径先把 0:05 写进 UI、音频却还在 0:02。
+    if (Date.now() < fastPathEnabledAt) return
     setNowPlayTime(position)
     audioClock.setAnchor(position * 1000, rate || settingState.setting['player.playbackRate'], true)
     // 行级自愈探针（快路径层，≤250ms 收敛）：守卫条件（确认在播/非缓冲/非拖动/非

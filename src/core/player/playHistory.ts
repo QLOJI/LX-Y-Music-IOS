@@ -82,6 +82,14 @@ export const getPlayHistoryByRange = async(startTime: number, endTime: number) =
   return history.filter(item => item.playedAt >= startTime && item.playedAt <= endTime)
 }
 
+/** 【第 187 轮】有播放记录的日期集合（YYYY-MM-DD）：日历只允许选这些天。 */
+export const getPlayHistoryDays = async(): Promise<Set<string>> => {
+  const history = await getPlayHistory()
+  const days = new Set<string>()
+  for (const item of history) days.add(getHistoryDay(item.playedAt))
+  return days
+}
+
 const removePlayHistoryInternal = async(ids: string[]): Promise<number> => {
   const removeIds = new Set(ids)
   const history = await getPlayHistory()
