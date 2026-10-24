@@ -82,7 +82,13 @@ export default async(setting: LX.AppSetting) => {
       if (lyricLoading > 0) return
       // 无论开关如何都记录真实当前行：关闭期间「音箱只显示歌名」不应导致
       // 重新打开后丢失行号（否则要等下一行变化才恢复歌词显示）。
+      const previousRealLyric = realCurrentLyric
       realCurrentLyric = text || undefined
+      // 【第 176 轮】空文本行（LRC 里的空白行 / 解析器重置）不得把已显示的行刷白：
+      // 卡片没有「空行」这个状态，刷白后要等下一句有文本的行才恢复（用户报的
+      // 「首行显示约 1 秒后变空白」）。保留上一行直到新的非空行到达；换歌 / 关闭
+      // 蓝牙歌词由 lyricLoading 窗口与 setNowPlayingLyrics([]) 负责清理。
+      if (!realCurrentLyric && previousRealLyric) realCurrentLyric = previousRealLyric
       // 【第 119 轮】前奏（解析器还没进入第一行）把第一行当作当前行：参考工程在播放开始就
       // 显示第一行，旧实现空行直接丢掉，要等第二行才第一次出现歌词。
       // 【第 124 轮】取**第一条有文本**的行：有些歌词源的首条是空行/空白（时间轴上存在，
