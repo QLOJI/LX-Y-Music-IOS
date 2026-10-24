@@ -631,7 +631,9 @@ export default () => {
       if (playerState.musicInfo.id != musicId) return
       if (genAtSeek != seekGen) return
       if (targetPosition > 0) {
-        setUserProgress(targetPosition)
+        // 【第 189 轮】resolve 只更新 seek 窗口与歌词重锚，**不再回写进度 UI**：
+        // UI 在发起时已落到用户目标（line 608），引擎落点若比目标低（nativeFlac
+        // range 不精确），回写就是 0:03→0:02；真正的落点由后续位置事件校正。
         seekTargetPosition = targetPosition
         seekHoldUntil = Date.now() + 2000
         // 【seek 完成后的显式重锚，补回上面说的后半段】resolve 时引擎位置已到达落点，
