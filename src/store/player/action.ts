@@ -46,7 +46,15 @@ export default {
     state.statusText = statusText
     global.state_event.playStateTextChanged(statusText)
   },
-  setNowPlayTime(time: number) {
+  setNowPlayTime(time: number, allowBackward = false) {
+    // 【第 179 轮】自动位置在开局 6 秒内不许回退（与原生 Now Playing elapsed 的
+    // 「开头几秒不许回退」同口径）。起播/缓冲窗口里原生时钟可能先外推到前面，
+    // 随后慢校准/引擎重锚用真值拉回 —— 直接写下去就是用户看到的
+    // 「0:05 → 0:02 → 0:05」。用户主动 seek 传 allowBackward=true（那是用户意图）；
+    // 切歌 / 重播先 setProgress(0, 0) 归零，prev 回到 0，不会误伤；跳到 <1s 放行
+    // （整首重播）。
+    const prevTime = state.progress.nowPlayTime
+    if (!allowBackward && prevTime > 0.5 && prevTime < 6 && time >= 1 && time < prevTime - 0.3) return
     // 已播时间不得越过总时长（需求：「歌曲实际播放时间不能超过进度条上的总时长」）。
     // 为什么必须钳在这一处，而不是逐个调用点：
     //   1) 4Hz 原生位置快路径发布的是**歌词时钟外推值**（AppDelegate 里
