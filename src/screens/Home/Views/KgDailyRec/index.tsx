@@ -19,7 +19,8 @@ const TABS: Array<{ id: TabType, label: string }> = [
   { id: 'everyday', label: '新歌速递' },
 ]
 
-// 一行里的列数 = 标题 + 2 个 tab = 3（≤ 4，全部同时可见、平分整行）——用户第 18 轮第 1 条。
+// 一行里的列数 = 标题 + 2 个 tab = 3（≤ 4，标题按自然宽、两个 tab 列平分剩余行宽，
+// 全部同时可见）——用户第 18 轮第 1 条；【第 20 轮·图二】起标题不再占等分列，见 DetailPageTitle 注释四。
 const COLUMN_COUNT = TABS.length + 1
 
 const Tabs = ({
@@ -29,7 +30,7 @@ const Tabs = ({
 }: {
   activeTab: TabType
   onTabChange: (tab: TabType) => void
-  /** 等分列宽（pt）：由 DetailPageTitle 实测行宽后下发，标题列与本行每个 tab 列同宽 */
+  /** tab 列宽（pt）：由 DetailPageTitle 按「（行宽 − 标题自然宽）÷ tab 列数」实测下发，各 tab 列等宽 */
   columnWidth: number
 }) => {
   const theme = useTheme()
@@ -68,6 +69,14 @@ const Tabs = ({
 export default memo(() => {
   const [activeTab, setActiveTab] = useState<TabType>('recommend')
   const pagerViewRef = useRef<PagerView>(null)
+  // 【第 182 轮】react-native-pager-view 6.7.1 的私有 isScrolling 在拖动手势被取消时
+  // 可能永久停在 true，之后它在 capture 阶段抢走页面里的每次按压/移动 —— 表现为
+  // 「整页点击、滑动都没反应」。Home / 播放详情页早有针对这个缺口的自愈，本页是
+  // 嵌套的内层 PagerView，一直没有。在「确定没有手势」的时机抹平（纯 JS 字段）。
+  const clearPagerLatch = useCallback(() => {
+    const pager = pagerViewRef.current as unknown as { isScrolling?: boolean } | null
+    if (pager?.isScrolling) pager.isScrolling = false
+  }, [])
   const t = useI18n()
 
   const handleTabChange = (newTab: TabType) => {
@@ -79,12 +88,14 @@ export default memo(() => {
 
   const onPageSelected = useCallback(
     (event: PagerViewOnPageSelectedEvent) => {
+      // 落页 = 手势确定结束：顺手抹平可能残留的库私有闩锁。
+      clearPagerLatch()
       const newTab = TABS[event.nativeEvent.position]?.id || 'recommend'
       if (newTab !== activeTab) {
         setActiveTab(newTab)
       }
     },
-    [activeTab],
+    [activeTab, clearPagerLatch],
   )
 
   const handleBackToDiscovery = useCallback(() => {
@@ -99,8 +110,9 @@ export default memo(() => {
   // ③ 顶部到标题行的间距：由共享组件 DetailPageTitle 的 row.paddingTop（designSpacing.sm）
   //    统一提供 —— 第 16 轮时只有这三页在自己的 headerExtraTop 里垫这一下，第 19 轮第 2 条起
   //    写进共享组件（十个用它的页面一条来源，七个「我的」二级列表页因此与推荐页同高）。
-  // ④ 用户第 18 轮第 1 条：整行等分成 min(列数, 4) 列 —— 列宽由 DetailPageTitle 实测行宽后
-  //    经渲染回调下发，标题列与每个 tab 列严格同宽、列内文字水平居中、垂直同一中线。
+  // ④ 用户第 18 轮第 1 条 + 第 20 轮图二：标题按自然宽渲染（字号不再被列宽挤压，三页一致），
+  //    tab 列宽由 DetailPageTitle 按「（行宽 − 标题自然宽）÷ tab 列数」实测后经渲染回调下发，
+  //    各 tab 列等宽、列内文字水平居中，且整个 tab 行下移到位（与标题字形底部对齐）。
   const pageHeader = (
     <>
       <PageTopInset />
@@ -113,7 +125,14 @@ export default memo(() => {
   )
 
   return (
-    <View style={{ flex: 1 }}>
+    <View
+      style={{ flex: 1 }}
+      // 触摸起点一定没有手势在跑：先抹平闩锁再让协商照常往下走（返回 false = 不截胡）。
+      onStartShouldSetResponderCapture={() => {
+        clearPagerLatch()
+        return false
+      }}
+    >
       {pageHeader}
       <View style={{ flex: 1 }}>
         <PagerView
@@ -121,6 +140,10 @@ export default memo(() => {
           style={{ flex: 1 }}
           initialPage={TABS.findIndex((t) => t.id === activeTab)}
           onPageSelected={onPageSelected}
+          // idle = 手势确定结束：清锁，防止取消的手势让它永久停在 dragging。
+          onPageScrollStateChanged={({ nativeEvent }: { nativeEvent: { pageScrollState: string } }) => {
+            if (nativeEvent.pageScrollState === 'idle') clearPagerLatch()
+          }}
           scrollEnabled
         >
           <View key="recommend">
@@ -137,9 +160,9 @@ export default memo(() => {
 })
 
 const styles = createStyle({
-  // 两个 tab 与标题同处一行（DetailPageTitle 的 row，alignItems center → 同一垂直中线）。
-  // flex:1 吃掉标题列右侧的剩余宽度；每列宽度由页面行内给（= 标题列宽，等分整行），
-  // 项目数 > 4 时横向滚动查看（本页 3 列，全可见、无滚动）。
+  // 两个 tab 与标题同处一行（DetailPageTitle 的 row；【第 20 轮·图二】起整行下移，
+  // 与标题字形底部对齐）。flex:1 吃掉标题自然宽右侧的剩余宽度；每列宽度由页面行内给
+  // （= DetailPageTitle 下发的 tab 列宽），本页标题 + 2 列全可见、无滚动。
   tabsScroll: {
     flex: 1,
   },
