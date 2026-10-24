@@ -215,6 +215,9 @@ const defaultSetting: LX.AppSetting = {
   'theme.lightId': 'green',
   'theme.darkId': 'black',
   'theme.dynamicBg': true,
+  // 最近一次动态背景图（冷启动先恢复它，避免等封面预取时白屏）。
+  // 必须进默认表：initSetting 以默认表的键为准合并持久化数据，表外键会被丢弃。
+  'theme.lastDynamicBgPic': '',
   'theme.blur': 18,
   'theme.fontShadow': false,
   'theme.glassOpacity': 40,
