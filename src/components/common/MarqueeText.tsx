@@ -10,6 +10,7 @@ import {
 } from 'react-native'
 import Text, { type TextProps } from '@/components/common/Text'
 import { useAppActive } from '@/store/common/hook'
+import { useHomePageVisible } from '@/store/common/pageVisibility'
 
 /**
  * 超出一行宽度的文本 → 从右到左滚动（跑马灯）；放得下就是静态文本，不花任何动画开销。
@@ -77,6 +78,10 @@ export default memo(({ text, children, containerStyle, ...props }: MarqueeTextPr
   const translateX = useRef(new Animated.Value(0)).current
   // 【第 70 轮第 3 条】前台门：App 不在前台就没有「看得见的滚动」可言，停表（见文件头注释）。
   const appActive = useAppActive()
+  // 【第 186 轮】离屏 Home 页 / 被压栈页盖住时停表：本组件在 Home 的常驻页里实例最多
+  // （几十行歌名各一条 loop），看不见时没必要逐帧驱动。Home 之外的用例（播放队列弹窗等）
+  // 没有 Provider，默认 true，行为不变。
+  const pageVisible = useHomePageVisible()
 
   const measure = useCallback(() => {
     const textWidth = textWidthRef.current
@@ -111,7 +116,7 @@ export default memo(({ text, children, containerStyle, ...props }: MarqueeTextPr
     //   重新起步（`translateX.setValue(0)` + 起点那一拍 MARQUEE_PAUSE_MS）。复位发生在
     //   界面不可见时，看不到；回来看到的是「从头滚」，不是一个半路速度不对的循环
     //   （Animated.loop 从中间值重启时会用整段 duration 走完剩下的距离）。
-    if (!distance || !appActive) {
+    if (!distance || !appActive || !pageVisible) {
       translateX.setValue(0)
       return
     }
@@ -138,7 +143,7 @@ export default memo(({ text, children, containerStyle, ...props }: MarqueeTextPr
     )
     animation.start()
     return () => { animation.stop() }
-  }, [distance, translateX, appActive])
+  }, [distance, translateX, appActive, pageVisible])
 
   return (
     <View

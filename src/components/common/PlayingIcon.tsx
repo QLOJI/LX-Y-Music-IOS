@@ -3,6 +3,7 @@ import { Animated, View } from 'react-native'
 import { createStyle } from '@/utils/tools'
 import { useIsPlay } from '@/store/player/hook'
 import { useAppActive, useHomeCovered } from '@/store/common/hook'
+import { useHomePageVisible } from '@/store/common/pageVisibility'
 
 export default ({ color = '#1cd0a6' }: { color?: string }) => {
   const isPlay = useIsPlay()
@@ -16,7 +17,10 @@ export default ({ color = '#1cd0a6' }: { color?: string }) => {
   // 两块玻璃 / 跑马灯一致；回前台由 active 翻转自动重启，走的是**已有的那条**路径
   // （同一段 else 收势 + 重新起表），不新增收尾动画，观感与现在从压栈页返回时相同。
   const appActive = useAppActive()
-  const active = isPlay && !homeCovered && appActive
+  // 【第 186 轮】离屏 Home 页（切到别的 tab / 被详情页盖住）也停：`active` 变化会
+  // 让下面的启停 effect 走已有的收势分支，回来再起表，观感与从压栈页返回一致。
+  const pageVisible = useHomePageVisible()
+  const active = isPlay && !homeCovered && appActive && pageVisible
   const anim1 = useRef(new Animated.Value(0.3)).current
   const anim2 = useRef(new Animated.Value(0.8)).current
   const anim3 = useRef(new Animated.Value(0.5)).current
