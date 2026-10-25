@@ -15,6 +15,7 @@ import Image from '@/components/common/Image'
 import PlayingIcon from '@/components/common/PlayingIcon'
 import { useI18n } from '@/lang'
 import { useIsWyLiked, useIsTxLiked, useIsKgLiked } from '@/store/user/hook'
+import { getTxLikeKeys } from '@/utils/txLikeKey'
 import { handleLikeMusic, handleTxLikeMusic, handleKgLikeMusic } from '@/components/OnlineList/listAction'
 import useCoverUrl from '@/utils/hooks/useCoverUrl'
 import { getQualityBadge } from '@/utils/musicQualityBadge'
@@ -104,15 +105,8 @@ const ListItem = memo(
     const moreButtonRef = useRef<TouchableOpacity>(null)
 
     const isWyLiked = useIsWyLiked(meta.songId)
-    const txSongId = meta.id
-    const isNumericId = txSongId && /^\d+$/.test(String(txSongId))
-    // 这里必须用上面的安全 meta（而不是 item.meta）：本地/下载任务转播放项、汽水(qs)等
-    // 经 filterListDetail 构造的歌曲没有 meta 字段，长按迷你播放器跳转到本页时会在渲染期
-    // 抛 `Cannot read property 'songmid' of undefined` 整列表崩掉（用户第 11 轮第 13 条）。
-    const txSongMid = isNumericId
-      ? String(txSongId)
-      : (meta.songmid || meta.strMediaMid || (typeof info.id === 'string' && info.id.startsWith('tx_') ? info.id.slice(3) : info.id))
-    const isTxLiked = useIsTxLiked(txSongMid)
+    // 【第 193 轮】同 OnlineList：用全部候选键查 QQ 喜欢状态（安全 meta 已在上方兜底）。
+    const isTxLiked = useIsTxLiked(getTxLikeKeys({ id: info.id, meta }))
     const isKgLiked = useIsKgLiked(meta.hash || meta.songId)
     // 【第 22 轮】下面全部改读 info：任务项的 source 在 metadata.musicInfo 上（item.source 是 undefined）
     const showLikeButton = info.source === 'wy' || info.source === 'tx' || info.source === 'kg'
