@@ -9,6 +9,7 @@ import { Icon } from '@/components/common/Icon'
 import { handleLikeMusic, handleTxLikeMusic, handleKgLikeMusic, handleShowArtistDetail } from '@/components/OnlineList/listAction'
 import playerState from '@/store/player/state'
 import { useIsWyLiked, useIsTxLiked, useIsKgLiked } from '@/store/user/hook'
+import { getTxLikeKeys } from '@/utils/txLikeKey'
 import { useWindowSize } from '@/utils/hooks'
 import SourceQualityBadge from '../../components/SourceQualityBadge'
 import { useButtonRadius } from '@/utils/buttonRadius'
@@ -130,15 +131,9 @@ export default memo(({ componentId, onLayout }: {
   const wySongId = (musicInfo?.source === 'wy' && musicInfo.meta?.songId) || ''
   const isWyLiked = useIsWyLiked(wySongId)
 
-  const txLikeKey = (() => {
-    if (musicInfo?.source !== 'tx') return ''
-    const rawSongMid = (musicInfo.meta as any)?.songmid || (musicInfo.meta as any)?.strMediaMid || musicInfo.id
-    const songMid = typeof rawSongMid === 'string' && rawSongMid.startsWith('tx_') ? rawSongMid.slice(3) : rawSongMid
-    const songId = (musicInfo.meta as any)?.id
-    const isNumericId = songId && /^\d+$/.test(String(songId))
-    return isNumericId ? String(songId) : songMid
-  })()
-  const isTxLiked = useIsTxLiked(txLikeKey)
+  // 【第 193 轮】QQ 喜欢状态按全部候选键查（与列表行、点击写入同一套）。
+  const txLikeKeys = musicInfo?.source === 'tx' ? getTxLikeKeys({ id: musicInfo.id, meta: musicInfo.meta as any }) : []
+  const isTxLiked = useIsTxLiked(txLikeKeys)
 
   const kgSongId = (musicInfo?.source === 'kg' && ((musicInfo.meta as any)?.hash || musicInfo.meta?.songId)) || ''
   const isKgLiked = useIsKgLiked(kgSongId)
