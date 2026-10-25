@@ -1,5 +1,6 @@
-import { useEffect, useState } from 'react'
-import { getCachedCoverUrl, fetchCoverUrl } from '@/core/music/coverUrl'
+import { useEffect, useRef, useState } from 'react'
+import { getCachedCoverUrl, fetchCoverUrl, invalidateCoverCache } from '@/core/music/coverUrl'
+import { getImageEpoch, subscribeImageEpoch } from '@/utils/imageEpoch'
 
 /**
  * 列表项封面 URL hook。
@@ -28,6 +29,24 @@ const useCoverUrl = (item: {
   const [url, setUrl] = useState<string>(() =>
     isCrossMatchSource ? getCachedCoverUrl(item) : (metaPicUrl || getCachedCoverUrl(item)),
   )
+  // 【第 191 轮】下拉刷新：纪元一变就作废本行缓存并用 isRefresh 重新取封面。
+  // lastEpoch 让「刷新之后才挂载的行」不在挂载首帧白跑一次 isRefresh。
+  const itemRef = useRef(item)
+  itemRef.current = item
+  const [imageEpoch, setImageEpoch] = useState(getImageEpoch)
+  useEffect(() => subscribeImageEpoch(setImageEpoch), [])
+  const lastEpochRef = useRef(imageEpoch)
+  useEffect(() => {
+    if (imageEpoch === lastEpochRef.current) return
+    lastEpochRef.current = imageEpoch
+    let ignore = false
+    const target = itemRef.current
+    invalidateCoverCache(target)
+    void fetchCoverUrl(target, { isRefresh: true }).then((pic) => {
+      if (!ignore && typeof pic === 'string' && pic) setUrl(pic)
+    })
+    return () => { ignore = true }
+  }, [imageEpoch])
 
   useEffect(() => {
     if (!isCrossMatchSource && metaPicUrl) {
