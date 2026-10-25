@@ -42,6 +42,17 @@ export const getCachedQsCover = (song: LX.Music.MusicInfoOnline): string => {
   return typeof cached === 'string' ? cached : ''
 }
 
+/** 下拉刷新：作废某首 qs 封面的缓存与在飞请求，下一次重新跨平台匹配。 */
+export const invalidateQsCover = (song: LX.Music.MusicInfoOnline) => {
+  const key = `${song.name}|${song.singer}`
+  qsCoverCache.delete(key)
+  qsCoverInflight.delete(key)
+}
+
+export const clearQsCoverCache = () => {
+  qsCoverCache.clear()
+}
+
 const withTimeout = async(promise: Promise<string>, ms: number, fallback: string): Promise<string> => {
   return new Promise<string>((resolve) => {
     const timer = setTimeout(() => { resolve(fallback) }, ms)

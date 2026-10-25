@@ -298,13 +298,6 @@ export const getCachedLyricInfo = async(
   let lrcInfo = await getStoreLyric(musicInfo)
   // lrcInfo = {}
   if (existTimeExp.test(lrcInfo.lyric) && lrcInfo.tlyric != null) {
-    // if (musicInfo.lrc.startsWith('\ufeff[id:$00000000]')) {
-    //   let str = musicInfo.lrc.replace('\ufeff[id:$00000000]\n', '')
-    //   commit('setLrc', { musicInfo, lyric: str, tlyric: musicInfo.tlrc, lxlyric: musicInfo.tlrc })
-    // } else if (musicInfo.lrc.startsWith('[id:$00000000]')) {
-    //   let str = musicInfo.lrc.replace('[id:$00000000]\n', '')
-    //   commit('setLrc', { musicInfo, lyric: str, tlyric: musicInfo.tlrc, lxlyric: musicInfo.tlrc })
-    // }
 
     // if (lrcInfo.lxlyric == null) {
     //   switch (musicInfo.source) {

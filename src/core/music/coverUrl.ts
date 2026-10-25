@@ -1,5 +1,6 @@
+import { bumpImageEpoch } from '@/utils/imageEpoch'
 import { getPicPath } from './index'
-import { getCachedQsCover, fetchQsCover } from './qsCover'
+import { getCachedQsCover, fetchQsCover, invalidateQsCover, clearQsCoverCache } from './qsCover'
 
 /**
  * 列表项封面动态获取。
@@ -119,7 +120,19 @@ export const getCachedCoverUrl = (song: CoverSong): string => {
  * （本地封面文件被系统清掉、远程封面 404）。作废后下一次 fetchCoverUrl 会重新走 getPicPath。
  */
 export const invalidateCoverCache = (song: CoverSong): void => {
+  if (song.source === 'qs') invalidateQsCover(song as LX.Music.MusicInfoOnline)
   coverCache.delete(keyOf(song))
+}
+
+/**
+ * 下拉刷新的统一入口：作废全部内存封面缓存并推进图片缓存纪元。
+ * 纪元一推进，已经挂载的远程 <Image> 会带着新的 URL 片段重新下载；
+ * 列表行的 useCoverUrl 也会用 isRefresh 重跑一遍取封面。
+ */
+export const refreshCoverCaches = (): void => {
+  coverCache.clear()
+  clearQsCoverCache()
+  bumpImageEpoch()
 }
 
 export const fetchCoverUrl = async(
@@ -145,7 +158,8 @@ export const fetchCoverUrl = async(
     const cached = coverCache.get(key)
     if (cached) return cached
   }
-  const inflight = coverInflight.get(key)
+  // isRefresh 不复用在飞请求：在飞的那一份是下拉前的旧结果，复用它等于没刷新。
+  const inflight = options?.isRefresh ? null : coverInflight.get(key)
   if (inflight) return inflight
 
   // 【第 34 轮第 3 条】超时包在**入队任务的内部**：只有任务真的 settle 了，runWithLimit 的
@@ -168,7 +182,8 @@ export const fetchCoverUrl = async(
     })
     .catch(() => '')
     .finally(() => {
-      coverInflight.delete(key)
+      // 只清自己：刷新会另起一个同 key 的请求，旧请求落地时不能把新条目删掉。
+      if (coverInflight.get(key) === task) coverInflight.delete(key)
     })
   coverInflight.set(key, task)
   return task
