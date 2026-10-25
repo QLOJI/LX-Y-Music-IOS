@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { getCachedCoverUrl, fetchCoverUrl, invalidateCoverCache } from '@/core/music/coverUrl'
+import { getCachedCoverUrl, fetchCoverUrl } from '@/core/music/coverUrl'
 import { getImageEpoch, subscribeImageEpoch } from '@/utils/imageEpoch'
 
 /**
@@ -33,15 +33,19 @@ const useCoverUrl = (item: {
   // lastEpoch 让「刷新之后才挂载的行」不在挂载首帧白跑一次 isRefresh。
   const itemRef = useRef(item)
   itemRef.current = item
+  // 当前显示的是不是歌曲自带的 meta.picUrl：是的话刷新只靠图片片段重下，
+  // 不再走 getPicPath（否则每行都会往封面缓存里写一条，导致签名反复变化、重复刷新）。
+  const displayedFromMetaRef = useRef(false)
   const [imageEpoch, setImageEpoch] = useState(getImageEpoch)
   useEffect(() => subscribeImageEpoch(setImageEpoch), [])
   const lastEpochRef = useRef(imageEpoch)
   useEffect(() => {
     if (imageEpoch === lastEpochRef.current) return
     lastEpochRef.current = imageEpoch
+    if (displayedFromMetaRef.current) return
     let ignore = false
     const target = itemRef.current
-    invalidateCoverCache(target)
+    // 不作废旧缓存：失败时继续用上一次的封面，成功时 fetchCoverUrl 会覆盖缓存。
     void fetchCoverUrl(target, { isRefresh: true }).then((pic) => {
       if (!ignore && typeof pic === 'string' && pic) setUrl(pic)
     })
@@ -50,9 +54,11 @@ const useCoverUrl = (item: {
 
   useEffect(() => {
     if (!isCrossMatchSource && metaPicUrl) {
+      displayedFromMetaRef.current = true
       setUrl(metaPicUrl)
       return
     }
+    displayedFromMetaRef.current = false
     const cached = getCachedCoverUrl(item)
     if (cached) {
       setUrl(cached)
