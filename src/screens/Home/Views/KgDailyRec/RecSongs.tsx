@@ -5,11 +5,19 @@ import { toast } from '@/utils/tools'
 import kgDailyRec from '@/utils/musicSdk/kg/dailyRec'
 import { usePlayerMusicInfo } from '@/store/player/hook'
 import { stageOnlineListToDefault } from '@/core/playListToDefault'
+import { refreshCoverCaches } from '@/core/music/coverUrl'
+import {
+  takeDailyRecAutoRefresh,
+  getDailyRecSessionList,
+  setDailyRecSessionList,
+} from '@/core/dailyRecSession'
 
 type RecType = 'recommend' | 'everyday'
 
 interface Props {
   type: RecType
+  /** 【第 191 轮】只有当前 tab 才自动刷新：每次启动每个 tab 只自动下拉一次。 */
+  active?: boolean
 }
 
 const handlePlay = async(list: LX.Music.MusicInfoOnline[], listId: string, index = 0) => {
@@ -17,16 +25,15 @@ const handlePlay = async(list: LX.Music.MusicInfoOnline[], listId: string, index
   await stageOnlineListToDefault(listId, [...list], index)
 }
 
-export default memo(({ type }: Props) => {
+export default memo(({ type, active = true }: Props) => {
   const listRef = useRef<OnlineListType>(null)
   const playerMusicInfo = usePlayerMusicInfo()
+  const cacheKey = `kg_daily_rec_${type}`
 
-  // isPullRefresh（第 16 轮第 7 条）：只有用户真的下拉才用 'refreshing' 播下拉动画。
-  // 首载走 'loading' —— 旧写法在挂载时也置 'refreshing'，iOS 刷新控件当场激活，把整个
-  // 列表（含当时的页内标题）压下去、加载结束再弹回来，就是用户看到的「第一次进入向上刷新」。
-  const fetchSongs = useCallback(async(isPullRefresh = false) => {
+  // 【第 191 轮】去掉加载中界面：无论首载还是刷新都用下拉动画（'refreshing'）。
+  const fetchSongs = useCallback(async() => {
     try {
-      listRef.current?.setStatus(isPullRefresh ? 'refreshing' : 'loading')
+      listRef.current?.setStatus('refreshing')
       let songs: LX.Music.MusicInfoOnline[] = []
 
       switch (type) {
@@ -41,6 +48,7 @@ export default memo(({ type }: Props) => {
       if (songs && songs.length > 0) {
         listRef.current?.setList(songs, false)
         listRef.current?.setStatus('idle')
+        setDailyRecSessionList(cacheKey, songs)
       } else {
         listRef.current?.setStatus('idle')
         toast('暂无推荐歌曲')
@@ -50,14 +58,23 @@ export default memo(({ type }: Props) => {
       toast('加载失败，请检查酷狗登录状态')
       listRef.current?.setStatus('error')
     }
-  }, [type])
+  }, [type, cacheKey])
+
+  // 挂载先还原本次启动里上次拿到的列表（页面离开会卸载），再决定要不要自动下拉。
+  useEffect(() => {
+    const cached = getDailyRecSessionList<LX.Music.MusicInfoOnline[]>(cacheKey)
+    if (cached?.length) listRef.current?.setList(cached, false)
+  }, [cacheKey])
 
   useEffect(() => {
+    if (!active) return
+    if (!takeDailyRecAutoRefresh(cacheKey)) return
+    refreshCoverCaches()
     void fetchSongs()
-  }, [fetchSongs])
+  }, [active, cacheKey, fetchSongs])
 
   const handleRefresh = useCallback(() => {
-    void fetchSongs(true)
+    void fetchSongs()
   }, [fetchSongs])
 
   const handlePlayList = useCallback((index: number) => {

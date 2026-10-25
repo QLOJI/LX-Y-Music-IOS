@@ -206,16 +206,16 @@ export default memo(() => {
           scrollEnabled
         >
           <View key="home">
-            <RecSongs type="home" onOpenDetail={handleOpenDetail} />
+            <RecSongs type="home" onOpenDetail={handleOpenDetail} active={activeTab === 'home'} />
           </View>
           <View key="radar">
-            <RecSongs type="radar" />
+            <RecSongs type="radar" active={activeTab === 'radar'} />
           </View>
           <View key="songlist">
-            <RecPlaylists onOpenDetail={handleOpenDetail} />
+            <RecPlaylists onOpenDetail={handleOpenDetail} active={activeTab === 'songlist'} />
           </View>
           <View key="newsong">
-            <RecSongs type="newsong" />
+            <RecSongs type="newsong" active={activeTab === 'newsong'} />
           </View>
         </PagerView>
       </View>

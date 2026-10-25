@@ -3,7 +3,7 @@ import { View, TouchableOpacity, FlatList, RefreshControl, Animated, PanResponde
 import { useMyList, useActiveListId, useListFetching } from '@/store/list/hook'
 import { useSettingValue } from '@/store/setting/hook'
 import { setActiveList, updateUserListPosition } from '@/core/list'
-import { fetchCoverUrl } from '@/core/music/coverUrl'
+import { fetchCoverUrl, refreshCoverCaches } from '@/core/music/coverUrl'
 import { getJumpListId } from '@/core/player/player'
 import { getListMusics } from '@/utils/data'
 import { useTheme } from '@/store/theme/hook'
@@ -541,21 +541,24 @@ export default memo(() => {
     heightsRef.current.length = userLists.length
   }
 
-  const fetchListInfo = useCallback(async(listId: string) => {
+  const fetchListInfo = useCallback(async(listId: string, isRefresh = false) => {
     try {
       const musics = await getListMusics(listId)
       const first = musics[0]
-      let cover = first?.meta?.picUrl ?? ''
+      // 【第 191 轮】下拉刷新时图片本身靠图片缓存纪元重下；这里只负责「没有地址」时
+      // 用 isRefresh 再要一次封面，不再为每个歌单都额外打一遍取图接口。
+      const metaCover = first?.meta?.picUrl ?? ''
+      let cover = metaCover
       // meta.picUrl 为空（WebDAV 同步 / 备份导入的歌单首曲常无封面）时按需动态补全，
       // 复用列表项同一套 getPicPath 分发（带缓存 + 并发限制），与「歌曲列表有封面」保持一致。
       // 在线获取偶发超时/失败会导致封面概率性空白，这里失败后短暂延迟再重试一次。
       if (!cover && first) {
-        cover = await fetchCoverUrl(first)
+        cover = await fetchCoverUrl(first, { isRefresh })
         if (!cover) {
           await new Promise<void>((resolve) => {
             setTimeout(resolve, 800)
           })
-          cover = await fetchCoverUrl(first)
+          cover = await fetchCoverUrl(first, { isRefresh })
         }
       }
       return { cover, total: musics.length }
@@ -568,7 +571,7 @@ export default memo(() => {
     }
   }, [])
 
-  const refreshListInfo = useCallback(async() => {
+  const refreshListInfo = useCallback(async(isPullRefresh = false) => {
     // 【第 30 轮·图九】不再有「前台加载」这一档：每次刷新都是静默的（列表始终拿已有数据渲染），
     // fetching 只为收起下拉控件。
     setFetching(true)
@@ -578,7 +581,7 @@ export default memo(() => {
       // 否则与「失败返回 null」的实现不一致（下面取用时已用可选链 fresh?. 兜底）。
       const fetched = new Map<string, { cover: string, total: number } | null>()
       for (const list of allList) {
-        fetched.set(list.id, await fetchListInfo(list.id))
+        fetched.set(list.id, await fetchListInfo(list.id, isPullRefresh))
       }
       // 合并旧值：封面获取失败/为空（网络抖动、WebDAV 歌单首曲无封面且动态补全
       // 失败）时 fresh.cover 是空字符串——`??` 只对 null/undefined 回退，空串会把
@@ -961,7 +964,13 @@ export default memo(() => {
               <RefreshControl
                 // 只认用户下拉（见 refreshing 状态注释）
                 refreshing={refreshing}
-                onRefresh={() => { setRefreshing(true); void refreshListInfo(false) }}
+                onRefresh={() => {
+                  // 【第 191 轮】「我的」下拉刷新：作废封面缓存并推进图片纪元，
+                  // 列表封面的 URL 片段随之变化，FastImage 才会真的重新下载。
+                  refreshCoverCaches()
+                  setRefreshing(true)
+                  void refreshListInfo(true)
+                }}
                 colors={[theme['c-primary-font']]}
                 // 【第 179 轮】只在「拖动排序已激活」时禁用下拉刷新。
                 // 旧写法按「手指是否接触卡片」禁用，而接触标志是每个手势都 setState 的

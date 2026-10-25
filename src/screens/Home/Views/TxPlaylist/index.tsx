@@ -10,6 +10,7 @@ import { useI18n } from '@/lang'
 import { useTheme } from '@/store/theme/hook'
 import Text from '@/components/common/Text'
 import { toast, confirmDialog } from '@/utils/tools'
+import { refreshCoverCaches } from '@/core/music/coverUrl'
 import SonglistDetail from '../../../SonglistDetail'
 import commonState from '@/store/common/state'
 import Menu, { type MenuType, type Position } from '@/components/common/Menu'
@@ -311,7 +312,7 @@ export default memo(() => {
               <RefreshControl
                 colors={[theme['c-primary']]}
                 refreshing={refreshing}
-                onRefresh={onRefresh}
+                onRefresh={() => { refreshCoverCaches(); onRefresh() }}
               />
             }
             ListEmptyComponent={

@@ -486,14 +486,16 @@ export default memo(() => {
             <TouchableOpacity
               style={{
                 ...styles.actionBtn,
-                // 「确定」按钮底面随「按钮透明度」淡出
-                backgroundColor: applyOpacity(theme['c-primary'], buttonOpacity),
+                // 「确定」与「今天」同一套底色 + 文字色：此前是主色实底 + 白色文字，
+                // 用户把按钮透明度调低后底色变透明、白字压在白弹层上就看不见了。
+                backgroundColor: applyOpacity(theme['c-primary-background'], buttonOpacity),
                 // 「确定」按钮高 36：按自身高度 36 折算半高，行内覆盖「按钮圆角」
                 borderRadius: buttonRadius(36),
               }}
               onPress={handleApplyPicker}
             >
-              <Text size={designTypography.caption} color={theme['c-primary-light-1000']}>确定</Text>
+              {/* 「确定」文字色与「今天」同一个键：此前用 c-primary-light-1000，在部分主题下与按钮底色几乎同色，字看不见 */}
+              <Text size={designTypography.caption} color={theme['c-primary-font']}>确定</Text>
             </TouchableOpacity>
           </View>
         </View>

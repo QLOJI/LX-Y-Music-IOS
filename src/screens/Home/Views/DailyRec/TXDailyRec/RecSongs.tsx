@@ -1,5 +1,6 @@
 import { memo, useEffect, useRef, useCallback, useState } from 'react'
-import { View, FlatList, TouchableOpacity, Image, RefreshControl } from 'react-native'
+import { View, FlatList, TouchableOpacity, RefreshControl } from 'react-native'
+import Image from '@/components/common/Image'
 import OnlineList, { type OnlineListType } from '@/components/OnlineList'
 import Text from '@/components/common/Text'
 import { useTheme } from '@/store/theme/hook'
@@ -13,12 +14,20 @@ import { usePlayerMusicInfo } from '@/store/player/hook'
 import { stageOnlineListToDefault } from '@/core/playListToDefault'
 import { type ListInfoItem } from '@/store/songlist/state'
 import { useBottomOverlayInset } from '@/store/common/hook'
+import { refreshCoverCaches } from '@/core/music/coverUrl'
+import {
+  takeDailyRecAutoRefresh,
+  getDailyRecSessionList,
+  setDailyRecSessionList,
+} from '@/core/dailyRecSession'
 
 type RecType = 'home' | 'radar' | 'newsong'
 
 interface Props {
   type: RecType
   onOpenDetail?: (playlistInfo: ListInfoItem) => void
+  /** 【第 191 轮】只有当前 tab 才自动下拉。 */
+  active?: boolean
 }
 
 const handlePlay = async(list: LX.Music.MusicInfoOnline[], listId: string, index = 0) => {
@@ -32,7 +41,7 @@ const PlaylistItem = ({ item, onPress }: { item: { id: string, name: string, cov
   return (
     <TouchableOpacity style={styles.item} onPress={onPress}>
       <Image
-        source={{ uri: item.cover || 'https://y.gtimg.cn/mediastyle/y/img/cover_qzone_130.jpg' }}
+        url={item.cover || 'https://y.gtimg.cn/mediastyle/y/img/cover_qzone_130.jpg'}
         style={[
           styles.cover,
           // 歌单封面圆角随「按钮圆角」设置行内覆盖；高度取 styles.cover.height 源值 60
@@ -51,11 +60,12 @@ const PlaylistItem = ({ item, onPress }: { item: { id: string, name: string, cov
   )
 }
 
-export default memo(({ type, onOpenDetail }: Props) => {
+export default memo(({ type, onOpenDetail, active = true }: Props) => {
   const listRef = useRef<OnlineListType>(null)
   const playerMusicInfo = usePlayerMusicInfo()
   const [playlists, setPlaylists] = useState<Array<{ id: string, name: string, cover: string, playCount: number }>>([])
   const [loading, setLoading] = useState(false)
+  const sessionKey = `tx_daily_${type}`
   // 下拉刷新动画只认「用户真的下拉过」（用户第 16 轮第 7 条）：loading 只喂空列表占位，
   // 程序触发的加载不再激活 iOS 刷新控件（否则内容会被压下去再弹回来 = 向上刷新）。
   const [refreshing, setRefreshing] = useState(false)
@@ -82,6 +92,7 @@ export default memo(({ type, onOpenDetail }: Props) => {
     if (refresh) setRefreshing(true)
     else setLoading(true)
     setLoadError('')
+    if (refresh) refreshCoverCaches()
     try {
       // 有界重试（2 次，800/2000ms）：冷启动首个请求容易输给「网络栈就绪 / 平台偶发 5xx」
       const result = await retryAsync(() => txApi.dailyRec.getHomeFeed(), {
@@ -89,13 +100,19 @@ export default memo(({ type, onOpenDetail }: Props) => {
       })
       if (loadId !== loadIdRef.current) return
       if (result?.list) {
-        if (result.list.length) loadedRef.current = true
-        setPlaylists(result.list.map((item: any) => ({
-          id: String(item.id),
-          name: item.name,
-          cover: item.cover,
-          playCount: item.playCount,
-        })))
+        if (result.list.length) {
+          loadedRef.current = true
+          const mapped = result.list.map((item: any) => ({
+            id: String(item.id),
+            name: item.name,
+            cover: item.cover,
+            playCount: item.playCount,
+          }))
+          setPlaylists(mapped)
+          setDailyRecSessionList(sessionKey, mapped)
+        } else {
+          setPlaylists([])
+        }
       }
     } catch (error: any) {
       if (loadId !== loadIdRef.current) return
@@ -130,6 +147,7 @@ export default memo(({ type, onOpenDetail }: Props) => {
 
       if (result?.list) {
         listRef.current?.setList(result.list, false)
+        setDailyRecSessionList(sessionKey, result.list)
       }
     } catch (error) {
       console.error(`获取QQ${type === 'radar' ? '雷达推荐' : '推荐新歌'}失败:`, error)
@@ -140,16 +158,27 @@ export default memo(({ type, onOpenDetail }: Props) => {
     }
   }, [type])
 
+  // 【第 191 轮】先还原本次启动的会话缓存；只有当前 tab + 本次启动尚未自动刷过才自动下拉。
   useEffect(() => {
     if (type === 'home') {
-      void loadPlaylists()
-    } else {
-      // 首载用 'loading'（列表内占位），不用 'refreshing' —— 后者会当场激活 iOS 刷新控件，
-      // 把内容压下去再弹回来（用户第 16 轮第 7 条）。
-      listRef.current?.setStatus('loading')
-      void fetchSongs()
+      const cached = getDailyRecSessionList<Array<{ id: string, name: string, cover: string, playCount: number }>>(sessionKey)
+      if (cached?.length) {
+        setPlaylists(cached)
+        setLoading(false)
+      }
+      if (!active) return
+      if (!takeDailyRecAutoRefresh(sessionKey)) return
+      void loadPlaylists(true)
+      return
     }
-  }, [type, loadPlaylists, fetchSongs])
+    const cachedSongs = getDailyRecSessionList<LX.Music.MusicInfoOnline[]>(sessionKey)
+    if (cachedSongs?.length) listRef.current?.setList(cachedSongs, false)
+    if (!active) return
+    if (!takeDailyRecAutoRefresh(sessionKey)) return
+    refreshCoverCaches()
+    listRef.current?.setStatus('refreshing')
+    void fetchSongs()
+  }, [type, active, sessionKey, loadPlaylists, fetchSongs])
 
   const handleRefresh = useCallback(() => {
     if (type === 'home') {
@@ -186,13 +215,8 @@ export default memo(({ type, onOpenDetail }: Props) => {
   // 空列表渲染：区分「加载中 / 加载失败 / 真的没推荐」，并给失败态一个重试入口
   const renderEmpty = () => {
     if (type !== 'home') return null
-    if (loading) {
-      return (
-        <View style={styles.empty}>
-          <Text color={theme['c-font-label']}>{t('list_loading')}</Text>
-        </View>
-      )
-    }
+    // 【第 191 轮】不再渲染「加载中」占位，刷新由下拉动画表达。
+    if (refreshing && playlists.length === 0) return null
     return (
       <View style={styles.empty}>
         <Text color={theme['c-font-label']}>{loadError ? t('list_error') : t('list_empty')}</Text>

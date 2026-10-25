@@ -11,6 +11,7 @@ import { scaleSizeW } from '@/utils/pixelRatio'
 import { createStyle } from '@/utils/tools'
 import Text from '@/components/common/Text'
 import { useBottomOverlayInset } from '@/store/common/hook'
+import { refreshCoverCaches } from '@/core/music/coverUrl'
 
 type FlatListType = FlatListProps<ListInfoItem>
 
@@ -95,7 +96,7 @@ export default forwardRef<ListType, ListProps>(({ header, onRefresh, onLoadMore,
         colors={[theme['c-primary']]}
         // progressBackgroundColor={theme.primary}
         refreshing={status == 'refreshing'}
-        onRefresh={onRefresh}
+        onRefresh={() => { refreshCoverCaches(); onRefresh() }}
       />
     ),
     [status, onRefresh, theme],
@@ -128,18 +129,6 @@ export default forwardRef<ListType, ListProps>(({ header, onRefresh, onLoadMore,
     )
   }, [onLoadMore, status])
 
-  // const itemWidth = useMemo(() => {
-  //   let itemWidth = Math.max(Math.trunc(width * 0.125), MAX_WIDTH)
-  //   // if (itemWidth < )
-  // }, [width])
-  // const computedItemWidth = useMemo(() => {
-  //   let w = width - GAP
-  //   let n = width / (MIN_WIDTH + GAP)
-  //   if (n > 10) n = 10
-  //   return Math.floor(w / n)
-  // }, [width])
-  // console.log(Math.trunc(width * 0.125), itemWidth)
-  // console.log(itemWidth, MIN_WIDTH, GAP, width)
   const isHorizontal = useHorizontalMode()
   // 底部悬浮层（迷你播放器 + 底部 Tab + 安全区）统一避让高度
   const bottomInset = useBottomOverlayInset()

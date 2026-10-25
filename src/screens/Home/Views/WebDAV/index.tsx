@@ -15,6 +15,7 @@ import Text from '@/components/common/Text'
 import MarqueeText from '@/components/common/MarqueeText'
 import Button from '@/components/common/Button'
 import Image from '@/components/common/Image'
+import { refreshCoverCaches } from '@/core/music/coverUrl'
 import { Icon } from '@/components/common/Icon'
 import { SvgIcon } from '@/components/common/SvgIcon'
 import { useTheme } from '@/store/theme/hook'
@@ -1562,7 +1563,7 @@ export default memo(() => {
             colors={[theme['c-primary']]}
             // 只认用户下拉（见 refreshing 状态注释）：扫描/选目录不再把列表压下去再弹回来
             refreshing={refreshing}
-            onRefresh={handleRefresh}
+            onRefresh={() => { refreshCoverCaches(); handleRefresh() }}
           />
         }
       />

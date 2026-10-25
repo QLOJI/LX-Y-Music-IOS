@@ -352,11 +352,12 @@ export default memo(() => {
               <RecSongs
                 isStylized={isStylized}
                 stylizedSelection={stylizedSelection}
+                active={activeTab === 'songs'}
               />
             )}
           </View>
           <View key="2">
-            <RecPlaylists onOpenDetail={handleOpenDetail} />
+            <RecPlaylists onOpenDetail={handleOpenDetail} active={activeTab === 'playlists'} />
           </View>
         </PagerView>
         <StylizedModal

@@ -19,6 +19,12 @@ import {
   clearDailyRecCache,
 } from '@/utils/data'
 import { getDailyRecSongsCache, setDailyRecSongsCache, clearDailyRecSongsCache } from '@/core/cache'
+import { refreshCoverCaches } from '@/core/music/coverUrl'
+import {
+  takeDailyRecAutoRefresh,
+  getDailyRecSessionList,
+  setDailyRecSessionList,
+} from '@/core/dailyRecSession'
 
 
 import type { StylizedSelection } from './StylizedModal'
@@ -36,9 +42,11 @@ const similarSongsFetcher = {
 interface RecSongsProps {
   isStylized?: boolean
   stylizedSelection?: StylizedSelection | null
+  /** 【第 191 轮】只有当前 tab 才自动下拉：每次启动每个 tab 只刷一次。 */
+  active?: boolean
 }
 
-export default memo(({ isStylized, stylizedSelection }: RecSongsProps) => {
+export default memo(({ isStylized, stylizedSelection, active = true }: RecSongsProps) => {
   const listRef = useRef<OnlineListType>(null)
   const unmountedRef = useRef(false)
   const [isLoading, setIsLoading] = useState(true)
@@ -48,11 +56,6 @@ export default memo(({ isStylized, stylizedSelection }: RecSongsProps) => {
   const theme = useTheme()
   const buttonRadius = useButtonRadius()
   const [isAllSimilarSongsFetched, setIsAllSimilarSongsFetched] = useState(false)
-  // 记录最近一次发起的加载签名（cookie + 风格化选择）与失败时间：
-  // effect 依赖里的 isLoading 会让加载中的 setIsLoading(true/false) 额外触发 effect
-  // （成功时重复请求、失败时形成风暴）。签名没变的重复触发直接跳过，失败后再退避
-  // LOAD_FAIL_BACKOFF；只有输入真正变化或用户下拉刷新才会重新加载
-  const lastLoadRef = useRef({ sig: '', failedAt: 0 })
 
   // 卸载时停止后台相似歌曲预取任务，避免切走后仍跑网络请求/磁盘读写造成卡顿
   useEffect(() => {
@@ -63,11 +66,17 @@ export default memo(({ isStylized, stylizedSelection }: RecSongsProps) => {
   }, [])
 
   useEffect(() => {
-    // 加载签名：输入没变时（isLoading 抖动引起的重跑）不重复加载
+    // 【第 191 轮】本次启动的缓存键：默认推荐按 cookie 分桶，风格化按整套选择分桶。
     const sig = `${cookie}|${isStylized}|${stylizedSelection ? JSON.stringify(stylizedSelection) : ''}`
-    const last = lastLoadRef.current
-    if (last.sig === sig && (!last.failedAt || Date.now() - last.failedAt < LOAD_FAIL_BACKOFF)) return
-    lastLoadRef.current = { sig, failedAt: 0 }
+    const cacheKey = isStylized && stylizedSelection ? `wy_stylized_${sig}` : `wy_songs_${cookie}`
+    // 先还原缓存（页面离开即卸载）：再次进入直接显示上次数据，不出现加载中界面。
+    const cachedList = isStylized
+      ? getDailyRecSessionList<any[]>(cacheKey)
+      : getDailyRecSongsCache()
+    if (cachedList?.length) {
+      listRef.current?.setList(cachedList, false)
+      listRef.current?.setStatus('idle')
+    }
 
     if (!cookie) {
       if (isLoading) {
@@ -79,19 +88,22 @@ export default memo(({ isStylized, stylizedSelection }: RecSongsProps) => {
       return
     }
 
+    // 只有当前 tab 才自动刷新；每次启动每个 key 只自动下拉一次，之后靠用户手动下拉。
+    if (!active) return
+    if (!takeDailyRecAutoRefresh(cacheKey)) return
+    refreshCoverCaches()
+
     if (isStylized && stylizedSelection) {
       setIsLoading(true)
-      listRef.current?.setStatus('loading')
+      listRef.current?.setStatus('refreshing')
       wyApi.dailyRec.saveStylizedTag(cookie, stylizedSelection.categoryId, stylizedSelection.tagIds).then(() => {
         return wyApi.dailyRec.getStylizedList(cookie)
       }).then((result: any) => {
         listRef.current?.setList(result.list, false)
         listRef.current?.setStatus('idle')
+        setDailyRecSessionList(cacheKey, result.list)
       }).catch((err: any) => {
         console.error(err)
-        // 记失败时间：同一输入的 effect 重跑（isLoading 抖动）在退避窗口内会被上面拦住。
-        // 只在签名仍是当前时才记，避免过期请求的失败覆盖新加载的状态
-        if (lastLoadRef.current.sig === sig) lastLoadRef.current = { sig, failedAt: Date.now() }
         toast(t('load_failed'), 'long')
         listRef.current?.setStatus('error')
       }).finally(() => {
@@ -100,17 +112,9 @@ export default memo(({ isStylized, stylizedSelection }: RecSongsProps) => {
       return
     }
 
-    const cachedSongs = getDailyRecSongsCache()
-    if (cachedSongs) {
-      setTimeout(() => {
-        listRef.current?.setList(cachedSongs, false)
-        listRef.current?.setStatus('idle')
-        setIsLoading(false)
-      }, 0)
-    } else {
-      setIsLoading(true)
-      listRef.current?.setStatus('loading')
-      wyApi.dailyRec.getList(cookie).then(async(result: any) => {
+    setIsLoading(true)
+    listRef.current?.setStatus('refreshing')
+    wyApi.dailyRec.getList(cookie).then(async(result: any) => {
         listRef.current?.setList(result.list, false)
         listRef.current?.setStatus('idle')
         setDailyRecSongsCache(result.list)
@@ -226,16 +230,12 @@ export default memo(({ isStylized, stylizedSelection }: RecSongsProps) => {
         await processQueue()
       }).catch((err: any) => {
         console.error(err)
-        // 记失败时间：同一输入的 effect 重跑（isLoading 抖动）在退避窗口内会被上面拦住。
-        // 只在签名仍是当前时才记，避免过期请求的失败覆盖新加载的状态
-        if (lastLoadRef.current.sig === sig) lastLoadRef.current = { sig, failedAt: Date.now() }
         toast(t('load_failed'), 'long')
         listRef.current?.setStatus('error')
       }).finally(() => {
         setIsLoading(false)
       })
-    }
-  }, [t, cookie, isStylized, stylizedSelection, isLoading])
+  }, [t, cookie, isStylized, stylizedSelection, active])
 
   useEffect(() => {
     const handleReplaceMusic = (oldMusicInfoId: string, newMusicInfo: LX.Music.MusicInfoOnline | null) => {
@@ -272,6 +272,7 @@ export default memo(({ isStylized, stylizedSelection }: RecSongsProps) => {
         return wyApi.dailyRec.getStylizedList(cookie)
       }).then((result: any) => {
         listRef.current?.setList(result.list, false)
+        setDailyRecSessionList(`wy_stylized_${cookie}|true|${JSON.stringify(stylizedSelection)}`, result.list)
       }).catch((err: any) => {
         console.error(err)
         toast(t('load_failed'), 'long')

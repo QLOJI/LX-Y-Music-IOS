@@ -15,6 +15,7 @@ import DetailPageTitle from '@/components/common/DetailPageTitle'
 import SwipeBackArea from '@/components/common/SwipeBackArea'
 import { setNavActiveId } from '@/core/common'
 import { useBottomOverlayInset } from '@/store/common/hook'
+import { refreshCoverCaches } from '@/core/music/coverUrl'
 
 export default memo(() => {
   const subscribedAlbums = useWySubscribedAlbums()
@@ -101,7 +102,7 @@ export default memo(() => {
               colors={[theme['c-primary']]}
               // 只认用户下拉（见 refreshing 状态注释）
               refreshing={refreshing}
-              onRefresh={() => { onRefresh(true) }}
+              onRefresh={() => { refreshCoverCaches(); onRefresh(true) }}
             />
           }
         />

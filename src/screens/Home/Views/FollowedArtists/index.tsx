@@ -13,6 +13,7 @@ import DetailPageTitle from '@/components/common/DetailPageTitle'
 import SwipeBackArea from '@/components/common/SwipeBackArea'
 import { setNavActiveId } from '@/core/common'
 import { useBottomOverlayInset } from '@/store/common/hook'
+import { refreshCoverCaches } from '@/core/music/coverUrl'
 
 export default memo(() => {
   const followedArtists = useWyFollowedArtists()
@@ -71,7 +72,7 @@ export default memo(() => {
           <RefreshControl
             colors={[theme['c-primary']]}
             refreshing={loading}
-            onRefresh={onRefresh}
+            onRefresh={() => { refreshCoverCaches(); onRefresh() }}
           />
         }
       />

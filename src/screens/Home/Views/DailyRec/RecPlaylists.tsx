@@ -12,10 +12,12 @@ import wy from '@/utils/musicSdk/wy/index'
 import ListItem from '../MyPlaylist/ListItem'
 import { useBottomOverlayInset } from '@/store/common/hook'
 import { getDailyRecPlaylistsCache, setDailyRecPlaylistsCache, clearDailyRecPlaylistsCache } from '@/core/cache'
+import { refreshCoverCaches } from '@/core/music/coverUrl'
+import { takeDailyRecAutoRefresh } from '@/core/dailyRecSession'
 
-export default memo(({ onOpenDetail }: { onOpenDetail: (info: any) => void }) => {
+export default memo(({ onOpenDetail, active = true }: { onOpenDetail: (info: any) => void, active?: boolean }) => {
   const [playlists, setPlaylists] = useState<any[]>([])
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(false)
   // 下拉刷新动画只认「用户真的下拉过」（用户第 16 轮第 7 条）。此前 RefreshControl 直接吃
   // loading，而 loading 初值为 true —— 列表挂载的那一帧刷新控件就被激活、把内容整体下压，
   // 加载结束回弹时再上跳一次（「第一次进入向上刷新」）。现在只有 handleRefresh（用户下拉）
@@ -61,6 +63,8 @@ export default memo(({ onOpenDetail }: { onOpenDetail: (info: any) => void }) =>
     if (isRefresh) setRefreshing(true)
     else setLoading(true)
     setLoadError('')
+    // 【第 191 轮】刷新同时作废封面缓存（下拉由外层入口已做，这里覆盖自动刷新路径）。
+    if (isRefresh) refreshCoverCaches()
     wyApi.getRecPlaylists(cookie).then(async(list: any) => {
       const adaptedList = list
         // .filter(item => !item.name.includes('雷达'))
@@ -110,9 +114,21 @@ export default memo(({ onOpenDetail }: { onOpenDetail: (info: any) => void }) =>
     })
   }, [cookie, t])
 
+  // 【第 191 轮】先还原本次启动里的缓存，再按「当前 tab + 本次启动是否已自动刷过」决定加载：
+  // 每次打开软件、每个 tab 只自动下拉刷新一次；再次进入不请求，要新数据由用户手动下拉。
+  const lastCookieRef = useRef(cookie)
   useEffect(() => {
-    loadPlaylists()
-  }, [loadPlaylists])
+    const cached = getDailyRecPlaylistsCache()
+    if (cached?.length) {
+      setPlaylists(cached)
+      setLoading(false)
+    }
+    const cookieChanged = lastCookieRef.current !== cookie
+    lastCookieRef.current = cookie
+    if (!active) return
+    if (!cookieChanged && !takeDailyRecAutoRefresh('wy_daily_playlists')) return
+    loadPlaylists(true)
+  }, [active, cookie, loadPlaylists])
 
   const handleItemPress = (playlistInfo: any) => {
     onOpenDetail(playlistInfo)
@@ -126,6 +142,8 @@ export default memo(({ onOpenDetail }: { onOpenDetail: (info: any) => void }) =>
   // 空列表渲染：只有这里能区分「未登录 / 加载中 / 加载失败 / 真的没有歌单」，
   // 并为失败和空数据提供「重新加载」入口（重试先清缓存再强刷）
   const renderEmpty = () => {
+    // 自动/手动刷新期间不显示「暂无数据」，交给下拉动画。
+    if (refreshing && playlists.length === 0) return null
     if (!cookie) {
       return (
         <View style={styles.empty}>
@@ -133,13 +151,7 @@ export default memo(({ onOpenDetail }: { onOpenDetail: (info: any) => void }) =>
         </View>
       )
     }
-    if (loading) {
-      return (
-        <View style={styles.empty}>
-          <Text color={theme['c-font-label']}>{t('list_loading')}</Text>
-        </View>
-      )
-    }
+    // 【第 191 轮】不再渲染「加载中」占位：首次/重新进入由自动下拉或手动下拉动画表达。
     return (
       <View style={styles.empty}>
         <Text color={theme['c-font-label']}>{loadError ? t('list_error') : t('list_empty')}</Text>

@@ -154,10 +154,10 @@ export default memo(() => {
           scrollEnabled
         >
           <View key="recommend">
-            <RecSongs type="recommend" />
+            <RecSongs type="recommend" active={activeTab === 'recommend'} />
           </View>
           <View key="everyday">
-            <RecSongs type="everyday" />
+            <RecSongs type="everyday" active={activeTab === 'everyday'} />
           </View>
         </PagerView>
       </View>

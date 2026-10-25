@@ -1,5 +1,6 @@
 import { memo, useEffect, useRef, useState, useCallback } from 'react'
-import { RefreshControl, View, FlatList, TouchableOpacity, Image } from 'react-native'
+import { RefreshControl, View, FlatList, TouchableOpacity } from 'react-native'
+import Image from '@/components/common/Image'
 import Text from '@/components/common/Text'
 import { useTheme } from '@/store/theme/hook'
 import { useHorizontalMode } from '@/utils/hooks'
@@ -10,6 +11,12 @@ import { useI18n } from '@/lang'
 import txApi from '@/utils/musicSdk/tx'
 import { type ListInfoItem } from '@/store/songlist/state'
 import { useBottomOverlayInset } from '@/store/common/hook'
+import { refreshCoverCaches } from '@/core/music/coverUrl'
+import {
+  takeDailyRecAutoRefresh,
+  getDailyRecSessionList,
+  setDailyRecSessionList,
+} from '@/core/dailyRecSession'
 
 interface PlaylistInfo {
   id: number
@@ -22,6 +29,8 @@ interface PlaylistInfo {
 
 interface Props {
   onOpenDetail: (playlistInfo: ListInfoItem) => void
+  /** 【第 191 轮】只有当前 tab 才自动下拉。 */
+  active?: boolean
 }
 
 const ListItem = ({ item, onPress }: { item: PlaylistInfo, onPress: () => void }) => {
@@ -30,7 +39,7 @@ const ListItem = ({ item, onPress }: { item: PlaylistInfo, onPress: () => void }
   return (
     <TouchableOpacity style={styles.item} onPress={onPress}>
       <Image
-        source={{ uri: item.picurl }}
+        url={item.picurl}
         style={[
           styles.cover,
           // 歌单封面圆角随「按钮圆角」设置行内覆盖；高度取 styles.cover.height 源值 60
@@ -49,9 +58,10 @@ const ListItem = ({ item, onPress }: { item: PlaylistInfo, onPress: () => void }
   )
 }
 
-export default memo(({ onOpenDetail }: Props) => {
+export default memo(({ onOpenDetail, active = true }: Props) => {
   const [playlists, setPlaylists] = useState<PlaylistInfo[]>([])
   const [loading, setLoading] = useState(false)
+  const sessionKey = 'tx_daily_songlists'
   // 下拉刷新动画只认「用户真的下拉过」（用户第 16 轮第 7 条）：loading 只喂空列表占位，
   // 程序触发的加载不再激活 iOS 刷新控件（否则内容会被压下去再弹回来 = 向上刷新）。
   const [refreshing, setRefreshing] = useState(false)
@@ -78,6 +88,7 @@ export default memo(({ onOpenDetail }: Props) => {
     if (refresh) setRefreshing(true)
     else setLoading(true)
     setLoadError('')
+    if (refresh) refreshCoverCaches()
     try {
       // 有界重试（2 次，800/2000ms）：冷启动首个请求要跟「网络栈就绪 / Cookie 落盘 /
       // 平台偶发 5xx」抢时间，一次失败就定格成空白页。shouldRetry 兜住「等待期间
@@ -87,7 +98,10 @@ export default memo(({ onOpenDetail }: Props) => {
       })
       if (loadId !== loadIdRef.current) return
       if (result?.songlists) {
-        if (result.songlists.length) loadedRef.current = true
+        if (result.songlists.length) {
+          loadedRef.current = true
+          setDailyRecSessionList(sessionKey, result.songlists)
+        }
         setPlaylists(result.songlists)
       }
     } catch (error: any) {
@@ -102,9 +116,17 @@ export default memo(({ onOpenDetail }: Props) => {
     }
   }, [t])
 
+  // 【第 191 轮】先还原本次启动缓存；只有当前 tab + 本次启动尚未自动刷过，才自动下拉一次。
   useEffect(() => {
-    void loadPlaylists()
-  }, [loadPlaylists])
+    const cached = getDailyRecSessionList<PlaylistInfo[]>(sessionKey)
+    if (cached?.length) {
+      setPlaylists(cached)
+      setLoading(false)
+    }
+    if (!active) return
+    if (!takeDailyRecAutoRefresh(sessionKey)) return
+    void loadPlaylists(true)
+  }, [active, sessionKey, loadPlaylists])
 
   const handleItemPress = (playlistInfo: PlaylistInfo) => {
     const listInfo = {
@@ -126,13 +148,7 @@ export default memo(({ onOpenDetail }: Props) => {
   // 空列表渲染：只有这里能区分「加载中 / 加载失败 / 真的没有歌单」，
   // 并为失败提供「重新加载」入口（旧写法整块交给 FlatList 空数据默认渲染，什么都没有）
   const renderEmpty = () => {
-    if (loading) {
-      return (
-        <View style={styles.empty}>
-          <Text color={theme['c-font-label']}>{t('list_loading')}</Text>
-        </View>
-      )
-    }
+    if (refreshing && playlists.length === 0) return null
     return (
       <View style={styles.empty}>
         <Text color={theme['c-font-label']}>{loadError ? t('list_error') : t('list_empty')}</Text>
