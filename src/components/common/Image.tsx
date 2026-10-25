@@ -5,6 +5,7 @@ import { createStyle } from '@/utils/tools'
 import { memo, useCallback, useEffect, useMemo, useState, useRef } from 'react'
 import { View, type ViewProps, Image as _Image, Text as NativeText, StyleSheet, AppState, type ImageResizeMode, type ImageStyle, type TextStyle, type ViewStyle, type StyleProp } from 'react-native'
 import { useLayout } from '@/utils/hooks'
+import { getImageEpoch, subscribeImageEpoch } from '@/utils/imageEpoch'
 
 export interface ImageProps extends ViewProps {
   style: StyleProp<ViewStyle | TextStyle | ImageStyle>
@@ -43,6 +44,9 @@ EmptyPic.displayName = 'CommonImageEmptyPic'
 
 const Image = memo(({ url, resizeMode = 'cover', style, onError, nativeID }: ImageProps) => {
   const [isError, setError] = useState(false)
+  // 【第 191 轮】下拉刷新推进纪元：远程图 URL 末尾加 #lxcb=<纪元>，换缓存键重新下载。
+  const [imageEpoch, setImageEpoch] = useState(getImageEpoch)
+  useEffect(() => subscribeImageEpoch(setImageEpoch), [])
   const urlRef = useRef(url)
   urlRef.current = url
   // 【第 67 轮】封面自动重试的账本
@@ -121,6 +125,10 @@ const Image = memo(({ url, resizeMode = 'cover', style, onError, nativeID }: Ima
   // 本地文件（file://）、require 资源（asset://）与 data: 一律仍走 RN Image ——
   // 它们本来就是本地读取、不存在网络往返，没必要把它们也换掉去承担行为差异。
   const isRemoteUri = typeof uri == 'string' && /^https?:\/\//i.test(uri)
+  // 【第 191 轮】下拉刷新推进纪元：片段只参与本地缓存键、不发给服务器（签名 URL 安全）。
+  const displayUri = isRemoteUri && imageEpoch > 0
+    ? `${uri}${uri!.includes('#') ? '&' : '#'}lxcb=${imageEpoch}`
+    : uri
   // FastImage 只认 cover/contain/stretch/center 四种，RN 的 ImageResizeMode 还多一个 repeat；
   // 全仓实际只用到 cover 与 contain，其余值统一退到 cover，避免把非法串透传给原生。
   const fastResizeMode = resizeMode === 'contain'
@@ -138,7 +146,7 @@ const Image = memo(({ url, resizeMode = 'cover', style, onError, nativeID }: Ima
             <FastImage
               style={style as StyleProp<ImageStyle>}
               source={{
-                uri: uri!,
+                uri: displayUri!,
                 headers: defaultHeaders,
                 // immutable：按 URL 永久缓存、不再向服务器回验。封面 URL 是 CDN 固定串，
                 // 与播放详情页大封面（PlayDetail/Vertical/Pic.tsx）同一口径。

@@ -12,6 +12,7 @@ import Text from '@/components/common/Text'
 import { handlePlay } from './listAction'
 import { useSettingValue } from '@/store/setting/hook'
 import { useBottomOverlayInset } from '@/store/common/hook'
+import { refreshCoverCaches } from '@/core/music/coverUrl'
 
 type FlatListType = FlatListProps<LX.Music.MusicInfoOnline>
 export type { RowInfoType }
@@ -330,7 +331,11 @@ const List = forwardRef<ListType, ListProps>(
         <RefreshControl
           colors={[theme['c-primary']]}
           refreshing={status == 'refreshing'}
-          onRefresh={onRefresh}
+          onRefresh={() => {
+            // 【第 191 轮】所有走 OnlineList 的页面：下拉即作废封面缓存并推进图片纪元
+            refreshCoverCaches()
+            onRefresh()
+          }}
         />
       ),
       [status, onRefresh, theme],
