@@ -8,6 +8,7 @@ import { scaleSizeW } from '@/utils/pixelRatio'
 import Text from '@/components/common/Text'
 import { createStyle } from '@/utils/tools'
 import { useBottomOverlayInset } from '@/store/common/hook'
+import { refreshCoverCaches } from '@/core/music/coverUrl'
 
 const MIN_WIDTH = scaleSizeW(120)
 const HORIZONTAL_SPACING = 24
@@ -110,7 +111,7 @@ export default memo(({ componentId, albums, loading, hasMore, onLoadMore, onRefr
               colors={[theme['c-primary']]}
               // 只认用户下拉（见 refreshing 状态注释）
               refreshing={refreshing}
-              onRefresh={handlePullRefresh}
+              onRefresh={() => { refreshCoverCaches(); handlePullRefresh() }}
             />
           }
           columnWrapperStyle={rowInfo.num > 1 ? styles.row : undefined}
