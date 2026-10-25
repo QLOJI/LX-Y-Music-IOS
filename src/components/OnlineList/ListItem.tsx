@@ -19,6 +19,7 @@ import { songRowMetrics, songRowStyles as styles } from '@/components/common/son
 import Image from '@/components/common/Image'
 import PlayingIcon from '@/components/common/PlayingIcon'
 import { useIsWyLiked, useIsTxLiked, useIsKgLiked } from '@/store/user/hook'
+import { getTxLikeKeys } from '@/utils/txLikeKey'
 import { handleLikeMusic, handleTxLikeMusic, handleKgLikeMusic } from './listAction'
 import useCoverUrl from '@/utils/hooks/useCoverUrl'
 import { getQualityBadge } from '@/utils/musicQualityBadge'
@@ -93,12 +94,9 @@ const ListItem = memo(
     // Mylist/MusicList/ListItem.tsx 同一类崩溃）。
     const meta = (item.meta ?? {}) as any
     const isWyLiked = useIsWyLiked(meta.songId)
-    const txSongId = meta.id
-    const isNumericId = txSongId && /^\d+$/.test(String(txSongId))
-    const txSongMid = isNumericId
-      ? String(txSongId)
-      : (meta.songmid || meta.strMediaMid || (typeof item.id === 'string' && item.id.startsWith('tx_') ? item.id.slice(3) : item.id))
-    const isTxLiked = useIsTxLiked(txSongMid)
+    // 【第 193 轮】QQ 红心按全部候选键查（songId / songmid / strMediaMid / tx_ id）：
+    // 启动时写入的喜欢集合与行内数据未必同形，只查一个键会出现「平台已喜欢、红心仍空」。
+    const isTxLiked = useIsTxLiked(getTxLikeKeys({ id: item.id, meta }))
     const isKgLiked = useIsKgLiked(meta.hash || meta.songId)
 
     const moreButtonRef = useRef<TouchableOpacity>(null)

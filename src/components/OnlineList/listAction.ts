@@ -13,7 +13,8 @@ import { httpFetch } from '@/utils/request'
 import musicDetailApi from '@/utils/musicSdk/wy/musicDetail'
 import userState from '@/store/user/state'
 import { weapi } from '@/utils/musicSdk/wy/utils/crypto.js'
-import { addWyLikedSong, removeWyLikedSong, addTxLikedSong, removeTxLikedSong, addKgLikedSong, removeKgLikedSong } from '@/store/user/action.ts'
+import { addWyLikedSong, removeWyLikedSong, addTxLikedSongs, removeTxLikedSongs, addKgLikedSong, removeKgLikedSong } from '@/store/user/action.ts'
+import { getTxLikeKeys, getTxLikeTarget } from '@/utils/txLikeKey'
 import { navigations } from '@/navigation'
 import wyApi from '@/utils/musicSdk/wy/user'
 import txApi from '@/utils/musicSdk/tx/user'
@@ -203,17 +204,18 @@ export const handleLikeMusic = async(musicInfo: LX.Music.MusicInfoOnline) => {
   const songId = musicInfo.meta.songId
   const isLiked = userState.wy_liked_song_ids.has(String(songId))
   const like = !isLiked
+  const apply = (liked: boolean) => {
+    if (liked) addWyLikedSong(songId)
+    else removeWyLikedSong(songId)
+  }
 
+  // 【第 193 轮】先翻本地红心再等网络：接口往返期间界面必须立刻有反馈。
+  apply(like)
   try {
     await wyApi.likeSong(songId, like)
-    if (like) {
-      toast('喜欢成功')
-      addWyLikedSong(songId)
-    } else {
-      toast('取消喜欢成功')
-      removeWyLikedSong(songId)
-    }
+    toast(like ? '喜欢成功' : '取消喜欢成功')
   } catch (error: any) {
+    apply(!like)
     toast(`操作失败: ${error.message}`)
   }
 }
@@ -229,30 +231,37 @@ export const handleTxLikeMusic = async(musicInfo: LX.Music.MusicInfoOnline) => {
     return
   }
 
-  const rawSongMid = (musicInfo.meta as any).songmid || (musicInfo.meta as any).strMediaMid || musicInfo.id
-  const songMid = typeof rawSongMid === 'string' && rawSongMid.startsWith('tx_') ? rawSongMid.slice(3) : rawSongMid
-  const songId = (musicInfo.meta as any).id
+  const likeKeys = getTxLikeKeys(musicInfo)
+  if (!likeKeys.length) {
+    toast('无法识别该歌曲的QQ标识')
+    return
+  }
+  const songIdentifier = getTxLikeTarget(musicInfo)
+  if (!songIdentifier) {
+    toast('无法识别该歌曲的QQ标识')
+    return
+  }
 
-  const isNumericId = songId && /^\d+$/.test(String(songId))
-
-  const likeKey = isNumericId ? String(songId) : songMid
-
-  const songIdentifier = isNumericId ? String(songId) : songMid
-
-  const isLiked = userState.tx_liked_song_ids.has(likeKey)
+  const isLiked = likeKeys.some(key => userState.tx_liked_song_ids.has(key))
   const like = !isLiked
+  const apply = (liked: boolean) => {
+    if (liked) addTxLikedSongs(likeKeys)
+    else removeTxLikedSongs(likeKeys)
+  }
 
+  // 【第 193 轮】先翻红心再请求：QQ 的加歌接口要先查歌单 + 签名，往返常超过 1 秒，
+  // 等结果回来才变色就是用户报的「点了没反应」。写入的是全部候选键，行内拿哪个都能命中。
+  apply(like)
   try {
     await txApi.likeSong(songIdentifier, like)
-    if (like) {
-      toast('喜欢成功')
-      addTxLikedSong(likeKey)
-    } else {
-      toast('取消喜欢成功')
-      removeTxLikedSong(likeKey)
-    }
+    toast(like ? '喜欢成功' : '取消喜欢成功')
   } catch (error: any) {
-    toast(`操作失败: ${error.message}`)
+    const message = error?.message || String(error)
+    // 实测「返回数据异常」这类错误发生在服务端已经执行之后（平台我喜欢里已经有歌）。
+    // 此时回滚会让界面与平台相反；只有明确的鉴权 / 网络 / 找不到歌单才回滚。
+    const definiteFailure = /cookie|登录|过期|未找到.*我喜欢|HTTP|网络|未设置/i.test(message)
+    if (definiteFailure) apply(!like)
+    toast(definiteFailure ? `操作失败: ${message}` : `已提交，若平台未生效请稍后重试（${message}）`)
   }
 }
 
@@ -270,22 +279,36 @@ export const handleKgLikeMusic = async(musicInfo: LX.Music.MusicInfoOnline) => {
   const meta = musicInfo.meta as any
   const songHash = meta.hash || ''
   const songId = musicInfo.meta.songId
-  const likeKey = songHash || String(songId)
+  const likeKey = songHash || String(songId || '')
+  if (!likeKey) {
+    toast('无法识别该歌曲的酷狗标识')
+    return
+  }
   const isLiked = userState.kg_liked_song_ids.has(likeKey)
   const like = !isLiked
+  const apply = (liked: boolean) => {
+    if (liked) addKgLikedSong(likeKey)
+    else removeKgLikedSong(likeKey)
+  }
+  // 【第 193 轮】先翻本地红心，失败再回滚：查询我喜欢歌单 + 增删歌曲要好几跳网络。
+  apply(like)
+  const fail = (message: string) => {
+    apply(!like)
+    toast(message)
+  }
 
   try {
     if (like) {
       const { getUserPlaylists } = await import('@/utils/musicSdk/kg/utils/api')
       const playlistsResult = await getUserPlaylists(cookie)
       if (!playlistsResult.success || !playlistsResult.data) {
-        toast('获取歌单列表失败')
+        fail('获取歌单列表失败')
         return
       }
 
       const favoritesPlaylist = playlistsResult.data.createdList.find((p: any) => p.isFavorites)
       if (!favoritesPlaylist?.listid) {
-        toast('未找到"我喜欢"歌单，可能是Cookie已失效，请重新登录')
+        fail('未找到"我喜欢"歌单，可能是Cookie已失效，请重新登录')
         return
       }
 
@@ -300,27 +323,26 @@ export const handleKgLikeMusic = async(musicInfo: LX.Music.MusicInfoOnline) => {
       const result = await addSongToPlaylist(cookie, favoritesPlaylist.listid, songInfo)
       if (result.success) {
         toast('喜欢成功')
-        addKgLikedSong(likeKey)
       } else {
-        toast(`操作失败: ${result.message}，可能是Cookie已失效，请重新登录`)
+        fail(`操作失败: ${result.message}，可能是Cookie已失效，请重新登录`)
       }
     } else {
       const { getUserPlaylists, getPlaylistSongs } = await import('@/utils/musicSdk/kg/utils/api')
       const playlistsResult = await getUserPlaylists(cookie)
       if (!playlistsResult.success || !playlistsResult.data) {
-        toast('获取歌单列表失败，可能是Cookie已失效，请重新登录')
+        fail('获取歌单列表失败，可能是Cookie已失效，请重新登录')
         return
       }
 
       const favoritesPlaylist = playlistsResult.data.createdList.find((p: any) => p.isFavorites)
       if (!favoritesPlaylist?.listid) {
-        toast('未找到"我喜欢"歌单，可能是Cookie已失效，请重新登录')
+        fail('未找到"我喜欢"歌单，可能是Cookie已失效，请重新登录')
         return
       }
 
       const songsResult = await getPlaylistSongs(cookie, favoritesPlaylist.id, 1, 500)
       if (!songsResult.success || !songsResult.data?.list) {
-        toast('获取歌单歌曲失败')
+        fail('获取歌单歌曲失败')
         return
       }
 
@@ -339,16 +361,15 @@ export const handleKgLikeMusic = async(musicInfo: LX.Music.MusicInfoOnline) => {
         const removeResult = await removeSongsFromPlaylist(cookie, favoritesPlaylist.listid, [Number(targetSong.fileId)])
         if (removeResult.success) {
           toast('取消喜欢成功')
-          removeKgLikedSong(likeKey)
         } else {
-          toast(`操作失败: ${removeResult.message}，可能是Cookie已失效，请重新登录`)
+          fail(`操作失败: ${removeResult.message}，可能是Cookie已失效，请重新登录`)
         }
       } else {
-        toast('未找到歌曲信息，可能是Cookie已失效，请重新登录')
+        fail('未找到歌曲信息，可能是Cookie已失效，请重新登录')
       }
     }
   } catch (error: any) {
-    toast(`操作失败: ${error.message}，可能是Cookie已失效，请重新登录`)
+    fail(`操作失败: ${error.message}，可能是Cookie已失效，请重新登录`)
   }
 }
 
