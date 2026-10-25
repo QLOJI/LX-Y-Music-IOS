@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import state from './state'
 
 export const useWyUid = () => {
@@ -37,13 +37,22 @@ export const useIsWyLiked = (songId: string | number) => {
   return isLiked
 }
 
-export const useIsTxLiked = (songMid: string | number) => {
-  const strId = String(songMid)
-  const [isLiked, setIsLiked] = useState(() => state.tx_liked_song_ids.has(strId))
+/**
+ * QQ 的喜欢状态查询：可以传多个候选键（songId / songmid / strMediaMid…），
+ * 命中任意一个就算已喜欢。启动时写入的「我喜欢」集合与行内使用的键不一定同形，
+ * 只查单一键会出现「平台已喜欢、红心仍空」。
+ */
+export const useIsTxLiked = (songIds: string | number | Array<string | number>) => {
+  const ids = (Array.isArray(songIds) ? songIds : [songIds]).map(String).filter(id => id && id !== 'undefined' && id !== 'null')
+  // 用分隔符拼签名：['12','3'] 与 ['1','23'] 不能撞成同一个 deps
+  const sig = ids.join('|')
+  const idsRef = useRef(ids)
+  idsRef.current = ids
+  const [isLiked, setIsLiked] = useState(() => ids.some(id => state.tx_liked_song_ids.has(id)))
 
   useEffect(() => {
     const handleUpdate = () => {
-      const newLikedStatus = state.tx_liked_song_ids.has(strId)
+      const newLikedStatus = idsRef.current.some(id => state.tx_liked_song_ids.has(id))
       setIsLiked(currentStatus => currentStatus === newLikedStatus ? currentStatus : newLikedStatus)
     }
     global.state_event.on('txLikedListChanged', handleUpdate)
@@ -51,7 +60,7 @@ export const useIsTxLiked = (songMid: string | number) => {
     return () => {
       global.state_event.off('txLikedListChanged', handleUpdate)
     }
-  }, [strId])
+  }, [sig])
 
   return isLiked
 }

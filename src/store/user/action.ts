@@ -132,6 +132,30 @@ export const removeTxLikedSong = (id: string | number) => {
   state.tx_liked_song_ids.delete(strId)
   global.state_event.txLikedListChanged()
 }
+/**
+ * 一次写入同一首歌的全部候选键（songId / songmid / strMediaMid…），只广播一次。
+ * 行内红心可能拿其中任意一个键来查，全部写入后不管用哪个都不会漏。
+ */
+export const addTxLikedSongs = (ids: Array<string | number>) => {
+  let changed = false
+  for (const raw of ids) {
+    const id = String(raw)
+    if (!id || state.tx_liked_song_ids.has(id)) continue
+    state.tx_liked_song_ids.add(id)
+    changed = true
+  }
+  if (changed) global.state_event.txLikedListChanged()
+}
+export const removeTxLikedSongs = (ids: Array<string | number>) => {
+  let changed = false
+  for (const raw of ids) {
+    const id = String(raw)
+    if (!state.tx_liked_song_ids.has(id)) continue
+    state.tx_liked_song_ids.delete(id)
+    changed = true
+  }
+  if (changed) global.state_event.txLikedListChanged()
+}
 
 export const setTxSubscribedPlaylists = (playlists: TxPlaylistInfo[]) => {
   state.tx_subscribed_playlists = playlists
