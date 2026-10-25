@@ -136,7 +136,13 @@ export default async(appSetting: LX.AppSetting) => {
         while (hasMore) {
           const result = await txUserApi.getFavSongs(page, pageSize)
           if (result.list && result.list.length > 0) {
-            allLikedMids.push(...result.list.map((song: any) => song.mid))
+            // 【第 193 轮】QQ 行内可能用 songId / songmid 任一形式查喜欢，初始化时全部写入。
+            for (const song of result.list as any[]) {
+              for (const value of [song.id, song.mid, song.songmid]) {
+                const key = value === undefined || value === null ? '' : String(value)
+                if (key) allLikedMids.push(key)
+              }
+            }
           }
           hasMore = result.hasMore
           page++
