@@ -72,8 +72,8 @@ const Tabs = ({
       contentContainerStyle={styles.tabsContainer}
     >
       {/* 主 tab 顺序（用户第 33 轮第 6 条：「将推荐歌单标题显示在左，推荐歌曲标题显示在右」）：
-          歌单在左、歌曲在右。切页映射不受影响 —— onTabChange 走的是 id（'songs' / 'playlists'），
-          不是下标；PagerView 仍是 page0 = RecSongs / page1 = RecPlaylists。 */}
+          歌单在左、歌曲在右。PagerView 的页序必须与视觉顺序一致 ——
+          第 192 轮修正为 page0 = RecPlaylists / page1 = RecSongs，滑动方向才和 tab 顺序一致。 */}
       <TouchableOpacity
         style={[
           styles.tab,
@@ -173,8 +173,8 @@ export default memo(() => {
   // 【第 40 轮·默认落点】用户原话「网易每日推荐打开时，默认显示推荐歌单内容」：
   // 主 tab 的初值从「推荐歌曲」（'songs'）改成「推荐歌单」（'playlists'）—— 页面上
   // 推荐歌单本来就在左（第 33 轮第 6 条），打开即落在它上面。
-  // PagerView 的 initialPage 仍按语义 id 映射（`activeTab === 'songs' ? 0 : 1`，见下方 render），
-  // 初值一变落点自然跟着变，映射本身不用动（也仍然与 tab 渲染顺序解耦）。
+  // 【第 192 轮】PagerView 页序与 tab 视觉顺序对齐：page0 = 推荐歌单、page1 = 推荐歌曲。
+  // initialPage 按语义 id 映射（`activeTab === 'songs' ? 1 : 0`，见下方 render）。
   const [activeTab, setActiveTab] = useState<'songs' | 'playlists'>('playlists')
   // 【第 187 轮】歌曲页首次切过去才挂载，之后常驻不卸载：每次进入本页只加载一次，
   // 切 tab 不重复请求。默认停在歌单页时不提前拉歌曲列表。
@@ -194,8 +194,9 @@ export default memo(() => {
   }, [activeTab])
 
   const pagerViewRef = useRef<PagerView>(null)
-  const activeIndexRef = useRef(activeTab === 'songs' ? 0 : 1)
-  activeIndexRef.current = activeTab === 'songs' ? 0 : 1
+  // 【第 192 轮】页序与 tab 视觉顺序对齐：page0 = 推荐歌单（左）、page1 = 推荐歌曲（右）。
+  const activeIndexRef = useRef(activeTab === 'songs' ? 1 : 0)
+  activeIndexRef.current = activeTab === 'songs' ? 1 : 0
   // 【第 184 轮】与酷狗/QQ 日推共用恢复链；本页已有「进入即非动画落 page1」的复位，
   // 所以关掉 hook 的进页复位，避免两边各发一次。
   const {
@@ -235,7 +236,7 @@ export default memo(() => {
       if (id !== 'nav_daily_rec' || prev === 'nav_daily_rec') return
       if (activeTabRef.current === 'playlists') return
       setActiveTab('playlists')
-      pagerViewRef.current?.setPageWithoutAnimation(1)
+      pagerViewRef.current?.setPageWithoutAnimation(0)
     }
     global.state_event.on('navActiveIdUpdated', handleNavActiveIdUpdate)
     return () => { global.state_event.off('navActiveIdUpdated', handleNavActiveIdUpdate) }
@@ -245,14 +246,14 @@ export default memo(() => {
   const handleTabChange = (newTab: 'songs' | 'playlists') => {
     if (activeTab === newTab) return
     setActiveTab(newTab)
-    // 保留契约要求的「按语义 id 映射页位」字面量；恢复链只布防、不重复发 setPage。
-    pagerViewRef.current?.setPage(newTab === 'songs' ? 0 : 1)
-    trackPageSwitch(newTab === 'songs' ? 0 : 1)
+    // 按语义 id 映射页位；第 192 轮起歌曲在右（page1）、歌单在左（page0）。
+    pagerViewRef.current?.setPage(newTab === 'songs' ? 1 : 0)
+    trackPageSwitch(newTab === 'songs' ? 1 : 0)
   }
 
   const onPageSelected = useCallback((event: PagerViewOnPageSelectedEvent) => {
     notifyPageSelected()
-    const newTab = event.nativeEvent.position === 0 ? 'songs' : 'playlists'
+    const newTab = event.nativeEvent.position === 0 ? 'playlists' : 'songs'
     if (newTab !== activeTab) {
       setActiveTab(newTab)
     }
@@ -339,13 +340,17 @@ export default memo(() => {
           key={pagerKey}
           ref={pagerViewRef}
           style={{ flex: 1 }}
-          initialPage={activeTab === 'songs' ? 0 : 1}
+          initialPage={activeTab === 'songs' ? 1 : 0}
           onPageSelected={onPageSelected}
           onPageScroll={onPageScroll}
           onPageScrollStateChanged={onPageScrollStateChanged}
           scrollEnabled
         >
-          <View key="1">
+          {/* 【第 192 轮】页序 = 视觉顺序：推荐歌单在左（page0）、推荐歌曲在右（page1）。 */}
+          <View key="playlists">
+            <RecPlaylists onOpenDetail={handleOpenDetail} active={activeTab === 'playlists'} />
+          </View>
+          <View key="songs">
             {/* 【第 187 轮】首次切到歌曲页才挂载，之后常驻：切 tab 不再卸载/重挂，
                 每次进入本页只加载一次；手动下拉刷新或风格化输入变化才重新加载。 */}
             {songsMounted && (
@@ -355,9 +360,6 @@ export default memo(() => {
                 active={activeTab === 'songs'}
               />
             )}
-          </View>
-          <View key="2">
-            <RecPlaylists onOpenDetail={handleOpenDetail} active={activeTab === 'playlists'} />
           </View>
         </PagerView>
         <StylizedModal
