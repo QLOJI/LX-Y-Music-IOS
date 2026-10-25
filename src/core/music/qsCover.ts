@@ -49,10 +49,6 @@ export const invalidateQsCover = (song: LX.Music.MusicInfoOnline) => {
   qsCoverInflight.delete(key)
 }
 
-export const clearQsCoverCache = () => {
-  qsCoverCache.clear()
-}
-
 const withTimeout = async(promise: Promise<string>, ms: number, fallback: string): Promise<string> => {
   return new Promise<string>((resolve) => {
     const timer = setTimeout(() => { resolve(fallback) }, ms)

@@ -1,6 +1,6 @@
 import { bumpImageEpoch } from '@/utils/imageEpoch'
 import { getPicPath } from './index'
-import { getCachedQsCover, fetchQsCover, invalidateQsCover, clearQsCoverCache } from './qsCover'
+import { getCachedQsCover, fetchQsCover, invalidateQsCover } from './qsCover'
 
 /**
  * 列表项封面动态获取。
@@ -124,15 +124,39 @@ export const invalidateCoverCache = (song: CoverSong): void => {
   coverCache.delete(keyOf(song))
 }
 
+// 上一次真正刷新封面时的缓存快照。下拉刷新先比快照：一样就什么都不做，
+// 避免每拉一次都把所有可见封面重新下载一遍。
+let lastCoverRefreshSig: string | null = null
+let coverRefreshSettleTimer: ReturnType<typeof setTimeout> | null = null
+
+const coverCacheSignature = (): string => {
+  const parts: string[] = []
+  for (const [key, url] of coverCache) parts.push(`${key}=${url}`)
+  // 排序保证同一批缓存无论插入顺序如何都得到同一签名
+  parts.sort()
+  return parts.join('\n')
+}
+
 /**
- * 下拉刷新的统一入口：作废全部内存封面缓存并推进图片缓存纪元。
- * 纪元一推进，已经挂载的远程 <Image> 会带着新的 URL 片段重新下载；
- * 列表行的 useCoverUrl 也会用 isRefresh 重跑一遍取封面。
+ * 下拉刷新的统一入口：比较本次与前次的封面缓存。
+ *   · 缓存完全一致 → 返回 false，不推进纪元、不重下任何图（用户要的「别反复刷」）；
+ *   · 缓存有变化（新封面 URL / 上次没拿到的补上了）→ 推进纪元，已挂载的远程图
+ *     带新片段重新下载，useCoverUrl 也会用 isRefresh 再取一遍。
+ * 注意这里**不清空** coverCache：它就是「前次刷新缓存」的账本，清掉就永远比不出相同。
  */
-export const refreshCoverCaches = (): void => {
-  coverCache.clear()
-  clearQsCoverCache()
+export const refreshCoverCaches = (): boolean => {
+  const sig = coverCacheSignature()
+  if (sig === lastCoverRefreshSig) return false
+  lastCoverRefreshSig = sig
   bumpImageEpoch()
+  // 刷新后的 isRefresh 结果会陆续写回 coverCache：等它们落定再取一次基线，
+  // 否则下一次下拉会拿「刷新前的旧缓存」去比，白白再刷一遍。
+  if (coverRefreshSettleTimer) clearTimeout(coverRefreshSettleTimer)
+  coverRefreshSettleTimer = setTimeout(() => {
+    coverRefreshSettleTimer = null
+    lastCoverRefreshSig = coverCacheSignature()
+  }, 2000)
+  return true
 }
 
 export const fetchCoverUrl = async(
