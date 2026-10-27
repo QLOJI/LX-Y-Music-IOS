@@ -1,7 +1,5 @@
 const artistDataCache = new Map<string, any>()
 const artistDetailCache = new Map<string, any>()
-let dailyRecSongsCache: LX.Music.MusicInfoOnline[] | null = null
-let dailyRecPlaylistsCache: any[] | null = null
 
 /**
  * 获取歌手页面的列表缓存数据
@@ -51,35 +49,4 @@ export const clearArtistCache = (artistId: string) => {
     }
   }
   artistDetailCache.delete(artistId)
-}
-
-export const getDailyRecSongsCache = (): LX.Music.MusicInfoOnline[] | null => {
-  return dailyRecSongsCache
-}
-
-export const setDailyRecSongsCache = (data: LX.Music.MusicInfoOnline[]) => {
-  dailyRecSongsCache = data
-}
-
-export const clearDailyRecSongsCache = () => {
-  dailyRecSongsCache = null
-}
-
-export const getDailyRecPlaylistsCache = (): any[] | null => {
-  return dailyRecPlaylistsCache
-}
-
-export const setDailyRecPlaylistsCache = (data: any[]) => {
-  // 空数组也是 truthy：若不拦截，调用方的缓存命中判断会把 [] 当成有效缓存，
-  // 本次会话内再进页面直接跳过加载并一直显示空列表。这里做一层防御
-  // （调用方 RecPlaylists 同时还有长度校验），空结果直接清空缓存。
-  if (!data || data.length === 0) {
-    dailyRecPlaylistsCache = null
-    return
-  }
-  dailyRecPlaylistsCache = data
-}
-
-export const clearDailyRecPlaylistsCache = () => {
-  dailyRecPlaylistsCache = null
 }
