@@ -7,6 +7,7 @@ import { audioClock } from '@/core/player/audioClock'
 import { findLineIndexByTime, getCurrentLyricLines, getWordState } from '@/plugins/lyric'
 import { useTheme } from '@/store/theme/hook'
 import { useIsPlay } from '@/store/player/hook'
+import { useAppActive } from '@/store/common/hook'
 import { createStyle } from '@/utils/tools'
 import type { LxLyricWord } from '@/plugins/lxLyricPlayer'
 
@@ -78,6 +79,9 @@ const KaraokeWords = memo(({
   const stateRef = useRef(state)
   // 播放态：暂停/停止时停掉逐字 rAF（见下）。
   const isPlay = useIsPlay()
+  // 前台门：退后台 / 锁屏 / 控制中心时界面不可见，逐字 rAF 没有意义；
+  // 本 App 有后台音频、进程常驻，不加这道门它在后台会按行持续唤醒 JS 线程。
+  const appActive = useAppActive()
   // 歌词行表（与调用方同一份 currentLines）：跨行钳制要判断「音频时间应该在哪一行」，
   // 复用现成的 findLineIndexByTime 二分查找，不另造行查找逻辑。
   // 【第 94 轮】歌词表改成**普通读取**（`getCurrentLyricLines()`），不再用 `useLrcSet()`：
@@ -99,6 +103,8 @@ const KaraokeWords = memo(({
     // 恢复播放时再跳回来）。恢复播放后 effect 重跑，第一帧按冻结的时钟算出的仍是当前状态，
     // 天然无缝。
     if (!isPlay) return
+    // 退后台同理：界面不可见，停帧；回前台 clock 状态不变，第一帧直接续上。
+    if (!appActive) return
     // 本行在行表中的位置（按起点时间精确匹配：调用方传入的 lineTime 就是本行 time）。
     // 匹配不到（行表未就绪/非当前歌词表）时不启用钳制，保守跳过。
     const myLineIndex = lines.findIndex((l) => l.time === lineTime)
@@ -134,7 +140,7 @@ const KaraokeWords = memo(({
     // 不会先画一帧旧状态。
     tick()
     return () => { cancelAnimationFrame(raf) }
-  }, [words, lineTime, isActive, isPlay])
+  }, [words, lineTime, isActive, isPlay, appActive])
 
   return (
     <Text style={style} numberOfLines={numberOfLines}>
@@ -184,6 +190,8 @@ const KaraokeText = memo(({
   const lastProgressRef = useRef(0)
   // 播放态：暂停/停止时停掉逐字 rAF（见下）。
   const isPlay = useIsPlay()
+  // 前台门：退后台不可见，停帧（后台音频常驻，不加这道门会一直逐帧唤醒）。
+  const appActive = useAppActive()
 
   useEffect(() => {
     // 【第 177 轮】非激活只停 rAF、不归零：调用方在非激活行上 played/inactive 两色相同，
@@ -192,6 +200,7 @@ const KaraokeText = memo(({
     // 暂停即停帧（原因同 KaraokeWords）；同样【保留当前高亮进度】，不清零——
     // 归零会让暂停瞬间已唱部分整段褪色、恢复后再一次性跳回来。
     if (!isPlay) return
+    if (!appActive) return
     let raf = 0
     // 行时长兜底 1ms：相邻两行时间戳相同（或末行无下一行时间）时不能除零
     const duration = Math.max(endTime - startTime, 1)
@@ -209,7 +218,7 @@ const KaraokeText = memo(({
     // 同 KaraokeWords：先同步算一帧，恢复可见时第一帧就是当前进度。
     tick()
     return () => { cancelAnimationFrame(raf) }
-  }, [startTime, endTime, isActive, isPlay, progress, text])
+  }, [startTime, endTime, isActive, isPlay, appActive, progress, text])
 
   const handleLayout = useCallback(({ nativeEvent }: LayoutChangeEvent) => {
     const width = Math.round(nativeEvent.layout.width)

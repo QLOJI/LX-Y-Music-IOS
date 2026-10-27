@@ -14,7 +14,7 @@ import { createStyle } from '@/utils/tools'
 import { updateSetting } from '@/core/common'
 import { useTheme } from '@/store/theme/hook'
 import { useSettingValue } from '@/store/setting/hook'
-import { useSafeAreaBottom, useComponentIds, useNavReturning } from '@/store/common/hook'
+import { useAppActive, useSafeAreaBottom, useComponentIds, useNavReturning } from '@/store/common/hook'
 import { useIsPlay } from '@/store/player/hook'
 import playerState from '@/store/player/state'
 import { COMPONENT_IDS } from '@/config/constant'
@@ -218,6 +218,8 @@ export default () => {
   const { line } = useLrcPlay()
   // 播放态（暂停/停止即 false）：暂停时彻底停掉下面的每帧滚动循环（详见循环 effect 的说明）。
   const isPlay = useIsPlay()
+  // 前台门：退后台 / 锁屏 / 控制中心时界面不可见，每帧滚动循环没有意义。
+  const appActive = useAppActive()
   // 歌词面板可见性：本组件没有 componentId 入参，改用 RNN 组件栈的栈顶名字判断——
   // componentIds 是自栈底到栈顶的数组，栈顶是 playDetail（横屏播放页自己）才说明歌词面板
   // 真的在前台；被评论页/设置页等压栈覆盖（栈顶换名）时不可见，应停帧。
@@ -823,6 +825,11 @@ export default () => {
     // 面板被压栈页覆盖时同样不该继续逐帧定位——停帧才真正省下这份常驻开销，恢复时重跑本 effect。
     // 停帧前把 wasPauseRef 置真：恢复首帧必须像「手动滚动恢复」一样按列表真实位置重取平滑基准，
     // 否则会被暂停/覆盖前的旧基准拽回去（与 isPauseScrollRef 的恢复路径同源处理）。
+    // 退后台也停帧（界面不可见）。单独一条：只重取基准、不置「瞬时到位」。
+    if (!appActive) {
+      wasPauseRef.current = true
+      return
+    }
     if (!isPlay || !panelVisible) {
       wasPauseRef.current = true
       // 循环被整段停掉 = 用户「切走」了（暂停 / 被压栈页盖住），恢复首帧要瞬时到位
@@ -863,7 +870,7 @@ export default () => {
     }
     rafId = requestAnimationFrame(loop)
     return () => { cancelAnimationFrame(rafId) }
-  }, [isPlay, panelVisible, lyricLines, scrollToActiveContinuous])
+  }, [isPlay, panelVisible, appActive, lyricLines, scrollToActiveContinuous])
 
   // 拖动进度条 / 跳转 / 恢复播放等用户动作期间强制让歌词列表立即滚动到高亮行，
   // 保证高亮行与进度条（及音频）绝对同步，结束后回归连续滚动。
