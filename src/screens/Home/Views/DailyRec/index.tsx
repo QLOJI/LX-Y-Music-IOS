@@ -177,8 +177,8 @@ export default memo(() => {
   // initialPage 按语义 id 映射（`activeTab === 'songs' ? 1 : 0`，见下方 render）。
   const [activeTab, setActiveTab] = useState<'songs' | 'playlists'>('playlists')
   // 两页都随本页挂载一起挂载（不再「首次切过去才挂」）：避免切 tab 时还要等页面挂载。
-  // 各 tab 的数据加载仍由 active 驱动：切到某个 tab 且本次启动尚未刷新时，
-  // 先清空列表并显示下拉刷新动画，再填入新数据；之后切换只还原缓存、手动下拉刷新。
+  // 每次切到某个 tab、或重新进入每日推荐页，都会先清空列表并立即下拉刷新，
+  // 响应后直接填入新数据，不保留上一次的列表内容。
   const [isStylized, setIsStylized] = useState(false)
   const [showStylizedModal, setShowStylizedModal] = useState(false)
   const [stylizedSelection, setStylizedSelection] = useState<StylizedSelection>(null)

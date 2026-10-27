@@ -11,12 +11,8 @@ import { useI18n } from '@/lang'
 import txApi from '@/utils/musicSdk/tx'
 import { type ListInfoItem } from '@/store/songlist/state'
 import { useBottomOverlayInset } from '@/store/common/hook'
+import { useHomePageVisible } from '@/store/common/pageVisibility'
 import { refreshCoverCaches } from '@/core/music/coverUrl'
-import {
-  takeDailyRecAutoRefresh,
-  getDailyRecSessionList,
-  setDailyRecSessionList,
-} from '@/core/dailyRecSession'
 
 interface PlaylistInfo {
   id: number
@@ -29,7 +25,7 @@ interface PlaylistInfo {
 
 interface Props {
   onOpenDetail: (playlistInfo: ListInfoItem) => void
-  /** 当前 tab：切到本 tab 且本次启动尚未自动刷新时，清空列表并走下拉刷新。 */
+  /** 当前 tab：每次切到本 tab 都清空列表并自动下拉刷新。 */
   active?: boolean
 }
 
@@ -61,9 +57,7 @@ const ListItem = ({ item, onPress }: { item: PlaylistInfo, onPress: () => void }
 export default memo(({ onOpenDetail, active = true }: Props) => {
   const [playlists, setPlaylists] = useState<PlaylistInfo[]>([])
   const [loading, setLoading] = useState(false)
-  const sessionKey = 'tx_daily_songlists'
-  // 下拉刷新动画只认「用户真的下拉过」（用户第 16 轮第 7 条）：loading 只喂空列表占位，
-  // 程序触发的加载不再激活 iOS 刷新控件（否则内容会被压下去再弹回来 = 向上刷新）。
+  // 每次切换/进入都走下拉刷新；loading 只作为历史空态闸门的复位位保留。
   const [refreshing, setRefreshing] = useState(false)
   // 失败原因（'' = 没失败）。空列表时用它区分「真的没有歌单」与「请求失败」，
   // 并给用户重试入口（②-5：原先失败只有一次 toast，FlatList 又没有 ListEmptyComponent，
@@ -77,23 +71,23 @@ export default memo(({ onOpenDetail, active = true }: Props) => {
   const buttonRadius = useButtonRadius()
   // 只认最后一次发起的加载：连续重试 / 下拉刷新重叠时丢弃过期响应，避免旧结果覆盖新结果
   const loadIdRef = useRef(0)
-  // 「已经拿到过数据」的闸门。原来的判据直接读 playlists.length 且写在 useCallback 依赖里，
-  // 加载成功（0 → N）就会重建函数、把 effect 再触发一次空跑；改用 ref 语义不变（有数据就
-  // 不再自动重发），但不再因为自己的结果而重跑
+  // 已加载闸门：非强制刷新才被挡住；切 tab / 进入页一律传 refresh=true。
   const loadedRef = useRef(false)
-  // 本次挂载已为当前 tab 还原过缓存：切回来时不再重复 setPlaylists，
-  // 避免列表数据被新数组替换而重置滚动位置。
-  const restoredKeyRef = useRef<string | null>(null)
+  // 离屏 Home 页重新进入时也刷新当前 tab（pageVisible false→true 的上升沿）。
+  const pageVisible = useHomePageVisible()
+  const [enterSeq, setEnterSeq] = useState(0)
+  const prevPageVisibleRef = useRef(pageVisible)
+  useEffect(() => {
+    if (pageVisible && !prevPageVisibleRef.current) setEnterSeq(v => v + 1)
+    prevPageVisibleRef.current = pageVisible
+  }, [pageVisible])
 
-  const loadPlaylists = useCallback(async(refresh = false, showRefreshing = true) => {
+  const loadPlaylists = useCallback(async(refresh = false) => {
     if (!refresh && loadedRef.current) return
     const loadId = ++loadIdRef.current
-    // 预取（非当前 tab）不点亮下拉刷新控件，切过去时数据已经现成。
-    if (refresh) {
-      if (showRefreshing) setRefreshing(true)
-    } else setLoading(true)
+    setRefreshing(true)
     setLoadError('')
-    if (refresh) refreshCoverCaches()
+    refreshCoverCaches()
     try {
       // 有界重试（2 次，800/2000ms）：冷启动首个请求要跟「网络栈就绪 / Cookie 落盘 /
       // 平台偶发 5xx」抢时间，一次失败就定格成空白页。shouldRetry 兜住「等待期间
@@ -103,10 +97,7 @@ export default memo(({ onOpenDetail, active = true }: Props) => {
       })
       if (loadId !== loadIdRef.current) return
       if (result?.songlists) {
-        if (result.songlists.length) {
-          loadedRef.current = true
-          setDailyRecSessionList(sessionKey, result.songlists)
-        }
+        if (result.songlists.length) loadedRef.current = true
         setPlaylists(result.songlists)
       }
     } catch (error: any) {
@@ -121,32 +112,13 @@ export default memo(({ onOpenDetail, active = true }: Props) => {
     }
   }, [t])
 
-  // 切到本 tab 时：本次启动还没自动刷过 → 立即清空 + 下拉动画 + 请求；
-  // 已经刷过 → 还原会话缓存，不请求。非当前 tab 只还原缓存，不请求。
+  // 每次切到本 tab / 重新进入本页：先清空，立即下拉刷新。
   useEffect(() => {
-    const cached = getDailyRecSessionList<PlaylistInfo[]>(sessionKey)
-    const restoreCache = () => {
-      if (cached?.length) setPlaylists(cached)
-    }
-
-    if (!active) {
-      if (restoredKeyRef.current === sessionKey) return
-      restoredKeyRef.current = sessionKey
-      restoreCache()
-      return
-    }
-    if (!takeDailyRecAutoRefresh(sessionKey)) {
-      if (restoredKeyRef.current === sessionKey) return
-      restoredKeyRef.current = sessionKey
-      restoreCache()
-      return
-    }
-
-    // 首次切到本 tab：先清空，露出下拉刷新动画，响应后再出现新内容。
-    restoredKeyRef.current = sessionKey
+    if (!active) return
     setPlaylists([])
-    void loadPlaylists(true, true)
-  }, [active, sessionKey, loadPlaylists])
+    setLoadError('')
+    void loadPlaylists(true)
+  }, [active, enterSeq, loadPlaylists])
 
   const handleItemPress = (playlistInfo: PlaylistInfo) => {
     const listInfo = {

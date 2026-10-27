@@ -18,13 +18,8 @@ import {
   saveDailyRecCache,
   clearDailyRecCache,
 } from '@/utils/data'
-import { getDailyRecSongsCache, setDailyRecSongsCache, clearDailyRecSongsCache } from '@/core/cache'
 import { refreshCoverCaches } from '@/core/music/coverUrl'
-import {
-  takeDailyRecAutoRefresh,
-  getDailyRecSessionList,
-  setDailyRecSessionList,
-} from '@/core/dailyRecSession'
+import { useHomePageVisible } from '@/store/common/pageVisibility'
 
 
 import type { StylizedSelection } from './StylizedModal'
@@ -42,15 +37,21 @@ const similarSongsFetcher = {
 interface RecSongsProps {
   isStylized?: boolean
   stylizedSelection?: StylizedSelection | null
-  /** 当前 tab：切到本 tab 且本次启动尚未自动刷新时，清空列表并走下拉刷新。 */
+  /** 当前 tab：每次切到本 tab 都清空列表并自动下拉刷新。 */
   active?: boolean
 }
 
 export default memo(({ isStylized, stylizedSelection, active = true }: RecSongsProps) => {
   const listRef = useRef<OnlineListType>(null)
   const unmountedRef = useRef(false)
-  // 本次挂载已为哪个缓存 key 还原过数据：切回来时不重复 setList（避免重置滚动位置）。
-  const restoredKeyRef = useRef<string | null>(null)
+  // 离屏 Home 页重新进入时也刷新当前 tab（pageVisible false→true 的上升沿）。
+  const pageVisible = useHomePageVisible()
+  const [enterSeq, setEnterSeq] = useState(0)
+  const prevPageVisibleRef = useRef(pageVisible)
+  useEffect(() => {
+    if (pageVisible && !prevPageVisibleRef.current) setEnterSeq(v => v + 1)
+    prevPageVisibleRef.current = pageVisible
+  }, [pageVisible])
   const [isLoading, setIsLoading] = useState(true)
   const t = useI18n()
   const cookie = useSettingValue('common.wy_cookie')
@@ -68,26 +69,7 @@ export default memo(({ isStylized, stylizedSelection, active = true }: RecSongsP
   }, [])
 
   useEffect(() => {
-    // 【第 191 轮】本次启动的缓存键：默认推荐按 cookie 分桶，风格化按整套选择分桶。
-    const sig = `${cookie}|${isStylized}|${stylizedSelection ? JSON.stringify(stylizedSelection) : ''}`
-    const cacheKey = isStylized && stylizedSelection ? `wy_stylized_${sig}` : `wy_songs_${cookie}`
-    const cachedList = isStylized
-      ? getDailyRecSessionList<any[]>(cacheKey)
-      : getDailyRecSongsCache()
-
-    const restoreCache = () => {
-      if (!cachedList?.length) return
-      listRef.current?.setList(cachedList, false)
-      listRef.current?.setStatus('idle')
-    }
-
-    // 非当前 tab：只还原缓存（本次挂载每个 key 只还原一次），不请求。
-    if (!active) {
-      if (restoredKeyRef.current === cacheKey) return
-      restoredKeyRef.current = cacheKey
-      restoreCache()
-      return
-    }
+    if (!active) return
 
     if (!cookie) {
       if (isLoading) {
@@ -99,16 +81,7 @@ export default memo(({ isStylized, stylizedSelection, active = true }: RecSongsP
       return
     }
 
-    // 本次启动该 key 已经自动刷过：只还原一次缓存，要新数据手动下拉。
-    if (!takeDailyRecAutoRefresh(cacheKey)) {
-      if (restoredKeyRef.current === cacheKey) return
-      restoredKeyRef.current = cacheKey
-      restoreCache()
-      return
-    }
-
-    // 首次激活：先清空列表，让切换后只能看到下拉刷新动画，再请求新数据。
-    restoredKeyRef.current = cacheKey
+    // 每次切到本 tab / 重新进入本页：先清空，立即下拉刷新，响应后出现新内容。
     listRef.current?.setList([], false)
     listRef.current?.setStatus('refreshing')
     refreshCoverCaches()
@@ -120,7 +93,6 @@ export default memo(({ isStylized, stylizedSelection, active = true }: RecSongsP
       }).then((result: any) => {
         listRef.current?.setList(result.list, false)
         listRef.current?.setStatus('idle')
-        setDailyRecSessionList(cacheKey, result.list)
       }).catch((err: any) => {
         console.error(err)
         toast(t('load_failed'), 'long')
@@ -135,7 +107,6 @@ export default memo(({ isStylized, stylizedSelection, active = true }: RecSongsP
     wyApi.dailyRec.getList(cookie).then(async(result: any) => {
         listRef.current?.setList(result.list, false)
         listRef.current?.setStatus('idle')
-        setDailyRecSongsCache(result.list)
 
         if (!result.list || result.list.length === 0) {
           setIsLoading(false)
@@ -253,7 +224,7 @@ export default memo(({ isStylized, stylizedSelection, active = true }: RecSongsP
       }).finally(() => {
         setIsLoading(false)
       })
-  }, [t, cookie, isStylized, stylizedSelection, active])
+  }, [t, cookie, isStylized, stylizedSelection, active, enterSeq])
 
   useEffect(() => {
     const handleReplaceMusic = (oldMusicInfoId: string, newMusicInfo: LX.Music.MusicInfoOnline | null) => {
@@ -290,7 +261,6 @@ export default memo(({ isStylized, stylizedSelection, active = true }: RecSongsP
         return wyApi.dailyRec.getStylizedList(cookie)
       }).then((result: any) => {
         listRef.current?.setList(result.list, false)
-        setDailyRecSessionList(`wy_stylized_${cookie}|true|${JSON.stringify(stylizedSelection)}`, result.list)
       }).catch((err: any) => {
         console.error(err)
         toast(t('load_failed'), 'long')
@@ -301,10 +271,8 @@ export default memo(({ isStylized, stylizedSelection, active = true }: RecSongsP
       return
     }
 
-    clearDailyRecSongsCache()
     wyApi.dailyRec.getList(cookie).then((result: any) => {
       listRef.current?.setList(result.list, false)
-      setDailyRecSongsCache(result.list)
       if (result.list && result.list.length > 0) {
         void autoSaveDailyPlaylist(result.list)
       }

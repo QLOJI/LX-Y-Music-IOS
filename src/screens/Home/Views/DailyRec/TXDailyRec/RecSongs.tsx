@@ -14,19 +14,15 @@ import { usePlayerMusicInfo } from '@/store/player/hook'
 import { stageOnlineListToDefault } from '@/core/playListToDefault'
 import { type ListInfoItem } from '@/store/songlist/state'
 import { useBottomOverlayInset } from '@/store/common/hook'
+import { useHomePageVisible } from '@/store/common/pageVisibility'
 import { refreshCoverCaches } from '@/core/music/coverUrl'
-import {
-  takeDailyRecAutoRefresh,
-  getDailyRecSessionList,
-  setDailyRecSessionList,
-} from '@/core/dailyRecSession'
 
 type RecType = 'home' | 'radar' | 'newsong'
 
 interface Props {
   type: RecType
   onOpenDetail?: (playlistInfo: ListInfoItem) => void
-  /** 当前 tab：切到本 tab 且本次启动尚未自动刷新时，清空列表并走下拉刷新。 */
+  /** 当前 tab：每次切到本 tab 都清空列表并自动下拉刷新。 */
   active?: boolean
 }
 
@@ -64,10 +60,7 @@ export default memo(({ type, onOpenDetail, active = true }: Props) => {
   const listRef = useRef<OnlineListType>(null)
   const playerMusicInfo = usePlayerMusicInfo()
   const [playlists, setPlaylists] = useState<Array<{ id: string, name: string, cover: string, playCount: number }>>([])
-  const [loading, setLoading] = useState(false)
-  const sessionKey = `tx_daily_${type}`
-  // 下拉刷新动画只认「用户真的下拉过」（用户第 16 轮第 7 条）：loading 只喂空列表占位，
-  // 程序触发的加载不再激活 iOS 刷新控件（否则内容会被压下去再弹回来 = 向上刷新）。
+  // 每次切换/进入都走下拉刷新，loading 空态占位不再需要。
   const [refreshing, setRefreshing] = useState(false)
   // 失败原因（'' = 没失败）：空列表时用它区分「真的没推荐」与「请求失败」，并给重试入口。
   // 与同目录 RecPlaylists / 网易 recPlaylists 同一套失败态（②-5：原先失败只有一次 toast，
@@ -81,23 +74,25 @@ export default memo(({ type, onOpenDetail, active = true }: Props) => {
   const buttonRadius = useButtonRadius()
   // 只认最后一次发起的加载：连续重试 / 下拉刷新重叠时丢弃过期响应
   const loadIdRef = useRef(0)
-  // 「已经拿到过数据」的闸门。原判据读 playlists.length 且写在依赖里，加载成功会重建
-  // 函数、把 effect 再触发一次空跑；换成 ref 后语义不变（有数据就不自动重发）但不自激
+  // 已加载闸门：只有「非强制刷新」的调用才被它挡住；标签切换/进入页一律传 refresh=true。
   const loadedRef = useRef(false)
-  // 本次挂载里已经为哪个 tab 还原过缓存：切回来时不再重复 setList，
-  // 避免用磁盘/会话缓存的新数组把列表滚动位置与渲染窗口重置。
-  const restoredKeyRef = useRef<string | null>(null)
+  // 离屏 Home 页重新进入时也要刷新当前 tab：pageVisible 的 false→true 上升沿
+  // 推进 enterSeq，作为刷新 effect 的依赖。
+  const pageVisible = useHomePageVisible()
+  const [enterSeq, setEnterSeq] = useState(0)
+  const prevPageVisibleRef = useRef(pageVisible)
+  useEffect(() => {
+    if (pageVisible && !prevPageVisibleRef.current) setEnterSeq(v => v + 1)
+    prevPageVisibleRef.current = pageVisible
+  }, [pageVisible])
 
-  const loadPlaylists = useCallback(async(refresh = false, showRefreshing = true) => {
+  const loadPlaylists = useCallback(async(refresh = false) => {
     if (type !== 'home') return
     if (!refresh && loadedRef.current) return
     const loadId = ++loadIdRef.current
-    // 预取（非当前 tab）不激活下拉刷新控件：数据照样请求，切过去时已经是现成的。
-    if (refresh) {
-      if (showRefreshing) setRefreshing(true)
-    } else setLoading(true)
+    setRefreshing(true)
     setLoadError('')
-    if (refresh) refreshCoverCaches()
+    refreshCoverCaches()
     try {
       // 有界重试（2 次，800/2000ms）：冷启动首个请求容易输给「网络栈就绪 / 平台偶发 5xx」
       const result = await retryAsync(() => txApi.dailyRec.getHomeFeed(), {
@@ -114,7 +109,6 @@ export default memo(({ type, onOpenDetail, active = true }: Props) => {
             playCount: item.playCount,
           }))
           setPlaylists(mapped)
-          setDailyRecSessionList(sessionKey, mapped)
         } else {
           setPlaylists([])
         }
@@ -125,16 +119,14 @@ export default memo(({ type, onOpenDetail, active = true }: Props) => {
       toast('加载失败', 'long')
     } finally {
       if (loadId === loadIdRef.current) {
-        setLoading(false)
         setRefreshing(false)
       }
     }
   }, [type])
 
-  const fetchSongs = useCallback(async(showRefreshing = true) => {
+  const fetchSongs = useCallback(async() => {
     try {
-      // 非当前 tab 的预取走静默加载：不把下拉刷新控件点亮。
-      if (showRefreshing) listRef.current?.setStatus('refreshing')
+      listRef.current?.setStatus('refreshing')
       let result: { list: LX.Music.MusicInfoOnline[] } | null = null
 
       switch (type) {
@@ -154,7 +146,6 @@ export default memo(({ type, onOpenDetail, active = true }: Props) => {
 
       if (result?.list) {
         listRef.current?.setList(result.list, false)
-        setDailyRecSessionList(sessionKey, result.list)
       }
     } catch (error) {
       console.error(`获取QQ${type === 'radar' ? '雷达推荐' : '推荐新歌'}失败:`, error)
@@ -165,53 +156,24 @@ export default memo(({ type, onOpenDetail, active = true }: Props) => {
     }
   }, [type])
 
-  // 切到本 tab 时：
-  //   · 本次启动还没自动刷过 → 立即清空列表 + 下拉刷新动画 + 请求新数据；
-  //   · 已经刷过 → 直接还原本次启动的会话缓存（不请求），要新数据手动下拉。
-  // 非当前 tab 只静默还原缓存，不请求 —— 切过去时由上面第一条统一清空重刷。
+  // 每次切到本 tab（或重新进入每日推荐页）都立即清空列表 + 下拉刷新动画 + 请求：
+  // 列表从空白开始，不会先显示上一次的内容；响应后直接出现新内容。
   useEffect(() => {
-    const cached = getDailyRecSessionList<any>(sessionKey)
-    const restoreCache = () => {
-      if (!cached?.length) return
-      if (type === 'home') {
-        setPlaylists(cached)
-        setLoading(false)
-      } else {
-        listRef.current?.setList(cached, false)
-      }
-    }
-
-    if (!active) {
-      if (restoredKeyRef.current === sessionKey) return
-      restoredKeyRef.current = sessionKey
-      restoreCache()
-      return
-    }
-    if (!takeDailyRecAutoRefresh(sessionKey)) {
-      if (restoredKeyRef.current === sessionKey) return
-      restoredKeyRef.current = sessionKey
-      restoreCache()
-      return
-    }
-
-    // 本次启动第一次切到本 tab：先清空，让列表从空白开始，
-    // 只看到下拉刷新动画，响应后再出现新内容。
-    restoredKeyRef.current = sessionKey
+    if (!active) return
     if (type === 'home') {
       setPlaylists([])
-      void loadPlaylists(true, true)
+      void loadPlaylists(true)
     } else {
       listRef.current?.setList([], false)
       refreshCoverCaches()
-      void fetchSongs(true)
+      void fetchSongs()
     }
-  }, [type, active, sessionKey, loadPlaylists, fetchSongs])
+  }, [type, active, enterSeq, loadPlaylists, fetchSongs])
 
   const handleRefresh = useCallback(() => {
     if (type === 'home') {
       void loadPlaylists(true)
     } else {
-      // 用户下拉：这条路径才播下拉刷新动画
       listRef.current?.setStatus('refreshing')
       void fetchSongs()
     }

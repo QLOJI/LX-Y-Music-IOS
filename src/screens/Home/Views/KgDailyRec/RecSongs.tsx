@@ -1,4 +1,4 @@
-import { memo, useEffect, useRef, useCallback } from 'react'
+import { memo, useEffect, useRef, useCallback, useState } from 'react'
 import { View } from 'react-native'
 import OnlineList, { type OnlineListType } from '@/components/OnlineList'
 import { toast } from '@/utils/tools'
@@ -6,17 +6,13 @@ import kgDailyRec from '@/utils/musicSdk/kg/dailyRec'
 import { usePlayerMusicInfo } from '@/store/player/hook'
 import { stageOnlineListToDefault } from '@/core/playListToDefault'
 import { refreshCoverCaches } from '@/core/music/coverUrl'
-import {
-  takeDailyRecAutoRefresh,
-  getDailyRecSessionList,
-  setDailyRecSessionList,
-} from '@/core/dailyRecSession'
+import { useHomePageVisible } from '@/store/common/pageVisibility'
 
 type RecType = 'recommend' | 'everyday'
 
 interface Props {
   type: RecType
-  /** 当前 tab：切到本 tab 且本次启动尚未自动刷新时，清空列表并走下拉刷新。 */
+  /** 当前 tab：每次切到本 tab 都清空列表并自动下拉刷新。 */
   active?: boolean
 }
 
@@ -28,12 +24,16 @@ const handlePlay = async(list: LX.Music.MusicInfoOnline[], listId: string, index
 export default memo(({ type, active = true }: Props) => {
   const listRef = useRef<OnlineListType>(null)
   const playerMusicInfo = usePlayerMusicInfo()
-  const cacheKey = `kg_daily_rec_${type}`
-  // 本次挂载已为当前 tab 还原过缓存：切回来时不再重复 setList（避免重置滚动位置）。
-  const restoredKeyRef = useRef<string | null>(null)
+  // 离屏 Home 页重新进入时也刷新当前 tab（pageVisible false→true 的上升沿）。
+  const pageVisible = useHomePageVisible()
+  const [enterSeq, setEnterSeq] = useState(0)
+  const prevPageVisibleRef = useRef(pageVisible)
+  useEffect(() => {
+    if (pageVisible && !prevPageVisibleRef.current) setEnterSeq(v => v + 1)
+    prevPageVisibleRef.current = pageVisible
+  }, [pageVisible])
 
-  // 去掉加载中界面：当前 tab 首载/刷新都用下拉动画（'refreshing'）；
-  // 非当前 tab 的预取静默加载，切过去时数据已经现成。
+  // 当前 tab 的首载/刷新都用下拉动画（'refreshing'）。
   const fetchSongs = useCallback(async(showRefreshing = true) => {
     try {
       if (showRefreshing) listRef.current?.setStatus('refreshing')
@@ -51,7 +51,6 @@ export default memo(({ type, active = true }: Props) => {
       if (songs && songs.length > 0) {
         listRef.current?.setList(songs, false)
         listRef.current?.setStatus('idle')
-        setDailyRecSessionList(cacheKey, songs)
       } else {
         listRef.current?.setStatus('idle')
         toast('暂无推荐歌曲')
@@ -61,36 +60,15 @@ export default memo(({ type, active = true }: Props) => {
       toast('加载失败，请检查酷狗登录状态')
       listRef.current?.setStatus('error')
     }
-  }, [type, cacheKey])
+  }, [type])
 
-  // 切到本 tab 时：本次启动还没自动刷过 → 立即清空 + 下拉动画 + 请求；
-  // 已经刷过 → 只在本次挂载第一次进入时还原会话缓存，之后保持列表现状。
-  // 非当前 tab 同样只还原一次缓存，不请求。
+  // 每次切到本 tab / 重新进入本页：先清空列表，立即下拉刷新，响应后出现新内容。
   useEffect(() => {
-    const cached = getDailyRecSessionList<LX.Music.MusicInfoOnline[]>(cacheKey)
-    const restoreCache = () => {
-      if (cached?.length) listRef.current?.setList(cached, false)
-    }
-
-    if (!active) {
-      if (restoredKeyRef.current === cacheKey) return
-      restoredKeyRef.current = cacheKey
-      restoreCache()
-      return
-    }
-    if (!takeDailyRecAutoRefresh(cacheKey)) {
-      if (restoredKeyRef.current === cacheKey) return
-      restoredKeyRef.current = cacheKey
-      restoreCache()
-      return
-    }
-
-    // 首次切到本 tab：先清空，露出下拉刷新动画，响应后再出现新内容。
-    restoredKeyRef.current = cacheKey
+    if (!active) return
     listRef.current?.setList([], false)
     refreshCoverCaches()
     void fetchSongs(true)
-  }, [active, cacheKey, fetchSongs])
+  }, [active, enterSeq, fetchSongs])
 
   const handleRefresh = useCallback(() => {
     void fetchSongs()

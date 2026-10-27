@@ -11,19 +11,14 @@ import wyApi from '@/utils/musicSdk/wy/dailyRec'
 import wy from '@/utils/musicSdk/wy/index'
 import ListItem from '../MyPlaylist/ListItem'
 import { useBottomOverlayInset } from '@/store/common/hook'
-import { getDailyRecPlaylistsCache, setDailyRecPlaylistsCache, clearDailyRecPlaylistsCache } from '@/core/cache'
+import { useHomePageVisible } from '@/store/common/pageVisibility'
 import { refreshCoverCaches } from '@/core/music/coverUrl'
-import { takeDailyRecAutoRefresh } from '@/core/dailyRecSession'
 
 export default memo(({ onOpenDetail, active = true }: { onOpenDetail: (info: any) => void, active?: boolean }) => {
   const [playlists, setPlaylists] = useState<any[]>([])
-  const [loading, setLoading] = useState(false)
-  // 下拉刷新动画只认「用户真的下拉过」（用户第 16 轮第 7 条）。此前 RefreshControl 直接吃
-  // loading，而 loading 初值为 true —— 列表挂载的那一帧刷新控件就被激活、把内容整体下压，
-  // 加载结束回弹时再上跳一次（「第一次进入向上刷新」）。现在只有 handleRefresh（用户下拉）
-  // 会置位 refreshing，程序触发的加载一律用 loading（只喂空列表占位文案）。
+  // 每次切换/进入都走下拉刷新，loading 空态占位不再需要。
   const [refreshing, setRefreshing] = useState(false)
-  // 失败原因（'' = 没失败）。空列表时用它区分「没有歌单」与「请求失败」，并给用户重试入口
+  // 失败原因（'' = 没失败）。空列表时用它区分「没有歌单」与「请求失败」，并给用户重试入口。
   const [loadError, setLoadError] = useState('')
   const cookie = useSettingValue('common.wy_cookie')
   const theme = useTheme()
@@ -34,42 +29,31 @@ export default memo(({ onOpenDetail, active = true }: { onOpenDetail: (info: any
   const buttonRadius = useButtonRadius()
   // 只认最后一次发起的加载：cookie 变化 / 连续重试时丢弃过期响应，避免旧结果覆盖新结果
   const loadIdRef = useRef(0)
-  // 本次挂载已为当前 tab 还原过缓存：切回来时不再重复 setPlaylists（避免重置滚动位置）。
-  const restoredRef = useRef(false)
+  // 离屏 Home 页重新进入时也刷新当前 tab（pageVisible false→true 的上升沿）。
+  const pageVisible = useHomePageVisible()
+  const [enterSeq, setEnterSeq] = useState(0)
+  const prevPageVisibleRef = useRef(pageVisible)
+  useEffect(() => {
+    if (pageVisible && !prevPageVisibleRef.current) setEnterSeq(v => v + 1)
+    prevPageVisibleRef.current = pageVisible
+  }, [pageVisible])
 
-  const loadPlaylists = useCallback((isRefresh = false) => {
+  const loadPlaylists = useCallback(() => {
     const loadId = ++loadIdRef.current
     if (!cookie) {
       // 无 cookie 不是「列表为空」：这里只清空数据，由 ListEmptyComponent 渲染
-      // 「请先设置网易云 Cookie」占位（对齐 SubscribedAlbums 的范式），
-      // 避免用户面对一片空白分不清是没登录还是没加载
-      setLoading(false)
+      // 「请先设置网易云 Cookie」占位。
       setRefreshing(false)
       setPlaylists([])
       setLoadError('')
       return
     }
 
-    if (!isRefresh) {
-      const cachedPlaylists = getDailyRecPlaylistsCache()
-      // [] 也是 truthy：不校验长度的话，空结果一旦进过缓存，本次会话内再进页面
-      // 会「命中」缓存直接跳过加载并一直显示空列表
-      if (cachedPlaylists && cachedPlaylists.length > 0) {
-        setPlaylists(cachedPlaylists)
-        setLoadError('')
-        setLoading(false)
-        return
-      }
-    }
-
-    if (isRefresh) setRefreshing(true)
-    else setLoading(true)
+    setRefreshing(true)
     setLoadError('')
-    // 【第 191 轮】刷新同时作废封面缓存（下拉由外层入口已做，这里覆盖自动刷新路径）。
-    if (isRefresh) refreshCoverCaches()
+    refreshCoverCaches()
     wyApi.getRecPlaylists(cookie).then(async(list: any) => {
       const adaptedList = list
-        // .filter(item => !item.name.includes('雷达'))
         .map((item: any) => ({
           id: item.id,
           name: item.name,
@@ -99,67 +83,33 @@ export default memo(({ onOpenDetail, active = true }: { onOpenDetail: (info: any
 
       if (loadId !== loadIdRef.current) return
       setPlaylists(adaptedList)
-      // 只缓存非空结果，避免 [] 污染命中判断（见上）
-      if (adaptedList.length > 0) setDailyRecPlaylistsCache(adaptedList)
     }).catch((err: any) => {
       if (loadId !== loadIdRef.current) return
       // 记下失败原因：空列表时 renderEmpty 会展示它 + 重试按钮。
-      // 之前失败只有一次 toast，FlatList 又没有 ListEmptyComponent，
-      // 失败后除非 cookie 变化 effect 不会重跑，用户没有任何恢复路径
       setLoadError(err?.message || '')
       toast(t('daily_rec_playlists_load_failed', { msg: err.message }))
     }).finally(() => {
-      if (loadId === loadIdRef.current) {
-        setLoading(false)
-        setRefreshing(false)
-      }
+      if (loadId === loadIdRef.current) setRefreshing(false)
     })
   }, [cookie, t])
 
-  // 切到本 tab 时：本次启动还没自动刷过（或 Cookie 变了）→ 立即清空 + 下拉动画 + 请求；
-  // 已经刷过 → 还原本次启动缓存，不请求。非当前 tab 只还原缓存。
-  const lastCookieRef = useRef(cookie)
+  // 每次切到本 tab / 重新进入本页：先清空，立即下拉刷新，响应后出现新内容。
   useEffect(() => {
-    const cached = getDailyRecPlaylistsCache()
-    const restoreCache = () => {
-      if (!cached?.length) return
-      setPlaylists(cached)
-      setLoading(false)
-    }
-
-    if (!active) {
-      if (restoredRef.current) return
-      restoredRef.current = true
-      restoreCache()
-      return
-    }
-    const cookieChanged = lastCookieRef.current !== cookie
-    lastCookieRef.current = cookie
-    const willRefresh = cookieChanged || takeDailyRecAutoRefresh('wy_daily_playlists')
-    if (!willRefresh) {
-      if (restoredRef.current) return
-      restoredRef.current = true
-      restoreCache()
-      return
-    }
-    // 首次切到本 tab（或 Cookie 变化）：先清空，露出下拉刷新动画，响应后再出现新内容。
-    restoredRef.current = true
+    if (!active) return
     setPlaylists([])
     setLoadError('')
-    loadPlaylists(true)
-  }, [active, cookie, loadPlaylists])
+    loadPlaylists()
+  }, [active, enterSeq, loadPlaylists])
 
   const handleItemPress = (playlistInfo: any) => {
     onOpenDetail(playlistInfo)
   }
 
   const handleRefresh = () => {
-    clearDailyRecPlaylistsCache()
-    loadPlaylists(true)
+    loadPlaylists()
   }
 
-  // 空列表渲染：只有这里能区分「未登录 / 加载中 / 加载失败 / 真的没有歌单」，
-  // 并为失败和空数据提供「重新加载」入口（重试先清缓存再强刷）
+  // 空列表渲染：区分「未登录 / 加载失败 / 真的没有歌单」，并为失败/空数据提供重试入口。
   const renderEmpty = () => {
     // 自动/手动刷新期间不显示「暂无数据」，交给下拉动画。
     if (refreshing && playlists.length === 0) return null
@@ -170,7 +120,6 @@ export default memo(({ onOpenDetail, active = true }: { onOpenDetail: (info: any
         </View>
       )
     }
-    // 【第 191 轮】不再渲染「加载中」占位：首次/重新进入由自动下拉或手动下拉动画表达。
     return (
       <View style={styles.empty}>
         <Text color={theme['c-font-label']}>{loadError ? t('list_error') : t('list_empty')}</Text>
@@ -210,7 +159,6 @@ export default memo(({ onOpenDetail, active = true }: { onOpenDetail: (info: any
         refreshControl={
           <RefreshControl
             colors={[theme['c-primary']]}
-            // 只认用户下拉（见 refreshing 状态注释）；程序加载不会把内容压下去再弹回来
             refreshing={refreshing}
             onRefresh={handleRefresh}
           />
