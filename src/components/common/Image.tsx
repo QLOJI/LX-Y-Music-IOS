@@ -1,7 +1,7 @@
 import FastImage from '@d11/react-native-fast-image'
 import { useTheme } from '@/store/theme/hook'
 import { BorderRadius } from '@/theme'
-import { createStyle } from '@/utils/tools'
+import { createStyle, isActive } from '@/utils/tools'
 import { memo, useCallback, useEffect, useMemo, useState, useRef } from 'react'
 import { View, type ViewProps, Image as _Image, Text as NativeText, StyleSheet, AppState, type ImageResizeMode, type ImageStyle, type TextStyle, type ViewStyle, type StyleProp } from 'react-native'
 import { useLayout } from '@/utils/hooks'
@@ -93,6 +93,9 @@ const Image = memo(({ url, resizeMode = 'cover', style, onError, nativeID }: Ima
     }
     if (!isError) return
     if (typeof urlRef.current != 'string' || !/^https?:\/\//i.test(urlRef.current)) return
+    // 后台不排重试：本 App 有后台音频、进程常驻，否则失败封面会在锁屏后继续按台阶
+    // 发网络请求。回前台由上面的 AppState effect 把 isError 打回 false 立即补一次。
+    if (!isActive()) return
     if (retryingCount >= RETRY_MAX_CONCURRENT) return
     retryingCount += 1
     const delay = Math.min(RETRY_BASE_MS * RETRY_STEP ** retryAttemptRef.current, RETRY_MAX_MS)
