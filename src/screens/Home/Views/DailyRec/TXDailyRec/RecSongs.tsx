@@ -26,7 +26,7 @@ type RecType = 'home' | 'radar' | 'newsong'
 interface Props {
   type: RecType
   onOpenDetail?: (playlistInfo: ListInfoItem) => void
-  /** 当前 tab：进入即预取所有 tab，只有当前 tab 的自动刷新点亮下拉动画。 */
+  /** 当前 tab：切到本 tab 且本次启动尚未自动刷新时，清空列表并走下拉刷新。 */
   active?: boolean
 }
 
@@ -84,6 +84,9 @@ export default memo(({ type, onOpenDetail, active = true }: Props) => {
   // 「已经拿到过数据」的闸门。原判据读 playlists.length 且写在依赖里，加载成功会重建
   // 函数、把 effect 再触发一次空跑；换成 ref 后语义不变（有数据就不自动重发）但不自激
   const loadedRef = useRef(false)
+  // 本次挂载里已经为哪个 tab 还原过缓存：切回来时不再重复 setList，
+  // 避免用磁盘/会话缓存的新数组把列表滚动位置与渲染窗口重置。
+  const restoredKeyRef = useRef<string | null>(null)
 
   const loadPlaylists = useCallback(async(refresh = false, showRefreshing = true) => {
     if (type !== 'home') return
@@ -162,26 +165,46 @@ export default memo(({ type, onOpenDetail, active = true }: Props) => {
     }
   }, [type])
 
-  // 进入本页时**所有 tab 一起预取**（不再等用户点 tab 才加载）：
-  // 每个 tab 在本次启动第一次挂载时自动刷新一次，数据直接进会话缓存；
-  // 之后切换 tab 不再发请求（takeDailyRecAutoRefresh 已消费），要新数据手动下拉。
-  // 非当前 tab 的预取不播放下拉动画，切过去时列表已经是现成的 = 流畅切换。
+  // 切到本 tab 时：
+  //   · 本次启动还没自动刷过 → 立即清空列表 + 下拉刷新动画 + 请求新数据；
+  //   · 已经刷过 → 直接还原本次启动的会话缓存（不请求），要新数据手动下拉。
+  // 非当前 tab 只静默还原缓存，不请求 —— 切过去时由上面第一条统一清空重刷。
   useEffect(() => {
-    if (type === 'home') {
-      const cached = getDailyRecSessionList<Array<{ id: string, name: string, cover: string, playCount: number }>>(sessionKey)
-      if (cached?.length) {
+    const cached = getDailyRecSessionList<any>(sessionKey)
+    const restoreCache = () => {
+      if (!cached?.length) return
+      if (type === 'home') {
         setPlaylists(cached)
         setLoading(false)
+      } else {
+        listRef.current?.setList(cached, false)
       }
-      if (!takeDailyRecAutoRefresh(sessionKey)) return
-      void loadPlaylists(true, active)
+    }
+
+    if (!active) {
+      if (restoredKeyRef.current === sessionKey) return
+      restoredKeyRef.current = sessionKey
+      restoreCache()
       return
     }
-    const cachedSongs = getDailyRecSessionList<LX.Music.MusicInfoOnline[]>(sessionKey)
-    if (cachedSongs?.length) listRef.current?.setList(cachedSongs, false)
-    if (!takeDailyRecAutoRefresh(sessionKey)) return
-    refreshCoverCaches()
-    void fetchSongs(active)
+    if (!takeDailyRecAutoRefresh(sessionKey)) {
+      if (restoredKeyRef.current === sessionKey) return
+      restoredKeyRef.current = sessionKey
+      restoreCache()
+      return
+    }
+
+    // 本次启动第一次切到本 tab：先清空，让列表从空白开始，
+    // 只看到下拉刷新动画，响应后再出现新内容。
+    restoredKeyRef.current = sessionKey
+    if (type === 'home') {
+      setPlaylists([])
+      void loadPlaylists(true, true)
+    } else {
+      listRef.current?.setList([], false)
+      refreshCoverCaches()
+      void fetchSongs(true)
+    }
   }, [type, active, sessionKey, loadPlaylists, fetchSongs])
 
   const handleRefresh = useCallback(() => {

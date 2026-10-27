@@ -42,13 +42,15 @@ const similarSongsFetcher = {
 interface RecSongsProps {
   isStylized?: boolean
   stylizedSelection?: StylizedSelection | null
-  /** 当前 tab：进入即预取所有 tab，只有当前 tab 的自动刷新点亮下拉动画。 */
+  /** 当前 tab：切到本 tab 且本次启动尚未自动刷新时，清空列表并走下拉刷新。 */
   active?: boolean
 }
 
 export default memo(({ isStylized, stylizedSelection, active = true }: RecSongsProps) => {
   const listRef = useRef<OnlineListType>(null)
   const unmountedRef = useRef(false)
+  // 本次挂载已为哪个缓存 key 还原过数据：切回来时不重复 setList（避免重置滚动位置）。
+  const restoredKeyRef = useRef<string | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const t = useI18n()
   const cookie = useSettingValue('common.wy_cookie')
@@ -69,13 +71,22 @@ export default memo(({ isStylized, stylizedSelection, active = true }: RecSongsP
     // 【第 191 轮】本次启动的缓存键：默认推荐按 cookie 分桶，风格化按整套选择分桶。
     const sig = `${cookie}|${isStylized}|${stylizedSelection ? JSON.stringify(stylizedSelection) : ''}`
     const cacheKey = isStylized && stylizedSelection ? `wy_stylized_${sig}` : `wy_songs_${cookie}`
-    // 先还原缓存（页面离开即卸载）：再次进入直接显示上次数据，不出现加载中界面。
     const cachedList = isStylized
       ? getDailyRecSessionList<any[]>(cacheKey)
       : getDailyRecSongsCache()
-    if (cachedList?.length) {
+
+    const restoreCache = () => {
+      if (!cachedList?.length) return
       listRef.current?.setList(cachedList, false)
       listRef.current?.setStatus('idle')
+    }
+
+    // 非当前 tab：只还原缓存（本次挂载每个 key 只还原一次），不请求。
+    if (!active) {
+      if (restoredKeyRef.current === cacheKey) return
+      restoredKeyRef.current = cacheKey
+      restoreCache()
+      return
     }
 
     if (!cookie) {
@@ -88,14 +99,22 @@ export default memo(({ isStylized, stylizedSelection, active = true }: RecSongsP
       return
     }
 
-    // 进入本页即预取（不再等用户点「推荐歌曲」）：每个 key 本次启动只自动刷新一次，
-    // 之后切换 tab 直接用会话/磁盘缓存，要新数据手动下拉。
-    if (!takeDailyRecAutoRefresh(cacheKey)) return
+    // 本次启动该 key 已经自动刷过：只还原一次缓存，要新数据手动下拉。
+    if (!takeDailyRecAutoRefresh(cacheKey)) {
+      if (restoredKeyRef.current === cacheKey) return
+      restoredKeyRef.current = cacheKey
+      restoreCache()
+      return
+    }
+
+    // 首次激活：先清空列表，让切换后只能看到下拉刷新动画，再请求新数据。
+    restoredKeyRef.current = cacheKey
+    listRef.current?.setList([], false)
+    listRef.current?.setStatus('refreshing')
     refreshCoverCaches()
 
     if (isStylized && stylizedSelection) {
       setIsLoading(true)
-      if (active) listRef.current?.setStatus('refreshing')
       wyApi.dailyRec.saveStylizedTag(cookie, stylizedSelection.categoryId, stylizedSelection.tagIds).then(() => {
         return wyApi.dailyRec.getStylizedList(cookie)
       }).then((result: any) => {
@@ -113,7 +132,6 @@ export default memo(({ isStylized, stylizedSelection, active = true }: RecSongsP
     }
 
     setIsLoading(true)
-    if (active) listRef.current?.setStatus('refreshing')
     wyApi.dailyRec.getList(cookie).then(async(result: any) => {
         listRef.current?.setList(result.list, false)
         listRef.current?.setStatus('idle')

@@ -176,9 +176,9 @@ export default memo(() => {
   // 【第 192 轮】PagerView 页序与 tab 视觉顺序对齐：page0 = 推荐歌单、page1 = 推荐歌曲。
   // initialPage 按语义 id 映射（`activeTab === 'songs' ? 1 : 0`，见下方 render）。
   const [activeTab, setActiveTab] = useState<'songs' | 'playlists'>('playlists')
-  // 两页都随本页挂载一起挂载（不再「首次切过去才挂」）：歌曲页在进入时就开始预取，
-  // 用户点「推荐歌曲」时数据已经现成 = 流畅切换；每个 tab 本次启动只自动刷新一次，
-  // 之后要新数据手动下拉（见 RecSongs 的 takeDailyRecAutoRefresh）。
+  // 两页都随本页挂载一起挂载（不再「首次切过去才挂」）：避免切 tab 时还要等页面挂载。
+  // 各 tab 的数据加载仍由 active 驱动：切到某个 tab 且本次启动尚未刷新时，
+  // 先清空列表并显示下拉刷新动画，再填入新数据；之后切换只还原缓存、手动下拉刷新。
   const [isStylized, setIsStylized] = useState(false)
   const [showStylizedModal, setShowStylizedModal] = useState(false)
   const [stylizedSelection, setStylizedSelection] = useState<StylizedSelection>(null)

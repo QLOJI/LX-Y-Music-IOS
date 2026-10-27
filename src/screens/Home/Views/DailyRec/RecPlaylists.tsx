@@ -34,6 +34,8 @@ export default memo(({ onOpenDetail, active = true }: { onOpenDetail: (info: any
   const buttonRadius = useButtonRadius()
   // 只认最后一次发起的加载：cookie 变化 / 连续重试时丢弃过期响应，避免旧结果覆盖新结果
   const loadIdRef = useRef(0)
+  // 本次挂载已为当前 tab 还原过缓存：切回来时不再重复 setPlaylists（避免重置滚动位置）。
+  const restoredRef = useRef(false)
 
   const loadPlaylists = useCallback((isRefresh = false) => {
     const loadId = ++loadIdRef.current
@@ -114,19 +116,36 @@ export default memo(({ onOpenDetail, active = true }: { onOpenDetail: (info: any
     })
   }, [cookie, t])
 
-  // 【第 191 轮】先还原本次启动里的缓存，再按「当前 tab + 本次启动是否已自动刷过」决定加载：
-  // 每次打开软件、每个 tab 只自动下拉刷新一次；再次进入不请求，要新数据由用户手动下拉。
+  // 切到本 tab 时：本次启动还没自动刷过（或 Cookie 变了）→ 立即清空 + 下拉动画 + 请求；
+  // 已经刷过 → 还原本次启动缓存，不请求。非当前 tab 只还原缓存。
   const lastCookieRef = useRef(cookie)
   useEffect(() => {
     const cached = getDailyRecPlaylistsCache()
-    if (cached?.length) {
+    const restoreCache = () => {
+      if (!cached?.length) return
       setPlaylists(cached)
       setLoading(false)
     }
+
+    if (!active) {
+      if (restoredRef.current) return
+      restoredRef.current = true
+      restoreCache()
+      return
+    }
     const cookieChanged = lastCookieRef.current !== cookie
     lastCookieRef.current = cookie
-    // 进入本页即预取（本页就是默认 tab，不依赖 active）；每次启动只自动刷新一次。
-    if (!cookieChanged && !takeDailyRecAutoRefresh('wy_daily_playlists')) return
+    const willRefresh = cookieChanged || takeDailyRecAutoRefresh('wy_daily_playlists')
+    if (!willRefresh) {
+      if (restoredRef.current) return
+      restoredRef.current = true
+      restoreCache()
+      return
+    }
+    // 首次切到本 tab（或 Cookie 变化）：先清空，露出下拉刷新动画，响应后再出现新内容。
+    restoredRef.current = true
+    setPlaylists([])
+    setLoadError('')
     loadPlaylists(true)
   }, [active, cookie, loadPlaylists])
 

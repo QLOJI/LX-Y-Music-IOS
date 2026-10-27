@@ -29,7 +29,7 @@ interface PlaylistInfo {
 
 interface Props {
   onOpenDetail: (playlistInfo: ListInfoItem) => void
-  /** 当前 tab：进入即预取所有 tab，只有当前 tab 的自动刷新点亮下拉动画。 */
+  /** 当前 tab：切到本 tab 且本次启动尚未自动刷新时，清空列表并走下拉刷新。 */
   active?: boolean
 }
 
@@ -81,6 +81,9 @@ export default memo(({ onOpenDetail, active = true }: Props) => {
   // 加载成功（0 → N）就会重建函数、把 effect 再触发一次空跑；改用 ref 语义不变（有数据就
   // 不再自动重发），但不再因为自己的结果而重跑
   const loadedRef = useRef(false)
+  // 本次挂载已为当前 tab 还原过缓存：切回来时不再重复 setPlaylists，
+  // 避免列表数据被新数组替换而重置滚动位置。
+  const restoredKeyRef = useRef<string | null>(null)
 
   const loadPlaylists = useCallback(async(refresh = false, showRefreshing = true) => {
     if (!refresh && loadedRef.current) return
@@ -118,16 +121,31 @@ export default memo(({ onOpenDetail, active = true }: Props) => {
     }
   }, [t])
 
-  // 进入本页即预取（不再等用户点 tab）：每个 tab 本次启动只自动刷新一次，
-  // 之后切换 tab 直接用会话缓存，要新数据手动下拉。
+  // 切到本 tab 时：本次启动还没自动刷过 → 立即清空 + 下拉动画 + 请求；
+  // 已经刷过 → 还原会话缓存，不请求。非当前 tab 只还原缓存，不请求。
   useEffect(() => {
     const cached = getDailyRecSessionList<PlaylistInfo[]>(sessionKey)
-    if (cached?.length) {
-      setPlaylists(cached)
-      setLoading(false)
+    const restoreCache = () => {
+      if (cached?.length) setPlaylists(cached)
     }
-    if (!takeDailyRecAutoRefresh(sessionKey)) return
-    void loadPlaylists(true, active)
+
+    if (!active) {
+      if (restoredKeyRef.current === sessionKey) return
+      restoredKeyRef.current = sessionKey
+      restoreCache()
+      return
+    }
+    if (!takeDailyRecAutoRefresh(sessionKey)) {
+      if (restoredKeyRef.current === sessionKey) return
+      restoredKeyRef.current = sessionKey
+      restoreCache()
+      return
+    }
+
+    // 首次切到本 tab：先清空，露出下拉刷新动画，响应后再出现新内容。
+    restoredKeyRef.current = sessionKey
+    setPlaylists([])
+    void loadPlaylists(true, true)
   }, [active, sessionKey, loadPlaylists])
 
   const handleItemPress = (playlistInfo: PlaylistInfo) => {
