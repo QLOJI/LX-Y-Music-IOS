@@ -92,7 +92,7 @@ export default memo(({ type, onOpenDetail, active = true }: Props) => {
     const loadId = ++loadIdRef.current
     setRefreshing(true)
     setLoadError('')
-    refreshCoverCaches()
+    setTimeout(refreshCoverCaches, 0)
     try {
       // 有界重试（2 次，800/2000ms）：冷启动首个请求容易输给「网络栈就绪 / 平台偶发 5xx」
       const result = await retryAsync(() => txApi.dailyRec.getHomeFeed(), {
@@ -161,11 +161,11 @@ export default memo(({ type, onOpenDetail, active = true }: Props) => {
   useEffect(() => {
     if (!active) return
     if (type === 'home') {
-      setPlaylists([])
+      // 不清空：有数据就保留原列表，只点亮下拉刷新动画；首次加载时列表本来就是空的。
       void loadPlaylists(true)
     } else {
-      listRef.current?.setList([], false)
-      refreshCoverCaches()
+      // 封面的缓存签名计算很重，延后到这一帧之后，避免切页瞬间 JS 卡一下。
+      setTimeout(refreshCoverCaches, 0)
       void fetchSongs()
     }
   }, [type, active, enterSeq, loadPlaylists, fetchSongs])

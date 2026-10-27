@@ -51,7 +51,7 @@ export default memo(({ onOpenDetail, active = true }: { onOpenDetail: (info: any
 
     setRefreshing(true)
     setLoadError('')
-    refreshCoverCaches()
+    setTimeout(refreshCoverCaches, 0)
     wyApi.getRecPlaylists(cookie).then(async(list: any) => {
       const adaptedList = list
         .map((item: any) => ({
@@ -93,10 +93,10 @@ export default memo(({ onOpenDetail, active = true }: { onOpenDetail: (info: any
     })
   }, [cookie, t])
 
-  // 每次切到本 tab / 重新进入本页：先清空，立即下拉刷新，响应后出现新内容。
+  // 每次切到本 tab / 重新进入本页：保留原列表，只点亮下拉刷新动画。
+  // 首次加载时列表本来就是空的，自然就是「空白 + 刷新」。
   useEffect(() => {
     if (!active) return
-    setPlaylists([])
     setLoadError('')
     loadPlaylists()
   }, [active, enterSeq, loadPlaylists])

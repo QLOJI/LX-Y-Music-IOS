@@ -81,10 +81,11 @@ export default memo(({ isStylized, stylizedSelection, active = true }: RecSongsP
       return
     }
 
-    // 每次切到本 tab / 重新进入本页：先清空，立即下拉刷新，响应后出现新内容。
-    listRef.current?.setList([], false)
+    // 每次切到本 tab / 重新进入本页：保留原列表，只点亮下拉刷新动画。
+    // 首次加载时列表本来就是空的，自然就是「空白 + 刷新」。
     listRef.current?.setStatus('refreshing')
-    refreshCoverCaches()
+    // 封面缓存签名计算很重，延后到这一帧之后，避免切页瞬间 JS 卡一下。
+    setTimeout(refreshCoverCaches, 0)
 
     if (isStylized && stylizedSelection) {
       setIsLoading(true)

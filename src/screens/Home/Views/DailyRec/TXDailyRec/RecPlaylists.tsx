@@ -87,7 +87,7 @@ export default memo(({ onOpenDetail, active = true }: Props) => {
     const loadId = ++loadIdRef.current
     setRefreshing(true)
     setLoadError('')
-    refreshCoverCaches()
+    setTimeout(refreshCoverCaches, 0)
     try {
       // 有界重试（2 次，800/2000ms）：冷启动首个请求要跟「网络栈就绪 / Cookie 落盘 /
       // 平台偶发 5xx」抢时间，一次失败就定格成空白页。shouldRetry 兜住「等待期间
@@ -112,10 +112,10 @@ export default memo(({ onOpenDetail, active = true }: Props) => {
     }
   }, [t])
 
-  // 每次切到本 tab / 重新进入本页：先清空，立即下拉刷新。
+  // 每次切到本 tab / 重新进入本页：保留原列表，只点亮下拉刷新动画。
+  // 首次加载时列表本来就是空的，自然就是「空白 + 刷新」。
   useEffect(() => {
     if (!active) return
-    setPlaylists([])
     setLoadError('')
     void loadPlaylists(true)
   }, [active, enterSeq, loadPlaylists])

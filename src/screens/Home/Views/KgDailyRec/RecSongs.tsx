@@ -62,11 +62,12 @@ export default memo(({ type, active = true }: Props) => {
     }
   }, [type])
 
-  // 每次切到本 tab / 重新进入本页：先清空列表，立即下拉刷新，响应后出现新内容。
+  // 每次切到本 tab / 重新进入本页：保留原列表，只点亮下拉刷新动画。
+  // 首次加载时列表本来就是空的，自然就是「空白 + 刷新」。
   useEffect(() => {
     if (!active) return
-    listRef.current?.setList([], false)
-    refreshCoverCaches()
+    // 封面缓存签名计算很重，延后到这一帧之后，避免切页瞬间 JS 卡一下。
+    setTimeout(refreshCoverCaches, 0)
     void fetchSongs(true)
   }, [active, enterSeq, fetchSongs])
 
