@@ -26,7 +26,7 @@ type RecType = 'home' | 'radar' | 'newsong'
 interface Props {
   type: RecType
   onOpenDetail?: (playlistInfo: ListInfoItem) => void
-  /** 【第 191 轮】只有当前 tab 才自动下拉。 */
+  /** 当前 tab：进入即预取所有 tab，只有当前 tab 的自动刷新点亮下拉动画。 */
   active?: boolean
 }
 
@@ -85,12 +85,14 @@ export default memo(({ type, onOpenDetail, active = true }: Props) => {
   // 函数、把 effect 再触发一次空跑；换成 ref 后语义不变（有数据就不自动重发）但不自激
   const loadedRef = useRef(false)
 
-  const loadPlaylists = useCallback(async(refresh = false) => {
+  const loadPlaylists = useCallback(async(refresh = false, showRefreshing = true) => {
     if (type !== 'home') return
     if (!refresh && loadedRef.current) return
     const loadId = ++loadIdRef.current
-    if (refresh) setRefreshing(true)
-    else setLoading(true)
+    // 预取（非当前 tab）不激活下拉刷新控件：数据照样请求，切过去时已经是现成的。
+    if (refresh) {
+      if (showRefreshing) setRefreshing(true)
+    } else setLoading(true)
     setLoadError('')
     if (refresh) refreshCoverCaches()
     try {
@@ -126,8 +128,10 @@ export default memo(({ type, onOpenDetail, active = true }: Props) => {
     }
   }, [type])
 
-  const fetchSongs = useCallback(async() => {
+  const fetchSongs = useCallback(async(showRefreshing = true) => {
     try {
+      // 非当前 tab 的预取走静默加载：不把下拉刷新控件点亮。
+      if (showRefreshing) listRef.current?.setStatus('refreshing')
       let result: { list: LX.Music.MusicInfoOnline[] } | null = null
 
       switch (type) {
@@ -158,7 +162,10 @@ export default memo(({ type, onOpenDetail, active = true }: Props) => {
     }
   }, [type])
 
-  // 【第 191 轮】先还原本次启动的会话缓存；只有当前 tab + 本次启动尚未自动刷过才自动下拉。
+  // 进入本页时**所有 tab 一起预取**（不再等用户点 tab 才加载）：
+  // 每个 tab 在本次启动第一次挂载时自动刷新一次，数据直接进会话缓存；
+  // 之后切换 tab 不再发请求（takeDailyRecAutoRefresh 已消费），要新数据手动下拉。
+  // 非当前 tab 的预取不播放下拉动画，切过去时列表已经是现成的 = 流畅切换。
   useEffect(() => {
     if (type === 'home') {
       const cached = getDailyRecSessionList<Array<{ id: string, name: string, cover: string, playCount: number }>>(sessionKey)
@@ -166,18 +173,15 @@ export default memo(({ type, onOpenDetail, active = true }: Props) => {
         setPlaylists(cached)
         setLoading(false)
       }
-      if (!active) return
       if (!takeDailyRecAutoRefresh(sessionKey)) return
-      void loadPlaylists(true)
+      void loadPlaylists(true, active)
       return
     }
     const cachedSongs = getDailyRecSessionList<LX.Music.MusicInfoOnline[]>(sessionKey)
     if (cachedSongs?.length) listRef.current?.setList(cachedSongs, false)
-    if (!active) return
     if (!takeDailyRecAutoRefresh(sessionKey)) return
     refreshCoverCaches()
-    listRef.current?.setStatus('refreshing')
-    void fetchSongs()
+    void fetchSongs(active)
   }, [type, active, sessionKey, loadPlaylists, fetchSongs])
 
   const handleRefresh = useCallback(() => {

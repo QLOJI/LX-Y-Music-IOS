@@ -125,7 +125,7 @@ export default memo(({ onOpenDetail, active = true }: { onOpenDetail: (info: any
     }
     const cookieChanged = lastCookieRef.current !== cookie
     lastCookieRef.current = cookie
-    if (!active) return
+    // 进入本页即预取（本页就是默认 tab，不依赖 active）；每次启动只自动刷新一次。
     if (!cookieChanged && !takeDailyRecAutoRefresh('wy_daily_playlists')) return
     loadPlaylists(true)
   }, [active, cookie, loadPlaylists])

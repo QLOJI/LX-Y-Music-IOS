@@ -176,9 +176,9 @@ export default memo(() => {
   // 【第 192 轮】PagerView 页序与 tab 视觉顺序对齐：page0 = 推荐歌单、page1 = 推荐歌曲。
   // initialPage 按语义 id 映射（`activeTab === 'songs' ? 1 : 0`，见下方 render）。
   const [activeTab, setActiveTab] = useState<'songs' | 'playlists'>('playlists')
-  // 【第 187 轮】歌曲页首次切过去才挂载，之后常驻不卸载：每次进入本页只加载一次，
-  // 切 tab 不重复请求。默认停在歌单页时不提前拉歌曲列表。
-  const [songsMounted, setSongsMounted] = useState(activeTab === 'songs')
+  // 两页都随本页挂载一起挂载（不再「首次切过去才挂」）：歌曲页在进入时就开始预取，
+  // 用户点「推荐歌曲」时数据已经现成 = 流畅切换；每个 tab 本次启动只自动刷新一次，
+  // 之后要新数据手动下拉（见 RecSongs 的 takeDailyRecAutoRefresh）。
   const [isStylized, setIsStylized] = useState(false)
   const [showStylizedModal, setShowStylizedModal] = useState(false)
   const [stylizedSelection, setStylizedSelection] = useState<StylizedSelection>(null)
@@ -188,10 +188,6 @@ export default memo(() => {
       if (data) setStylizedSelection(data)
     })
   }, [])
-
-  useEffect(() => {
-    if (activeTab === 'songs') setSongsMounted(true)
-  }, [activeTab])
 
   const pagerViewRef = useRef<PagerView>(null)
   // 【第 192 轮】页序与 tab 视觉顺序对齐：page0 = 推荐歌单（左）、page1 = 推荐歌曲（右）。
@@ -351,15 +347,12 @@ export default memo(() => {
             <RecPlaylists onOpenDetail={handleOpenDetail} active={activeTab === 'playlists'} />
           </View>
           <View key="songs">
-            {/* 【第 187 轮】首次切到歌曲页才挂载，之后常驻：切 tab 不再卸载/重挂，
-                每次进入本页只加载一次；手动下拉刷新或风格化输入变化才重新加载。 */}
-            {songsMounted && (
-              <RecSongs
-                isStylized={isStylized}
-                stylizedSelection={stylizedSelection}
-                active={activeTab === 'songs'}
-              />
-            )}
+            {/* 两页随本页挂载一起挂载：歌曲页进入即预取，切 tab 不再等加载。 */}
+            <RecSongs
+              isStylized={isStylized}
+              stylizedSelection={stylizedSelection}
+              active={activeTab === 'songs'}
+            />
           </View>
         </PagerView>
         <StylizedModal

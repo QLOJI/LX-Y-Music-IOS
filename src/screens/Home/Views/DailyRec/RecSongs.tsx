@@ -42,7 +42,7 @@ const similarSongsFetcher = {
 interface RecSongsProps {
   isStylized?: boolean
   stylizedSelection?: StylizedSelection | null
-  /** 【第 191 轮】只有当前 tab 才自动下拉：每次启动每个 tab 只刷一次。 */
+  /** 当前 tab：进入即预取所有 tab，只有当前 tab 的自动刷新点亮下拉动画。 */
   active?: boolean
 }
 
@@ -88,14 +88,14 @@ export default memo(({ isStylized, stylizedSelection, active = true }: RecSongsP
       return
     }
 
-    // 只有当前 tab 才自动刷新；每次启动每个 key 只自动下拉一次，之后靠用户手动下拉。
-    if (!active) return
+    // 进入本页即预取（不再等用户点「推荐歌曲」）：每个 key 本次启动只自动刷新一次，
+    // 之后切换 tab 直接用会话/磁盘缓存，要新数据手动下拉。
     if (!takeDailyRecAutoRefresh(cacheKey)) return
     refreshCoverCaches()
 
     if (isStylized && stylizedSelection) {
       setIsLoading(true)
-      listRef.current?.setStatus('refreshing')
+      if (active) listRef.current?.setStatus('refreshing')
       wyApi.dailyRec.saveStylizedTag(cookie, stylizedSelection.categoryId, stylizedSelection.tagIds).then(() => {
         return wyApi.dailyRec.getStylizedList(cookie)
       }).then((result: any) => {
@@ -113,7 +113,7 @@ export default memo(({ isStylized, stylizedSelection, active = true }: RecSongsP
     }
 
     setIsLoading(true)
-    listRef.current?.setStatus('refreshing')
+    if (active) listRef.current?.setStatus('refreshing')
     wyApi.dailyRec.getList(cookie).then(async(result: any) => {
         listRef.current?.setList(result.list, false)
         listRef.current?.setStatus('idle')

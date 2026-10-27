@@ -29,7 +29,7 @@ interface PlaylistInfo {
 
 interface Props {
   onOpenDetail: (playlistInfo: ListInfoItem) => void
-  /** 【第 191 轮】只有当前 tab 才自动下拉。 */
+  /** 当前 tab：进入即预取所有 tab，只有当前 tab 的自动刷新点亮下拉动画。 */
   active?: boolean
 }
 
@@ -82,11 +82,13 @@ export default memo(({ onOpenDetail, active = true }: Props) => {
   // 不再自动重发），但不再因为自己的结果而重跑
   const loadedRef = useRef(false)
 
-  const loadPlaylists = useCallback(async(refresh = false) => {
+  const loadPlaylists = useCallback(async(refresh = false, showRefreshing = true) => {
     if (!refresh && loadedRef.current) return
     const loadId = ++loadIdRef.current
-    if (refresh) setRefreshing(true)
-    else setLoading(true)
+    // 预取（非当前 tab）不点亮下拉刷新控件，切过去时数据已经现成。
+    if (refresh) {
+      if (showRefreshing) setRefreshing(true)
+    } else setLoading(true)
     setLoadError('')
     if (refresh) refreshCoverCaches()
     try {
@@ -116,16 +118,16 @@ export default memo(({ onOpenDetail, active = true }: Props) => {
     }
   }, [t])
 
-  // 【第 191 轮】先还原本次启动缓存；只有当前 tab + 本次启动尚未自动刷过，才自动下拉一次。
+  // 进入本页即预取（不再等用户点 tab）：每个 tab 本次启动只自动刷新一次，
+  // 之后切换 tab 直接用会话缓存，要新数据手动下拉。
   useEffect(() => {
     const cached = getDailyRecSessionList<PlaylistInfo[]>(sessionKey)
     if (cached?.length) {
       setPlaylists(cached)
       setLoading(false)
     }
-    if (!active) return
     if (!takeDailyRecAutoRefresh(sessionKey)) return
-    void loadPlaylists(true)
+    void loadPlaylists(true, active)
   }, [active, sessionKey, loadPlaylists])
 
   const handleItemPress = (playlistInfo: PlaylistInfo) => {

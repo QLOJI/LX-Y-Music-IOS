@@ -16,7 +16,7 @@ type RecType = 'recommend' | 'everyday'
 
 interface Props {
   type: RecType
-  /** 【第 191 轮】只有当前 tab 才自动刷新：每次启动每个 tab 只自动下拉一次。 */
+  /** 当前 tab：进入即预取所有 tab，只有当前 tab 的自动刷新点亮下拉动画。 */
   active?: boolean
 }
 
@@ -30,10 +30,11 @@ export default memo(({ type, active = true }: Props) => {
   const playerMusicInfo = usePlayerMusicInfo()
   const cacheKey = `kg_daily_rec_${type}`
 
-  // 【第 191 轮】去掉加载中界面：无论首载还是刷新都用下拉动画（'refreshing'）。
-  const fetchSongs = useCallback(async() => {
+  // 去掉加载中界面：当前 tab 首载/刷新都用下拉动画（'refreshing'）；
+  // 非当前 tab 的预取静默加载，切过去时数据已经现成。
+  const fetchSongs = useCallback(async(showRefreshing = true) => {
     try {
-      listRef.current?.setStatus('refreshing')
+      if (showRefreshing) listRef.current?.setStatus('refreshing')
       let songs: LX.Music.MusicInfoOnline[] = []
 
       switch (type) {
@@ -66,11 +67,12 @@ export default memo(({ type, active = true }: Props) => {
     if (cached?.length) listRef.current?.setList(cached, false)
   }, [cacheKey])
 
+  // 进入本页即预取所有 tab（两个子页都会挂载）：每个 tab 本次启动只自动刷新一次，
+  // 之后切换 tab 直接用会话缓存，要新数据手动下拉。
   useEffect(() => {
-    if (!active) return
     if (!takeDailyRecAutoRefresh(cacheKey)) return
     refreshCoverCaches()
-    void fetchSongs()
+    void fetchSongs(active)
   }, [active, cacheKey, fetchSongs])
 
   const handleRefresh = useCallback(() => {
