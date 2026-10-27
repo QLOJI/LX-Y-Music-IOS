@@ -1,6 +1,9 @@
 import { hashSHA1 } from '@/utils/nativeModules/crypto'
 
 const PART_1_INDEXES = [23, 14, 6, 36, 16, 7, 19]
+// 官网 needSign（musics.fcg?encoding=ag-1）当前使用的签名索引：第一段是 8 位，
+// 老接口用的是上面 7 位版本。两套并存，避免改动已验收的只读/搜索通道。
+const WEB_PART_1_INDEXES = [23, 14, 6, 36, 16, 40, 7, 19]
 const PART_2_INDEXES = [16, 1, 32, 12, 19, 27, 8, 5]
 const SCRAMBLE_VALUES = [89, 39, 179, 150, 218, 82, 58, 252, 177, 52, 186, 123, 120, 64, 242, 133, 143, 161, 121, 179]
 
@@ -17,6 +20,16 @@ function base64Encode(data) {
 export async function zzcSign(text) {
   const hash = (await hashSHA1(text)).toUpperCase()
   const part1 = pickHashByIdx(hash, PART_1_INDEXES)
+  const part2 = pickHashByIdx(hash, PART_2_INDEXES)
+  const part3 = SCRAMBLE_VALUES.map((value, i) => value ^ parseInt(hash.slice(i * 2, i * 2 + 2), 16))
+  const b64Part = base64Encode(part3).replace(/[\\/+=]/g, '')
+  return `zzc${part1}${b64Part}${part2}`.toLowerCase()
+}
+
+/** 官网 needSign 通道（musics.fcg?encoding=ag-1）使用的 8 位第一段签名。 */
+export async function zzcSignV2(text) {
+  const hash = (await hashSHA1(text)).toUpperCase()
+  const part1 = pickHashByIdx(hash, WEB_PART_1_INDEXES)
   const part2 = pickHashByIdx(hash, PART_2_INDEXES)
   const part3 = SCRAMBLE_VALUES.map((value, i) => value ^ parseInt(hash.slice(i * 2, i * 2 + 2), 16))
   const b64Part = base64Encode(part3).replace(/[\\/+=]/g, '')

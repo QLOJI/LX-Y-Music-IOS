@@ -7,12 +7,24 @@
 import { httpFetch } from '../../request'
 import settingState from '@/store/setting/state'
 import { txLog } from '@/utils/txLog'
-import { zzcSign } from './utils/crypto'
+import { zzcSign, zzcSignV2 } from './utils/crypto'
+import { encodeAG1Request, decodeAG1Response } from './utils/ag1'
 import { log as errorLog } from '@/utils/log'
 import getMusicInfo from './musicInfo'
 
 const TX_API_HOST = 'c.y.qq.com'
 const TX_MUSIC_U_FCG = 'https://u.y.qq.com/cgi-bin/musics.fcg'
+const TX_MUSIC_U = 'https://u.y.qq.com/cgi-bin/musicu.fcg'
+// 「我喜欢」写接口（needSign）固定走 u6 的 ag-1 加密通道。
+const TX_MUSIC_U_FCG_AG1 = 'https://u6.y.qq.com/cgi-bin/musics.fcg'
+
+const qqHash33 = (value: string, seed = 5381) => {
+  let hash = seed
+  for (const char of String(value || '')) {
+    hash = ((hash << 5) + hash + char.charCodeAt(0)) & 0x7fffffff
+  }
+  return hash
+}
 
 export default {
   /**
@@ -607,6 +619,20 @@ export default {
     return euinMatch ? euinMatch[1] : null
   },
 
+  /** 写接口 comm.authst 需要的登录票据（qm_keyst / qqmusic_key） */
+  extractMusicKey(cookie: string): string {
+    if (!cookie) return ''
+    const match = cookie.match(/(?:^|;\s*)(?:qm_keyst|qqmusic_key)=([^;]+)/)
+    return match ? match[1] : ''
+  },
+
+  /** 微信登录的 comm.tmeLoginType（QQ 登录可缺省） */
+  extractLoginType(cookie: string): number | undefined {
+    if (!cookie) return undefined
+    const match = cookie.match(/(?:^|;\s*)(?:login_type|tmeLoginType)=(\d+)/)
+    return match ? Number(match[1]) : undefined
+  },
+
   /**
    * Send signed request
    */
@@ -1192,19 +1218,20 @@ export default {
         continue
       }
       if (/^\d+$/.test(id)) {
-        songInfo.push({ songId: parseInt(id, 10), songType: 13 })
+        // 普通歌曲的 songType 是 0（官网红心写入的实测值；13 是旧猜法）。
+        songInfo.push({ songId: parseInt(id, 10), songType: 0 })
         continue
       }
       try {
         const musicInfo = await getMusicInfo(id)
         if (musicInfo?.songId) {
-          songInfo.push({ songId: musicInfo.songId, songType: 13 })
+          songInfo.push({ songId: musicInfo.songId, songType: 0 })
           continue
         }
         const searchResult = await this.searchSong(id)
         const songId = searchResult?.[0]?.songId
         if (songId) {
-          songInfo.push({ songId, songType: 13 })
+          songInfo.push({ songId, songType: 0 })
         } else {
           failedIds.push(id)
         }
@@ -1217,6 +1244,58 @@ export default {
   },
 
   /**
+   * 「我喜欢」目录 id：PlaylistDetailWrite 必须使用 PlaylistBaseRead 返回的 dirId。
+   * 老接口的 tid / 固定 201 都可能不是当前账号实际入口（迁移过的账号会变）。
+   */
+  async getFavoritePlaylistDirId(cookie: string, uin: string, musicKey: string): Promise<number> {
+    const fallback = 201
+    try {
+      const gTk = qqHash33(musicKey)
+      const payload = {
+        comm: {
+          ct: 24,
+          cv: 4747474,
+          platform: 'yqq.json',
+          uin,
+          qq: uin,
+          authst: musicKey,
+          tmeLoginType: this.extractLoginType(cookie),
+          g_tk: gTk,
+          g_tk_new_20200303: gTk,
+          format: 'json',
+        },
+        req_0: {
+          module: 'music.musicasset.PlaylistBaseRead',
+          method: 'GetPlaylistByUin',
+          param: { uin, bWithoutStatus: false },
+        },
+      }
+      const { body } = await httpFetch(TX_MUSIC_U, {
+        method: 'post',
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          Referer: 'https://y.qq.com/',
+          Cookie: cookie,
+        },
+        body: payload,
+      }).promise as any
+      const playlists = body?.req_0?.data?.v_playlist
+      if (Array.isArray(playlists)) {
+        const favorite = playlists.find((item: any) => {
+          const dirId = Number(item?.dirId ?? item?.dirid)
+          const name = String(item?.dirName ?? item?.dir_name ?? item?.title ?? item?.name ?? '').trim()
+          return dirId === 201 || name === '我喜欢' || name === '我喜欢的音乐'
+        })
+        const dirId = Number(favorite?.dirId ?? favorite?.dirid)
+        if (Number.isFinite(dirId) && dirId > 0) return dirId
+      }
+    } catch (err: any) {
+      txLog.warn('解析「我喜欢」目录失败，回退 201', { error: err?.message })
+    }
+    return fallback
+  },
+
+  /**
    * Like/unlike a song
    * @param songMid Song mid or numeric songId
    * @param like true=like, false=unlike
@@ -1225,56 +1304,106 @@ export default {
     const cookie = settingState.setting['common.tx_cookie']
     if (!cookie) throw new Error('未设置QQ音乐Cookie')
 
+    // 写接口的 uin 必须是纯数字：QQ 登录用 uin，微信登录用 wxuin。
+    const uinMatch = cookie.match(/(?:^|;\s*)uin=(\d+)/) ||
+      cookie.match(/(?:^|;\s*)(?:wxUin|wxuin)=(\d+)/)
+    const uin = uinMatch ? uinMatch[1] : (this.extractUin(cookie) ?? '').replace(/\D/g, '')
+    const musicKey = this.extractMusicKey(cookie)
+    if (!uin) throw new Error('Cookie中未找到可用的 uin，请重新登录QQ音乐')
+    if (!musicKey) throw new Error('Cookie中缺少 qm_keyst/qqmusic_key，请重新登录QQ音乐')
+
     const { songInfo, failedIds } = await this.resolveSongInfo([songMid])
     if (!songInfo.length) {
       throw new Error(like ? '无法获取该歌曲的数字 songId，未加入我喜欢' : '无法获取该歌曲的数字 songId，未从我喜欢移除')
     }
 
-    // 「我喜欢」固定 dirId 201，官方收藏形状是 { dirId, v_songInfo }：
-    // 不带 tid / bFmtUtf8。带上这两个字段会被服务端当成「往公开歌单写」，
-    // 业务码可能回 0 但实际没有落到我喜欢里（用户报的「点了变红、平台没有」）。
+    // 「我喜欢」目录 id 不能写死：先解析当前账号实际入口的 dirId，失败退回 201。
+    const favoriteDirId = await this.getFavoritePlaylistDirId(cookie, uin, musicKey)
+
+    const gTk = qqHash33(musicKey)
     const payload = {
-      comm: { ct: 24, cv: 1800 },
+      comm: {
+        ct: 24,
+        cv: 4747474,
+        platform: 'yqq.json',
+        uin,
+        qq: uin,
+        authst: musicKey,
+        tmeLoginType: this.extractLoginType(cookie),
+        g_tk: gTk,
+        g_tk_new_20200303: gTk,
+        format: 'json',
+        inCharset: 'utf-8',
+        outCharset: 'utf-8',
+        notice: 0,
+        need_new_code: 1,
+      },
       req_0: {
         module: 'music.musicasset.PlaylistDetailWrite',
         method: like ? 'AddSonglist' : 'DelSonglist',
         param: {
-          dirId: 201,
+          dirId: favoriteDirId,
           v_songInfo: songInfo,
         },
       },
     }
 
-    const body = await this.sendSignedRequest(payload)
-    const retCode = body?.req_0?.data?.retCode
-    const reqCode = body?.req_0?.code
-    txLog.info('喜欢接口响应', {
+    // 官方写接口启用了 needSign：请求体必须 ag-1 加密，纯签名+明文会回 80105
+    // （业务块非 0、内层 retCode 却仍可能是 0，只看 retCode 会误报成功）。
+    const requestBody = JSON.stringify(payload)
+    const encryptedBody = encodeAG1Request(requestBody)
+    const sign = await zzcSignV2(requestBody)
+    const url = `${TX_MUSIC_U_FCG_AG1}?_=${Date.now()}&encoding=ag-1&sign=${encodeURIComponent(sign)}`
+
+    const requestObj = httpFetch(url, {
+      method: 'post',
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        Referer: 'https://y.qq.com/',
+        'Content-Type': 'text/plain',
+        Cookie: cookie,
+      },
+      body: encryptedBody,
+      binary: true,
+      timeout: 15000,
+    })
+    const { body, statusCode } = await requestObj.promise as any
+    if (statusCode !== 200) throw new Error(`HTTP请求失败，状态码: ${statusCode}`)
+
+    let responseData: any
+    try {
+      responseData = JSON.parse(decodeAG1Response(body))
+    } catch (err: any) {
+      throw new Error(`QQ音乐写入响应解密失败：${err?.message || err}`)
+    }
+
+    const req = responseData?.req_0 || responseData
+    const reqCode = req?.code
+    const retCode = req?.data?.retCode
+    const msg = req?.msg || req?.errMsg || req?.data?.msg || req?.data?.retMsg || ''
+    txLog.info('喜欢接口响应(ag-1)', {
       like,
-      code: body?.code,
+      dirId: favoriteDirId,
+      code: responseData?.code,
       reqCode,
       retCode,
-      msg: body?.req_0?.data?.retMsg,
+      msg,
     })
-    if (body?.code != null && body.code !== 0) {
-      throw new Error(`${like ? '加入' : '移出'}我喜欢失败，错误码: ${body.code}`)
+
+    if (reqCode != null && Number(reqCode) !== 0) {
+      throw new Error(`${like ? '加入' : '移出'}我喜欢失败${msg ? `：${msg}` : ''}（代码 ${reqCode}）`)
     }
-    if (retCode === 1000 || retCode === 1001) {
-      throw new Error('QQ音乐登录已过期，请重新登录QQ音乐')
+    if (retCode != null && Number(retCode) !== 0) {
+      throw new Error(`${like ? '加入' : '移出'}我喜欢失败${msg ? `：${msg}` : ''}（retCode ${retCode}）`)
     }
-    if (retCode != null && retCode !== 0) {
-      const retMsg = body?.req_0?.data?.retMsg || `错误码: ${retCode}`
-      throw new Error(`${like ? '加入' : '移出'}我喜欢失败：${retMsg}`)
-    }
-    // 部分返回体不带 data.retCode：只要模块码为 0 就按成功处理，
-    // 不再因为「字段缺失」把已经落库的收藏回滚掉。
-    if (retCode == null && reqCode != null && reqCode !== 0) {
-      const retMsg = body?.req_0?.data?.retMsg || `模块错误码: ${reqCode}`
-      throw new Error(`${like ? '加入' : '移出'}我喜欢失败：${retMsg}`)
+    if (reqCode == null && retCode == null && Number(responseData?.code) !== 0) {
+      throw new Error(`${like ? '加入' : '移出'}我喜欢失败（代码 ${responseData?.code}）`)
     }
 
     txLog.info(like ? '喜欢歌曲成功' : '取消喜欢歌曲成功', {
       songMid,
       songId: songInfo[0]?.songId,
+      dirId: favoriteDirId,
       failedCount: failedIds.length,
     })
     return true
