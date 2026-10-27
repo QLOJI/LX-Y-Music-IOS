@@ -3,7 +3,7 @@ import { prefetch } from '@/components/common/ImageBackground'
 import { setBgPic, updateSetting } from '@/core/common'
 import wyUserApi from '@/utils/musicSdk/wy/user'
 import txUserApi from '@/utils/musicSdk/tx/user'
-import { setWyFollowedArtists, setWyLikedSongs, setWySubscribedAlbums, setWyUid, setTxLikedSongs, setKgLikedSongs } from '@/store/user/action'
+import { setWyFollowedArtists, setWyLikedSongs, setWySubscribedAlbums, setWyUid, setTxLikedSongs, clearTxLikedSongs, setKgLikedSongs } from '@/store/user/action'
 import { getUserPlaylists, getPlaylistSongs } from '@/utils/musicSdk/kg/utils/api'
 import { toast } from '@/utils/tools'
 import { searchLog } from '@/utils/searchLog'
@@ -111,7 +111,7 @@ export default async(setting: LX.AppSetting) => {
         toast(`QQ音乐数据获取失败: ${err.message}`)
       }
     } else {
-      setTxLikedSongs([])
+      clearTxLikedSongs()
     }
   }
 

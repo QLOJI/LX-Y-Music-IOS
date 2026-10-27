@@ -10,7 +10,12 @@ import {
 } from '@/plugins/lyric'
 import { getPosition } from '@/plugins/player/utils'
 import playerState from '@/store/player/state'
+import { AppState, Platform } from 'react-native'
 // import settingState from '@/store/setting/state'
+
+let appStateWired = false
+
+const isIOS = Platform.OS === 'ios'
 
 /**
  * 取一次「可信的引擎位置」（秒）。
@@ -39,7 +44,20 @@ export const getReliableLyricPosition = async() => {
  * init lyric
  */
 export const init = async() => {
-  return lrcInit()
+  await lrcInit()
+  if (isIOS && !appStateWired) {
+    appStateWired = true
+    // 后台省电：JS 歌词 ticker 在退到后台时停表（音频继续放，锁屏歌词由原生时钟
+    // 驱动，不依赖这里）；回前台用引擎真实位置重锚后重新起表。
+    // 只认 background：inactive（控制中心 / 系统弹窗）时界面仍可见，歌词不能停。
+    AppState.addEventListener('change', (state) => {
+      if (state === 'background') {
+        pause()
+      } else if (state === 'active' && playerState.isPlay) {
+        void play()
+      }
+    })
+  }
 }
 
 /**
@@ -122,12 +140,15 @@ export const toggleRoma = async(isShowLyricRoma: boolean) => {
 export const play = async() => {
   const position = await getReliableLyricPosition()
   handlePlay(position * 1000)
+  // 后台只把行锚到当前引擎位置，不保留 ticker（回前台由 AppState 监听重新 play）。
+  if (isIOS && AppState.currentState === 'background') pause()
   return position
 }
 
 export const seek = (time: number) => {
   handlePlay(time * 1000)
-  if (!playerState.isPlay) {
+  // 后台 seek（锁屏/控制中心拖进度）：只锚行，不保留 ticker（同 play）。
+  if (!playerState.isPlay || (isIOS && AppState.currentState === 'background')) {
     setTimeout(() => {
       pause()
     })
