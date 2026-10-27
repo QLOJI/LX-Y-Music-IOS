@@ -260,7 +260,7 @@ export const handleTxLikeMusic = async(musicInfo: LX.Music.MusicInfoOnline) => {
     // 只有**明确**的鉴权 / 网络 / Cookie 失效才回滚。此前把消息里出现 "Cookie"
     // 一律当成失败：通用错误文案（如「添加歌曲失败，可能是 Cookie 已失效」）会让
     // 服务端已经落库的喜欢也把红心翻回去，正是用户报的「变红后马上恢复原样」。
-    const definiteFailure = /(未登录|登录已过期|登录.*失效|Cookie.*(无效|失效|过期)|未找到uin|未找到.*我喜欢|无法获取.*songId|没有有效的歌曲|未设置|HTTP|网络|超时)/i.test(message)
+    const definiteFailure = /(登录|Cookie.*(无效|失效|过期|缺少)|未找到uin|未找到.*我喜欢|无法获取.*songId|没有有效的歌曲|未设置|HTTP|网络|超时|80105|解密失败|加入我喜欢失败|移出我喜欢失败)/i.test(message)
     if (definiteFailure) apply(!like)
     toast(definiteFailure ? `操作失败: ${message}` : `已提交，若平台未生效请稍后重试（${message}）`)
   }
