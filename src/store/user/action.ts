@@ -116,18 +116,36 @@ export const updateWySubscribedPlaylistTrackCount = (id: string | number, change
   }
 }
 
+// 本次会话里用户手动改过的喜欢状态（true=喜欢 / false=取消）。启动时拉「我喜欢」
+// 是异步的：请求发出后用户立刻点红心，等整份列表回来时会用旧快照覆盖本地集合，
+// 界面就是「变红后马上恢复原样」。这份覆盖表在 setTxLikedSongs 落到集合上，
+// 让旧快照盖不掉用户在当前会话里的明确操作；重启 App 自动清空。
+const txLikedOverrides = new Map<string, boolean>()
+
 export const setTxLikedSongs = (ids: Array<string | number>) => {
-  state.tx_liked_song_ids = new Set(ids.map(String))
+  const next = new Set(ids.map(String))
+  for (const [id, liked] of txLikedOverrides) {
+    if (liked) next.add(id)
+    else next.delete(id)
+  }
+  state.tx_liked_song_ids = next
+  global.state_event.txLikedListChanged()
+}
+export const clearTxLikedSongs = () => {
+  txLikedOverrides.clear()
+  state.tx_liked_song_ids = new Set()
   global.state_event.txLikedListChanged()
 }
 export const addTxLikedSong = (id: string | number) => {
   const strId = String(id)
+  txLikedOverrides.set(strId, true)
   if (state.tx_liked_song_ids.has(strId)) return
   state.tx_liked_song_ids.add(strId)
   global.state_event.txLikedListChanged()
 }
 export const removeTxLikedSong = (id: string | number) => {
   const strId = String(id)
+  txLikedOverrides.set(strId, false)
   if (!state.tx_liked_song_ids.has(strId)) return
   state.tx_liked_song_ids.delete(strId)
   global.state_event.txLikedListChanged()
@@ -140,7 +158,9 @@ export const addTxLikedSongs = (ids: Array<string | number>) => {
   let changed = false
   for (const raw of ids) {
     const id = String(raw)
-    if (!id || state.tx_liked_song_ids.has(id)) continue
+    if (!id) continue
+    txLikedOverrides.set(id, true)
+    if (state.tx_liked_song_ids.has(id)) continue
     state.tx_liked_song_ids.add(id)
     changed = true
   }
@@ -150,6 +170,8 @@ export const removeTxLikedSongs = (ids: Array<string | number>) => {
   let changed = false
   for (const raw of ids) {
     const id = String(raw)
+    if (!id) continue
+    txLikedOverrides.set(id, false)
     if (!state.tx_liked_song_ids.has(id)) continue
     state.tx_liked_song_ids.delete(id)
     changed = true
