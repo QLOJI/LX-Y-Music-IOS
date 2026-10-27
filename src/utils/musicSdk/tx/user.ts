@@ -476,13 +476,17 @@ export default {
       }
 
       const retCode = body?.req_0?.data?.retCode
+      const reqCode = body?.req_0?.code
+      if (body?.code != null && body.code !== 0) {
+        throw new Error(`添加歌曲失败，错误码: ${body.code}`)
+      }
       if (retCode === 1000 || retCode === 1001) {
         txLog.error('未登录或登录已过期')
         errorLog.error('[QQ音乐] 未登录或登录已过期，请更新QQ Cookie')
         throw new Error('QQ音乐登录已过期，请重新登录QQ音乐')
       }
 
-      if (retCode !== 0 && retCode !== undefined) {
+      if (retCode != null && retCode !== 0) {
         const errorMsg = body?.req_0?.data?.retMsg || `添加歌曲失败，错误码: ${retCode}`
         txLog.error('添加歌曲失败', {
           retCode,
@@ -492,12 +496,14 @@ export default {
           songMids,
         })
         errorLog.error(`[QQ音乐] 添加歌曲失败: ${errorMsg}, 歌单ID: ${listId}, 歌曲数量: ${songMids.length}`)
-        throw new Error(`${errorMsg}，可能是Cookie已失效，请重新登录QQ音乐`)
+        throw new Error(errorMsg)
       }
 
-      if (retCode === undefined) {
-        errorLog.error(`[QQ音乐] 添加歌曲失败: 返回数据异常, 歌单ID: ${listId}`)
-        throw new Error('添加歌曲失败，可能是Cookie已失效，请重新登录QQ音乐')
+      // retCode 缺失时不再当成失败：部分写接口只在 req_0.code 上回业务码。
+      if (retCode == null && reqCode != null && reqCode !== 0) {
+        const errorMsg = body?.req_0?.data?.retMsg || `添加歌曲失败，模块错误码: ${reqCode}`
+        errorLog.error(`[QQ音乐] 添加歌曲失败: ${errorMsg}, 歌单ID: ${listId}, 歌曲数量: ${songMids.length}`)
+        throw new Error(errorMsg)
       }
 
       txLog.info('添加歌曲成功', {
@@ -944,11 +950,18 @@ export default {
       const body = await this.sendSignedRequest(payload)
 
       const retCode = body?.req_0?.data?.retCode
+      const reqCode = body?.req_0?.code
+      if (body?.code != null && body.code !== 0) {
+        throw new Error(`删除歌曲失败，错误码: ${body.code}`)
+      }
       if (retCode === 1000 || retCode === 1001) {
         throw new Error('QQ音乐登录已过期，请重新登录QQ音乐')
       }
-      if (retCode !== 0) {
-        throw new Error(`${body?.req_0?.data?.retMsg || `删除歌曲失败，错误码: ${retCode}`}，可能是Cookie已失效，请重新登录QQ音乐`)
+      if (retCode != null && retCode !== 0) {
+        throw new Error(body?.req_0?.data?.retMsg || `删除歌曲失败，错误码: ${retCode}`)
+      }
+      if (retCode == null && reqCode != null && reqCode !== 0) {
+        throw new Error(body?.req_0?.data?.retMsg || `删除歌曲失败，模块错误码: ${reqCode}`)
       }
 
       txLog.info('删除歌曲成功', { dirid, tid, songCount: songInfo.length })
@@ -1162,24 +1175,108 @@ export default {
   },
 
   /**
+   * 把一组歌曲标识（数字 songId 或 mid）解析成写接口需要的数字 songId。
+   * QQ 的 AddSonglist/DelSonglist 只认数字 songId：mid 必须先走 getMusicInfo，
+   * 取不到时再用歌曲详情搜索兜底。
+   */
+  async resolveSongInfo(songIds: string[]): Promise<{
+    songInfo: Array<{ songId: number, songType: number }>
+    failedIds: string[]
+  }> {
+    const songInfo: Array<{ songId: number, songType: number }> = []
+    const failedIds: string[] = []
+    for (const raw of songIds) {
+      const id = String(raw ?? '').trim()
+      if (!id) {
+        failedIds.push(id)
+        continue
+      }
+      if (/^\d+$/.test(id)) {
+        songInfo.push({ songId: parseInt(id, 10), songType: 13 })
+        continue
+      }
+      try {
+        const musicInfo = await getMusicInfo(id)
+        if (musicInfo?.songId) {
+          songInfo.push({ songId: musicInfo.songId, songType: 13 })
+          continue
+        }
+        const searchResult = await this.searchSong(id)
+        const songId = searchResult?.[0]?.songId
+        if (songId) {
+          songInfo.push({ songId, songType: 13 })
+        } else {
+          failedIds.push(id)
+        }
+      } catch (err: any) {
+        txLog.warn('解析歌曲数字 songId 失败', { id, error: err?.message })
+        failedIds.push(id)
+      }
+    }
+    return { songInfo, failedIds }
+  },
+
+  /**
    * Like/unlike a song
-   * @param songMid Song mid
+   * @param songMid Song mid or numeric songId
    * @param like true=like, false=unlike
    */
   async likeSong(songMid: string, like: boolean): Promise<boolean> {
-    const likedListId = await this.getLikedListId()
-    if (!likedListId) {
-      throw new Error('未找到"我喜欢"歌单，可能是Cookie已失效，请重新登录QQ音乐')
+    const cookie = settingState.setting['common.tx_cookie']
+    if (!cookie) throw new Error('未设置QQ音乐Cookie')
+
+    const { songInfo, failedIds } = await this.resolveSongInfo([songMid])
+    if (!songInfo.length) {
+      throw new Error(like ? '无法获取该歌曲的数字 songId，未加入我喜欢' : '无法获取该歌曲的数字 songId，未从我喜欢移除')
     }
 
-    if (like) {
-      await this.addSongToPlaylist(likedListId, [songMid])
-      txLog.info('喜欢歌曲成功', { songMid })
-    } else {
-      await this.removeSongFromPlaylist(likedListId, [songMid])
-      txLog.info('取消喜欢歌曲成功', { songMid })
+    // 「我喜欢」固定 dirId 201，官方收藏形状是 { dirId, v_songInfo }：
+    // 不带 tid / bFmtUtf8。带上这两个字段会被服务端当成「往公开歌单写」，
+    // 业务码可能回 0 但实际没有落到我喜欢里（用户报的「点了变红、平台没有」）。
+    const payload = {
+      comm: { ct: 24, cv: 1800 },
+      req_0: {
+        module: 'music.musicasset.PlaylistDetailWrite',
+        method: like ? 'AddSonglist' : 'DelSonglist',
+        param: {
+          dirId: 201,
+          v_songInfo: songInfo,
+        },
+      },
     }
 
+    const body = await this.sendSignedRequest(payload)
+    const retCode = body?.req_0?.data?.retCode
+    const reqCode = body?.req_0?.code
+    txLog.info('喜欢接口响应', {
+      like,
+      code: body?.code,
+      reqCode,
+      retCode,
+      msg: body?.req_0?.data?.retMsg,
+    })
+    if (body?.code != null && body.code !== 0) {
+      throw new Error(`${like ? '加入' : '移出'}我喜欢失败，错误码: ${body.code}`)
+    }
+    if (retCode === 1000 || retCode === 1001) {
+      throw new Error('QQ音乐登录已过期，请重新登录QQ音乐')
+    }
+    if (retCode != null && retCode !== 0) {
+      const retMsg = body?.req_0?.data?.retMsg || `错误码: ${retCode}`
+      throw new Error(`${like ? '加入' : '移出'}我喜欢失败：${retMsg}`)
+    }
+    // 部分返回体不带 data.retCode：只要模块码为 0 就按成功处理，
+    // 不再因为「字段缺失」把已经落库的收藏回滚掉。
+    if (retCode == null && reqCode != null && reqCode !== 0) {
+      const retMsg = body?.req_0?.data?.retMsg || `模块错误码: ${reqCode}`
+      throw new Error(`${like ? '加入' : '移出'}我喜欢失败：${retMsg}`)
+    }
+
+    txLog.info(like ? '喜欢歌曲成功' : '取消喜欢歌曲成功', {
+      songMid,
+      songId: songInfo[0]?.songId,
+      failedCount: failedIds.length,
+    })
     return true
   },
 }
