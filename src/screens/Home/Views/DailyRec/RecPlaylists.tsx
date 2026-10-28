@@ -1,6 +1,6 @@
 import { memo, useEffect, useState, useCallback, useRef } from 'react'
 import { View, FlatList, Keyboard, TouchableOpacity } from 'react-native'
-import RefreshControl from '@/components/common/RefreshControl'
+import usePullRefresh from '@/components/common/usePullRefresh'
 import Text from '@/components/common/Text'
 import { useSettingValue } from '@/store/setting/hook'
 import { createStyle, toast } from '@/utils/tools'
@@ -110,6 +110,9 @@ export default memo(({ onOpenDetail, active = true }: { onOpenDetail: (info: any
     loadPlaylists()
   }
 
+  // 自绘下拉刷新：不改变列表 inset，触发/结束都不会上下跳，刷新后顶部距离不变。
+  const { indicator: pullIndicator, scrollProps: pullScrollProps } = usePullRefresh(refreshing, handleRefresh)
+
   // 空列表渲染：区分「未登录 / 加载失败 / 真的没有歌单」，并为失败/空数据提供重试入口。
   const renderEmpty = () => {
     // 自动/手动刷新期间不显示「暂无数据」，交给下拉动画。
@@ -142,8 +145,10 @@ export default memo(({ onOpenDetail, active = true }: { onOpenDetail: (info: any
   }
 
   return (
-    <View style={{ flex: 1 }}>
+    <View style={{ flex: 1, overflow: 'hidden' }}>
+      {pullIndicator}
       <FlatList
+        {...pullScrollProps}
         onScrollBeginDrag={Keyboard.dismiss}
         data={playlists}
         contentContainerStyle={{ paddingBottom: bottomInset }}
@@ -157,13 +162,6 @@ export default memo(({ onOpenDetail, active = true }: { onOpenDetail: (info: any
         )}
         keyExtractor={item => String(item.id)}
         ListEmptyComponent={renderEmpty()}
-        refreshControl={
-          <RefreshControl
-            colors={[theme['c-primary']]}
-            refreshing={refreshing}
-            onRefresh={handleRefresh}
-          />
-        }
       />
     </View>
   )

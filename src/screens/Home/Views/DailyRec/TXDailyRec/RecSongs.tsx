@@ -1,6 +1,6 @@
 import { memo, useEffect, useRef, useCallback, useState } from 'react'
 import { View, FlatList, TouchableOpacity } from 'react-native'
-import RefreshControl from '@/components/common/RefreshControl'
+import usePullRefresh from '@/components/common/usePullRefresh'
 import Image from '@/components/common/Image'
 import OnlineList, { type OnlineListType } from '@/components/OnlineList'
 import Text from '@/components/common/Text'
@@ -180,6 +180,12 @@ export default memo(({ type, onOpenDetail, active = true }: Props) => {
     }
   }, [type, loadPlaylists, fetchSongs])
 
+  // 自绘下拉刷新：不改变列表 inset，触发/结束都不会上下跳，刷新后顶部距离不变。
+  const { indicator: pullIndicator, scrollProps: pullScrollProps } = usePullRefresh(
+    type === 'home' && refreshing,
+    handleRefresh,
+  )
+
   const handlePlayList = useCallback((index: number) => {
     const list = listRef.current?.getList()
     if (!list) return
@@ -229,8 +235,10 @@ export default memo(({ type, onOpenDetail, active = true }: Props) => {
 
   if (type === 'home') {
     return (
-      <View style={{ flex: 1 }}>
+      <View style={{ flex: 1, overflow: 'hidden' }}>
+        {pullIndicator}
         <FlatList
+          {...pullScrollProps}
           data={playlists}
           // 底部悬浮层（迷你播放器 + 底部 Tab + 安全区）统一避让高度
           contentContainerStyle={{ paddingBottom: bottomInset }}
@@ -244,10 +252,6 @@ export default memo(({ type, onOpenDetail, active = true }: Props) => {
           )}
           keyExtractor={(item) => item.id}
           ListEmptyComponent={renderEmpty()}
-          refreshControl={
-            // 只认用户下拉（见 refreshing 状态注释）
-            <RefreshControl colors={[theme['c-primary']]} refreshing={refreshing} onRefresh={handleRefresh} />
-          }
         />
       </View>
     )
