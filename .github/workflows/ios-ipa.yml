@@ -51,7 +51,7 @@ jobs:
           path: |
             ~/.cocoapods
             ~/Library/Caches/CocoaPods
-          key: ${{ runner.os }}-cocoapods-${{ hashFiles('ios/Podfile', 'package-lock.json', 'patches/**', 'ios/Vendor/**') }}
+          key: ${{ runner.os }}-cocoapods-${{ hashFiles('ios/Podfile', 'ios/Podfile.lock', 'package-lock.json', 'patches/**', 'ios/Vendor/**') }}
           restore-keys: |
             ${{ runner.os }}-cocoapods-
 
@@ -78,7 +78,17 @@ jobs:
           path: |
             ~/.cocoapods
             ~/Library/Caches/CocoaPods
-          key: ${{ runner.os }}-cocoapods-${{ hashFiles('ios/Podfile', 'package-lock.json', 'patches/**', 'ios/Vendor/**') }}
+          key: ${{ runner.os }}-cocoapods-${{ hashFiles('ios/Podfile', 'ios/Podfile.lock', 'package-lock.json', 'patches/**', 'ios/Vendor/**') }}
+
+      # 把首次 pod install 生成的 Podfile.lock 带出来。把它提交进仓库后，
+      # CI 只解析锁定版本，不再把所有 pod 的历史版本从 trunk CDN 全拉一遍。
+      - name: Upload generated Podfile.lock
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-podfile-lock
+          path: ios/Podfile.lock
+          if-no-files-found: ignore
 
       - name: Read package version (date-based)
         shell: bash
