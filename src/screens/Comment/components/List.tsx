@@ -1,9 +1,11 @@
 import { useMemo, useRef, useState, forwardRef, useImperativeHandle } from 'react'
-import { FlatList, type FlatListProps, RefreshControl, View } from 'react-native'
+import { FlatList, type FlatListProps, View } from 'react-native'
+import RefreshControl from '@/components/common/RefreshControl'
 
 // import { useMusicList } from '@/store/list/hook'
 import CommentFloor, { type CommentFloorActions } from './CommentFloor'
 import { createStyle } from '@/utils/tools'
+import { refreshCoverCaches } from '@/core/music/coverUrl'
 import { useTheme } from '@/store/theme/hook'
 import { type Comment } from '../utils'
 import { useI18n } from '@/lang'
@@ -67,7 +69,7 @@ const List = forwardRef<ListType, ListProps>(({ onRefresh, onLoadMore, actions }
         colors={[theme['c-primary']]}
         // progressBackgroundColor={theme.primary}
         refreshing={status == 'refreshing'}
-        onRefresh={onRefresh}
+        onRefresh={() => { refreshCoverCaches(); onRefresh() }}
       />
     ),
     [status, onRefresh, theme],

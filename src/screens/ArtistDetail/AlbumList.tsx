@@ -1,5 +1,6 @@
 import { memo, useMemo, useState, useEffect, useCallback } from 'react'
-import { FlatList, View, RefreshControl } from 'react-native'
+import { FlatList, View } from 'react-native'
+import RefreshControl from '@/components/common/RefreshControl'
 import AlbumListItem from './AlbumListItem'
 import { useHorizontalMode, useLayout } from '@/utils/hooks'
 import { useTheme } from '@/store/theme/hook'
