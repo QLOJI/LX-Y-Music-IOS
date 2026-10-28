@@ -37,7 +37,7 @@ const similarSongsFetcher = {
 interface RecSongsProps {
   isStylized?: boolean
   stylizedSelection?: StylizedSelection | null
-  /** 当前 tab：每次切到本 tab 都清空列表并自动下拉刷新。 */
+  /** 当前 tab：每次切到本 tab 都自动下拉刷新（保留原列表）。 */
   active?: boolean
 }
 

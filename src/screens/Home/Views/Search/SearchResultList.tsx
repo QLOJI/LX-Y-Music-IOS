@@ -1,5 +1,6 @@
 import { forwardRef, useImperativeHandle, useRef, useState, useCallback, useEffect, type ReactElement } from 'react'
-import { FlatList, RefreshControl, Keyboard, View } from 'react-native'
+import { FlatList, Keyboard, View } from 'react-native'
+import RefreshControl from '@/components/common/RefreshControl'
 import wyMusicSearch from '@/utils/musicSdk/wy/musicSearch'
 import txMusicSearch from '@/utils/musicSdk/tx/musicSearch'
 import kgMusicSearch from '@/utils/musicSdk/kg/musicSearch'

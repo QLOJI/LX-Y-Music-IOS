@@ -1,5 +1,6 @@
 import { memo, useEffect, useState, useCallback, useRef } from 'react'
-import { View, FlatList, RefreshControl, BackHandler, StyleSheet, Keyboard, ActivityIndicator } from 'react-native'
+import { View, FlatList, BackHandler, StyleSheet, Keyboard, ActivityIndicator } from 'react-native'
+import RefreshControl from '@/components/common/RefreshControl'
 import ListItem from './ListItem'
 import wyApi from '@/utils/musicSdk/wy/user'
 import wyDailyRecApi from '@/utils/musicSdk/wy/dailyRec'

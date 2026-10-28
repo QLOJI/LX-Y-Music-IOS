@@ -1,5 +1,6 @@
 import { useRef, useState, useMemo, forwardRef, useImperativeHandle, type ReactElement } from 'react'
-import { FlatList, View, RefreshControl, type FlatListProps, Keyboard, useWindowDimensions } from 'react-native'
+import { FlatList, View, type FlatListProps, Keyboard, useWindowDimensions } from 'react-native'
+import RefreshControl from '@/components/common/RefreshControl'
 
 import ListItem from './ListItem'
 // import { navigations } from '@/navigation'

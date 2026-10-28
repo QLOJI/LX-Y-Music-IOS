@@ -1,5 +1,6 @@
 import { memo, useState, useCallback, useEffect } from 'react'
-import { View, FlatList, RefreshControl, Keyboard } from 'react-native'
+import { View, FlatList, Keyboard } from 'react-native'
+import RefreshControl from '@/components/common/RefreshControl'
 import { useWySubscribedAlbums } from '@/store/user/hook'
 import wyApi from '@/utils/musicSdk/wy/user'
 import { setWySubscribedAlbums } from '@/store/user/action'

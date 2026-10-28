@@ -47,6 +47,9 @@ export const useRecoverablePager = (
   const { navId, activeIndexRef, resyncOnEnter = true } = options
 
   const pendingIndexRef = useRef<number | null>(null)
+  // 80ms 探测：点击后原生若没开始滑（setPage 被 Manager 吞掉 / settling 事件丢失），
+  // 立刻非动画切过去。此前只能等 600ms 兜底，用户看到「按钮已切换、页面等一会儿才动」。
+  const probeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const fallbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const remountTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [pagerKey, setPagerKey] = useState(0)
@@ -57,6 +60,10 @@ export const useRecoverablePager = (
   }, [pagerRef])
 
   const clearSwitchTimers = useCallback(() => {
+    if (probeTimerRef.current) {
+      clearTimeout(probeTimerRef.current)
+      probeTimerRef.current = null
+    }
     if (fallbackTimerRef.current) {
       clearTimeout(fallbackTimerRef.current)
       fallbackTimerRef.current = null
@@ -71,11 +78,24 @@ export const useRecoverablePager = (
   // 过渡中点击不再排队等 idle —— 等不到 idle 时旧逻辑要 600ms 后才无动画跳页，
   // 用户看到「按钮已切换、页面顿一下再切过去」。过渡中直接非动画直达，立即响应。
   const scrollStateRef = useRef<'idle' | 'dragging' | 'settling'>('idle')
+  // 切页请求时刻 / 最近一次页面滚动时刻：80ms 探测据此判断「原生到底动没动」。
+  // 有滚动 = 动画已开始，保留滑动；没滚动 = setPage 被 animating 闩锁吞掉，立即直达。
+  const pageRequestAtRef = useRef(0)
+  const lastScrollAtRef = useRef(0)
 
   /** 只布防恢复链（600ms 非动画 → 700ms 重挂），不自己发 setPage。 */
   const armFallback = useCallback((index: number) => {
     clearSwitchTimers()
     pendingIndexRef.current = index
+    // 短探测：80ms 后既没进入滚动、也没有页面滚动事件 = setPage 被原生闩锁吞掉，
+    // 立即非动画直达；有滚动则说明动画已在跑，保留原滑动。
+    probeTimerRef.current = setTimeout(() => {
+      probeTimerRef.current = null
+      if (pendingIndexRef.current !== index) return
+      if (scrollStateRef.current === 'idle' && lastScrollAtRef.current <= pageRequestAtRef.current) {
+        pagerRef.current?.setPageWithoutAnimation?.(index)
+      }
+    }, 80)
     fallbackTimerRef.current = setTimeout(() => {
       fallbackTimerRef.current = null
       if (pendingIndexRef.current !== index) return
@@ -91,13 +111,21 @@ export const useRecoverablePager = (
     }, 600)
   }, [clearSwitchTimers, pagerRef])
 
-  /** 只登记目标页并布防恢复链，不自己发 setPage（给必须保留原 setPage 字面量的页面用）。 */
+  /** 只登记目标页并布防恢复链；过渡中（直连 setPage 可能被原生丢弃）立即非动画直达。 */
   const trackPageSwitch = useCallback((index: number) => {
+    pageRequestAtRef.current = Date.now()
+    lastScrollAtRef.current = 0
+    if (scrollStateRef.current !== 'idle') {
+      pendingIndexRef.current = index
+      pagerRef.current?.setPageWithoutAnimation?.(index)
+    }
     armFallback(index)
-  }, [armFallback])
+  }, [armFallback, pagerRef])
 
   const sendPage = useCallback((index: number) => {
     pendingIndexRef.current = index
+    pageRequestAtRef.current = Date.now()
+    lastScrollAtRef.current = 0
     pagerRef.current?.setPage?.(index)
     armFallback(index)
   }, [armFallback, pagerRef])
@@ -110,6 +138,8 @@ export const useRecoverablePager = (
     // 过渡中（dragging / settling）：立即非动画直达，不等 idle、不排队。
     // 仍布防恢复链：原生若不响应，600ms 后再补一次直达、700ms 后重挂。
     pendingIndexRef.current = index
+    pageRequestAtRef.current = Date.now()
+    lastScrollAtRef.current = 0
     pagerRef.current?.setPageWithoutAnimation?.(index)
     armFallback(index)
   }, [armFallback, pagerRef, sendPage])
@@ -152,6 +182,7 @@ export const useRecoverablePager = (
 
   const onPageScroll = useCallback(() => {
     activityAtRef.current = Date.now()
+    lastScrollAtRef.current = Date.now()
   }, [])
 
   const onPageScrollStateChanged = useCallback((e: { nativeEvent: { pageScrollState: string } }) => {

@@ -177,8 +177,8 @@ export default memo(() => {
   // initialPage 按语义 id 映射（`activeTab === 'songs' ? 1 : 0`，见下方 render）。
   const [activeTab, setActiveTab] = useState<'songs' | 'playlists'>('playlists')
   // 两页都随本页挂载一起挂载（不再「首次切过去才挂」）：避免切 tab 时还要等页面挂载。
-  // 每次切到某个 tab、或重新进入每日推荐页，都会先清空列表并立即下拉刷新，
-  // 响应后直接填入新数据，不保留上一次的列表内容。
+  // 每次切到某个 tab、或重新进入每日推荐页，都会保留原列表并立即下拉刷新；
+  // 首次加载（列表为空）时呈现空白 + 刷新，响应后直接填入新数据。
   const [isStylized, setIsStylized] = useState(false)
   const [showStylizedModal, setShowStylizedModal] = useState(false)
   const [stylizedSelection, setStylizedSelection] = useState<StylizedSelection>(null)
@@ -241,10 +241,11 @@ export default memo(() => {
   const t = useI18n()
   const handleTabChange = (newTab: 'songs' | 'playlists') => {
     if (activeTab === newTab) return
-    setActiveTab(newTab)
     // 按语义 id 映射页位；第 192 轮起歌曲在右（page1）、歌单在左（page0）。
+    // 先把原生切页请求发出去，再更新 React 选中态：页面动画不被整页重渲染挡在前面。
     pagerViewRef.current?.setPage(newTab === 'songs' ? 1 : 0)
     trackPageSwitch(newTab === 'songs' ? 1 : 0)
+    setActiveTab(newTab)
   }
 
   const onPageSelected = useCallback((event: PagerViewOnPageSelectedEvent) => {

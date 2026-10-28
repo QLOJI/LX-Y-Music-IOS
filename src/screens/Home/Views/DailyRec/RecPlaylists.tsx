@@ -1,5 +1,6 @@
 import { memo, useEffect, useState, useCallback, useRef } from 'react'
-import { View, FlatList, RefreshControl, Keyboard, TouchableOpacity } from 'react-native'
+import { View, FlatList, Keyboard, TouchableOpacity } from 'react-native'
+import RefreshControl from '@/components/common/RefreshControl'
 import Text from '@/components/common/Text'
 import { useSettingValue } from '@/store/setting/hook'
 import { createStyle, toast } from '@/utils/tools'

@@ -3,7 +3,6 @@ import {
   AppState,
   FlatList,
   Keyboard,
-  RefreshControl,
   ScrollView,
   StyleSheet,
   TextInput,
@@ -11,6 +10,7 @@ import {
   View,
   type ListRenderItem,
 } from 'react-native'
+import RefreshControl from '@/components/common/RefreshControl'
 import Text from '@/components/common/Text'
 import MarqueeText from '@/components/common/MarqueeText'
 import Button from '@/components/common/Button'

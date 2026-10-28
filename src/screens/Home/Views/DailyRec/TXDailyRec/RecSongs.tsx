@@ -1,5 +1,6 @@
 import { memo, useEffect, useRef, useCallback, useState } from 'react'
-import { View, FlatList, TouchableOpacity, RefreshControl } from 'react-native'
+import { View, FlatList, TouchableOpacity } from 'react-native'
+import RefreshControl from '@/components/common/RefreshControl'
 import Image from '@/components/common/Image'
 import OnlineList, { type OnlineListType } from '@/components/OnlineList'
 import Text from '@/components/common/Text'
@@ -22,7 +23,7 @@ type RecType = 'home' | 'radar' | 'newsong'
 interface Props {
   type: RecType
   onOpenDetail?: (playlistInfo: ListInfoItem) => void
-  /** 当前 tab：每次切到本 tab 都清空列表并自动下拉刷新。 */
+  /** 当前 tab：每次切到本 tab 都自动下拉刷新（保留原列表）。 */
   active?: boolean
 }
 
@@ -156,8 +157,8 @@ export default memo(({ type, onOpenDetail, active = true }: Props) => {
     }
   }, [type])
 
-  // 每次切到本 tab（或重新进入每日推荐页）都立即清空列表 + 下拉刷新动画 + 请求：
-  // 列表从空白开始，不会先显示上一次的内容；响应后直接出现新内容。
+  // 每次切到本 tab（或重新进入每日推荐页）：保留原列表，只点亮下拉刷新动画并请求。
+  // 首次加载时列表本来就是空的，自然呈现「空白 + 刷新」；响应后直接替换成新内容。
   useEffect(() => {
     if (!active) return
     if (type === 'home') {

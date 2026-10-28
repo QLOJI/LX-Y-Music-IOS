@@ -1,5 +1,6 @@
 import { memo, useEffect, useRef, useState, useCallback } from 'react'
-import { RefreshControl, View, FlatList, TouchableOpacity } from 'react-native'
+import { View, FlatList, TouchableOpacity } from 'react-native'
+import RefreshControl from '@/components/common/RefreshControl'
 import Image from '@/components/common/Image'
 import Text from '@/components/common/Text'
 import { useTheme } from '@/store/theme/hook'
@@ -25,7 +26,7 @@ interface PlaylistInfo {
 
 interface Props {
   onOpenDetail: (playlistInfo: ListInfoItem) => void
-  /** 当前 tab：每次切到本 tab 都清空列表并自动下拉刷新。 */
+  /** 当前 tab：每次切到本 tab 都自动下拉刷新（保留原列表）。 */
   active?: boolean
 }
 

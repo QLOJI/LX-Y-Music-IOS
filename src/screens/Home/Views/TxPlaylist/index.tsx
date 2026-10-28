@@ -3,7 +3,8 @@
  */
 
 import { memo, useEffect, useState, useCallback, useRef } from 'react'
-import { View, FlatList, RefreshControl, BackHandler, StyleSheet, Keyboard, ActivityIndicator } from 'react-native'
+import { View, FlatList, BackHandler, StyleSheet, Keyboard, ActivityIndicator } from 'react-native'
+import RefreshControl from '@/components/common/RefreshControl'
 import ListItem from './ListItem'
 import txUserApi from '@/utils/musicSdk/tx/user'
 import { useI18n } from '@/lang'

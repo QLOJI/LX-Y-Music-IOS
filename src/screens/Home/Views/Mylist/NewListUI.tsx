@@ -1,5 +1,6 @@
 import { memo, useCallback, useMemo, useState, useEffect, useRef } from 'react'
-import { View, TouchableOpacity, FlatList, RefreshControl, Animated, PanResponder, BackHandler, StyleSheet } from 'react-native'
+import { View, TouchableOpacity, FlatList, Animated, PanResponder, BackHandler, StyleSheet } from 'react-native'
+import RefreshControl from '@/components/common/RefreshControl'
 import { useMyList, useActiveListId, useListFetching } from '@/store/list/hook'
 import { useSettingValue } from '@/store/setting/hook'
 import { setActiveList, updateUserListPosition } from '@/core/list'

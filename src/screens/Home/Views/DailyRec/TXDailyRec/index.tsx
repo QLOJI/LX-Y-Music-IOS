@@ -106,9 +106,10 @@ export default memo(() => {
 
   const handleTabChange = (newTab: TabType) => {
     if (activeTab === newTab) return
-    setActiveTab(newTab)
     const tabIndex = TABS.findIndex((t) => t.id === newTab)
+    // 先把原生切页请求发出去，再更新 React 选中态：页面动画不被整页重渲染挡在前面。
     requestPage(tabIndex)
+    setActiveTab(newTab)
   }
 
   const onPageSelected = useCallback(
