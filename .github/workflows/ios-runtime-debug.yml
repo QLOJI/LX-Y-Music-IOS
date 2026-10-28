@@ -28,15 +28,51 @@ jobs:
           node-version-file: .nvmrc
           cache: npm
 
+      - name: Setup Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.2"
+
       - name: Install dependencies
         run: npm install
 
+      # 缓存 CocoaPods 的 specs 与源码缓存：boost / RCT-Folly / Hermes 这些大依赖
+      # 下载一次后，后续 runner 不再重新 clone / 下载（pod install 长时间无输出的根因）。
+      - name: Cache CocoaPods
+        id: cocoapods-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cocoapods
+            ~/Library/Caches/CocoaPods
+          key: ${{ runner.os }}-cocoapods-${{ hashFiles('ios/Podfile', 'package-lock.json', 'patches/**', 'ios/Vendor/**') }}
+          restore-keys: |
+            ${{ runner.os }}-cocoapods-
+
       - name: Install CocoaPods dependencies
         shell: bash
+        timeout-minutes: 45
         run: |
-          gem install cocoapods -v '~> 1.12' --no-document
+          set -x
+          gem install cocoapods -v '~> 1.15' --no-document
           cd ios
-          pod install --repo-update
+          # 缓存命中时不再更新 trunk CDN（这一步本身就可能长时间无输出）；
+          # 首次运行才做 --repo-update，并把 --verbose 打开，日志能看到卡在哪个 pod。
+          if [ "${{ steps.cocoapods-cache.outputs.cache-hit }}" = "true" ]; then
+            pod install --verbose
+          else
+            pod install --verbose --repo-update
+          fi
+
+      # 首次下载成功后立刻落缓存：后面的 Xcode 编译即使失败，下次也不用再拉 boost/Folly。
+      - name: Save CocoaPods cache
+        if: steps.cocoapods-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/.cocoapods
+            ~/Library/Caches/CocoaPods
+          key: ${{ runner.os }}-cocoapods-${{ hashFiles('ios/Podfile', 'package-lock.json', 'patches/**', 'ios/Vendor/**') }}
 
       - name: Build simulator app
         shell: bash
