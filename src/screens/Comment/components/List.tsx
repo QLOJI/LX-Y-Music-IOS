@@ -1,6 +1,6 @@
-import { useMemo, useRef, useState, forwardRef, useImperativeHandle } from 'react'
+import { useMemo, useRef, useState, forwardRef, useImperativeHandle, useCallback } from 'react'
 import { FlatList, type FlatListProps, View } from 'react-native'
-import RefreshControl from '@/components/common/RefreshControl'
+import usePullRefresh from '@/components/common/usePullRefresh'
 
 // import { useMusicList } from '@/store/list/hook'
 import CommentFloor, { type CommentFloorActions } from './CommentFloor'
@@ -63,16 +63,14 @@ const List = forwardRef<ListType, ListProps>(({ onRefresh, onLoadMore, actions }
 
   const getkey: FlatListType['keyExtractor'] = (item) => item.id
 
-  const refreshControl = useMemo(
-    () => (
-      <RefreshControl
-        colors={[theme['c-primary']]}
-        // progressBackgroundColor={theme.primary}
-        refreshing={status == 'refreshing'}
-        onRefresh={() => { refreshCoverCaches(); onRefresh() }}
-      />
-    ),
-    [status, onRefresh, theme],
+  const handlePullRefresh = useCallback(() => {
+    setTimeout(refreshCoverCaches, 0)
+    onRefresh()
+  }, [onRefresh])
+  const { indicator: pullIndicator, scrollProps: pullScrollProps } = usePullRefresh(
+    status == 'refreshing',
+    handlePullRefresh,
+    flatListRef,
   )
   const footerComponent = useMemo(() => {
     let label: FooterLabel
@@ -96,8 +94,11 @@ const List = forwardRef<ListType, ListProps>(({ onRefresh, onLoadMore, actions }
   }, [onLoadMore, status])
 
   return (
-    <FlatList
+    <View style={{ flex: 1, overflow: 'hidden' }}>
+      {pullIndicator}
+      <FlatList
       ref={flatListRef}
+      {...pullScrollProps}
       style={styles.list}
       data={currentList}
       onEndReachedThreshold={0.5}
@@ -111,9 +112,9 @@ const List = forwardRef<ListType, ListProps>(({ onRefresh, onLoadMore, actions }
       // onRefresh={onRefresh}
       // refreshing={refreshing}
       onEndReached={handleLoadMore}
-      refreshControl={refreshControl}
       ListFooterComponent={footerComponent}
-    />
+      />
+    </View>
   )
 })
 

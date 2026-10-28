@@ -1,6 +1,6 @@
-import { memo, useMemo, useState, useEffect, useCallback } from 'react'
+import { memo, useMemo, useState, useEffect, useCallback, useRef } from 'react'
 import { FlatList, View } from 'react-native'
-import RefreshControl from '@/components/common/RefreshControl'
+import usePullRefresh from '@/components/common/usePullRefresh'
 import AlbumListItem from './AlbumListItem'
 import { useHorizontalMode, useLayout } from '@/utils/hooks'
 import { useTheme } from '@/store/theme/hook'
@@ -38,6 +38,7 @@ export default memo(({ componentId, albums, loading, hasMore, onLoadMore, onRefr
   // 现在 refreshing 只在用户下拉的那一刻置位，等这次加载（loading true→false）落地后清除；
   // 程序触发的加载（切 tab、缓存未命中）只会有 loading，永远不会点亮刷新控件。
   const [refreshing, setRefreshing] = useState(false)
+  const flatListRef = useRef<FlatList>(null)
 
   const handlePullRefresh = useCallback(() => {
     setRefreshing(true)
@@ -92,10 +93,23 @@ export default memo(({ componentId, albums, loading, hasMore, onLoadMore, onRefr
     )
   }
 
+  const handlePullRefreshWithCover = useCallback(() => {
+    setTimeout(refreshCoverCaches, 0)
+    handlePullRefresh()
+  }, [handlePullRefresh])
+  const { indicator: pullIndicator, scrollProps: pullScrollProps } = usePullRefresh(
+    refreshing,
+    handlePullRefreshWithCover,
+    flatListRef,
+  )
+
   return (
-    <View style={styles.container} onLayout={onLayout}>
+    <View style={[styles.container, { overflow: 'hidden' }]} onLayout={onLayout}>
+      {pullIndicator}
       {width > 0 && (
         <FlatList
+          ref={flatListRef}
+          {...pullScrollProps}
           key={String(rowInfo.num) + viewMode}
           numColumns={rowInfo.num}
           data={list}
@@ -107,14 +121,6 @@ export default memo(({ componentId, albums, loading, hasMore, onLoadMore, onRefr
           onEndReachedThreshold={0.5}
           ListHeaderComponent={ListHeaderComponent}
           ListFooterComponent={ListFooterComponent}
-          refreshControl={
-            <RefreshControl
-              colors={[theme['c-primary']]}
-              // 只认用户下拉（见 refreshing 状态注释）
-              refreshing={refreshing}
-              onRefresh={() => { refreshCoverCaches(); handlePullRefresh() }}
-            />
-          }
           columnWrapperStyle={rowInfo.num > 1 ? styles.row : undefined}
         />
       )}
