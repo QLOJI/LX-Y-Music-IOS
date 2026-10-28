@@ -19,7 +19,7 @@
     "publish": "node publish"
   },
   "engines": {
-    "node": ">= 18",
+    "node": ">= 20",
     "npm": ">= 8.5.2"
   },
   "repository": {
