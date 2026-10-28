@@ -334,6 +334,7 @@ const List = forwardRef<ListType, ListProps>(
     const { indicator: pullIndicator, scrollProps: pullScrollProps } = usePullRefresh(
       status == 'refreshing',
       handlePullRefresh,
+      flatListRef,
     )
 
     const footerComponent = useMemo(() => {
