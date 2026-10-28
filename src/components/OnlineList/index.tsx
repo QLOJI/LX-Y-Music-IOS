@@ -39,7 +39,6 @@ export interface OnlineListProps {
   onRefresh: ListProps['onRefresh']
   onLoadMore: ListProps['onLoadMore']
   onPlayList?: ListProps['onPlayList']
-  progressViewOffset?: ListProps['progressViewOffset']
   ListHeaderComponent?: ListProps['ListHeaderComponent']
   ListFooterComponent?: ListProps['ListFooterComponent']
   checkHomePagerIdle?: boolean
@@ -65,7 +64,6 @@ export default forwardRef<OnlineListType, OnlineListProps>(
       onRefresh,
       onLoadMore,
       onPlayList,
-      progressViewOffset,
       ListHeaderComponent,
       ListFooterComponent,
       checkHomePagerIdle = false,
@@ -306,7 +304,6 @@ export default forwardRef<OnlineListType, OnlineListProps>(
             onRefresh={onRefresh}
             onLoadMore={onLoadMore}
             onPlayList={onPlayList}
-            progressViewOffset={progressViewOffset}
             ListHeaderComponent={ListHeaderComponent}
             ListFooterComponent={ListFooterComponent}
             checkHomePagerIdle={checkHomePagerIdle}

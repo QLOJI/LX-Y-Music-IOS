@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useRef, useState, forwardRef, useImperativeHandle, useEffect } from 'react'
 import { FlatList, type FlatListProps, Keyboard, View } from 'react-native'
-import RefreshControl from '@/components/common/RefreshControl'
+import usePullRefresh from '@/components/common/usePullRefresh'
 import ListItem, { ITEM_HEIGHT } from './ListItem'
 import { createStyle, getRowInfo, type RowInfoType } from '@/utils/tools'
 import { useHorizontalMode } from '@/utils/hooks'
@@ -25,7 +25,6 @@ export interface ListProps {
   onRefresh: () => void
   onLoadMore: () => void
   onPlayList?: (index: number) => void
-  progressViewOffset?: number
   ListHeaderComponent?: FlatListType['ListEmptyComponent']
   ListFooterComponent?: FlatListType['ListFooterComponent']
   checkHomePagerIdle: boolean
@@ -64,7 +63,6 @@ const List = forwardRef<ListType, ListProps>(
       listId,
       onLoadMore,
       onPlayList,
-      progressViewOffset,
       ListHeaderComponent,
       ListFooterComponent,
       rowType,
@@ -327,19 +325,15 @@ const List = forwardRef<ListType, ListProps>(
       return { length: ITEM_HEIGHT, offset: ITEM_HEIGHT * rowIndex, index }
     }
 
-    const refreshControl = useMemo(
-      () => (
-        <RefreshControl
-          colors={[theme['c-primary']]}
-          refreshing={status == 'refreshing'}
-          onRefresh={() => {
-            // 【第 191 轮】所有走 OnlineList 的页面：下拉即作废封面缓存并推进图片纪元
-            refreshCoverCaches()
-            onRefresh()
-          }}
-        />
-      ),
-      [status, onRefresh, theme],
+    const handlePullRefresh = useCallback(() => {
+      // 所有走 OnlineList 的页面：下拉即作废封面缓存并推进图片纪元。
+      // 签名计算较重，放到下一拍，避免松手瞬间卡一下。
+      setTimeout(refreshCoverCaches, 0)
+      onRefresh()
+    }, [onRefresh])
+    const { indicator: pullIndicator, scrollProps: pullScrollProps } = usePullRefresh(
+      status == 'refreshing',
+      handlePullRefresh,
     )
 
     const footerComponent = useMemo(() => {
@@ -378,7 +372,9 @@ const List = forwardRef<ListType, ListProps>(
     const bottomInset = useBottomOverlayInset()
 
     return (
-      <FlatList
+      <View style={{ flex: 1, overflow: 'hidden' }}>
+        {pullIndicator}
+        <FlatList
         // key：numColumns 变更（旋转/分屏）时强制重挂载 FlatList——
         // RN 不支持运行中变更 numColumns，直接改值会崩溃；重挂载时数据保存在本组件 state 中不丢失
         key={`cols-${numColumns}`}
@@ -401,8 +397,8 @@ const List = forwardRef<ListType, ListProps>(
         initialNumToRender={30}
         // iOS 上必须显式设置 scrollEventThrottle，否则滚动事件只在手势结束时
         // 触发一次，VirtualizedList 的渲染窗口无法跟随滚动推进，表现为
-        // 列表滚动到下方一片空白。
-        scrollEventThrottle={16}
+        // 列表滚动到下方一片空白。pullScrollProps 内同值（16）。
+        {...pullScrollProps}
         // 列表头部的按钮触摸立即下发，避免概率性点击无响应
         delaysContentTouches={false}
         // 行数据原地更新（musicInfoUpdate）+ 播放状态变化时驱动对应行重渲染；
@@ -416,11 +412,10 @@ const List = forwardRef<ListType, ListProps>(
         // refreshing={refreshing}
         onEndReachedThreshold={0.5}
         onEndReached={handleLoadMore}
-        progressViewOffset={progressViewOffset}
         ListHeaderComponent={ListHeaderComponent}
-        refreshControl={refreshControl}
         ListFooterComponent={footerComponent}
-      />
+        />
+      </View>
     )
   },
 )
