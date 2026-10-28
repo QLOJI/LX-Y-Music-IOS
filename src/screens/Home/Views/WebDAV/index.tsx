@@ -10,7 +10,7 @@ import {
   View,
   type ListRenderItem,
 } from 'react-native'
-import RefreshControl from '@/components/common/RefreshControl'
+import usePullRefresh from '@/components/common/usePullRefresh'
 import Text from '@/components/common/Text'
 import MarqueeText from '@/components/common/MarqueeText'
 import Button from '@/components/common/Button'
@@ -754,6 +754,16 @@ export default memo(() => {
     [],
   )
 
+  const handlePullRefresh = useCallback(() => {
+    setTimeout(refreshCoverCaches, 0)
+    handleRefresh()
+  }, [handleRefresh])
+  const { indicator: pullIndicator, scrollProps: pullScrollProps } = usePullRefresh(
+    refreshing,
+    handlePullRefresh,
+    listRef,
+  )
+
   const handlePlay = useCallback(
     (musicInfo: LX.WebDAV.MusicInfo) => {
       const index = songs.findIndex(item => item.id === musicInfo.id)
@@ -1421,8 +1431,10 @@ export default memo(() => {
   )
 
   const renderList = () => (
-    <View style={styles.listPage}>
+    <View style={[styles.listPage, { overflow: 'hidden' }]}>
+      {pullIndicator}
       <FlatList
+        {...pullScrollProps}
         key={`cols-${numColumns}`}
         ref={listRef}
         data={filteredSongs}
@@ -1557,14 +1569,6 @@ export default memo(() => {
           <View style={styles.empty}>
             <Text color={theme['c-font-label']}>{searchText.trim() ? '没有匹配的歌曲' : '还没有扫描到歌曲'}</Text>
           </View>
-        }
-        refreshControl={
-          <RefreshControl
-            colors={[theme['c-primary']]}
-            // 只认用户下拉（见 refreshing 状态注释）：扫描/选目录不再把列表压下去再弹回来
-            refreshing={refreshing}
-            onRefresh={() => { refreshCoverCaches(); handleRefresh() }}
-          />
         }
       />
     </View>

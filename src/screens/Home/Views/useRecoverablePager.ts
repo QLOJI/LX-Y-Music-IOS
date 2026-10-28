@@ -87,15 +87,16 @@ export const useRecoverablePager = (
   const armFallback = useCallback((index: number) => {
     clearSwitchTimers()
     pendingIndexRef.current = index
-    // 短探测：80ms 后既没进入滚动、也没有页面滚动事件 = setPage 被原生闩锁吞掉，
-    // 立即非动画直达；有滚动则说明动画已在跑，保留原滑动。
+    // 短探测：30ms（约两帧）后既没进入滚动、也没有页面滚动事件 = setPage 被原生
+    // animating 闩锁吞掉，立即非动画直达；有滚动则说明动画已在跑，保留原滑动。
+    // 不能等 600ms 兜底 —— 那正是「按钮已切换、页面顿一下才滑过去」。
     probeTimerRef.current = setTimeout(() => {
       probeTimerRef.current = null
       if (pendingIndexRef.current !== index) return
       if (scrollStateRef.current === 'idle' && lastScrollAtRef.current <= pageRequestAtRef.current) {
         pagerRef.current?.setPageWithoutAnimation?.(index)
       }
-    }, 80)
+    }, 30)
     fallbackTimerRef.current = setTimeout(() => {
       fallbackTimerRef.current = null
       if (pendingIndexRef.current !== index) return

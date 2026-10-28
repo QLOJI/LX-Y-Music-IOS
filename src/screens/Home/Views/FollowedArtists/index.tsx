@@ -1,6 +1,6 @@
-import { memo, useState, useCallback } from 'react'
+import { memo, useState, useCallback, useRef } from 'react'
 import { View, FlatList, Keyboard } from 'react-native'
-import RefreshControl from '@/components/common/RefreshControl'
+import usePullRefresh from '@/components/common/usePullRefresh'
 import ListItem from './ListItem'
 import { useWyFollowedArtists } from '@/store/user/hook.ts'
 import wyApi from '@/utils/musicSdk/wy/user'
@@ -19,6 +19,7 @@ import { refreshCoverCaches } from '@/core/music/coverUrl'
 export default memo(() => {
   const followedArtists = useWyFollowedArtists()
   const [loading, setLoading] = useState(false)
+  const flatListRef = useRef<FlatList>(null)
   const theme = useTheme()
   const t = useI18n()
   const isHorizontal = useHorizontalMode()
@@ -44,6 +45,16 @@ export default memo(() => {
     setNavActiveId('nav_love')
   }, [])
 
+  const handlePullRefresh = useCallback(() => {
+    setTimeout(refreshCoverCaches, 0)
+    onRefresh()
+  }, [onRefresh])
+  const { indicator: pullIndicator, scrollProps: pullScrollProps } = usePullRefresh(
+    loading,
+    handlePullRefresh,
+    flatListRef,
+  )
+
   return (
     <View style={{ flex: 1 }}>
       {/* 【第 21 轮·图五】页头（状态栏占位 + 标题行）固定在列表**外面**，参考 WebDAV 布局。
@@ -56,7 +67,11 @@ export default memo(() => {
           （共享页头）的字号。本页原先连标题都没有，只有共享页头那一行
           （用户第 14 轮第 1 条：标题按「我的」标题位置固定且显示完全）。 */}
       <DetailPageTitle title={t('nav_followed_artists')} />
+      <View style={{ flex: 1, overflow: 'hidden' }}>
+      {pullIndicator}
       <FlatList
+        ref={flatListRef}
+        {...pullScrollProps}
         onScrollBeginDrag={Keyboard.dismiss}
         data={followedArtists}
         contentContainerStyle={{ paddingBottom: bottomInset }}
@@ -69,14 +84,8 @@ export default memo(() => {
         )}
         keyExtractor={item => String(item.id)}
         columnWrapperStyle={isHorizontal ? styles.columnWrapper : undefined}
-        refreshControl={
-          <RefreshControl
-            colors={[theme['c-primary']]}
-            refreshing={loading}
-            onRefresh={() => { refreshCoverCaches(); onRefresh() }}
-          />
-        }
       />
+      </View>
       <SwipeBackArea onBack={handleBackToLove} />
     </View>
   )

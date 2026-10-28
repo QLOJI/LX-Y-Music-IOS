@@ -1,6 +1,6 @@
 import { forwardRef, useImperativeHandle, useRef, useState, useCallback, useEffect, type ReactElement } from 'react'
 import { FlatList, Keyboard, View } from 'react-native'
-import RefreshControl from '@/components/common/RefreshControl'
+import usePullRefresh from '@/components/common/usePullRefresh'
 import wyMusicSearch from '@/utils/musicSdk/wy/musicSearch'
 import txMusicSearch from '@/utils/musicSdk/tx/musicSearch'
 import kgMusicSearch from '@/utils/musicSdk/kg/musicSearch'
@@ -48,6 +48,7 @@ export default forwardRef(({ header, searchType, source }: SearchResultListProps
   // 表达同一件事，只有用户下拉才会置位，两边才一致。这里照抄同一口径：置位只发生在 onRefresh，
   // loading 落回 false 时清除（含「源不支持」那条提前 return 的路径，它也 setLoading(false)）。
   const [isRefreshing, setIsRefreshing] = useState(false)
+  const flatListRef = useRef<FlatList>(null)
   useEffect(() => {
     if (!loading) setIsRefreshing(false)
   }, [loading])
@@ -174,8 +175,27 @@ export default forwardRef(({ header, searchType, source }: SearchResultListProps
     [isHorizontal, renderItemContent],
   )
 
+  const handlePullRefresh = useCallback(() => {
+    setTimeout(refreshCoverCaches, 0)
+    log.info('[SearchResultList] === 下拉刷新 ===', {
+      text: searchInfoRef.current.text,
+      currentPage: searchInfoRef.current.page,
+    })
+    setIsRefreshing(true)
+    handleLoad(searchInfoRef.current.text, 1, true)
+  }, [handleLoad])
+  const { indicator: pullIndicator, scrollProps: pullScrollProps } = usePullRefresh(
+    isRefreshing,
+    handlePullRefresh,
+    flatListRef,
+  )
+
   return (
-    <FlatList
+    <View style={{ flex: 1, overflow: 'hidden' }}>
+      {pullIndicator}
+      <FlatList
+      ref={flatListRef}
+      {...pullScrollProps}
       data={list}
       ListHeaderComponent={header}
       contentContainerStyle={{ paddingBottom: bottomInset }}
@@ -204,22 +224,8 @@ export default forwardRef(({ header, searchType, source }: SearchResultListProps
         handleLoad(searchInfoRef.current.text, searchInfoRef.current.page)
       }}
       onEndReachedThreshold={0.5}
-      refreshControl={
-        <RefreshControl
-          colors={[theme['c-primary']]}
-          refreshing={isRefreshing}
-          onRefresh={() => {
-            refreshCoverCaches()
-            log.info('[SearchResultList] === 下拉刷新 ===', {
-              text: searchInfoRef.current.text,
-              currentPage: searchInfoRef.current.page,
-            })
-            setIsRefreshing(true)
-            handleLoad(searchInfoRef.current.text, 1, true)
-          }}
-        />
-      }
-    />
+      />
+    </View>
   )
 })
 

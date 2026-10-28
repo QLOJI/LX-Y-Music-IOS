@@ -1,6 +1,6 @@
-import { useRef, useState, useMemo, forwardRef, useImperativeHandle, type ReactElement } from 'react'
+import { useRef, useState, useMemo, useCallback, forwardRef, useImperativeHandle, type ReactElement } from 'react'
 import { FlatList, View, type FlatListProps, Keyboard, useWindowDimensions } from 'react-native'
-import RefreshControl from '@/components/common/RefreshControl'
+import usePullRefresh from '@/components/common/usePullRefresh'
 
 import ListItem from './ListItem'
 // import { navigations } from '@/navigation'
@@ -91,16 +91,15 @@ export default forwardRef<ListType, ListProps>(({ header, onRefresh, onLoadMore,
   // const getItemLayout: FlatListType['getItemLayout'] = (data, index) => {
   //   return { length: ITEM_HEIGHT, offset: ITEM_HEIGHT * index, index }
   // }
-  const refreshControl = useMemo(
-    () => (
-      <RefreshControl
-        colors={[theme['c-primary']]}
-        // progressBackgroundColor={theme.primary}
-        refreshing={status == 'refreshing'}
-        onRefresh={() => { refreshCoverCaches(); onRefresh() }}
-      />
-    ),
-    [status, onRefresh, theme],
+  const handlePullRefresh = useCallback(() => {
+    // 封面签名计算较重，放到下一拍，避免松手瞬间卡一下。
+    setTimeout(refreshCoverCaches, 0)
+    onRefresh()
+  }, [onRefresh])
+  const { indicator: pullIndicator, scrollProps: pullScrollProps } = usePullRefresh(
+    status == 'refreshing',
+    handlePullRefresh,
+    flatListRef,
   )
   const footerComponent = useMemo(() => {
     let label: FooterLabel
@@ -173,9 +172,11 @@ export default forwardRef<ListType, ListProps>(({ header, onRefresh, onLoadMore,
 
   return (
     <View style={styles.container} onLayout={onLayout}>
+      {pullIndicator}
       {/* 不再用 `width == 0 ? null` 门控（2026-10-02 用户第 3 条）：那会把头部一起
           摘掉一帧。宽度由 effectiveWidth 兜底，rowInfo 首帧即可用。 */}
       <FlatList
+        {...pullScrollProps}
         key={String(rowInfo.num)}
         ref={flatListRef}
         style={styles.list}
@@ -211,7 +212,6 @@ export default forwardRef<ListType, ListProps>(({ header, onRefresh, onLoadMore,
         onEndReached={handleLoadMore}
         showsVerticalScrollIndicator={false}
         delaysContentTouches={false}
-        refreshControl={refreshControl}
         ListFooterComponent={footerComponent}
       />
     </View>

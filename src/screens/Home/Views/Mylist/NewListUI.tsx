@@ -1,6 +1,7 @@
 import { memo, useCallback, useMemo, useState, useEffect, useRef } from 'react'
 import { View, TouchableOpacity, FlatList, Animated, PanResponder, BackHandler, StyleSheet } from 'react-native'
-import RefreshControl from '@/components/common/RefreshControl'
+import usePullRefresh from '@/components/common/usePullRefresh'
+import { useStatusbarHeight } from '@/store/common/hook'
 import { useMyList, useActiveListId, useListFetching } from '@/store/list/hook'
 import { useSettingValue } from '@/store/setting/hook'
 import { setActiveList, updateUserListPosition } from '@/core/list'
@@ -416,6 +417,8 @@ export default memo(() => {
   // 下拉刷新动画只认「用户真的下拉过」（用户第 16 轮第 7 条）。refreshing 只在用户下拉那一刻
   // 置位，本次加载（fetching true→false）落地后清除。
   const [refreshing, setRefreshing] = useState(false)
+  const flatListRef = useRef<any>(null)
+  const statusBarHeight = useStatusbarHeight()
   const [hasError, setHasError] = useState(false)
   const [showMusicList, setShowMusicList] = useState(false)
   const isFirstLoadRef = useRef(true)
@@ -614,6 +617,13 @@ export default memo(() => {
   useEffect(() => {
     refreshListInfoRef.current = () => { void refreshListInfo() }
   }, [refreshListInfo])
+
+  const handlePullRefresh = useCallback(() => {
+    setTimeout(refreshCoverCaches, 0)
+    setRefreshing(true)
+    void refreshListInfo(true)
+  }, [refreshListInfo])
+  const { indicator: pullIndicator, scrollProps: pullScrollProps } = usePullRefresh(refreshing, handlePullRefresh, flatListRef, statusBarHeight)
 
   useEffect(() => {
     void refreshListInfo()
@@ -929,7 +939,8 @@ export default memo(() => {
   )
 
   const listPanel = (
-    <View style={styles.content}>
+    <View style={[styles.content, { overflow: 'hidden' }]}>
+      {pullIndicator}
       {hasError ? (
         <View style={styles.errorContainer}>
           <Text size={16} color={theme['c-font']} style={styles.errorText}>加载失败</Text>
@@ -943,6 +954,8 @@ export default memo(() => {
       ) : (
         <>
           <FlatList
+            ref={flatListRef}
+            {...pullScrollProps}
             data={listItems}
             contentContainerStyle={{ paddingBottom: listClearance }}
             onLayout={(e) => {
@@ -961,24 +974,6 @@ export default memo(() => {
             keyExtractor={item => item.id}
             style={styles.listContainer}
             scrollEnabled={draggingIndex == null}
-            refreshControl={
-              <RefreshControl
-                // 只认用户下拉（见 refreshing 状态注释）
-                refreshing={refreshing}
-                onRefresh={() => {
-                  // 【第 191 轮】「我的」下拉刷新：作废封面缓存并推进图片纪元，
-                  // 列表封面的 URL 片段随之变化，FastImage 才会真的重新下载。
-                  refreshCoverCaches()
-                  setRefreshing(true)
-                  void refreshListInfo(true)
-                }}
-                colors={[theme['c-primary-font']]}
-                // 【第 179 轮】只在「拖动排序已激活」时禁用下拉刷新。
-                // 旧写法按「手指是否接触卡片」禁用，而接触标志是每个手势都 setState 的
-                // 整页状态 ⇒ 正常下滑每碰一次列表就整表重渲染两次（起/落），列表抖动。
-                enabled={draggingIndex == null}
-              />
-            }
           />
           <ListNameEdit ref={listNameEditRef} />
           <ListMusicSort ref={listMusicSortRef} />

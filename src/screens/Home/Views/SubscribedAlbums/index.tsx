@@ -1,6 +1,6 @@
-import { memo, useState, useCallback, useEffect } from 'react'
+import { memo, useState, useCallback, useEffect, useRef } from 'react'
 import { View, FlatList, Keyboard } from 'react-native'
-import RefreshControl from '@/components/common/RefreshControl'
+import usePullRefresh from '@/components/common/usePullRefresh'
 import { useWySubscribedAlbums } from '@/store/user/hook'
 import wyApi from '@/utils/musicSdk/wy/user'
 import { setWySubscribedAlbums } from '@/store/user/action'
@@ -26,6 +26,7 @@ export default memo(() => {
   // 在进入页面时当场激活：内容被压下去、加载完再弹回来（「第一次进入向上刷新」）。
   // 现在程序加载只用 loading（只喂空态文案），refreshing 只由用户下拉置位。
   const [refreshing, setRefreshing] = useState(false)
+  const flatListRef = useRef<FlatList>(null)
   const theme = useTheme()
   const t = useI18n()
   const cookie = useSettingValue('common.wy_cookie')
@@ -67,6 +68,16 @@ export default memo(() => {
     setNavActiveId('nav_love')
   }, [])
 
+  const handlePullRefresh = useCallback(() => {
+    setTimeout(refreshCoverCaches, 0)
+    onRefresh(true)
+  }, [onRefresh])
+  const { indicator: pullIndicator, scrollProps: pullScrollProps } = usePullRefresh(
+    refreshing,
+    handlePullRefresh,
+    flatListRef,
+  )
+
   return (
     <View style={{ flex: 1 }}>
       {/* 【第 21 轮·图六】页头（状态栏占位 + 标题行）固定在列表**外面**，参考 WebDAV 布局。
@@ -85,7 +96,11 @@ export default memo(() => {
           <Text>{t('wy_cookie_not_set')}</Text>
         </View>
       ) : (
-        <FlatList
+        <View style={{ flex: 1, overflow: 'hidden' }}>
+          {pullIndicator}
+          <FlatList
+          ref={flatListRef}
+          {...pullScrollProps}
           onScrollBeginDrag={Keyboard.dismiss}
           data={subscribedAlbums}
           contentContainerStyle={{ paddingBottom: bottomInset }}
@@ -98,15 +113,8 @@ export default memo(() => {
           )}
           keyExtractor={item => String(item.id)}
           columnWrapperStyle={isHorizontal ? styles.columnWrapper : undefined}
-          refreshControl={
-            <RefreshControl
-              colors={[theme['c-primary']]}
-              // 只认用户下拉（见 refreshing 状态注释）
-              refreshing={refreshing}
-              onRefresh={() => { refreshCoverCaches(); onRefresh(true) }}
-            />
-          }
-        />
+          />
+        </View>
       )}
       <SwipeBackArea onBack={handleBackToLove} />
     </View>

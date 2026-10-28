@@ -17,6 +17,7 @@ import { refreshCoverCaches } from '@/core/music/coverUrl'
 
 export default memo(({ onOpenDetail, active = true }: { onOpenDetail: (info: any) => void, active?: boolean }) => {
   const [playlists, setPlaylists] = useState<any[]>([])
+  const flatListRef = useRef<FlatList>(null)
   // 每次切换/进入都走下拉刷新，loading 空态占位不再需要。
   const [refreshing, setRefreshing] = useState(false)
   // 失败原因（'' = 没失败）。空列表时用它区分「没有歌单」与「请求失败」，并给用户重试入口。
@@ -111,7 +112,7 @@ export default memo(({ onOpenDetail, active = true }: { onOpenDetail: (info: any
   }
 
   // 自绘下拉刷新：不改变列表 inset，触发/结束都不会上下跳，刷新后顶部距离不变。
-  const { indicator: pullIndicator, scrollProps: pullScrollProps } = usePullRefresh(refreshing, handleRefresh)
+  const { indicator: pullIndicator, scrollProps: pullScrollProps } = usePullRefresh(refreshing, handleRefresh, flatListRef)
 
   // 空列表渲染：区分「未登录 / 加载失败 / 真的没有歌单」，并为失败/空数据提供重试入口。
   const renderEmpty = () => {
@@ -148,6 +149,7 @@ export default memo(({ onOpenDetail, active = true }: { onOpenDetail: (info: any
     <View style={{ flex: 1, overflow: 'hidden' }}>
       {pullIndicator}
       <FlatList
+        ref={flatListRef}
         {...pullScrollProps}
         onScrollBeginDrag={Keyboard.dismiss}
         data={playlists}

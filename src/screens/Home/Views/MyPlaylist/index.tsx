@@ -1,6 +1,6 @@
 import { memo, useEffect, useState, useCallback, useRef } from 'react'
 import { View, FlatList, BackHandler, StyleSheet, Keyboard, ActivityIndicator } from 'react-native'
-import RefreshControl from '@/components/common/RefreshControl'
+import usePullRefresh from '@/components/common/usePullRefresh'
 import ListItem from './ListItem'
 import wyApi from '@/utils/musicSdk/wy/user'
 import wyDailyRecApi from '@/utils/musicSdk/wy/dailyRec'
@@ -33,6 +33,7 @@ export default memo(() => {
   const uid = useWyUid()
   // 底部悬浮层（迷你播放器 + 底部 Tab + 安全区）统一避让高度
   const bottomInset = useBottomOverlayInset()
+  const flatListRef = useRef<any>(null)
   const [loading, setLoading] = useState(true)
   // 首载闸门（用户第 15 轮第 3 条）：FlatList 必须等首次加载结束再挂载，**不能**先以
   // data=[] 挂出来、数据到了再补进去 —— 空列表里只有页头那一格，数据到达后整块内容按
@@ -233,12 +234,26 @@ export default memo(() => {
       <DetailPageTitle title={t('nav_my_playlist')} />
     </>
   )
+  const handlePullRefresh = useCallback(() => {
+    setTimeout(refreshCoverCaches, 0)
+    onRefresh()
+  }, [onRefresh])
+  const { indicator: pullIndicator, scrollProps: pullScrollProps } = usePullRefresh(
+    loading,
+    handlePullRefresh,
+    flatListRef,
+  )
+
   return (
     <View style={{ flex: 1 }}>
       <View style={[{ flex: 1 }, selectedPlaylist ? { opacity: 0 } : null]} pointerEvents={selectedPlaylist ? 'none' : 'auto'}>
         {pageHeader}
         {listReady ? (
+          <View style={{ flex: 1, overflow: 'hidden' }}>
+          {pullIndicator}
           <FlatList
+            ref={flatListRef}
+            {...pullScrollProps}
             onScrollBeginDrag={Keyboard.dismiss}
             data={playlists}
             contentContainerStyle={{ paddingBottom: bottomInset }}
@@ -251,14 +266,8 @@ export default memo(() => {
               </View>
             )}
             keyExtractor={item => String(item.id)}
-            refreshControl={
-              <RefreshControl
-                colors={[theme['c-primary']]}
-                refreshing={loading}
-                onRefresh={() => { refreshCoverCaches(); onRefresh() }}
-              />
-            }
           />
+          </View>
         ) : (
           <View style={styles.loadingContainer}>
             <ActivityIndicator color={theme['c-primary-font']} size="large" />

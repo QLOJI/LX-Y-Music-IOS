@@ -4,7 +4,7 @@
 
 import { memo, useEffect, useState, useCallback, useRef } from 'react'
 import { View, FlatList, BackHandler, StyleSheet, Keyboard, ActivityIndicator } from 'react-native'
-import RefreshControl from '@/components/common/RefreshControl'
+import usePullRefresh from '@/components/common/usePullRefresh'
 import ListItem from './ListItem'
 import { getUserPlaylists, subscribePlaylist, unsubscribePlaylist } from '@/utils/musicSdk/kg/utils/api'
 import { useI18n } from '@/lang'
@@ -50,6 +50,7 @@ export default memo(() => {
   const [collectedPlaylists, setCollectedPlaylists] = useState<PlaylistInfo[]>([])
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
+  const flatListRef = useRef<any>(null)
   // 首载闸门（用户第 15 轮第 3 条）：FlatList 必须等首次加载结束再挂载，**不能**先以
   // data=[] 挂出来、数据到了再补进去 —— 空列表里只有页头那一格（tab 文案里的数量也还是
   // 0），数据到达后整块内容按最终高度重排/复位，用户看到的就是「第一次进入歌单页时整体
@@ -288,6 +289,16 @@ export default memo(() => {
       />
     </>
   )
+  const handlePullRefresh = useCallback(() => {
+    setTimeout(refreshCoverCaches, 0)
+    onRefresh()
+  }, [onRefresh])
+  const { indicator: pullIndicator, scrollProps: pullScrollProps } = usePullRefresh(
+    refreshing,
+    handlePullRefresh,
+    flatListRef,
+  )
+
   return (
     <View style={{ flex: 1 }}>
       <View
@@ -296,7 +307,11 @@ export default memo(() => {
       >
         {pageHeader}
         {listReady ? (
+          <View style={{ flex: 1, overflow: 'hidden' }}>
+          {pullIndicator}
           <FlatList
+            ref={flatListRef}
+            {...pullScrollProps}
             key={`cols-${numColumns}`}
             onScrollBeginDrag={Keyboard.dismiss}
             data={playlists}
@@ -309,13 +324,6 @@ export default memo(() => {
             )}
             keyExtractor={item => `${item.id}-${item.isCollected ? 'collected' : 'created'}`}
             showsVerticalScrollIndicator={false}
-            refreshControl={
-              <RefreshControl
-                colors={[theme['c-primary']]}
-                refreshing={refreshing}
-                onRefresh={() => { refreshCoverCaches(); onRefresh() }}
-              />
-            }
             ListEmptyComponent={
               loading ? null : (
                 <View style={styles.emptyContainer}>
@@ -327,6 +335,7 @@ export default memo(() => {
               )
             }
           />
+          </View>
         ) : (
           <View style={styles.loadingContainer}>
             <ActivityIndicator color={theme['c-primary-font']} size="large" />

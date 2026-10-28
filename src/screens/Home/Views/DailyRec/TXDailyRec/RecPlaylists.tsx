@@ -57,6 +57,7 @@ const ListItem = ({ item, onPress }: { item: PlaylistInfo, onPress: () => void }
 
 export default memo(({ onOpenDetail, active = true }: Props) => {
   const [playlists, setPlaylists] = useState<PlaylistInfo[]>([])
+  const flatListRef = useRef<FlatList>(null)
   const [loading, setLoading] = useState(false)
   // 每次切换/进入都走下拉刷新；loading 只作为历史空态闸门的复位位保留。
   const [refreshing, setRefreshing] = useState(false)
@@ -139,7 +140,7 @@ export default memo(({ onOpenDetail, active = true }: Props) => {
   }
 
   // 自绘下拉刷新：不改变列表 inset，触发/结束都不会上下跳，刷新后顶部距离不变。
-  const { indicator: pullIndicator, scrollProps: pullScrollProps } = usePullRefresh(refreshing, handleRefresh)
+  const { indicator: pullIndicator, scrollProps: pullScrollProps } = usePullRefresh(refreshing, handleRefresh, flatListRef)
 
   // 空列表渲染：只有这里能区分「加载中 / 加载失败 / 真的没有歌单」，
   // 并为失败提供「重新加载」入口（旧写法整块交给 FlatList 空数据默认渲染，什么都没有）
@@ -169,6 +170,7 @@ export default memo(({ onOpenDetail, active = true }: Props) => {
     <View style={{ flex: 1, overflow: 'hidden' }}>
       {pullIndicator}
       <FlatList
+        ref={flatListRef}
         {...pullScrollProps}
         onScrollBeginDrag={() => {}}
         data={playlists}

@@ -59,6 +59,7 @@ const PlaylistItem = ({ item, onPress }: { item: { id: string, name: string, cov
 
 export default memo(({ type, onOpenDetail, active = true }: Props) => {
   const listRef = useRef<OnlineListType>(null)
+  const playlistListRef = useRef<FlatList>(null)
   const playerMusicInfo = usePlayerMusicInfo()
   const [playlists, setPlaylists] = useState<Array<{ id: string, name: string, cover: string, playCount: number }>>([])
   // 每次切换/进入都走下拉刷新，loading 空态占位不再需要。
@@ -184,6 +185,7 @@ export default memo(({ type, onOpenDetail, active = true }: Props) => {
   const { indicator: pullIndicator, scrollProps: pullScrollProps } = usePullRefresh(
     type === 'home' && refreshing,
     handleRefresh,
+    playlistListRef,
   )
 
   const handlePlayList = useCallback((index: number) => {
@@ -238,6 +240,7 @@ export default memo(({ type, onOpenDetail, active = true }: Props) => {
       <View style={{ flex: 1, overflow: 'hidden' }}>
         {pullIndicator}
         <FlatList
+          ref={playlistListRef}
           {...pullScrollProps}
           data={playlists}
           // 底部悬浮层（迷你播放器 + 底部 Tab + 安全区）统一避让高度
