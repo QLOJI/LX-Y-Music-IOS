@@ -1,5 +1,6 @@
 import { useCallback, useMemo, useRef, useState, forwardRef, useImperativeHandle, useEffect } from 'react'
-import { FlatList, type FlatListProps, Keyboard, RefreshControl, View } from 'react-native'
+import { FlatList, type FlatListProps, Keyboard, View } from 'react-native'
+import RefreshControl from '@/components/common/RefreshControl'
 import ListItem, { ITEM_HEIGHT } from './ListItem'
 import { createStyle, getRowInfo, type RowInfoType } from '@/utils/tools'
 import { useHorizontalMode } from '@/utils/hooks'
