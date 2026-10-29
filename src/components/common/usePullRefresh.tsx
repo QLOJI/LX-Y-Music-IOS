@@ -47,6 +47,10 @@ const usePullRefresh = (refreshing: boolean, onRefresh: () => void, listRef?: Sc
   // 下拉起点 = 原始顶部偏移（含 iOS 安全区 inset，可能为负）；托住位再往下 32pt。
   const restOffsetRef = useRef(0)
   const holdOffsetRef = useRef(-PULL_TRIGGER)
+  // 最近一次滚动偏移 / 首次静止偏移（= 列表顶部，含 iOS 安全区 inset，可能为负）。
+  // 程序触发的刷新只有在列表仍停在顶部时才补下拉动作，滚下去了就不硬拽。
+  const lastOffsetRef = useRef<number | null>(null)
+  const topOffsetRef = useRef<number | null>(null)
   const refreshingRef = useRef(refreshing)
   const displayRef = useRef(refreshing)
   const sawRefreshingRef = useRef(false)
@@ -60,6 +64,7 @@ const usePullRefresh = (refreshing: boolean, onRefresh: () => void, listRef?: Sc
   const settleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const fallbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const unholdTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const autoHoldTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const watchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   refreshingRef.current = refreshing
 
@@ -127,9 +132,33 @@ const usePullRefresh = (refreshing: boolean, onRefresh: () => void, listRef?: Sc
         // 绝不把刷新图标永久留在顶部。
         if (displayRef.current) hideIndicator()
       }, WATCHDOG_MS)
+      // 程序触发的刷新（切 tab / 首次进页）也要有「下拉动作」：列表仍在顶部时托住 32pt，
+      // 而不是只在列表里亮一个图标。滚到别处就不动它。
+      if (!heldRef.current) {
+        const tryHold = () => {
+          if (heldRef.current || !refreshingRef.current) return
+          const last = lastOffsetRef.current
+          const top = topOffsetRef.current
+          if (last == null || top == null) return
+          if (last > top + 1) return
+          restOffsetRef.current = top
+          holdOffsetRef.current = top - PULL_TRIGGER
+          holdList()
+        }
+        tryHold()
+        if (!heldRef.current) {
+          // 首帧可能还没收到滚动事件（量不到顶部偏移）：等一拍再试一次。
+          clearTimer(autoHoldTimerRef)
+          autoHoldTimerRef.current = setTimeout(() => {
+            autoHoldTimerRef.current = null
+            tryHold()
+          }, 120)
+        }
+      }
       return
     }
     clearTimer(watchdogRef)
+    clearTimer(autoHoldTimerRef)
     if (!displayRef.current) return
 
     const remain = REFRESH_MIN_MS - (Date.now() - startedAtRef.current)
@@ -174,6 +203,7 @@ const usePullRefresh = (refreshing: boolean, onRefresh: () => void, listRef?: Sc
     clearTimer(settleTimerRef)
     clearTimer(fallbackTimerRef)
     clearTimer(unholdTimerRef)
+    clearTimer(autoHoldTimerRef)
     clearTimer(watchdogRef)
   }, [])
 
@@ -185,6 +215,12 @@ const usePullRefresh = (refreshing: boolean, onRefresh: () => void, listRef?: Sc
   }, [])
 
   const handleScroll = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
+    const y = e.nativeEvent.contentOffset.y
+    lastOffsetRef.current = y
+    // 首次静止偏移即列表顶部（可能因 iOS 安全区 inset 为负），程序刷新托住时要用。
+    if (topOffsetRef.current == null && dragStartRef.current == null && !heldRef.current) {
+      topOffsetRef.current = y
+    }
     if (displayRef.current) {
       // 刷新中：忽略回弹过程，指示器保持在完整状态。
       if (lastPullRef.current !== PULL_TRIGGER) {
