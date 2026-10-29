@@ -14,7 +14,6 @@ import ListItem from '../MyPlaylist/ListItem'
 import { useBottomOverlayInset } from '@/store/common/hook'
 import { useHomePageVisible } from '@/store/common/pageVisibility'
 import { refreshCoverCaches } from '@/core/music/coverUrl'
-import { takeDailyRecAutoRefresh } from '@/core/dailyRecSession'
 
 export default memo(({ onOpenDetail, active = true }: { onOpenDetail: (info: any) => void, active?: boolean }) => {
   const [playlists, setPlaylists] = useState<any[]>([])
@@ -32,6 +31,8 @@ export default memo(({ onOpenDetail, active = true }: { onOpenDetail: (info: any
   const buttonRadius = useButtonRadius()
   // 只认最后一次发起的加载：cookie 变化 / 连续重试时丢弃过期响应，避免旧结果覆盖新结果
   const loadIdRef = useRef(0)
+  // 当前列表对应的 cookie：cookie 变了必须重新加载，哪怕旧列表还有数据。
+  const loadKeyRef = useRef('')
   // 离屏 Home 页重新进入时也刷新当前 tab（pageVisible false→true 的上升沿）。
   const pageVisible = useHomePageVisible()
   const [enterSeq, setEnterSeq] = useState(0)
@@ -100,8 +101,10 @@ export default memo(({ onOpenDetail, active = true }: { onOpenDetail: (info: any
   // 首次加载时列表本来就是空的，自然就是「空白 + 刷新」。
   useEffect(() => {
     if (!active) return
-    // 本次启动第一次进入本 tab 才自动下拉刷新；之后只手动下拉。
-    if (!takeDailyRecAutoRefresh(`wy_daily_playlists_${cookie}`)) return
+    // 已有数据且 cookie 没变：只展示，不再自动下拉刷新（第一次刷出后只能手动下拉）。
+    // 列表为空（首次进入 / 重挂后数据丢失）或 cookie 变了，必须加载，否则就是空白页或旧内容。
+    if (loadKeyRef.current === cookie && playlists.length > 0) return
+    loadKeyRef.current = cookie
     setLoadError('')
     loadPlaylists()
   }, [active, enterSeq, loadPlaylists])

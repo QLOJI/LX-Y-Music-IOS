@@ -19,7 +19,6 @@ import {
   clearDailyRecCache,
 } from '@/utils/data'
 import { refreshCoverCaches } from '@/core/music/coverUrl'
-import { takeDailyRecAutoRefresh } from '@/core/dailyRecSession'
 import { useHomePageVisible } from '@/store/common/pageVisibility'
 
 
@@ -54,6 +53,9 @@ export default memo(({ isStylized, stylizedSelection, active = true }: RecSongsP
     prevPageVisibleRef.current = pageVisible
   }, [pageVisible])
   const [isLoading, setIsLoading] = useState(true)
+  // 当前列表对应的「数据源」标识：普通日推 = cookie，风格化 = cookie + 选中标签。
+  // 标识变了（换风格 / 换账号）必须重新加载，哪怕旧列表还有数据。
+  const loadKeyRef = useRef('')
   const t = useI18n()
   const cookie = useSettingValue('common.wy_cookie')
   const playerMusicInfo = usePlayerMusicInfo()
@@ -82,11 +84,14 @@ export default memo(({ isStylized, stylizedSelection, active = true }: RecSongsP
       return
     }
 
-    // 每个列表本次启动只自动下拉刷新一次；之后切换回来只显示已有列表，手动下拉。
-    const autoKey = isStylized && stylizedSelection
-      ? `wy_stylized_${cookie}|${JSON.stringify(stylizedSelection)}`
-      : `wy_songs_${cookie}`
-    if (!takeDailyRecAutoRefresh(autoKey)) return
+    // 列表已有数据且数据源没变：只展示，不再自动下拉刷新（第一次刷出后只能手动下拉）。
+    // 列表为空（首次进入 / PagerView 恢复重挂后数据丢失）或数据源变了（换风格/换账号）
+    // 时必须加载，否则就是空白页或旧内容。
+    const loadKey = isStylized && stylizedSelection
+      ? `${cookie}|${JSON.stringify(stylizedSelection)}`
+      : cookie
+    if (loadKeyRef.current === loadKey && (listRef.current?.getList()?.length ?? 0) > 0) return
+    loadKeyRef.current = loadKey
 
     // 首次加载时列表本来就是空的，自然就是「空白 + 刷新」。
     listRef.current?.setStatus('refreshing')

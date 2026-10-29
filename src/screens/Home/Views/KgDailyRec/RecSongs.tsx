@@ -6,7 +6,6 @@ import kgDailyRec from '@/utils/musicSdk/kg/dailyRec'
 import { usePlayerMusicInfo } from '@/store/player/hook'
 import { stageOnlineListToDefault } from '@/core/playListToDefault'
 import { refreshCoverCaches } from '@/core/music/coverUrl'
-import { takeDailyRecAutoRefresh } from '@/core/dailyRecSession'
 import { useHomePageVisible } from '@/store/common/pageVisibility'
 
 type RecType = 'recommend' | 'everyday'
@@ -67,8 +66,9 @@ export default memo(({ type, active = true }: Props) => {
   // 首次加载时列表本来就是空的，自然就是「空白 + 刷新」。
   useEffect(() => {
     if (!active) return
-    // 本次启动第一次进入本 tab 才自动下拉刷新；之后只手动下拉。
-    if (!takeDailyRecAutoRefresh(`kg_daily_${type}`)) return
+    // 列表已有数据：只展示，不再自动下拉刷新（第一次刷出后只能手动下拉）。
+    // 列表为空（首次进入 / PagerView 恢复重挂后数据丢失）时必须加载一次，否则就是空白页。
+    if ((listRef.current?.getList()?.length ?? 0) > 0) return
     // 封面缓存签名计算很重，延后到这一帧之后，避免切页瞬间 JS 卡一下。
     setTimeout(refreshCoverCaches, 0)
     void fetchSongs(true)
