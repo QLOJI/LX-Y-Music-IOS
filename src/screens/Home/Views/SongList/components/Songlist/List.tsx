@@ -195,7 +195,10 @@ export default forwardRef<ListType, ListProps>(({ header, onRefresh, onLoadMore,
         data={list}
         contentContainerStyle={{ paddingBottom: bottomInset }}
         maxToRenderPerBatch={4}
-        onScrollBeginDrag={Keyboard.dismiss}
+        onScrollBeginDrag={(e) => {
+          Keyboard.dismiss()
+          pullScrollProps.onScrollBeginDrag?.(e)
+        }}
         // updateCellsBatchingPeriod={80}
         windowSize={8}
         // removeClippedSubviews 会按估算行高错误地裁剪变高网格行，

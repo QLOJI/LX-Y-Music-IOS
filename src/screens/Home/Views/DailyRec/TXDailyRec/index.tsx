@@ -126,6 +126,13 @@ export default memo(() => {
     [activeTab, notifyPageSelected],
   )
 
+  // 兜底：页面事件万一丢失，700ms 后也要放行刷新。
+  useEffect(() => {
+    if (settledTab === activeTab) return
+    const timer = setTimeout(() => { setSettledTab(activeTab) }, 700)
+    return () => { clearTimeout(timer) }
+  }, [activeTab, settledTab])
+
   const handleOpenDetail = useCallback((playlistInfo: ListInfoItem) => {
     setSelectedPlaylist(playlistInfo)
   }, [])

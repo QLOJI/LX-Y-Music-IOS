@@ -1,4 +1,4 @@
-import { memo, useRef, useState, useCallback } from 'react'
+import { memo, useRef, useState, useCallback, useEffect } from 'react'
 import { TouchableOpacity, View, ScrollView } from 'react-native'
 import Text from '@/components/common/Text'
 import { createStyle } from '@/utils/tools'
@@ -70,6 +70,8 @@ const Tabs = ({
 
 export default memo(() => {
   const [activeTab, setActiveTab] = useState<TabType>('recommend')
+  // 落页后才触发数据刷新，切页动画期间不启动刷新。
+  const [settledTab, setSettledTab] = useState<TabType>(activeTab)
   const pagerViewRef = useRef<PagerView>(null)
   const activeIndexRef = useRef(TABS.findIndex((t) => t.id === activeTab))
   activeIndexRef.current = TABS.findIndex((t) => t.id === activeTab)
@@ -102,9 +104,17 @@ export default memo(() => {
       if (newTab !== activeTab) {
         setActiveTab(newTab)
       }
+      setSettledTab(newTab)
     },
     [activeTab, notifyPageSelected],
   )
+
+  // 兜底：页面事件万一丢失，700ms 后也要放行刷新。
+  useEffect(() => {
+    if (settledTab === activeTab) return
+    const timer = setTimeout(() => { setSettledTab(activeTab) }, 700)
+    return () => { clearTimeout(timer) }
+  }, [activeTab, settledTab])
 
   const handleBackToDiscovery = useCallback(() => {
     setNavActiveId('nav_discovery')
@@ -155,10 +165,10 @@ export default memo(() => {
           scrollEnabled
         >
           <View key="recommend">
-            <RecSongs type="recommend" active={activeTab === 'recommend'} />
+            <RecSongs type="recommend" active={settledTab === 'recommend'} />
           </View>
           <View key="everyday">
-            <RecSongs type="everyday" active={activeTab === 'everyday'} />
+            <RecSongs type="everyday" active={settledTab === 'everyday'} />
           </View>
         </PagerView>
       </View>
