@@ -13,17 +13,20 @@ import { useTheme } from '@/store/theme/hook'
  * 自绘下拉刷新（不依赖系统 UIRefreshControl）。
  *
  * 固定策略（所有列表同一套）：
- *   · 下拉距离达到 PULL_TRIGGER 才触发；松手后列表按系统回弹回到它原本的静止位置，
- *     全程不修改 contentInset、不主动 scrollToOffset —— 轻拉/重拉/刷新多少次，落点只有一个；
- *   · 刷新态由父级 refreshing 驱动：置位即把指示器顶到完整态（自动刷新也有下拉动画），
- *     落地后至少展示 REFRESH_MIN_MS 再淡出；
- *   · 触发后父级若没有进入 refreshing（onRefresh 是空实现 / 被丢弃），兜底定时器收回指示器；
- *   · 另设看门狗，父级 refreshing 卡住时也会收起，不留下永远停在顶部的图标。
+ *   · 下拉距离按「手指按下时的滚动偏移」为基准计算 —— iOS 的安全区会给滚动视图
+ *     一个负的初始偏移，直接拿 -contentOffset.y 当距离会在挂载瞬间误判成「已下拉」；
+ *   · 只有「从列表顶部开始拖」才算下拉；达到 PULL_TRIGGER 才触发，触发后用 contentInset
+ *     托住列表，给刷新图标留出空白位；
+ *   · 刷新结束先动画滚回拖动起点（不是 0 —— iOS 安全区会让原始顶部是负偏移），再撤掉
+ *     inset（内容位置只由 offset 决定，撤 inset 不再跳动），落点与刷新前完全一致；
+ *   · 指标至少展示 REFRESH_MIN_MS；另有看门狗，父级 refreshing 卡住时也会收起；
+ *   · 触发后父级若没有进入 refreshing（回调空实现 / 被丢弃），兜底定时器收回图标。
  */
 export const PULL_TRIGGER = 32
 export const REFRESH_MIN_MS = 900
 const SETTLE_MS = 250
 const FALLBACK_MS = 700
+const UNHOLD_DELAY_MS = 280
 const WATCHDOG_MS = 10000
 const ICON_SIZE = 26
 const ICON_RADIUS = 10
@@ -34,15 +37,21 @@ type ScrollListRef = { current: any }
 
 const AnimatedCircle = Animated.createAnimatedComponent(Circle)
 
-const usePullRefresh = (refreshing: boolean, onRefresh: () => void, _listRef?: ScrollListRef, topOffset = 0) => {
+const usePullRefresh = (refreshing: boolean, onRefresh: () => void, listRef?: ScrollListRef, topOffset = 0) => {
   const theme = useTheme()
   const progress = useRef(new Animated.Value(0)).current
   const spin = useRef(new Animated.Value(0)).current
   const pullRef = useRef(0)
   const lastPullRef = useRef(-1)
+  const dragStartRef = useRef<number | null>(null)
+  // 下拉起点 = 原始顶部偏移（含 iOS 安全区 inset，可能为负）；托住位再往下 32pt。
+  const restOffsetRef = useRef(0)
+  const holdOffsetRef = useRef(-PULL_TRIGGER)
   const refreshingRef = useRef(refreshing)
   const displayRef = useRef(refreshing)
   const sawRefreshingRef = useRef(false)
+  const heldRef = useRef(false)
+  const [held, setHeld] = useState(false)
   const [displayRefreshing, setDisplayRefreshing] = useState(refreshing)
   const onRefreshRef = useRef(onRefresh)
   onRefreshRef.current = onRefresh
@@ -50,6 +59,7 @@ const usePullRefresh = (refreshing: boolean, onRefresh: () => void, _listRef?: S
   const minTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const settleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const fallbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const unholdTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const watchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   refreshingRef.current = refreshing
 
@@ -60,9 +70,31 @@ const usePullRefresh = (refreshing: boolean, onRefresh: () => void, _listRef?: S
     }
   }
 
+  /** 托住列表：下拉后内容停在刷新位，图标下方/上方留出 32pt 空白。 */
+  const holdList = useCallback(() => {
+    heldRef.current = true
+    setHeld(true)
+  }, [])
+
+  /** 松开列表：先动画回原始顶部（拖动起点），动画结束再撤 inset（不会二次跳动）。 */
+  const releaseHold = useCallback(() => {
+    if (!heldRef.current) return
+    heldRef.current = false
+    listRef?.current?.scrollToOffset?.({ offset: restOffsetRef.current, animated: true })
+    clearTimer(unholdTimerRef)
+    unholdTimerRef.current = setTimeout(() => {
+      unholdTimerRef.current = null
+      setHeld(false)
+    }, UNHOLD_DELAY_MS)
+  }, [listRef])
+
   const hideIndicator = useCallback(() => {
     displayRef.current = false
+    dragStartRef.current = null
+    pullRef.current = 0
+    lastPullRef.current = 0
     setDisplayRefreshing(false)
+    releaseHold()
     progress.stopAnimation()
     Animated.timing(progress, {
       toValue: 0,
@@ -70,7 +102,7 @@ const usePullRefresh = (refreshing: boolean, onRefresh: () => void, _listRef?: S
       easing: Easing.out(Easing.quad),
       useNativeDriver: false,
     }).start()
-  }, [progress])
+  }, [progress, releaseHold])
 
   useEffect(() => {
     if (refreshing) {
@@ -113,6 +145,12 @@ const usePullRefresh = (refreshing: boolean, onRefresh: () => void, _listRef?: S
     return () => { clearTimer(minTimerRef) }
   }, [refreshing, progress, hideIndicator])
 
+  // inset 落地后再把内容推进刷新位（先有可停的区间，滚动才不会被弹回去）。
+  useEffect(() => {
+    if (!held) return
+    listRef?.current?.scrollToOffset?.({ offset: holdOffsetRef.current, animated: true })
+  }, [held, listRef])
+
   // 刷新中旋转圆环
   useEffect(() => {
     if (!displayRefreshing) {
@@ -135,7 +173,15 @@ const usePullRefresh = (refreshing: boolean, onRefresh: () => void, _listRef?: S
     clearTimer(minTimerRef)
     clearTimer(settleTimerRef)
     clearTimer(fallbackTimerRef)
+    clearTimer(unholdTimerRef)
     clearTimer(watchdogRef)
+  }, [])
+
+  const handleScrollBeginDrag = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
+    // 记住拖动起点：iOS 安全区会把初始偏移压到负数，必须按相对位移算下拉距离。
+    dragStartRef.current = e.nativeEvent.contentOffset.y
+    pullRef.current = 0
+    lastPullRef.current = 0
   }, [])
 
   const handleScroll = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
@@ -147,8 +193,18 @@ const usePullRefresh = (refreshing: boolean, onRefresh: () => void, _listRef?: S
       }
       return
     }
-    const y = e.nativeEvent.contentOffset.y
-    const pull = Math.max(0, -y)
+    const start = dragStartRef.current
+    // 非拖动滚动（安全区初始偏移、回弹、程序化滚动）：一律视为 0，避免误点亮图标。
+    if (start == null) {
+      if (lastPullRef.current !== 0) {
+        lastPullRef.current = 0
+        pullRef.current = 0
+        progress.stopAnimation()
+        progress.setValue(0)
+      }
+      return
+    }
+    const pull = Math.max(0, start - e.nativeEvent.contentOffset.y)
     pullRef.current = pull
     if (pull === lastPullRef.current) return
     lastPullRef.current = pull
@@ -156,16 +212,24 @@ const usePullRefresh = (refreshing: boolean, onRefresh: () => void, _listRef?: S
     progress.setValue(Math.min(1, pull / PULL_TRIGGER))
   }, [progress])
 
-  const handleScrollEndDrag = useCallback(() => {
+  const handleScrollEndDrag = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
+    const start = dragStartRef.current
+    dragStartRef.current = null
     if (displayRef.current) return
-    if (pullRef.current >= PULL_TRIGGER) {
-      // 先点亮完整指示器再发请求：父级落 refreshing 之前图标不会闪一下又缩回去。
+    const pull = start == null ? pullRef.current : Math.max(0, start - e.nativeEvent.contentOffset.y)
+    pullRef.current = pull
+    // 只有从列表顶部（偏移 ≤ 0）开始的拖动才是下拉刷新；从列表中间甩到顶部的回弹不算。
+    if (start != null && start <= 0 && pull >= PULL_TRIGGER) {
+      restOffsetRef.current = start
+      holdOffsetRef.current = start - PULL_TRIGGER
+      // 先点亮完整指示器、托住列表，再发请求：图标不会闪一下又缩回去，列表也留出空白位。
       displayRef.current = true
       setDisplayRefreshing(true)
       progress.stopAnimation()
       progress.setValue(1)
+      holdList()
       onRefreshRef.current()
-      // 父级没有进入 refreshing（空实现 / 被丢弃）时收回图标，绝不停在顶部。
+      // 父级没有进入 refreshing（空实现 / 被丢弃）时收回图标与列表。
       sawRefreshingRef.current = false
       clearTimer(fallbackTimerRef)
       fallbackTimerRef.current = setTimeout(() => {
@@ -189,11 +253,10 @@ const usePullRefresh = (refreshing: boolean, onRefresh: () => void, _listRef?: S
         useNativeDriver: false,
       }).start()
     }, SETTLE_MS)
-  }, [progress, hideIndicator])
+  }, [progress, holdList, hideIndicator])
 
   const handleMomentumScrollEnd = useCallback(() => {
     if (displayRef.current) return
-    if (pullRef.current >= PULL_TRIGGER) return
     pullRef.current = 0
     lastPullRef.current = 0
     progress.stopAnimation()
@@ -252,10 +315,13 @@ const usePullRefresh = (refreshing: boolean, onRefresh: () => void, _listRef?: S
     indicator,
     scrollProps: {
       onScroll: handleScroll,
+      onScrollBeginDrag: handleScrollBeginDrag,
       onScrollEndDrag: handleScrollEndDrag,
       onMomentumScrollEnd: handleMomentumScrollEnd,
       scrollEventThrottle: 16,
       bounces: true,
+      // 只有下拉触发的刷新才托住列表；程序触发的刷新不改变列表位置。
+      contentInset: held ? { top: PULL_TRIGGER } : undefined,
     },
   }
 }
