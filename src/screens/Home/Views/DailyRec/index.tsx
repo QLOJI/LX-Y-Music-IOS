@@ -250,7 +250,9 @@ export default memo(() => {
     // 先把原生切页请求发出去，再更新 React 选中态：页面动画不被整页重渲染挡在前面。
     pagerViewRef.current?.setPage(newTab === 'songs' ? 1 : 0)
     trackPageSwitch(newTab === 'songs' ? 1 : 0)
-    setActiveTab(newTab)
+    // 选中态推到下一个宏任务：本轮事件先结束、原生 setPage 先过桥，
+    // 否则同一帧里的重渲染偶尔会把切页指令压后（表现为「点了一下没动、过会儿才滑」）。
+    setTimeout(() => { setActiveTab(newTab) }, 0)
   }
 
   const onPageSelected = useCallback((event: PagerViewOnPageSelectedEvent) => {

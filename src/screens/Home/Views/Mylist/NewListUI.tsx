@@ -954,6 +954,11 @@ export default memo(() => {
           <FlatList
             ref={flatListRef}
             {...pullScrollProps}
+            // 页头（PageTopInset + 标题行）在本列表内：iOS 会给贴着安全区顶边的滚动视图
+            // 自动加 62pt 顶部 inset，把标题推低（与 FollowedArtists 同一条根因）。
+            // 关掉自动调整，标题位置才和推荐/设置同一条基准，刷新前后也不再变化。
+            contentInsetAdjustmentBehavior="never"
+            automaticallyAdjustContentInsets={false}
             data={listItems}
             contentContainerStyle={{ paddingBottom: listClearance }}
             onLayout={(e) => {

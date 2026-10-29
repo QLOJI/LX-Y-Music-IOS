@@ -178,6 +178,11 @@ export default forwardRef<ListType, ListProps>(({ header, onRefresh, onLoadMore,
         {...pullScrollProps}
         key={String(rowInfo.num)}
         ref={flatListRef}
+        // 页头（标题/平台/分类/标签）在本列表内：iOS 会给贴着安全区顶边的滚动视图
+        // 自动加 62pt 顶部 inset，把标题整体推低（与 FollowedArtists 同一条根因）。
+        // 关掉自动调整，标题的 paddingTop 才能与推荐/设置走同一个基准。
+        contentInsetAdjustmentBehavior="never"
+        automaticallyAdjustContentInsets={false}
         style={styles.list}
         // 左右内边距写在**每一行**上，不再写在外层 style（2026-10-02 统一搜索页四个 tab 的
         // 排列）：写在 style 上时整条列表一起内缩，连 ListHeaderComponent（搜索框、搜索平台、
