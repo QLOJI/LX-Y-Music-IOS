@@ -53,6 +53,9 @@ export const useRecoverablePager = (
   const fallbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const remountTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [pagerKey, setPagerKey] = useState(0)
+  // 原生当前页（onPageSelected 回报）。恢复链要「非动画回到当前页」来清 animating，
+  // 不能拿 JS 的 activeTab —— 点击后它已经指向目标页了。
+  const nativeIndexRef = useRef(activeIndexRef.current)
 
   const clearPagerLatch = useCallback(() => {
     const pager = pagerRef.current as unknown as PagerLike
@@ -87,29 +90,43 @@ export const useRecoverablePager = (
   const armFallback = useCallback((index: number) => {
     clearSwitchTimers()
     pendingIndexRef.current = index
+    // 非动画回到「当前原生页」只为清掉卡住的 animating / 交互闩锁，画面不动；
+    // 紧接着再发一次动画 setPage，让用户看到的是滑动而不是瞬移。
+    const retryAnimated = () => {
+      if (pendingIndexRef.current !== index) return
+      pagerRef.current?.setPageWithoutAnimation?.(nativeIndexRef.current)
+      pagerRef.current?.setPage?.(index)
+    }
     // 短探测：30ms（约两帧）后既没进入滚动、也没有页面滚动事件 = setPage 被原生
-    // animating 闩锁吞掉，立即非动画直达；有滚动则说明动画已在跑，保留原滑动。
-    // 不能等 600ms 兜底 —— 那正是「按钮已切换、页面顿一下才滑过去」。
+    // animating 闩锁吞掉 —— 清闩锁后立刻动画重试。
     probeTimerRef.current = setTimeout(() => {
       probeTimerRef.current = null
       if (pendingIndexRef.current !== index) return
       if (scrollStateRef.current === 'idle' && lastScrollAtRef.current <= pageRequestAtRef.current) {
-        pagerRef.current?.setPageWithoutAnimation?.(index)
+        retryAnimated()
       }
     }, 30)
+    // 第二拍：页面滚动状态事件丢失（pageScrollState 卡在 settling/dragging）但页面
+    // 实际没动时，上面的短探测会被跳过 —— 这里不看状态，只看「请求之后有没有真的滚动」，
+    // 没有就再重试一次动画。250ms 足以避开正常转场的首帧事件。
     fallbackTimerRef.current = setTimeout(() => {
       fallbackTimerRef.current = null
       if (pendingIndexRef.current !== index) return
-      // 非动画直达：绕过 Manager 的 animating 闸门；补丁会在此刻清 animating 并恢复交互。
-      pagerRef.current?.setPageWithoutAnimation?.(index)
+      if (lastScrollAtRef.current > pageRequestAtRef.current) return
+      retryAnimated()
       remountTimerRef.current = setTimeout(() => {
         remountTimerRef.current = null
         if (pendingIndexRef.current !== index) return
-        // 原生实例完全不响应：重挂 PagerView（initialPage 用当前页）。
-        pendingIndexRef.current = null
-        setPagerKey(k => k + 1)
-      }, 700)
-    }, 600)
+        // 原生实例完全不响应：非动画硬落位（补丁会清 animating），再等一拍仍不落页则重挂。
+        pagerRef.current?.setPageWithoutAnimation?.(index)
+        remountTimerRef.current = setTimeout(() => {
+          remountTimerRef.current = null
+          if (pendingIndexRef.current !== index) return
+          pendingIndexRef.current = null
+          setPagerKey(k => k + 1)
+        }, 700)
+      }, 350)
+    }, 250)
   }, [clearSwitchTimers, pagerRef])
 
   /** 只登记目标页并布防恢复链；过渡中（直连 setPage 可能被原生丢弃）立即非动画直达。 */
@@ -174,7 +191,8 @@ export const useRecoverablePager = (
   }, [clearSwitchTimers, clearWatchdog])
 
   /** 页面 onPageSelected 的第一行调用：撤恢复链、清看门狗与 JS 闩锁。 */
-  const notifyPageSelected = useCallback(() => {
+  const notifyPageSelected = useCallback((position?: number) => {
+    if (position != null) nativeIndexRef.current = position
     pendingIndexRef.current = null
     clearSwitchTimers()
     clearWatchdog()

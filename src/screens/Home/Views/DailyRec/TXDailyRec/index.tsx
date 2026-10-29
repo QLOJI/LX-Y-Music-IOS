@@ -118,7 +118,7 @@ export default memo(() => {
 
   const onPageSelected = useCallback(
     (event: PagerViewOnPageSelectedEvent) => {
-      notifyPageSelected()
+      notifyPageSelected(event.nativeEvent.position)
       const newTab = TABS[event.nativeEvent.position]?.id || 'home'
       if (newTab !== activeTab) {
         setActiveTab(newTab)

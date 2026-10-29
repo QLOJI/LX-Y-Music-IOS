@@ -101,7 +101,7 @@ export default memo(() => {
   const onPageSelected = useCallback(
     (event: PagerViewOnPageSelectedEvent) => {
       // 落页 = 手势确定结束：撤掉恢复链、抹平可能残留的库私有闩锁。
-      notifyPageSelected()
+      notifyPageSelected(event.nativeEvent.position)
       const newTab = TABS[event.nativeEvent.position]?.id || 'recommend'
       if (newTab !== activeTab) {
         setActiveTab(newTab)
