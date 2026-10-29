@@ -89,7 +89,6 @@ export default memo(({ onOpenDetail, active = true }: Props) => {
     const loadId = ++loadIdRef.current
     setRefreshing(true)
     setLoadError('')
-    setTimeout(refreshCoverCaches, 0)
     try {
       // 有界重试（2 次，800/2000ms）：冷启动首个请求要跟「网络栈就绪 / Cookie 落盘 /
       // 平台偶发 5xx」抢时间，一次失败就定格成空白页。shouldRetry 兜住「等待期间
@@ -139,6 +138,8 @@ export default memo(({ onOpenDetail, active = true }: Props) => {
   }
 
   const handleRefresh = () => {
+    // 手动下拉才刷新封面缓存（自动加载不刷，避免重渲所有图片挡点击）。
+    setTimeout(refreshCoverCaches, 0)
     void loadPlaylists(true)
   }
 

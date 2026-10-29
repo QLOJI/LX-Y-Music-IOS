@@ -18,7 +18,6 @@ import {
   saveDailyRecCache,
   clearDailyRecCache,
 } from '@/utils/data'
-import { refreshCoverCaches } from '@/core/music/coverUrl'
 import { useHomePageVisible } from '@/store/common/pageVisibility'
 
 
@@ -95,8 +94,8 @@ export default memo(({ isStylized, stylizedSelection, active = true }: RecSongsP
 
     // 首次加载时列表本来就是空的，自然就是「空白 + 刷新」。
     listRef.current?.setStatus('refreshing')
-    // 封面缓存签名计算很重，延后到这一帧之后，避免切页瞬间 JS 卡一下。
-    setTimeout(refreshCoverCaches, 0)
+    // 不在这里刷封面缓存：签名计算 + bumpImageEpoch 会重渲所有已挂载图片，
+    // 赶上用户下一次点击就是「点了没反应、过一会儿才切页」。手动下拉时 OnlineList 会刷。
 
     if (isStylized && stylizedSelection) {
       setIsLoading(true)

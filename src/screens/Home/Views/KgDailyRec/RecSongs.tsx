@@ -5,7 +5,6 @@ import { toast } from '@/utils/tools'
 import kgDailyRec from '@/utils/musicSdk/kg/dailyRec'
 import { usePlayerMusicInfo } from '@/store/player/hook'
 import { stageOnlineListToDefault } from '@/core/playListToDefault'
-import { refreshCoverCaches } from '@/core/music/coverUrl'
 import { useHomePageVisible } from '@/store/common/pageVisibility'
 
 type RecType = 'recommend' | 'everyday'
@@ -69,8 +68,8 @@ export default memo(({ type, active = true }: Props) => {
     // 列表已有数据：只展示，不再自动下拉刷新（第一次刷出后只能手动下拉）。
     // 列表为空（首次进入 / PagerView 恢复重挂后数据丢失）时必须加载一次，否则就是空白页。
     if ((listRef.current?.getList()?.length ?? 0) > 0) return
-    // 封面缓存签名计算很重，延后到这一帧之后，避免切页瞬间 JS 卡一下。
-    setTimeout(refreshCoverCaches, 0)
+    // 不在这里刷封面缓存：签名计算 + bumpImageEpoch 会把已挂载列表的所有图片重渲一遍，
+    // 赶上用户下一次点击就是「点了没反应、过一会儿才切页」。手动下拉刷新时再刷。
     void fetchSongs(true)
   }, [active, enterSeq, fetchSongs, type])
 

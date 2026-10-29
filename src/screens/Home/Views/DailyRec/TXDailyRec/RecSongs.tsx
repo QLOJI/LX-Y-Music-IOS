@@ -94,7 +94,6 @@ export default memo(({ type, onOpenDetail, active = true }: Props) => {
     const loadId = ++loadIdRef.current
     setRefreshing(true)
     setLoadError('')
-    setTimeout(refreshCoverCaches, 0)
     try {
       // 有界重试（2 次，800/2000ms）：冷启动首个请求容易输给「网络栈就绪 / 平台偶发 5xx」
       const result = await retryAsync(() => txApi.dailyRec.getHomeFeed(), {
@@ -171,14 +170,16 @@ export default memo(({ type, onOpenDetail, active = true }: Props) => {
     } else {
       // 已有数据：只展示，不再自动下拉刷新；列表为空时必须加载。
       if ((listRef.current?.getList()?.length ?? 0) > 0) return
-      // 封面的缓存签名计算很重，延后到这一帧之后，避免切页瞬间 JS 卡一下。
-      setTimeout(refreshCoverCaches, 0)
+      // 不在这里刷封面缓存：签名计算 + bumpImageEpoch 会重渲所有已挂载图片，
+      // 赶上用户下一次点击就是「点了没反应、过一会儿才切页」。手动下拉时 OnlineList 会刷。
       void fetchSongs()
     }
   }, [type, active, enterSeq, loadPlaylists, fetchSongs])
 
   const handleRefresh = useCallback(() => {
     if (type === 'home') {
+      // 手动下拉才刷新封面缓存（自动加载不刷，见上方 effect 注释）。
+      setTimeout(refreshCoverCaches, 0)
       void loadPlaylists(true)
     } else {
       listRef.current?.setStatus('refreshing')
