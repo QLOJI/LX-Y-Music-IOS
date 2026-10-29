@@ -214,7 +214,10 @@ export default forwardRef(({ header, searchType, source }: SearchResultListProps
       updateCellsBatchingPeriod={50}
       scrollEventThrottle={16}
       columnWrapperStyle={isHorizontal ? styles.columnWrapper : undefined}
-      onScrollBeginDrag={Keyboard.dismiss}
+      onScrollBeginDrag={(e) => {
+        Keyboard.dismiss()
+        pullScrollProps.onScrollBeginDrag?.(e)
+      }}
       onEndReached={() => {
         log.info('[SearchResultList] === 触底加载更多 ===', {
           text: searchInfoRef.current.text,

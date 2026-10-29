@@ -313,7 +313,10 @@ export default memo(() => {
             ref={flatListRef}
             {...pullScrollProps}
             key={`cols-${numColumns}`}
-            onScrollBeginDrag={Keyboard.dismiss}
+            onScrollBeginDrag={(e) => {
+              Keyboard.dismiss()
+              pullScrollProps.onScrollBeginDrag?.(e)
+            }}
             data={playlists}
             contentContainerStyle={{ paddingBottom: bottomInset, paddingRight: 0 }}
             numColumns={numColumns}

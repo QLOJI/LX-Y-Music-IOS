@@ -175,7 +175,6 @@ export default memo(({ onOpenDetail, active = true }: Props) => {
       <FlatList
         ref={flatListRef}
         {...pullScrollProps}
-        onScrollBeginDrag={() => {}}
         data={playlists}
         contentContainerStyle={{ paddingBottom: bottomInset }}
         key={isHorizontal ? 'horizontal' : 'vertical'}

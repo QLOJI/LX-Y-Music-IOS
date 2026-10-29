@@ -101,7 +101,10 @@ export default memo(() => {
           <FlatList
           ref={flatListRef}
           {...pullScrollProps}
-          onScrollBeginDrag={Keyboard.dismiss}
+          onScrollBeginDrag={(e) => {
+            Keyboard.dismiss()
+            pullScrollProps.onScrollBeginDrag?.(e)
+          }}
           data={subscribedAlbums}
           contentContainerStyle={{ paddingBottom: bottomInset }}
           key={isHorizontal ? 'horizontal' : 'vertical'}

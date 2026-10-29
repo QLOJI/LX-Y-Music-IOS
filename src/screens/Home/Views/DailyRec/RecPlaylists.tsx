@@ -157,7 +157,10 @@ export default memo(({ onOpenDetail, active = true }: { onOpenDetail: (info: any
       <FlatList
         ref={flatListRef}
         {...pullScrollProps}
-        onScrollBeginDrag={Keyboard.dismiss}
+        onScrollBeginDrag={(e) => {
+          Keyboard.dismiss()
+          pullScrollProps.onScrollBeginDrag?.(e)
+        }}
         data={playlists}
         contentContainerStyle={{ paddingBottom: bottomInset }}
         key={isHorizontal ? 'horizontal' : 'vertical'}
