@@ -1,4 +1,4 @@
-import { memo, useState, useCallback, useRef } from 'react'
+import { memo, useState, useCallback, useRef, useEffect } from 'react'
 import { View, FlatList, Keyboard } from 'react-native'
 import usePullRefresh from '@/components/common/usePullRefresh'
 import ListItem from './ListItem'
@@ -19,6 +19,8 @@ import { refreshCoverCaches } from '@/core/music/coverUrl'
 export default memo(() => {
   const followedArtists = useWyFollowedArtists()
   const [loading, setLoading] = useState(false)
+  // 只有用户下拉才让刷新指示器/托住列表；程序加载不触发。
+  const [pullRefreshing, setPullRefreshing] = useState(false)
   const flatListRef = useRef<FlatList>(null)
   const theme = useTheme()
   const t = useI18n()
@@ -47,10 +49,14 @@ export default memo(() => {
 
   const handlePullRefresh = useCallback(() => {
     setTimeout(refreshCoverCaches, 0)
+    setPullRefreshing(true)
     onRefresh()
   }, [onRefresh])
+  useEffect(() => {
+    if (!loading) setPullRefreshing(false)
+  }, [loading])
   const { indicator: pullIndicator, scrollProps: pullScrollProps } = usePullRefresh(
-    loading,
+    pullRefreshing,
     handlePullRefresh,
     flatListRef,
   )

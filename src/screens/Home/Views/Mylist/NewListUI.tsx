@@ -1,7 +1,6 @@
 import { memo, useCallback, useMemo, useState, useEffect, useRef } from 'react'
 import { View, TouchableOpacity, FlatList, Animated, PanResponder, BackHandler, StyleSheet } from 'react-native'
 import usePullRefresh from '@/components/common/usePullRefresh'
-import { useStatusbarHeight } from '@/store/common/hook'
 import { useMyList, useActiveListId, useListFetching } from '@/store/list/hook'
 import { useSettingValue } from '@/store/setting/hook'
 import { setActiveList, updateUserListPosition } from '@/core/list'
@@ -418,7 +417,6 @@ export default memo(() => {
   // 置位，本次加载（fetching true→false）落地后清除。
   const [refreshing, setRefreshing] = useState(false)
   const flatListRef = useRef<any>(null)
-  const statusBarHeight = useStatusbarHeight()
   const [hasError, setHasError] = useState(false)
   const [showMusicList, setShowMusicList] = useState(false)
   const isFirstLoadRef = useRef(true)
@@ -623,7 +621,7 @@ export default memo(() => {
     setRefreshing(true)
     void refreshListInfo(true)
   }, [refreshListInfo])
-  const { indicator: pullIndicator, scrollProps: pullScrollProps } = usePullRefresh(refreshing, handlePullRefresh, flatListRef, statusBarHeight)
+  const { indicator: pullIndicator, scrollProps: pullScrollProps } = usePullRefresh(refreshing, handlePullRefresh, flatListRef)
 
   useEffect(() => {
     void refreshListInfo()
@@ -927,7 +925,8 @@ export default memo(() => {
   }
 
   const listHeader = (
-    <>
+    <View>
+      {pullIndicator}
       <PageTopInset />
       <View style={styles.pageHeader}>
         <Text style={styles.pageTitle} size={34} color={theme['c-font']}>
@@ -935,12 +934,11 @@ export default memo(() => {
         </Text>
         <OpenList onOpenDetail={handleOpenImportedDetail} />
       </View>
-    </>
+    </View>
   )
 
   const listPanel = (
     <View style={[styles.content, { overflow: 'hidden' }]}>
-      {pullIndicator}
       {hasError ? (
         <View style={styles.errorContainer}>
           <Text size={16} color={theme['c-font']} style={styles.errorText}>加载失败</Text>

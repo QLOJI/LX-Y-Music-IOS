@@ -35,6 +35,8 @@ export default memo(() => {
   const bottomInset = useBottomOverlayInset()
   const flatListRef = useRef<any>(null)
   const [loading, setLoading] = useState(true)
+  // 只有用户下拉才让刷新指示器/托住列表；首载 loading 不触发它。
+  const [pullRefreshing, setPullRefreshing] = useState(false)
   // 首载闸门（用户第 15 轮第 3 条）：FlatList 必须等首次加载结束再挂载，**不能**先以
   // data=[] 挂出来、数据到了再补进去 —— 空列表里只有页头那一格，数据到达后整块内容按
   // 最终高度重排/复位，用户看到的就是「第一次进入歌单页时整体向上跳一下再落下来」。
@@ -236,10 +238,20 @@ export default memo(() => {
   )
   const handlePullRefresh = useCallback(() => {
     setTimeout(refreshCoverCaches, 0)
+    if (!cookie || !uid) {
+      setPullRefreshing(false)
+      onRefresh()
+      return
+    }
+    setPullRefreshing(true)
     onRefresh()
-  }, [onRefresh])
+  }, [onRefresh, cookie, uid])
+  // 加载落地后收起下拉刷新态（hook 自己还会保持最短展示时间）。
+  useEffect(() => {
+    if (!loading) setPullRefreshing(false)
+  }, [loading])
   const { indicator: pullIndicator, scrollProps: pullScrollProps } = usePullRefresh(
-    loading,
+    pullRefreshing,
     handlePullRefresh,
     flatListRef,
   )

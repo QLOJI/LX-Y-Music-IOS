@@ -172,7 +172,6 @@ export default forwardRef<ListType, ListProps>(({ header, onRefresh, onLoadMore,
 
   return (
     <View style={styles.container} onLayout={onLayout}>
-      {pullIndicator}
       {/* 不再用 `width == 0 ? null` 门控（2026-10-02 用户第 3 条）：那会把头部一起
           摘掉一帧。宽度由 effectiveWidth 兜底，rowInfo 首帧即可用。 */}
       <FlatList
@@ -206,7 +205,12 @@ export default forwardRef<ListType, ListProps>(({ header, onRefresh, onLoadMore,
         removeClippedSubviews={false}
         // initialNumToRender={12}
         renderItem={renderItem}
-        ListHeaderComponent={header}
+        ListHeaderComponent={(
+          <View>
+            {pullIndicator}
+            {header}
+          </View>
+        )}
         keyExtractor={getkey}
         // getItemLayout={getItemLayout}
         // onRefresh={onRefresh}
