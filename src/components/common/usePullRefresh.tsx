@@ -20,8 +20,9 @@ import { useTheme } from '@/store/theme/hook'
  *   const { indicator, scrollProps } = usePullRefresh(refreshing, onRefresh, flatListRef)
  *   把 indicator 放在列表容器顶层（容器加 overflow:'hidden'），scrollProps 展开到 FlatList。
  */
-export const PULL_TRIGGER = 30
-export const REFRESH_MIN_MS = 600
+// 高度同时容纳放大的刷新图标；仍明显短于系统 UIRefreshControl 的触发距离。
+export const PULL_TRIGGER = 40
+export const REFRESH_MIN_MS = 900
 const UNHOLD_DELAY_MS = 240
 
 type ScrollListRef = { current: any }
@@ -61,6 +62,10 @@ const usePullRefresh = (refreshing: boolean, onRefresh: () => void, listRef?: Sc
     refreshingRef.current = refreshing
     if (refreshing) {
       armedRef.current = true
+      // 程序触发的自动刷新也把列表托到刷新位，显示成一次下拉动作，
+      // 指示器出现在列表上方而不是盖住第一行。
+      heldRef.current = true
+      setHeld(true)
       startedAtRef.current = Date.now()
       displayRef.current = true
       setDisplayRefreshing(true)
@@ -174,7 +179,7 @@ const usePullRefresh = (refreshing: boolean, onRefresh: () => void, listRef?: Sc
         },
       ]}
     >
-      <ActivityIndicator color={theme['c-primary']} animating={displayRefreshing} />
+      <ActivityIndicator color={theme['c-primary']} size="large" animating={displayRefreshing} />
     </Animated.View>
   )
 
@@ -185,9 +190,8 @@ const usePullRefresh = (refreshing: boolean, onRefresh: () => void, listRef?: Sc
       onScrollEndDrag: handleScrollEndDrag,
       scrollEventThrottle: 16,
       bounces: true,
-      // 禁用系统的自动安全区 inset，顶部距离完全由这里控制。
-      contentInsetAdjustmentBehavior: 'never' as const,
-      automaticallyAdjustContentInsets: false,
+      // 保留系统自动安全区 inset（关掉会把「歌单 / 我的」页头整体推上去）；
+      // 只在刷新时叠加一个 PULL_TRIGGER 的顶部 inset 做下拉动作。
       contentInset: { top: held ? PULL_TRIGGER : 0 },
     },
   }
