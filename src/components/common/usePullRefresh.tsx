@@ -220,8 +220,9 @@ const usePullRefresh = (refreshing: boolean, onRefresh: () => void, listRef?: Sc
     pullRef.current = pull
     // 只有从列表顶部（偏移 ≤ 0）开始的拖动才是下拉刷新；从列表中间甩到顶部的回弹不算。
     if (start != null && start <= 0 && pull >= PULL_TRIGGER) {
-      restOffsetRef.current = start
-      holdOffsetRef.current = start - PULL_TRIGGER
+      // 回位目标不高于 0：防止在回弹途中再次按下时把「回弹中的偏移」当成原始顶部。
+      restOffsetRef.current = Math.min(start, 0)
+      holdOffsetRef.current = restOffsetRef.current - PULL_TRIGGER
       // 先点亮完整指示器、托住列表，再发请求：图标不会闪一下又缩回去，列表也留出空白位。
       displayRef.current = true
       setDisplayRefreshing(true)
