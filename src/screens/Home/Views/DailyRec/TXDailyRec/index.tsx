@@ -87,6 +87,8 @@ const Tabs = ({
 
 export default memo(() => {
   const [activeTab, setActiveTab] = useState<TabType>('home')
+  // 落页后才触发数据刷新，切页动画期间不启动刷新。
+  const [settledTab, setSettledTab] = useState<TabType>(activeTab)
   const pagerViewRef = useRef<PagerView>(null)
   const activeIndexRef = useRef(TABS.findIndex((t) => t.id === activeTab))
   activeIndexRef.current = TABS.findIndex((t) => t.id === activeTab)
@@ -119,6 +121,7 @@ export default memo(() => {
       if (newTab !== activeTab) {
         setActiveTab(newTab)
       }
+      setSettledTab(newTab)
     },
     [activeTab, notifyPageSelected],
   )
@@ -207,16 +210,16 @@ export default memo(() => {
           scrollEnabled
         >
           <View key="home">
-            <RecSongs type="home" onOpenDetail={handleOpenDetail} active={activeTab === 'home'} />
+            <RecSongs type="home" onOpenDetail={handleOpenDetail} active={settledTab === 'home'} />
           </View>
           <View key="radar">
-            <RecSongs type="radar" active={activeTab === 'radar'} />
+            <RecSongs type="radar" active={settledTab === 'radar'} />
           </View>
           <View key="songlist">
-            <RecPlaylists onOpenDetail={handleOpenDetail} active={activeTab === 'songlist'} />
+            <RecPlaylists onOpenDetail={handleOpenDetail} active={settledTab === 'songlist'} />
           </View>
           <View key="newsong">
-            <RecSongs type="newsong" active={activeTab === 'newsong'} />
+            <RecSongs type="newsong" active={settledTab === 'newsong'} />
           </View>
         </PagerView>
       </View>

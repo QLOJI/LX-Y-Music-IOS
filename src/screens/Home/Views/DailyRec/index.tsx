@@ -176,6 +176,10 @@ export default memo(() => {
   // 【第 192 轮】PagerView 页序与 tab 视觉顺序对齐：page0 = 推荐歌单、page1 = 推荐歌曲。
   // initialPage 按语义 id 映射（`activeTab === 'songs' ? 1 : 0`，见下方 render）。
   const [activeTab, setActiveTab] = useState<'songs' | 'playlists'>('playlists')
+  // 只有页面真正落定（onPageSelected / 进页复位）后才触发数据刷新：
+  // 切 tab 时按钮高亮立即变、PagerView 立即开始滑，刷新等滑完再开始，
+  // 避免刷新引发的 state/inset 更新和右滑动画抢帧。
+  const [settledTab, setSettledTab] = useState<'songs' | 'playlists'>(activeTab)
   // 两页都随本页挂载一起挂载（不再「首次切过去才挂」）：避免切 tab 时还要等页面挂载。
   // 每次切到某个 tab、或重新进入每日推荐页，都会保留原列表并立即下拉刷新；
   // 首次加载（列表为空）时呈现空白 + 刷新，响应后直接填入新数据。
@@ -232,6 +236,7 @@ export default memo(() => {
       if (id !== 'nav_daily_rec' || prev === 'nav_daily_rec') return
       if (activeTabRef.current === 'playlists') return
       setActiveTab('playlists')
+      setSettledTab('playlists')
       pagerViewRef.current?.setPageWithoutAnimation(0)
     }
     global.state_event.on('navActiveIdUpdated', handleNavActiveIdUpdate)
@@ -254,6 +259,8 @@ export default memo(() => {
     if (newTab !== activeTab) {
       setActiveTab(newTab)
     }
+    // 落页后才放行数据刷新：切页动画期间不启动刷新。
+    setSettledTab(newTab)
   }, [activeTab, notifyPageSelected])
 
   const handleOpenDetail = useCallback((playlistInfo: ListInfoItem) => {
@@ -345,14 +352,14 @@ export default memo(() => {
         >
           {/* 【第 192 轮】页序 = 视觉顺序：推荐歌单在左（page0）、推荐歌曲在右（page1）。 */}
           <View key="playlists">
-            <RecPlaylists onOpenDetail={handleOpenDetail} active={activeTab === 'playlists'} />
+            <RecPlaylists onOpenDetail={handleOpenDetail} active={settledTab === 'playlists'} />
           </View>
           <View key="songs">
             {/* 两页随本页挂载一起挂载：歌曲页进入即预取，切 tab 不再等加载。 */}
             <RecSongs
               isStylized={isStylized}
               stylizedSelection={stylizedSelection}
-              active={activeTab === 'songs'}
+              active={settledTab === 'songs'}
             />
           </View>
         </PagerView>
