@@ -14,6 +14,7 @@ import ListItem from '../MyPlaylist/ListItem'
 import { useBottomOverlayInset } from '@/store/common/hook'
 import { useHomePageVisible } from '@/store/common/pageVisibility'
 import { refreshCoverCaches } from '@/core/music/coverUrl'
+import { takeDailyRecAutoRefresh } from '@/core/dailyRecSession'
 
 export default memo(({ onOpenDetail, active = true }: { onOpenDetail: (info: any) => void, active?: boolean }) => {
   const [playlists, setPlaylists] = useState<any[]>([])
@@ -99,6 +100,8 @@ export default memo(({ onOpenDetail, active = true }: { onOpenDetail: (info: any
   // 首次加载时列表本来就是空的，自然就是「空白 + 刷新」。
   useEffect(() => {
     if (!active) return
+    // 本次启动第一次进入本 tab 才自动下拉刷新；之后只手动下拉。
+    if (!takeDailyRecAutoRefresh(`wy_daily_playlists_${cookie}`)) return
     setLoadError('')
     loadPlaylists()
   }, [active, enterSeq, loadPlaylists])

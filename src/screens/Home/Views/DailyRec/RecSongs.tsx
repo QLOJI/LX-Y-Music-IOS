@@ -19,6 +19,7 @@ import {
   clearDailyRecCache,
 } from '@/utils/data'
 import { refreshCoverCaches } from '@/core/music/coverUrl'
+import { takeDailyRecAutoRefresh } from '@/core/dailyRecSession'
 import { useHomePageVisible } from '@/store/common/pageVisibility'
 
 
@@ -81,7 +82,12 @@ export default memo(({ isStylized, stylizedSelection, active = true }: RecSongsP
       return
     }
 
-    // 每次切到本 tab / 重新进入本页：保留原列表，只点亮下拉刷新动画。
+    // 每个列表本次启动只自动下拉刷新一次；之后切换回来只显示已有列表，手动下拉。
+    const autoKey = isStylized && stylizedSelection
+      ? `wy_stylized_${cookie}|${JSON.stringify(stylizedSelection)}`
+      : `wy_songs_${cookie}`
+    if (!takeDailyRecAutoRefresh(autoKey)) return
+
     // 首次加载时列表本来就是空的，自然就是「空白 + 刷新」。
     listRef.current?.setStatus('refreshing')
     // 封面缓存签名计算很重，延后到这一帧之后，避免切页瞬间 JS 卡一下。

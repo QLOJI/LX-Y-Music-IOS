@@ -14,6 +14,7 @@ import { type ListInfoItem } from '@/store/songlist/state'
 import { useBottomOverlayInset } from '@/store/common/hook'
 import { useHomePageVisible } from '@/store/common/pageVisibility'
 import { refreshCoverCaches } from '@/core/music/coverUrl'
+import { takeDailyRecAutoRefresh } from '@/core/dailyRecSession'
 
 interface PlaylistInfo {
   id: number
@@ -118,6 +119,8 @@ export default memo(({ onOpenDetail, active = true }: Props) => {
   // 首次加载时列表本来就是空的，自然就是「空白 + 刷新」。
   useEffect(() => {
     if (!active) return
+    // 本次启动第一次进入本 tab 才自动下拉刷新；之后只手动下拉。
+    if (!takeDailyRecAutoRefresh('tx_daily_songlists')) return
     setLoadError('')
     void loadPlaylists(true)
   }, [active, enterSeq, loadPlaylists])

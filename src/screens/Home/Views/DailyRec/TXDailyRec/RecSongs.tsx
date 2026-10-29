@@ -17,6 +17,7 @@ import { type ListInfoItem } from '@/store/songlist/state'
 import { useBottomOverlayInset } from '@/store/common/hook'
 import { useHomePageVisible } from '@/store/common/pageVisibility'
 import { refreshCoverCaches } from '@/core/music/coverUrl'
+import { takeDailyRecAutoRefresh } from '@/core/dailyRecSession'
 
 type RecType = 'home' | 'radar' | 'newsong'
 
@@ -162,6 +163,8 @@ export default memo(({ type, onOpenDetail, active = true }: Props) => {
   // 首次加载时列表本来就是空的，自然呈现「空白 + 刷新」；响应后直接替换成新内容。
   useEffect(() => {
     if (!active) return
+    // 每个列表本次启动只自动下拉刷新一次；之后切换回来只显示已有列表，手动下拉。
+    if (!takeDailyRecAutoRefresh(`tx_daily_${type}`)) return
     if (type === 'home') {
       // 不清空：有数据就保留原列表，只点亮下拉刷新动画；首次加载时列表本来就是空的。
       void loadPlaylists(true)
