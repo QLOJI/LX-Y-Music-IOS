@@ -21,7 +21,7 @@ import { useTheme } from '@/store/theme/hook'
  *   const { indicator, scrollProps } = usePullRefresh(refreshing, onRefresh, flatListRef)
  *   把 indicator 放在列表容器顶层（容器加 overflow:'hidden'），scrollProps 展开到 FlatList。
  */
-export const PULL_TRIGGER = 40
+export const PULL_TRIGGER = 32
 export const REFRESH_MIN_MS = 900
 const UNHOLD_DELAY_MS = 240
 const ICON_SIZE = 26
@@ -261,9 +261,9 @@ const usePullRefresh = (refreshing: boolean, onRefresh: () => void, listRef?: Sc
       onScrollEndDrag: handleScrollEndDrag,
       scrollEventThrottle: 16,
       bounces: true,
-      // 保留系统自动安全区 inset（关掉会把「歌单 / 我的」页头整体推上去）；
-      // 只在刷新时叠加一个 PULL_TRIGGER 的顶部 inset 做下拉动作。
-      contentInset: { top: held ? PULL_TRIGGER : 0 },
+      // 不刷新时完全不传 contentInset，保持列表原先的安全区/顶部布局；
+      // 刷新时叠加一个 PULL_TRIGGER 的顶部 inset 做下拉动作。
+      contentInset: held ? { top: PULL_TRIGGER } : undefined,
     },
   }
 }
