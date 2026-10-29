@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useRef, useState, forwardRef, useImperativeHandle, useEffect } from 'react'
-import { FlatList, type FlatListProps, Keyboard, View } from 'react-native'
+import { FlatList, type FlatListProps, Keyboard, View, type NativeScrollEvent, type NativeSyntheticEvent } from 'react-native'
 import usePullRefresh from '@/components/common/usePullRefresh'
 import ListItem, { ITEM_HEIGHT } from './ListItem'
 import { createStyle, getRowInfo, type RowInfoType } from '@/utils/tools'
@@ -365,8 +365,10 @@ const List = forwardRef<ListType, ListProps>(
       )
     }, [onLoadMore, status, visibleMultiSelect, ListFooterComponent])
 
-    const handleScrollBeginDrag = () => {
+    const handleScrollBeginDrag = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
       if (listId !== 'search') Keyboard.dismiss()
+      // 下拉刷新要用拖动起点做基准（iOS 安全区会给滚动视图负的初始偏移）。
+      pullScrollProps.onScrollBeginDrag?.(e)
     }
 
     // 底部悬浮层（迷你播放器 + 底部 Tab + 安全区）统一避让高度
