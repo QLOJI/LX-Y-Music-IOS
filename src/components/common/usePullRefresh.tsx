@@ -1,37 +1,47 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
-  ActivityIndicator,
   Animated,
   Easing,
   StyleSheet,
   type NativeScrollEvent,
   type NativeSyntheticEvent,
 } from 'react-native'
+import Svg, { Circle } from 'react-native-svg'
 import { useTheme } from '@/store/theme/hook'
 
 /**
  * 自绘下拉刷新（不依赖系统 UIRefreshControl）：
- *   · 触发距离固定 30pt（比系统短一半），指示器完全显示后松手即刷新；
- *   · 松手时只把列表托在刷新位（contentInset.top=30），不再额外向下推；
- *   · 刷新结束后先平滑滚回 offset 0，再撤掉 inset —— 顶部距离与刷新前完全一致；
- *   · 指示器至少展示 600ms，所有列表节奏统一。
+ *   · 下拉时圆环从圆点逐渐画满，松手即刷新；刷新中圆环旋转；
+ *   · 触发距离 PULL_TRIGGER，刷新时把列表托在刷新位，不额外向下推；
+ *   · 刷新结束平滑回到「下拉前的原顶部位置」（不是强制 scrollTo 0），
+ *     因此「歌单 / 我的」这类带页头列表不会在刷新后把标题顶上去；
+ *   · 指示器至少展示 REFRESH_MIN_MS，各列表节奏统一。
  *
  * 用法：
  *   const { indicator, scrollProps } = usePullRefresh(refreshing, onRefresh, flatListRef)
  *   把 indicator 放在列表容器顶层（容器加 overflow:'hidden'），scrollProps 展开到 FlatList。
  */
-// 高度同时容纳放大的刷新图标；仍明显短于系统 UIRefreshControl 的触发距离。
 export const PULL_TRIGGER = 40
 export const REFRESH_MIN_MS = 900
 const UNHOLD_DELAY_MS = 240
+const ICON_SIZE = 26
+const ICON_RADIUS = 10
+const ICON_STROKE = 2.4
+const ICON_CIRCUMFERENCE = 2 * Math.PI * ICON_RADIUS
 
 type ScrollListRef = { current: any }
+
+const AnimatedCircle = Animated.createAnimatedComponent(Circle)
 
 const usePullRefresh = (refreshing: boolean, onRefresh: () => void, listRef?: ScrollListRef, topOffset = 0) => {
   const theme = useTheme()
   const progress = useRef(new Animated.Value(0)).current
+  const spin = useRef(new Animated.Value(0)).current
   const pullRef = useRef(0)
   const lastPullRef = useRef(0)
+  // 下拉前的原顶部偏移（可能是 0，也可能是自动安全区 inset 的负值）。
+  // 刷新结束回到这里，而不是无条件 scrollToOffset(0)。
+  const restOffsetRef = useRef<number | null>(null)
   const refreshingRef = useRef(refreshing)
   const armedRef = useRef(false)
   const heldRef = useRef(false)
@@ -48,9 +58,11 @@ const usePullRefresh = (refreshing: boolean, onRefresh: () => void, listRef?: Sc
   const releaseHold = useCallback(() => {
     if (!heldRef.current) return
     heldRef.current = false
-    // 先把列表平滑滚回 0，让内容自己回到原位；稍后再撤 inset，
-    // 避免 inset 变化瞬间把列表硬拽上去。
-    listRef?.current?.scrollToOffset?.({ offset: 0, animated: true })
+    // 回到「下拉前的原顶部位置」：带安全区 inset 的列表不是 0。
+    listRef?.current?.scrollToOffset?.({
+      offset: restOffsetRef.current ?? 0,
+      animated: true,
+    })
     if (unholdTimerRef.current) clearTimeout(unholdTimerRef.current)
     unholdTimerRef.current = setTimeout(() => {
       unholdTimerRef.current = null
@@ -74,7 +86,7 @@ const usePullRefresh = (refreshing: boolean, onRefresh: () => void, listRef?: Sc
         toValue: 1,
         duration: 150,
         easing: Easing.out(Easing.quad),
-        useNativeDriver: true,
+        useNativeDriver: false,
       }).start()
       return
     }
@@ -90,7 +102,7 @@ const usePullRefresh = (refreshing: boolean, onRefresh: () => void, listRef?: Sc
         toValue: 0,
         duration: 200,
         easing: Easing.out(Easing.quad),
-        useNativeDriver: true,
+        useNativeDriver: false,
       }).start()
     }
     const remain = REFRESH_MIN_MS - (Date.now() - startedAtRef.current)
@@ -111,6 +123,24 @@ const usePullRefresh = (refreshing: boolean, onRefresh: () => void, listRef?: Sc
     }
   }, [refreshing, progress, releaseHold])
 
+  // 刷新中旋转圆环
+  useEffect(() => {
+    if (!displayRefreshing) {
+      spin.stopAnimation()
+      spin.setValue(0)
+      return
+    }
+    spin.setValue(0)
+    const anim = Animated.loop(Animated.timing(spin, {
+      toValue: 1,
+      duration: 900,
+      easing: Easing.linear,
+      useNativeDriver: true,
+    }))
+    anim.start()
+    return () => { anim.stop() }
+  }, [displayRefreshing, spin])
+
   useEffect(() => () => {
     if (minTimerRef.current) clearTimeout(minTimerRef.current)
     if (fallbackTimerRef.current) clearTimeout(fallbackTimerRef.current)
@@ -120,13 +150,26 @@ const usePullRefresh = (refreshing: boolean, onRefresh: () => void, listRef?: Sc
   const handleScroll = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
     if (refreshingRef.current || armedRef.current) return
     const y = e.nativeEvent.contentOffset.y
-    const pull = Math.max(0, -y)
+    // 记录静止时的顶部偏移：列表中带自动安全区 inset 时它是负值。
+    // 取观察到的、最接近 0 的非正 offset 作为基底。
+    if (y <= 0) {
+      if (restOffsetRef.current == null || y > restOffsetRef.current) restOffsetRef.current = y
+    }
+    const base = restOffsetRef.current ?? 0
+    const pull = Math.max(0, base - y)
     if (pull === lastPullRef.current) return
     lastPullRef.current = pull
     pullRef.current = pull
     progress.stopAnimation()
     progress.setValue(Math.min(1, pull / PULL_TRIGGER))
   }, [progress])
+
+  const handleScrollBeginDrag = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
+    if (refreshingRef.current) return
+    // 手指按下开始拖动的这一刻就是「原顶部位置」：带安全区 inset 的页面是负值。
+    const y = e.nativeEvent.contentOffset.y
+    if (y <= 0) restOffsetRef.current = y
+  }, [])
 
   const handleScrollEndDrag = useCallback(() => {
     if (refreshingRef.current) return
@@ -148,7 +191,7 @@ const usePullRefresh = (refreshing: boolean, onRefresh: () => void, listRef?: Sc
           toValue: 0,
           duration: 150,
           easing: Easing.out(Easing.quad),
-          useNativeDriver: true,
+          useNativeDriver: false,
         }).start()
       }, 200)
     } else {
@@ -156,11 +199,23 @@ const usePullRefresh = (refreshing: boolean, onRefresh: () => void, listRef?: Sc
         toValue: 0,
         duration: 150,
         easing: Easing.out(Easing.quad),
-        useNativeDriver: true,
+        useNativeDriver: false,
       }).start()
     }
     pullRef.current = 0
   }, [progress])
+
+  // 下拉阶段：圆环从圆点画满；刷新阶段：保留一段缺口并旋转，形成加载圈。
+  const dashOffset = displayRefreshing
+    ? 0
+    : progress.interpolate({
+      inputRange: [0, 1],
+      outputRange: [ICON_CIRCUMFERENCE, 0],
+    })
+  const dashArray = displayRefreshing
+    ? `${ICON_CIRCUMFERENCE * 0.78} ${ICON_CIRCUMFERENCE}`
+    : `${ICON_CIRCUMFERENCE} ${ICON_CIRCUMFERENCE}`
+  const rotate = spin.interpolate({ inputRange: [0, 1], outputRange: ['0deg', '360deg'] })
 
   const indicator = (
     <Animated.View
@@ -179,7 +234,22 @@ const usePullRefresh = (refreshing: boolean, onRefresh: () => void, listRef?: Sc
         },
       ]}
     >
-      <ActivityIndicator color={theme['c-primary']} size="large" animating={displayRefreshing} />
+      <Animated.View style={{ transform: [{ rotate }] }}>
+        <Svg width={ICON_SIZE} height={ICON_SIZE} viewBox={`0 0 ${ICON_SIZE} ${ICON_SIZE}`}>
+          <AnimatedCircle
+            cx={ICON_SIZE / 2}
+            cy={ICON_SIZE / 2}
+            r={ICON_RADIUS}
+            stroke={theme['c-primary']}
+            strokeWidth={ICON_STROKE}
+            fill="none"
+            strokeLinecap="round"
+            strokeDasharray={dashArray}
+            strokeDashoffset={dashOffset as any}
+            transform={`rotate(-90 ${ICON_SIZE / 2} ${ICON_SIZE / 2})`}
+          />
+        </Svg>
+      </Animated.View>
     </Animated.View>
   )
 
@@ -187,6 +257,7 @@ const usePullRefresh = (refreshing: boolean, onRefresh: () => void, listRef?: Sc
     indicator,
     scrollProps: {
       onScroll: handleScroll,
+      onScrollBeginDrag: handleScrollBeginDrag,
       onScrollEndDrag: handleScrollEndDrag,
       scrollEventThrottle: 16,
       bounces: true,
