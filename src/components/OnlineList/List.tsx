@@ -13,7 +13,6 @@ import Text from '@/components/common/Text'
 import { handlePlay } from './listAction'
 import { useSettingValue } from '@/store/setting/hook'
 import { useBottomOverlayInset } from '@/store/common/hook'
-import { refreshCoverCaches } from '@/core/music/coverUrl'
 
 type FlatListType = FlatListProps<LX.Music.MusicInfoOnline>
 export type { RowInfoType }
@@ -326,9 +325,8 @@ const List = forwardRef<ListType, ListProps>(
     }
 
     const handlePullRefresh = useCallback(() => {
-      // 所有走 OnlineList 的页面：下拉即作废封面缓存并推进图片纪元。
-      // 签名计算较重，放到下一拍，避免松手瞬间卡一下。
-      setTimeout(refreshCoverCaches, 0)
+      // 不推进图片纪元：同歌同歌单的封面/图标继续用缓存，只有换了 URL（新歌单/新歌）
+      // 才会重新下载，避免每次下拉都把整屏封面重载一遍。
       onRefresh()
     }, [onRefresh])
     const { indicator: pullIndicator, scrollProps: pullScrollProps } = usePullRefresh(

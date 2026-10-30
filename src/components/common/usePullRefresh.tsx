@@ -51,6 +51,8 @@ const usePullRefresh = (refreshing: boolean, onRefresh: () => void, listRef?: Sc
   // 程序触发的刷新只有在列表仍停在顶部时才补下拉动作，滚下去了就不硬拽。
   const lastOffsetRef = useRef<number | null>(null)
   const topOffsetRef = useRef<number | null>(null)
+  // 托住/回位动画期间禁止用滚动偏移学「顶部」，否则会把动画中途值当成顶部烤进去。
+  const suppressCaptureUntilRef = useRef(0)
   const refreshingRef = useRef(refreshing)
   const displayRef = useRef(refreshing)
   const sawRefreshingRef = useRef(false)
@@ -81,17 +83,30 @@ const usePullRefresh = (refreshing: boolean, onRefresh: () => void, listRef?: Sc
     setHeld(true)
   }, [])
 
-  /** 松开列表：先动画回原始顶部（拖动起点），动画结束再撤 inset（不会二次跳动）。 */
+  /** 不是刷新态时把列表校正回测得的顶部：轻拉/回弹中途松手都不会留下偏移。 */
+  const snapToTop = useCallback(() => {
+    if (displayRef.current || heldRef.current) return
+    const top = topOffsetRef.current
+    const last = lastOffsetRef.current
+    if (top == null || last == null) return
+    if (Math.abs(last - top) < 0.5) return
+    listRef?.current?.scrollToOffset?.({ offset: top, animated: true })
+  }, [listRef])
+
+  /** 松开列表：先动画回原始顶部，动画结束再撤 inset（不会二次跳动）。 */
   const releaseHold = useCallback(() => {
     if (!heldRef.current) return
     heldRef.current = false
-    listRef?.current?.scrollToOffset?.({ offset: restOffsetRef.current, animated: true })
+    suppressCaptureUntilRef.current = Date.now() + 600
+    const target = topOffsetRef.current ?? restOffsetRef.current
+    listRef?.current?.scrollToOffset?.({ offset: target, animated: true })
     clearTimer(unholdTimerRef)
     unholdTimerRef.current = setTimeout(() => {
       unholdTimerRef.current = null
       setHeld(false)
+      setTimeout(snapToTop, 100)
     }, UNHOLD_DELAY_MS)
-  }, [listRef])
+  }, [listRef, snapToTop])
 
   const hideIndicator = useCallback(() => {
     displayRef.current = false
@@ -219,7 +234,14 @@ const usePullRefresh = (refreshing: boolean, onRefresh: () => void, listRef?: Sc
     lastOffsetRef.current = y
     // 首次静止偏移即列表顶部（可能因 iOS 安全区 inset 为负），刷新回位与程序刷新托住都用它。
     // 只认顶部区域（y ≤ 0）且非拖动/非托住期间：避免把回弹或列表中段的偏移当成顶部。
-    if (topOffsetRef.current == null && dragStartRef.current == null && !heldRef.current && !displayRef.current && y <= 0) {
+    if (
+      topOffsetRef.current == null &&
+      dragStartRef.current == null &&
+      !heldRef.current &&
+      !displayRef.current &&
+      Date.now() >= suppressCaptureUntilRef.current &&
+      y <= 0
+    ) {
       topOffsetRef.current = y
     }
     if (displayRef.current) {
@@ -291,16 +313,32 @@ const usePullRefresh = (refreshing: boolean, onRefresh: () => void, listRef?: Sc
         easing: Easing.out(Easing.quad),
         useNativeDriver: false,
       }).start()
+      // 轻拉松手：回弹不一定精确落回顶部，这里统一校正一次。
+      snapToTop()
     }, SETTLE_MS)
-  }, [progress, holdList, hideIndicator])
+  }, [progress, holdList, hideIndicator, snapToTop])
 
-  const handleMomentumScrollEnd = useCallback(() => {
+  const handleMomentumScrollEnd = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
+    const y = e.nativeEvent.contentOffset.y
+    lastOffsetRef.current = y
+    // 惯性结束 = 列表已经静止：此时在顶部区域量到的偏移才是可信的「顶部」。
+    if (
+      topOffsetRef.current == null &&
+      dragStartRef.current == null &&
+      !heldRef.current &&
+      !displayRef.current &&
+      Date.now() >= suppressCaptureUntilRef.current &&
+      y <= 0
+    ) {
+      topOffsetRef.current = y
+    }
     if (displayRef.current) return
     pullRef.current = 0
     lastPullRef.current = 0
     progress.stopAnimation()
     progress.setValue(0)
-  }, [progress])
+    snapToTop()
+  }, [progress, snapToTop])
 
   // 下拉阶段：圆环从圆点画满；刷新阶段：保留一段缺口并旋转，形成加载圈。
   const dashOffset = displayRefreshing
