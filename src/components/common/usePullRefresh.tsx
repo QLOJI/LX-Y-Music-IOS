@@ -53,6 +53,10 @@ const usePullRefresh = (refreshing: boolean, onRefresh: () => void, listRef?: Sc
   const topOffsetRef = useRef<number | null>(null)
   // 托住/回位动画期间禁止用滚动偏移学「顶部」，否则会把动画中途值当成顶部烤进去。
   const suppressCaptureUntilRef = useRef(0)
+  // 顶部偏移的「候选值 + 静默计时」：滚动停住 120ms 才认，避免把大惯性回弹的中途值
+  // 学成顶部（一旦学歪，之后每次刷新都回到歪的位置，看起来就是「卡住」）。
+  const topCandidateRef = useRef<number | null>(null)
+  const topCaptureTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const refreshingRef = useRef(refreshing)
   const displayRef = useRef(refreshing)
   const sawRefreshingRef = useRef(false)
@@ -84,7 +88,7 @@ const usePullRefresh = (refreshing: boolean, onRefresh: () => void, listRef?: Sc
   }, [])
 
   /** 不是刷新态时把列表校正回测得的顶部：轻拉/回弹中途松手都不会留下偏移。 */
-  const snapToTop = useCallback(() => {
+  const snapToTop = useCallback((animated = true) => {
     if (displayRef.current || heldRef.current || dragStartRef.current != null) return
     const top = topOffsetRef.current
     const last = lastOffsetRef.current
@@ -92,7 +96,8 @@ const usePullRefresh = (refreshing: boolean, onRefresh: () => void, listRef?: Sc
     // 只在「越过顶部」（负向过度滚动，last 比 top 更负）时纠正。
     // 正常向下翻列表是 last > top，绝不能拉回顶部——那会表现成「上下滑动被锁住」。
     if (last >= top - 0.5) return
-    listRef?.current?.scrollToOffset?.({ offset: top, animated: true })
+    lastOffsetRef.current = top
+    listRef?.current?.scrollToOffset?.({ offset: top, animated })
   }, [listRef])
 
   /** 松开列表：先动画回原始顶部，动画结束再撤 inset（不会二次跳动）。 */
@@ -106,7 +111,9 @@ const usePullRefresh = (refreshing: boolean, onRefresh: () => void, listRef?: Sc
     unholdTimerRef.current = setTimeout(() => {
       unholdTimerRef.current = null
       setHeld(false)
-      setTimeout(snapToTop, 100)
+      // 撤 inset 之后做一次**非动画**硬校正：越过顶部的偏移不会自己弹回来，
+      // 大惯性下拉后「卡在半空」就靠这一步收尾。
+      setTimeout(() => snapToTop(false), 120)
     }, UNHOLD_DELAY_MS)
   }, [listRef, snapToTop])
 
@@ -221,6 +228,7 @@ const usePullRefresh = (refreshing: boolean, onRefresh: () => void, listRef?: Sc
     clearTimer(fallbackTimerRef)
     clearTimer(unholdTimerRef)
     clearTimer(autoHoldTimerRef)
+    clearTimer(topCaptureTimerRef)
     clearTimer(watchdogRef)
   }, [])
 
@@ -234,8 +242,9 @@ const usePullRefresh = (refreshing: boolean, onRefresh: () => void, listRef?: Sc
   const handleScroll = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
     const y = e.nativeEvent.contentOffset.y
     lastOffsetRef.current = y
-    // 首次静止偏移即列表顶部（可能因 iOS 安全区 inset 为负），刷新回位与程序刷新托住都用它。
-    // 只认顶部区域（y ≤ 0）且非拖动/非托住期间：避免把回弹或列表中段的偏移当成顶部。
+    // 顶部偏移（含 iOS 安全区 inset，可能为负）= 刷新回位 / 程序刷新托住 / 校正的基准。
+    // 不能一见到负偏移就认：大惯性回弹中途的偏移会比真正的顶部更负。这里先记候选值，
+    // 滚动停住 120ms 且值没变才落定——只有停稳时的偏移才是真的顶部。
     if (
       topOffsetRef.current == null &&
       dragStartRef.current == null &&
@@ -244,7 +253,18 @@ const usePullRefresh = (refreshing: boolean, onRefresh: () => void, listRef?: Sc
       Date.now() >= suppressCaptureUntilRef.current &&
       y <= 0
     ) {
-      topOffsetRef.current = y
+      topCandidateRef.current = y
+      clearTimer(topCaptureTimerRef)
+      topCaptureTimerRef.current = setTimeout(() => {
+        topCaptureTimerRef.current = null
+        if (topOffsetRef.current != null) return
+        if (displayRef.current || heldRef.current || dragStartRef.current != null) return
+        const candidate = topCandidateRef.current
+        const last = lastOffsetRef.current
+        if (candidate == null || last == null || candidate > 0) return
+        if (Math.abs(last - candidate) > 0.5) return
+        topOffsetRef.current = last
+      }, 120)
     }
     if (displayRef.current) {
       // 刷新中：忽略回弹过程，指示器保持在完整状态。
