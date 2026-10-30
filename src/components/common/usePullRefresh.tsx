@@ -217,8 +217,9 @@ const usePullRefresh = (refreshing: boolean, onRefresh: () => void, listRef?: Sc
   const handleScroll = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
     const y = e.nativeEvent.contentOffset.y
     lastOffsetRef.current = y
-    // 首次静止偏移即列表顶部（可能因 iOS 安全区 inset 为负），程序刷新托住时要用。
-    if (topOffsetRef.current == null && dragStartRef.current == null && !heldRef.current) {
+    // 首次静止偏移即列表顶部（可能因 iOS 安全区 inset 为负），刷新回位与程序刷新托住都用它。
+    // 只认顶部区域（y ≤ 0）且非拖动/非托住期间：避免把回弹或列表中段的偏移当成顶部。
+    if (topOffsetRef.current == null && dragStartRef.current == null && !heldRef.current && !displayRef.current && y <= 0) {
       topOffsetRef.current = y
     }
     if (displayRef.current) {
@@ -256,8 +257,9 @@ const usePullRefresh = (refreshing: boolean, onRefresh: () => void, listRef?: Sc
     pullRef.current = pull
     // 只有从列表顶部（偏移 ≤ 0）开始的拖动才是下拉刷新；从列表中间甩到顶部的回弹不算。
     if (start != null && start <= 0 && pull >= PULL_TRIGGER) {
-      // 回位目标不高于 0：防止在回弹途中再次按下时把「回弹中的偏移」当成原始顶部。
-      restOffsetRef.current = Math.min(start, 0)
+      // 回位目标固定为「列表顶部」：不能用拖动起点——回弹途中再按下时起点会一次次变低，
+      // 连拉几次后顶部间距就会越来越大。顶部偏移未知时才退回拖动起点（且不高于 0）。
+      restOffsetRef.current = topOffsetRef.current ?? Math.min(start, 0)
       holdOffsetRef.current = restOffsetRef.current - PULL_TRIGGER
       // 先点亮完整指示器、托住列表，再发请求：图标不会闪一下又缩回去，列表也留出空白位。
       displayRef.current = true
