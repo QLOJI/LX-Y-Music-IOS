@@ -13,7 +13,6 @@ import txApi from '@/utils/musicSdk/tx'
 import { type ListInfoItem } from '@/store/songlist/state'
 import { useBottomOverlayInset } from '@/store/common/hook'
 import { useHomePageVisible } from '@/store/common/pageVisibility'
-import { refreshCoverCaches } from '@/core/music/coverUrl'
 
 interface PlaylistInfo {
   id: number
@@ -138,8 +137,6 @@ export default memo(({ onOpenDetail, active = true }: Props) => {
   }
 
   const handleRefresh = () => {
-    // 手动下拉才刷新封面缓存（自动加载不刷，避免重渲所有图片挡点击）。
-    setTimeout(refreshCoverCaches, 0)
     void loadPlaylists(true)
   }
 

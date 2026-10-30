@@ -16,7 +16,6 @@ import DetailPageTitle from '@/components/common/DetailPageTitle'
 import SwipeBackArea from '@/components/common/SwipeBackArea'
 import { setNavActiveId } from '@/core/common'
 import { useBottomOverlayInset } from '@/store/common/hook'
-import { refreshCoverCaches } from '@/core/music/coverUrl'
 
 export default memo(() => {
   const subscribedAlbums = useWySubscribedAlbums()
@@ -69,7 +68,6 @@ export default memo(() => {
   }, [])
 
   const handlePullRefresh = useCallback(() => {
-    setTimeout(refreshCoverCaches, 0)
     onRefresh(true)
   }, [onRefresh])
   const { indicator: pullIndicator, scrollProps: pullScrollProps } = usePullRefresh(

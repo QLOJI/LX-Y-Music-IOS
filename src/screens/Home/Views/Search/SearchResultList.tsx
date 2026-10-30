@@ -11,7 +11,6 @@ import AlbumListItem from '../../Views/SubscribedAlbums/ListItem'
 import { log } from '@/utils/log'
 import { createStyle, toast } from '@/utils/tools'
 import { useBottomOverlayInset } from '@/store/common/hook'
-import { refreshCoverCaches } from '@/core/music/coverUrl'
 
 interface SearchResultListProps {
   header?: ReactElement
@@ -176,7 +175,6 @@ export default forwardRef(({ header, searchType, source }: SearchResultListProps
   )
 
   const handlePullRefresh = useCallback(() => {
-    setTimeout(refreshCoverCaches, 0)
     log.info('[SearchResultList] === 下拉刷新 ===', {
       text: searchInfoRef.current.text,
       currentPage: searchInfoRef.current.page,

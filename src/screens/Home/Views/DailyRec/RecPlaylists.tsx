@@ -13,7 +13,6 @@ import wy from '@/utils/musicSdk/wy/index'
 import ListItem from '../MyPlaylist/ListItem'
 import { useBottomOverlayInset } from '@/store/common/hook'
 import { useHomePageVisible } from '@/store/common/pageVisibility'
-import { refreshCoverCaches } from '@/core/music/coverUrl'
 
 export default memo(({ onOpenDetail, active = true }: { onOpenDetail: (info: any) => void, active?: boolean }) => {
   const [playlists, setPlaylists] = useState<any[]>([])
@@ -113,8 +112,6 @@ export default memo(({ onOpenDetail, active = true }: { onOpenDetail: (info: any
   }
 
   const handleRefresh = () => {
-    // 手动下拉才刷新封面缓存（自动加载不刷，避免重渲所有图片挡点击）。
-    setTimeout(refreshCoverCaches, 0)
     loadPlaylists()
   }
 

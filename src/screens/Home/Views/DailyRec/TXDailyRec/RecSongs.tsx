@@ -16,7 +16,6 @@ import { stageOnlineListToDefault } from '@/core/playListToDefault'
 import { type ListInfoItem } from '@/store/songlist/state'
 import { useBottomOverlayInset } from '@/store/common/hook'
 import { useHomePageVisible } from '@/store/common/pageVisibility'
-import { refreshCoverCaches } from '@/core/music/coverUrl'
 
 type RecType = 'home' | 'radar' | 'newsong'
 
@@ -178,8 +177,6 @@ export default memo(({ type, onOpenDetail, active = true }: Props) => {
 
   const handleRefresh = useCallback(() => {
     if (type === 'home') {
-      // 手动下拉才刷新封面缓存（自动加载不刷，见上方 effect 注释）。
-      setTimeout(refreshCoverCaches, 0)
       void loadPlaylists(true)
     } else {
       listRef.current?.setStatus('refreshing')

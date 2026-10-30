@@ -12,7 +12,6 @@ import { scaleSizeW } from '@/utils/pixelRatio'
 import { createStyle } from '@/utils/tools'
 import Text from '@/components/common/Text'
 import { useBottomOverlayInset } from '@/store/common/hook'
-import { refreshCoverCaches } from '@/core/music/coverUrl'
 
 type FlatListType = FlatListProps<ListInfoItem>
 
@@ -92,8 +91,6 @@ export default forwardRef<ListType, ListProps>(({ header, onRefresh, onLoadMore,
   //   return { length: ITEM_HEIGHT, offset: ITEM_HEIGHT * index, index }
   // }
   const handlePullRefresh = useCallback(() => {
-    // 封面签名计算较重，放到下一拍，避免松手瞬间卡一下。
-    setTimeout(refreshCoverCaches, 0)
     onRefresh()
   }, [onRefresh])
   const { indicator: pullIndicator, scrollProps: pullScrollProps } = usePullRefresh(

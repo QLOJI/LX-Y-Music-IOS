@@ -10,7 +10,6 @@ import { MUSIC_TOGGLE_MODE } from '@/config/constant'
 import { updateSetting, setNavActiveId } from '@/core/common'
 import { useWySubscribedPlaylists, useWyUid } from '@/store/user/hook.ts'
 import { useBottomOverlayInset } from '@/store/common/hook'
-import { refreshCoverCaches } from '@/core/music/coverUrl'
 import { useHorizontalMode } from '@/utils/hooks'
 import { useI18n } from '@/lang'
 import PageTopInset from '@/components/common/PageTopInset'
@@ -237,7 +236,6 @@ export default memo(() => {
     </>
   )
   const handlePullRefresh = useCallback(() => {
-    setTimeout(refreshCoverCaches, 0)
     if (!cookie || !uid) {
       setPullRefreshing(false)
       onRefresh()

@@ -4,7 +4,7 @@ import usePullRefresh from '@/components/common/usePullRefresh'
 import { useMyList, useActiveListId, useListFetching } from '@/store/list/hook'
 import { useSettingValue } from '@/store/setting/hook'
 import { setActiveList, updateUserListPosition } from '@/core/list'
-import { fetchCoverUrl, refreshCoverCaches } from '@/core/music/coverUrl'
+import { fetchCoverUrl } from '@/core/music/coverUrl'
 import { getJumpListId } from '@/core/player/player'
 import { getListMusics } from '@/utils/data'
 import { useTheme } from '@/store/theme/hook'
@@ -617,7 +617,6 @@ export default memo(() => {
   }, [refreshListInfo])
 
   const handlePullRefresh = useCallback(() => {
-    setTimeout(refreshCoverCaches, 0)
     setRefreshing(true)
     void refreshListInfo(true)
   }, [refreshListInfo])
