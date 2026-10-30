@@ -85,11 +85,13 @@ const usePullRefresh = (refreshing: boolean, onRefresh: () => void, listRef?: Sc
 
   /** 不是刷新态时把列表校正回测得的顶部：轻拉/回弹中途松手都不会留下偏移。 */
   const snapToTop = useCallback(() => {
-    if (displayRef.current || heldRef.current) return
+    if (displayRef.current || heldRef.current || dragStartRef.current != null) return
     const top = topOffsetRef.current
     const last = lastOffsetRef.current
     if (top == null || last == null) return
-    if (Math.abs(last - top) < 0.5) return
+    // 只在「越过顶部」（负向过度滚动，last 比 top 更负）时纠正。
+    // 正常向下翻列表是 last > top，绝不能拉回顶部——那会表现成「上下滑动被锁住」。
+    if (last >= top - 0.5) return
     listRef?.current?.scrollToOffset?.({ offset: top, animated: true })
   }, [listRef])
 
