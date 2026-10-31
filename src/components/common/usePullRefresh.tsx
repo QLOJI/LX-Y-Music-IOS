@@ -70,9 +70,6 @@ const usePullRefresh = (
   // 不能每次用拖动起点——一次没回成功，下一次的起点就更低，空白会越拉越大。
   const restTopRef = useRef<number | null>(null)
   const holdAppliedRef = useRef(false)
-  // 圆圈在容器内的纵向位置：等于静止位到容器顶的距离（无安全区 inset 时为 0）。
-  const [indicatorTop, setIndicatorTop] = useState(0)
-  const indicatorTopRef = useRef(0)
   const refreshingRef = useRef(refreshing)
   const displayRef = useRef(refreshing)
   const sawRefreshingRef = useRef(false)
@@ -234,14 +231,7 @@ const usePullRefresh = (
     // 没有自动 inset，此时静止位就是 0，由「下拉达标时的拖动起点」兜底确定。
     if (restTopRef.current != null || y >= 0 || dragStartRef.current != null || displayRef.current) return
     restTopRef.current = y
-    if (holdSpace) {
-      const nextTop = -y
-      if (indicatorTopRef.current !== nextTop) {
-        indicatorTopRef.current = nextTop
-        setIndicatorTop(nextTop)
-      }
-    }
-  }, [holdSpace])
+  }, [])
 
   const handleScrollBeginDrag = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
     clearTimer(scrollTimerRef)
@@ -253,20 +243,11 @@ const usePullRefresh = (
     learnRestTop(y)
     dragStartRef.current = y
     dragTopRef.current = y
-    // 只有「有停留位」的页面才把圆圈按静止位高度定位（落在新打开的空白区中心）；
-    // 歌单主页 / 我的 / 播放历史 / 排行榜保持圆圈位置固定，不随拖动移动。
-    if (holdSpace && restTopRef.current != null) {
-      const nextTop = -restTopRef.current
-      if (indicatorTopRef.current !== nextTop) {
-        indicatorTopRef.current = nextTop
-        setIndicatorTop(nextTop)
-      }
-    }
     lastOffsetRef.current = y
     pullRef.current = 0
     lastPullRef.current = 0
     lastStepRef.current = 0
-  }, [holdSpace, learnRestTop])
+  }, [learnRestTop])
 
   const handleScroll = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
     const y = e.nativeEvent.contentOffset.y
@@ -396,7 +377,7 @@ const usePullRefresh = (
     : 0
   // 纯回弹页面若给了定位区：圆圈下对齐贴在标题上方；否则维持原几何。
   const useArea = !holdSpace && indicatorArea != null
-  const areaTop = useArea ? indicatorArea!.top : topOffset + indicatorTop
+  const areaTop = useArea ? indicatorArea!.top : topOffset
   const areaHeight = useArea ? indicatorArea!.height : ringGap
 
   const indicator = (
