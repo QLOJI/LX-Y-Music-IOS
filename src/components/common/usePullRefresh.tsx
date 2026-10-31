@@ -25,9 +25,9 @@ import { useTheme } from '@/store/theme/hook'
  * 下拉只在「从列表顶部开始的拖动」里计数：起点 > 0（列表中间）一律不算。
  */
 export const PULL_TRIGGER = 32
-/** 有停留位的页面：触发距离与空白高度（比纯回弹页面大一些）。 */
-const HOLD_TRIGGER = 60
-const HOLD_GAP = 44
+/** 有停留位的页面：触发距离与停留空白高度，两者必须一致（圆圈正好停在空白中心）。 */
+const HOLD_GAP = 60
+const HOLD_TRIGGER = HOLD_GAP
 export const REFRESH_MIN_MS = 900
 const FALLBACK_MS = 700
 const WATCHDOG_MS = 10000
@@ -127,9 +127,22 @@ const usePullRefresh = (
           }, 220)
         }, RETURN_ANIM_MS)
       }
-    } else if (insetRef.current) {
-      // 兜底：没有记录到 hold 但 inset 还开着，也要撤掉。
-      applyInset(false)
+    } else {
+      if (insetRef.current) applyInset(false)
+      // 纯回弹页面：刷新结束若停在了「被弹到 0」的贴顶位置（系统回弹目标是 0，
+      // 不是安全区 inset 下的真实静止位），显式回到真实静止位，标题才和推荐页齐平。
+      const restTop = restTopRef.current
+      const last = lastOffsetRef.current
+      if (
+        !dragging &&
+        restTop != null &&
+        last != null &&
+        // 只在仍停在顶部附近时纠正，用户已经滚进列表内容就不要拽回来。
+        last > restTop - PULL_TRIGGER * 2 &&
+        last < restTop + 1
+      ) {
+        listRef?.current?.scrollToOffset?.({ offset: restTop, animated: true })
+      }
     }
     progress.stopAnimation()
     Animated.timing(progress, {
@@ -267,6 +280,7 @@ const usePullRefresh = (
     const pull = start <= 0 ? Math.max(0, start - y) : 0
     pullRef.current = pull
     // 进度按 1/32 量化，慢拉时不必每帧过桥同步（触发距离按页面口径）。
+    // 注意：拖动过程中**绝不**改 inset —— 那会让系统可回弹范围变化、松手后停在半路。
     const step = Math.min(1, Math.round((pull / (holdSpace ? HOLD_TRIGGER : PULL_TRIGGER)) * 32) / 32)
     if (step === lastStepRef.current) return
     lastStepRef.current = step
@@ -311,11 +325,23 @@ const usePullRefresh = (
       }, FALLBACK_MS)
       return
     }
-    // 轻拉松手（未达触发位）：撤掉可能存在的 inset，然后交给系统自然回弹。
-    // 不再叠加程序化滚动——两段动画同时跑就是「上下抖动」的来源。
+    // 轻拉松手（未达触发位）：必须回到初始静止位。
+    // 有停留位的页面显式动画回位（拖动中可能抬过 inset，系统回弹不可靠）；
+    // 纯回弹页面交给系统（只在确实抬过 inset 时才需要先撤掉）。
     if (start != null && start <= 0) {
       dragTopRef.current = start
-      if (insetRef.current) applyInset(false)
+      const restTop = restTopRef.current ?? start
+      if (holdSpace) {
+        if (insetRef.current) applyInset(false)
+        clearTimer(scrollTimerRef)
+        scrollTimerRef.current = setTimeout(() => {
+          scrollTimerRef.current = null
+          if (displayRef.current || dragStartRef.current != null) return
+          listRef?.current?.scrollToOffset?.({ offset: restTop, animated: true })
+        }, INSET_COMMIT_MS)
+      } else if (insetRef.current) {
+        applyInset(false)
+      }
     }
     progress.stopAnimation()
     Animated.timing(progress, {
@@ -345,8 +371,12 @@ const usePullRefresh = (
     ? `${ICON_CIRCUMFERENCE * 0.78} ${ICON_CIRCUMFERENCE}`
     : `${ICON_CIRCUMFERENCE} ${ICON_CIRCUMFERENCE}`
   const rotate = spin.interpolate({ inputRange: [0, 1], outputRange: ['0deg', '360deg'] })
-  // 纯回弹页面保持原来的 32pt 圆圈几何；有停留位的页面才用更大的空白高度。
+  // 纯回弹页面保持原来的 32pt 圆圈几何、位置固定；有停留位的页面用更大的空白高度，
+  // 圆圈随下拉距离移动，始终停在下拉出来的空白区中心，达到触发高度后固定不再移动。
   const ringGap = holdSpace ? HOLD_GAP : PULL_TRIGGER
+  const ringTranslate = holdSpace
+    ? progress.interpolate({ inputRange: [0, 1], outputRange: [-ringGap / 2, 0] })
+    : 0
 
   const indicator = (
     <Animated.View
@@ -357,12 +387,7 @@ const usePullRefresh = (
           top: topOffset + indicatorTop,
           height: ringGap,
           opacity: progress,
-          transform: [{
-            translateY: progress.interpolate({
-              inputRange: [0, 1],
-              outputRange: [-ringGap, 0],
-            }),
-          }],
+          transform: [{ translateY: ringTranslate }],
         },
       ]}
     >
