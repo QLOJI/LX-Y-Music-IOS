@@ -100,8 +100,8 @@ export default forwardRef<ListType, ListProps>(({ header, onRefresh, onLoadMore,
     flatListRef,
     0,
     false,
-    // 圆圈下对齐：贴在「状态栏下方留白」区域的底部，即标题正上方。
-    { top: statusBarHeight, height: Math.max(designSpacing.sm, statusBarHeight - designSpacing.md) },
+    // 圆圈下对齐：贴在「状态栏下方留白」区域的底部、标题正上方（再上移 5pt）。
+    { top: statusBarHeight - 5, height: Math.max(designSpacing.sm, statusBarHeight - designSpacing.md) },
   )
   const footerComponent = useMemo(() => {
     let label: FooterLabel
@@ -136,7 +136,10 @@ export default forwardRef<ListType, ListProps>(({ header, onRefresh, onLoadMore,
   const bottomInset = useBottomOverlayInset()
   // 顶部状态栏高度：关掉 iOS 自动安全区 inset 后，由这里显式补回，
   // 位置与推荐页（自动 inset + paddingTop）严格一致，且不受刷新影响。
-  const statusBarHeight = useStatusbarHeight()
+  // 本页可能在 pager 预加载阶段挂载（早于状态栏测量，hook 拿到 0 且不会再更新），
+  // 用 60 兜底，保证圆圈不会贴到屏幕最顶部。
+  const statusBarRaw = useStatusbarHeight()
+  const statusBarHeight = statusBarRaw > 20 ? statusBarRaw : 60
 
   const rowInfo = useMemo(() => {
     // 网格行左右各 ROW_INSET 内边距（见下方 columnWrapperStyle.paddingHorizontal），

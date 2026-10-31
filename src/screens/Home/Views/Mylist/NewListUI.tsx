@@ -622,9 +622,9 @@ export default memo(() => {
     setRefreshing(true)
     void refreshListInfo(true)
   }, [refreshListInfo])
-  // 圆圈下对齐：贴在「状态栏下方留白」区域的底部，即标题正上方。
+  // 圆圈下对齐：贴在「状态栏下方留白」区域的底部、标题正上方（再上移 5pt）。
   const { indicator: pullIndicator, scrollProps: pullScrollProps, pullOffset } = usePullRefresh(refreshing, handlePullRefresh, flatListRef, 0, false, {
-    top: statusBarHeight,
+    top: statusBarHeight - 5,
     height: Math.max(designSpacing.sm, statusBarHeight - designSpacing.md),
   })
 

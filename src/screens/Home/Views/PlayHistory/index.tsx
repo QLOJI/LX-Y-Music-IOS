@@ -366,9 +366,9 @@ export default memo(() => {
         // 关掉自动安全区 inset：顶部间距由页头 paddingTop（状态栏高度）显式提供，
         // 滚动范围恒从 0 起、静止位恒为 0，刷新前后位置固定。
         contentInsetAdjustmentBehavior="never"
-        // 圆圈下对齐：贴在「状态栏下方留白」区域的底部，即标题正上方。
+        // 圆圈下对齐：贴在「状态栏下方留白」区域的底部、标题正上方（再上移 5pt）。
         indicatorArea={{
-          top: statusBarHeight,
+          top: statusBarHeight - 5,
           height: Math.max(designSpacing.sm, statusBarHeight - designSpacing.md),
         }}
         ListHeaderComponent={pageHeader}
