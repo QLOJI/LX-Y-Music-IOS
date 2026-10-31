@@ -358,9 +358,8 @@ export default memo(() => {
         indicatorInHeader
         // 与歌单一致：只用系统自然回弹，不做刷新位下移。
         holdSpace={false}
-        // 顶部间距由页头里的 PageTopInset 负责：关掉 iOS 自动安全区 inset，
-        // 标题位置才和推荐页同一条基准线。
-        contentInsetAdjustmentBehavior="never"
+        // 与推荐页同构：自动安全区 inset + 页头自身的 PageTopInset。
+        contentInsetAdjustmentBehavior="automatic"
         ListHeaderComponent={pageHeader}
         playingId={playerMusicInfo.id}
         onPlayList={handlePlayList}
