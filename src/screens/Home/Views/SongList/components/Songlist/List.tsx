@@ -100,8 +100,9 @@ export default forwardRef<ListType, ListProps>(({ header, onRefresh, onLoadMore,
     flatListRef,
     0,
     false,
-    // 圆圈下对齐：贴在「状态栏下方留白」区域的底部、标题正上方（再上移 5pt）。
-    { top: statusBarHeight - 5, height: Math.max(designSpacing.sm, statusBarHeight - designSpacing.md) },
+    // 圆圈占住页头里「状态栏下方留白」那一块（inline 排版），标题自然落在它下面。
+    // 不走绝对定位：本页的绝对定位坐标系与其它页不同，之前几次都定位到了屏幕顶端。
+    { top: 0, height: headerTopGap, inline: true },
   )
   const footerComponent = useMemo(() => {
     let label: FooterLabel
@@ -140,6 +141,8 @@ export default forwardRef<ListType, ListProps>(({ header, onRefresh, onLoadMore,
   // 用 60 兜底，保证圆圈不会贴到屏幕最顶部。
   const statusBarRaw = useStatusbarHeight()
   const statusBarHeight = statusBarRaw > 20 ? statusBarRaw : 60
+  // 标题上方留给圆圈的空白高度（与「我的」页 PageTopInset 同源公式）。
+  const headerTopGap = Math.max(designSpacing.sm, statusBarHeight - designSpacing.md)
 
   const rowInfo = useMemo(() => {
     // 网格行左右各 ROW_INSET 内边距（见下方 columnWrapperStyle.paddingHorizontal），
@@ -180,9 +183,6 @@ export default forwardRef<ListType, ListProps>(({ header, onRefresh, onLoadMore,
 
   return (
     <View style={styles.container} onLayout={onLayout}>
-      {/* 圆圈放在列表**外面**（与「我的」/播放历史/排行榜一致）：绝对定位不会跟着
-          列表内容滚动，位置才能稳定贴在标题上方。 */}
-      {pullIndicator}
       {/* 不再用 `width == 0 ? null` 门控（2026-10-02 用户第 3 条）：那会把头部一起
           摘掉一帧。宽度由 effectiveWidth 兜底，rowInfo 首帧即可用。 */}
       <Animated.View style={{ flex: 1, transform: [{ translateY: pullOffset }] }}>
@@ -223,7 +223,10 @@ export default forwardRef<ListType, ListProps>(({ header, onRefresh, onLoadMore,
         renderItem={renderItem}
         ListHeaderComponent={(
           <View style={{ paddingTop: statusBarHeight }}>
-            {header}
+            {pullIndicator}
+            {/* HeaderBar 自带一份同样的状态栏下留白；圆圈区已经占住了这段高度，
+                抵消掉它，标题位置保持不变的。 */}
+            <View style={{ marginTop: -headerTopGap }}>{header}</View>
           </View>
         )}
         keyExtractor={getkey}
