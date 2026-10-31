@@ -169,9 +169,6 @@ export default forwardRef<ListType, ListProps>(({ header, onRefresh, onLoadMore,
 
   return (
     <View style={styles.container} onLayout={onLayout}>
-      {/* 圆圈统一放在列表可视区顶部（不再是列表页头的第一个子节点）：
-          其它页面都是列表容器顶部的覆盖层，这样所有界面的圆圈位置一致。 */}
-      {pullIndicator}
       {/* 不再用 `width == 0 ? null` 门控（2026-10-02 用户第 3 条）：那会把头部一起
           摘掉一帧。宽度由 effectiveWidth 兜底，rowInfo 首帧即可用。 */}
       <Animated.View style={{ flex: 1, transform: [{ translateY: pullOffset }] }}>
@@ -210,6 +207,7 @@ export default forwardRef<ListType, ListProps>(({ header, onRefresh, onLoadMore,
         renderItem={renderItem}
         ListHeaderComponent={(
           <View>
+            {pullIndicator}
             {header}
           </View>
         )}

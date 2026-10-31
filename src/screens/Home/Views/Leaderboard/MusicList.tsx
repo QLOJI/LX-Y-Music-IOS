@@ -119,6 +119,8 @@ export default forwardRef<MusicListType, { header?: ReactElement }>((props, ref)
   return (
     <OnlineList
       ref={listRef}
+      // 页头（状态栏占位 + 榜单标题栏）在列表内：圆圈画到页头内容顶部，显示在标题文字上方。
+      indicatorInHeader
       ListHeaderComponent={header}
       onPlayList={handlePlayList}
       onRefresh={handleRefresh}

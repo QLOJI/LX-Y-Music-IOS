@@ -347,6 +347,8 @@ export default memo(() => {
         ref={listRef}
         listId="play_history"
         forcePlayList
+        // 页头（标题 + 日期栏）在列表内：圆圈画到页头内容顶部，显示在标题文字上方。
+        indicatorInHeader
         ListHeaderComponent={pageHeader}
         playingId={playerMusicInfo.id}
         onPlayList={handlePlayList}
