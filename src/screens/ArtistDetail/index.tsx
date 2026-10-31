@@ -284,7 +284,8 @@ export default memo(({ componentId, artistInfo }: { componentId: string, artistI
       isFirstSortEffect.current = false
       return
     }
-    setSongs(prev => ({ ...prev, page: 1, list: [], hasMore: true }))
+    // 切排序也保留旧列表，等新数据回来整表替换（避免空白闪烁）。
+    setSongs(prev => ({ ...prev, page: 1, hasMore: true }))
     loadSongs(songs.sort, 1, true)
   }, [songs.sort, loadSongs])
 
@@ -300,7 +301,7 @@ export default memo(({ componentId, artistInfo }: { componentId: string, artistI
     if (songs.sort === newSort) return
     const cacheKeyParam = artistInfo.source === 'tx' ? (artistInfo.mid || artistInfo.id) : artistInfo.id
     clearArtistCache(cacheKeyParam)
-    setSongs(prev => ({ ...prev, sort: newSort, list: [], page: 1, hasMore: true }))
+    setSongs(prev => ({ ...prev, sort: newSort, page: 1, hasMore: true }))
   }
 
   const handleTabChange = (newTab: 'songs' | 'albums') => {
@@ -319,11 +320,12 @@ export default memo(({ componentId, artistInfo }: { componentId: string, artistI
       setArtistDetail(data)
     }).catch(() => { toast('刷新歌手信息失败') })
 
+    // 刷新期间保留旧列表（不要先清空）：等新数据回来再整表替换，避免空白一下。
     if (activeTab === 'songs') {
-      setSongs(prev => ({ ...prev, page: 1, list: [], hasMore: true }))
+      setSongs(prev => ({ ...prev, page: 1, hasMore: true }))
       loadSongs(songs.sort, 1, true)
     } else {
-      setAlbums(prev => ({ ...prev, page: 1, list: [], hasMore: true }))
+      setAlbums(prev => ({ ...prev, page: 1, hasMore: true }))
       loadAlbums(1, true)
     }
   }, [artistInfo, songs.sort, loadSongs, activeTab, loadAlbums])
