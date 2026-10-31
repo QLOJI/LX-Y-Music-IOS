@@ -101,9 +101,9 @@ export default forwardRef<ListType, ListProps>(({ header, onRefresh, onLoadMore,
     0,
     false,
     // 与「我的」页完全相同的方案：绝对定位在下对齐区，圆圈贴在标题正上方。
-    // top 用固定值（与「我的」页在刘海机上实测一致）：本页可能在状态栏测量前就挂载，
-    // 依赖 hook 的值会拿到 6，圆圈就贴到屏幕顶端。
-    { top: 55, height: headerTopGap },
+    // top 用固定值：本页可能在状态栏测量前就挂载，依赖 hook 的值会拿到 6、圆圈贴屏幕顶端。
+    // 55 是「我的」页的实测基准，这里再下移 20pt（用户要求）。
+    { top: 75, height: headerTopGap },
   )
   const footerComponent = useMemo(() => {
     let label: FooterLabel
