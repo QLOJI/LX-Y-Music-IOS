@@ -110,12 +110,8 @@ export default memo(({ componentId, artistInfo }: { componentId: string, artistI
     const cacheKey = `${currentArtistParam}_songs_v2_${sort}_${page}`
     const offset = (page - 1) * SONG_LIMIT
 
-    setSongs(prev => ({
-      ...prev,
-      ...(isRefresh || page === 1 ? { list: [], hasMore: true, page: 1 } : {}),
-      loading: true,
-      sort,
-    }))
+    // 刷新/切排序时保留旧列表，等新数据回来再整表替换：避免「闪一下空白页」。
+    setSongs(prev => ({ ...prev, loading: true, sort }))
 
     const applyResult = (data: any) => {
       // 排序/刷新触发新请求后，旧请求结果不得覆盖新列表。

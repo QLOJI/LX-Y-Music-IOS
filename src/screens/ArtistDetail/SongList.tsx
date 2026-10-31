@@ -71,7 +71,8 @@ const SongList = forwardRef<SongListRef, SongListProps>(({
       // 下一页加载期间也必须保持 loading，避免 iOS FlatList 的 onEndReached
       // 连续触发多个分页请求；之前只有“首屏为空”时才设 loading，导致滚动
       // 到底部时状态立刻回到 idle，分页请求互相覆盖/丢页。
-      songListRef.current?.setStatus(songs.loading ? 'loading' : songs.hasMore ? 'idle' : 'end')
+      // 不再显示「加载中」页脚：刷新/切排序期间保留旧列表，等数据回来直接替换。
+      songListRef.current?.setStatus(songs.hasMore ? 'idle' : 'end')
       // page 表示“下一次要请求的页码”：首屏返回后 page=2，但列表仍应替换；
       // 从第二页返回后 page=3，才是追加已有列表。
       if (lastSyncedListRef.current !== songs.list) {
