@@ -252,16 +252,18 @@ const usePullRefresh = (
       // 达标时的拖动起点就是「用户看到的静止位」，比任何采样都可靠（无自动 inset 的
       // 列表只能从这里拿到 0）。只写一次，之后永远用它回位，避免一次没回成功就累积偏移。
       if (restTopRef.current == null) restTopRef.current = start
-      // 手指已离开：用 transform 把列表下移出一个停留位（一次性动画）。
-      // 不碰滚动偏移/inset，所以既不会被手势抢，也不会在收尾时回不去。
-      holdAppliedRef.current = true
-      holdAnim.stopAnimation()
-      Animated.timing(holdAnim, {
-        toValue: 1,
-        duration: 220,
-        easing: Easing.out(Easing.cubic),
-        useNativeDriver: true,
-      }).start()
+      // 只有「有停留位」的页面才下移列表。歌单主页 / 我的 / 播放历史 / 排行榜
+      // 不做任何位移 —— 它们松手后交给系统回弹，否则收尾归零时会「猛地上跳一下」。
+      if (holdSpace) {
+        holdAppliedRef.current = true
+        holdAnim.stopAnimation()
+        Animated.timing(holdAnim, {
+          toValue: 1,
+          duration: 220,
+          easing: Easing.out(Easing.cubic),
+          useNativeDriver: true,
+        }).start()
+      }
       displayRef.current = true
       setDisplayRefreshing(true)
       progress.stopAnimation()
