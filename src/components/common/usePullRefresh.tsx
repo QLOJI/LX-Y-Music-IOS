@@ -70,6 +70,8 @@ const usePullRefresh = (refreshing: boolean, onRefresh: () => void, _listRef?: S
   const returnStartAtRef = useRef(0)
   const returnDurationRef = useRef(400)
   const holdSessionRef = useRef(false)
+  // 补偿量的平滑值：滚动事件与渲染帧不同步时，直接 setValue 会一帧一跳。
+  const lastHoldRef = useRef(0)
   refreshingRef.current = refreshing
 
   const clearTimer = (ref: React.MutableRefObject<ReturnType<typeof setTimeout> | null>) => {
@@ -89,11 +91,13 @@ const usePullRefresh = (refreshing: boolean, onRefresh: () => void, _listRef?: S
 
   const animateHold = useCallback((to: number, duration: number) => {
     hold.stopAnimation()
+    // 必须与回落会话一样走 JS 驱动：同一个 Animated.Value 混用原生/JS 驱动
+    // 会被 RN 丢弃更新，表现为回落时上下跳变。
     Animated.timing(hold, {
       toValue: to,
       duration,
       easing: Easing.out(Easing.cubic),
-      useNativeDriver: true,
+      useNativeDriver: false,
     }).start()
   }, [hold])
 
@@ -116,6 +120,7 @@ const usePullRefresh = (refreshing: boolean, onRefresh: () => void, _listRef?: S
       : Math.round(clamp(420 + distance * 7, 420, 980))
     hold.stopAnimation()
     hold.setValue(0)
+    lastHoldRef.current = 0
     progress.stopAnimation()
 
     const tick = () => {
@@ -128,11 +133,17 @@ const usePullRefresh = (refreshing: boolean, onRefresh: () => void, _listRef?: S
       const remain = last == null
         ? 0
         : clamp(returnTopRef.current - last, 0, Math.max(0, v) + PULL_TRIGGER)
-      hold.setValue(clamp((v - remain) / PULL_TRIGGER, 0, 2.2))
-      progress.setValue(target > 0 ? clamp(v / PULL_TRIGGER, 0, 1) : clamp(v / PULL_TRIGGER, 0, 1))
+      // 平滑补偿：滚动事件与渲染帧不同步时，直接赋值会一帧一跳（页头在列表里的
+      // 页面最明显）；取 0.6 的一阶低通，视觉误差远小于可见抖动。
+      const targetHold = clamp((v - remain) / PULL_TRIGGER, 0, 2.2)
+      const smoothed = lastHoldRef.current + (targetHold - lastHoldRef.current) * 0.6
+      lastHoldRef.current = smoothed
+      hold.setValue(smoothed)
+      progress.setValue(clamp(v / PULL_TRIGGER, 0, 1))
       if (p >= 1) {
         returningRef.current = false
         holdSessionRef.current = true
+        lastHoldRef.current = target / PULL_TRIGGER
         hold.setValue(target / PULL_TRIGGER)
         progress.setValue(target > 0 ? 1 : 0)
         return
@@ -155,6 +166,7 @@ const usePullRefresh = (refreshing: boolean, onRefresh: () => void, _listRef?: S
       // 手指还按在列表上：直接归零，绝不在拖动中逐帧改 transform。
       hold.stopAnimation()
       hold.setValue(0)
+      lastHoldRef.current = 0
     } else {
       // 刷新收尾：按同一套减速曲线收回 32pt。
       animateHold(0, 460)
@@ -242,6 +254,7 @@ const usePullRefresh = (refreshing: boolean, onRefresh: () => void, _listRef?: S
       holdSessionRef.current = false
       hold.stopAnimation()
       hold.setValue(0)
+      lastHoldRef.current = 0
       progress.stopAnimation()
     }
     dragStartRef.current = e.nativeEvent.contentOffset.y
