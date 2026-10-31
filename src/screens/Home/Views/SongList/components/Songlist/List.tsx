@@ -100,9 +100,8 @@ export default forwardRef<ListType, ListProps>(({ header, onRefresh, onLoadMore,
     flatListRef,
     0,
     false,
-    // 圆圈占住页头里「状态栏下方留白」那一块（inline 排版），标题自然落在它下面。
-    // 不走绝对定位：本页的绝对定位坐标系与其它页不同，之前几次都定位到了屏幕顶端。
-    { top: 0, height: headerTopGap, inline: true },
+    // 与「我的」页完全相同的方案：绝对定位在下对齐区，圆圈贴在标题正上方。
+    { top: statusBarHeight - 5, height: headerTopGap },
   )
   const footerComponent = useMemo(() => {
     let label: FooterLabel
@@ -183,6 +182,9 @@ export default forwardRef<ListType, ListProps>(({ header, onRefresh, onLoadMore,
 
   return (
     <View style={styles.container} onLayout={onLayout}>
+      {/* 与「我的」页同构：圆圈是列表外层的绝对定位覆盖层，不参与列表布局，
+          也就不会在刷新收尾时把内容顶一下。 */}
+      {pullIndicator}
       {/* 不再用 `width == 0 ? null` 门控（2026-10-02 用户第 3 条）：那会把头部一起
           摘掉一帧。宽度由 effectiveWidth 兜底，rowInfo 首帧即可用。 */}
       <Animated.View style={{ flex: 1, transform: [{ translateY: pullOffset }] }}>
@@ -223,10 +225,7 @@ export default forwardRef<ListType, ListProps>(({ header, onRefresh, onLoadMore,
         renderItem={renderItem}
         ListHeaderComponent={(
           <View style={{ paddingTop: statusBarHeight }}>
-            {pullIndicator}
-            {/* HeaderBar 自带一份同样的状态栏下留白；圆圈区已经占住了这段高度，
-                抵消掉它，标题位置保持不变的。 */}
-            <View style={{ marginTop: -headerTopGap }}>{header}</View>
+            {header}
           </View>
         )}
         keyExtractor={getkey}
