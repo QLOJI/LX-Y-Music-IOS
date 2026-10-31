@@ -13,28 +13,21 @@ import { useTheme } from '@/store/theme/hook'
  * 自绘下拉刷新（不依赖系统 UIRefreshControl）。
  *
  * 硬约束：
- * 1. 不修改列表自身的滚动状态（不设 contentInset、不调 scrollToOffset）；
- * 2. **不在手指拖动过程中改列表 transform** —— 给正在被拖动的 ScrollView 逐帧改
- *    transform 会让 UIKit 反复重算 pan，表现为「拉不动 + 频繁抖动」；
- * 3. 圆圈位置相对「列表可视区顶部」固定，所有页面一致。
+ * 1. 不在手指拖动过程中改列表 transform（会让 UIKit 反复重算 pan → 拉不动/抖动）；
+ * 2. 松手后的回落**不交给系统**：系统的橡胶回弹几乎瞬间弹回，观感就是「跳过去」。
  *
- * 交互分三段：
- *   · 拖动阶段：只按进度点亮圆圈，列表位移由系统回弹提供（不干预）；
- *   · 松手未达阈值：用 transform 做一段「惯性减速」的回落 —— 以系统剩余过冲为
- *     基准抵消掉它的快速回弹，再由 easeOutCubic 慢慢把位移收到 0（时长随拉动距离
- *     增长），观感接近一次自然减速；
- *   · 刷新阶段（松手达标 / 程序刷新）：列表整体下移 32pt 停留，结束时同样按惯性
- *     曲线收回。
+ * 回落做法（松手瞬间、手指已离开）：
+ *   · 用 `scrollToOffset({animated:false})` 把系统偏移静默归位，取消系统自己的快速回弹；
+ *   · 同时把等量的位移交给 transform（画面位置与松手瞬间一致，不闪）；
+ *   · 再用 `easeOutCubic` 把 transform 收回去，时长随拉动距离增长（≈320~780ms），
+ *     即「按惯性速率」的减速收尾。
  *
- * 只在「从列表顶部开始的拖动」里计数：以手指按下时的偏移为基准，起点 > 0（列表中间）
- * 一律不算，图标不会在列表中段冒出来。
+ * 下拉只在「从列表顶部开始的拖动」里计数：起点 > 0（列表中间）一律不算。
  */
 export const PULL_TRIGGER = 32
 export const REFRESH_MIN_MS = 900
 const FALLBACK_MS = 700
 const WATCHDOG_MS = 10000
-const RETURN_MIN_MS = 300
-const RETURN_MAX_MS = 700
 const ICON_SIZE = 26
 const ICON_RADIUS = 10
 const ICON_STROKE = 2.4
@@ -44,16 +37,17 @@ type ScrollListRef = { current: any }
 
 const AnimatedCircle = Animated.createAnimatedComponent(Circle)
 
-const usePullRefresh = (refreshing: boolean, onRefresh: () => void, _listRef?: ScrollListRef, topOffset = 0) => {
+const clamp = (v: number, min: number, max: number) => Math.min(max, Math.max(min, v))
+
+const usePullRefresh = (refreshing: boolean, onRefresh: () => void, listRef?: ScrollListRef, topOffset = 0) => {
   const theme = useTheme()
   // 圆圈进度：拖动时跟手，刷新时保持满格。
   const progress = useRef(new Animated.Value(0)).current
-  // 列表位移（0~1 系数，乘 32pt）：只在刷新态和「惯性回落」期间使用。
+  // 列表位移（0~1 系数，乘 32pt）：刷新停留与惯性回落都在这里。
   const hold = useRef(new Animated.Value(0)).current
   const spin = useRef(new Animated.Value(0)).current
   const pullRef = useRef(0)
   const lastPullRef = useRef(-1)
-  const lastOffsetRef = useRef<number | null>(null)
   const dragStartRef = useRef<number | null>(null)
   const refreshingRef = useRef(refreshing)
   const displayRef = useRef(refreshing)
@@ -65,13 +59,11 @@ const usePullRefresh = (refreshing: boolean, onRefresh: () => void, _listRef?: S
   const minTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const fallbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const watchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  // 惯性回落会话
+  // 惯性回落会话：returnTop = 松手时列表静止顶部偏移；returning 期间忽略滚动事件复位。
   const returningRef = useRef(false)
   const returnTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const returnTopRef = useRef(0)
-  const returnPullRef = useRef(0)
-  const returnStartRef = useRef(0)
-  const returnDurationRef = useRef(RETURN_MIN_MS)
+  const holdInMsRef = useRef(260)
   refreshingRef.current = refreshing
 
   const clearTimer = (ref: React.MutableRefObject<ReturnType<typeof setTimeout> | null>) => {
@@ -91,37 +83,53 @@ const usePullRefresh = (refreshing: boolean, onRefresh: () => void, _listRef?: S
     }).start()
   }, [hold])
 
-  const stopReturn = useCallback(() => {
-    returningRef.current = false
+  const readHold = () => {
+    const anyHold = hold as unknown as { __getValue?: () => number }
+    return typeof anyHold.__getValue === 'function' ? anyHold.__getValue() : 0
+  }
+
+  /**
+   * 松手后的接管：静默把系统偏移归位（取消系统快速回弹），再用 transform 保持
+   * 画面位置不动。之后由调用方把 hold 动画到目标值。
+   */
+  const takeOverRebound = useCallback((top: number, pull: number): boolean => {
+    if (typeof listRef?.current?.scrollToOffset !== 'function') return false
+    returningRef.current = true
+    returnTopRef.current = top
     clearTimer(returnTimerRef)
+    const amount = Math.max(0.05, pull / PULL_TRIGGER)
+    // 先落 transform（画面留在松手位置），再让系统偏移归位：同一次桥接批次内生效。
     hold.stopAnimation()
-    hold.setValue(0)
-  }, [hold])
+    hold.setValue(amount)
+    listRef.current.scrollToOffset({ offset: top, animated: false })
+    return true
+  }, [hold, listRef])
 
   const hideIndicator = useCallback(() => {
-    // 手指还按在列表上时直接归零，不做 transform 动画——拖动中逐帧改位移就是抖动的来源。
     const dragging = dragStartRef.current != null
     displayRef.current = false
     dragStartRef.current = null
     pullRef.current = 0
     lastPullRef.current = 0
     setDisplayRefreshing(false)
+    clearTimer(returnTimerRef)
+    returningRef.current = false
     if (dragging) {
-      stopReturn()
+      // 手指还按在列表上：直接归零，绝不在拖动中逐帧改 transform。
+      hold.stopAnimation()
+      hold.setValue(0)
     } else {
-      // 收尾按惯性减速：从 32pt 刷新位平滑收回，而不是 180ms 弹一下。
-      returningRef.current = false
-      clearTimer(returnTimerRef)
-      animateHold(0, 320)
+      // 刷新收尾：同样按惯性减速收回 32pt，不要弹一下。
+      animateHold(0, 420)
     }
     progress.stopAnimation()
     Animated.timing(progress, {
       toValue: 0,
-      duration: 220,
+      duration: 300,
       easing: Easing.out(Easing.cubic),
       useNativeDriver: false,
     }).start()
-  }, [progress, animateHold, stopReturn])
+  }, [progress, animateHold, hold])
 
   useEffect(() => {
     if (refreshing) {
@@ -129,23 +137,25 @@ const usePullRefresh = (refreshing: boolean, onRefresh: () => void, _listRef?: S
       clearTimer(minTimerRef)
       sawRefreshingRef.current = true
       startedAtRef.current = Date.now()
+      const wasDisplaying = displayRef.current
       displayRef.current = true
       setDisplayRefreshing(true)
-      stopReturn()
-      // 列表在系统回弹之上按惯性曲线落到 32pt 刷新位（不是瞬间顶下去）。
-      animateHold(1, 260)
+      // 下拉触发时 takeOverRebound 已经把 hold 放在松手位置：从这里按惯性滑到 32pt。
+      // 程序刷新（切 tab / 首次进入）则是从 0 滑到 32pt。
+      const duration = wasDisplaying ? clamp(holdInMsRef.current, 220, 680) : 300
+      returningRef.current = false
+      clearTimer(returnTimerRef)
+      animateHold(1, duration)
       progress.stopAnimation()
       Animated.timing(progress, {
         toValue: 1,
-        duration: 200,
+        duration: 220,
         easing: Easing.out(Easing.cubic),
         useNativeDriver: false,
       }).start()
       clearTimer(watchdogRef)
       watchdogRef.current = setTimeout(() => {
         watchdogRef.current = null
-        // 父级 refreshing 长期不落地（接口挂起/页面态丢失）：强制收起，
-        // 绝不把刷新图标永久留在列表上方。
         if (displayRef.current) hideIndicator()
       }, WATCHDOG_MS)
       return
@@ -164,7 +174,7 @@ const usePullRefresh = (refreshing: boolean, onRefresh: () => void, _listRef?: S
       hideIndicator()
     }, remain)
     return () => { clearTimer(minTimerRef) }
-  }, [refreshing, progress, hideIndicator, animateHold, stopReturn])
+  }, [refreshing, progress, hideIndicator, animateHold])
 
   // 刷新中旋转圆环
   useEffect(() => {
@@ -191,72 +201,40 @@ const usePullRefresh = (refreshing: boolean, onRefresh: () => void, _listRef?: S
     clearTimer(watchdogRef)
   }, [])
 
-  /**
-   * 松手未达阈值：抵消系统的快速回弹，再按 easeOutCubic 慢慢收回。
-   *   R(t) = 系统此刻剩余的过冲（顶部 - 当前偏移，来自 onScroll）
-   *   V(t) = 我们期望的「剩余下移量」，从松手时的拉动距离按惯性曲线降到 0
-   *   额外位移 = max(0, V - R)，加到列表 transform 上 —— 观感就是「弹得慢、收得稳」。
-   */
-  const startInertiaReturn = useCallback((top: number, pull: number) => {
-    returningRef.current = true
-    returnTopRef.current = top
-    returnPullRef.current = Math.max(pull, 8)
-    returnStartRef.current = Date.now()
-    returnDurationRef.current = Math.round(Math.min(RETURN_MAX_MS, RETURN_MIN_MS + pull * 4))
-    hold.stopAnimation()
-    hold.setValue(0)
-    clearTimer(returnTimerRef)
-    const tick = () => {
-      returnTimerRef.current = null
-      if (!returningRef.current) return
-      const elapsed = Date.now() - returnStartRef.current
-      const p = Math.min(1, elapsed / returnDurationRef.current)
-      const eased = 1 - Math.pow(1 - p, 3)
-      const v = returnPullRef.current * (1 - eased)
-      const last = lastOffsetRef.current
-      // 松手后接近尾声时系统回弹一定已结束，不再依赖可能缺失的滚动事件。
-      const remaining = p > 0.7 || last == null
-        ? 0
-        : Math.max(0, returnTopRef.current - last)
-      const extra = Math.max(0, v - Math.min(remaining, v))
-      hold.setValue(Math.min(1, extra / PULL_TRIGGER))
-      progress.setValue(Math.min(1, v / PULL_TRIGGER))
-      if (p >= 1) {
-        returningRef.current = false
-        hold.setValue(0)
-        progress.setValue(0)
-        return
-      }
-      returnTimerRef.current = setTimeout(tick, 16)
-    }
-    tick()
-  }, [hold, progress])
-
   const handleScrollBeginDrag = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
-    // 新手势开始：撤掉上一次的回落动画，避免 transform 和 pan 抢。
-    stopReturn()
-    progress.stopAnimation()
+    // 刷新中用户又按住列表：保持 32pt 位移不动，避免抓取瞬间画面跳一下。
+    if (!displayRef.current) {
+      // 惯性回落途中被按住：把当前 transform 位移换回滚动偏移，保证画面连续，
+      // 之后交给系统/用户手势。
+      const hv = readHold()
+      if (returningRef.current && hv > 0.01) {
+        listRef?.current?.scrollToOffset?.({
+          offset: returnTopRef.current - hv * PULL_TRIGGER,
+          animated: false,
+        })
+      }
+      returningRef.current = false
+      clearTimer(returnTimerRef)
+      hold.stopAnimation()
+      hold.setValue(0)
+      progress.stopAnimation()
+    }
     dragStartRef.current = e.nativeEvent.contentOffset.y
-    lastOffsetRef.current = dragStartRef.current
     pullRef.current = 0
     lastPullRef.current = 0
-  }, [stopReturn, progress])
+  }, [hold, progress, listRef])
 
   const handleScroll = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
-    const y = e.nativeEvent.contentOffset.y
-    lastOffsetRef.current = y
     if (displayRef.current) {
-      // 刷新中：忽略回弹过程，指示器保持在完整状态。
       if (lastPullRef.current !== PULL_TRIGGER) {
         lastPullRef.current = PULL_TRIGGER
         progress.setValue(1)
       }
       return
     }
-    const start = dragStartRef.current
-    // 惯性回落会话中：进度与位移由 startInertiaReturn 驱动，这里只负责记录偏移。
+    // 惯性回落期间由动画独占，不让滚动事件把进度提前归零。
     if (returningRef.current) return
-    // 非拖动滚动（惯性、回弹、程序化滚动）：一律归零，绝不点亮图标。
+    const start = dragStartRef.current
     if (start == null) {
       if (lastPullRef.current !== 0) {
         lastPullRef.current = 0
@@ -266,9 +244,8 @@ const usePullRefresh = (refreshing: boolean, onRefresh: () => void, _listRef?: S
       }
       return
     }
-    // 只有「从顶部区域开始的拖动」才算下拉：起点在列表中间（> 0）时，
-    // 往下滑是往顶部滚，不是下拉，进度恒为 0。
-    const pull = start <= 0 ? Math.max(0, start - y) : 0
+    // 只有「从顶部区域开始的拖动」才算下拉：起点在列表中间时一律为 0。
+    const pull = start <= 0 ? Math.max(0, start - e.nativeEvent.contentOffset.y) : 0
     pullRef.current = pull
     if (pull === lastPullRef.current) return
     lastPullRef.current = pull
@@ -281,16 +258,17 @@ const usePullRefresh = (refreshing: boolean, onRefresh: () => void, _listRef?: S
     dragStartRef.current = null
     if (displayRef.current) return
     const y = e.nativeEvent.contentOffset.y
-    lastOffsetRef.current = y
     const pull = start == null ? pullRef.current : (start <= 0 ? Math.max(0, start - y) : 0)
     pullRef.current = pull
     if (start != null && start <= 0 && pull >= PULL_TRIGGER) {
+      // 下拉触发：接管系统回弹，让列表从松手位置按惯性滑到 32pt 刷新位。
+      const ok = takeOverRebound(start, pull)
+      holdInMsRef.current = ok ? clamp(240 + pull * 3, 240, 680) : 300
       displayRef.current = true
       setDisplayRefreshing(true)
       progress.stopAnimation()
       progress.setValue(1)
       onRefreshRef.current()
-      // 父级没有进入 refreshing（空实现 / 被丢弃）时收回图标与位移。
       sawRefreshingRef.current = false
       clearTimer(fallbackTimerRef)
       fallbackTimerRef.current = setTimeout(() => {
@@ -299,19 +277,42 @@ const usePullRefresh = (refreshing: boolean, onRefresh: () => void, _listRef?: S
       }, FALLBACK_MS)
       return
     }
-    // 轻拉松手：走惯性减速回落（顶部位移补偿 + easeOutCubic 收尾）。
+    // 轻拉松手：同样接管回弹，然后按惯性曲线收回 0。
     if (start != null && start <= 0 && pull > 0) {
-      startInertiaReturn(start, pull)
+      const duration = clamp(320 + pull * 6, 320, 780)
+      if (takeOverRebound(start, pull)) {
+        animateHold(0, duration)
+        progress.stopAnimation()
+        Animated.timing(progress, {
+          toValue: 0,
+          duration,
+          easing: Easing.out(Easing.cubic),
+          useNativeDriver: false,
+        }).start()
+        clearTimer(returnTimerRef)
+        returnTimerRef.current = setTimeout(() => {
+          returnTimerRef.current = null
+          returningRef.current = false
+        }, duration + 60)
+        return
+      }
+      progress.stopAnimation()
+      Animated.timing(progress, {
+        toValue: 0,
+        duration: 220,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: false,
+      }).start()
       return
     }
     progress.stopAnimation()
     Animated.timing(progress, {
       toValue: 0,
-      duration: 180,
+      duration: 220,
       easing: Easing.out(Easing.cubic),
       useNativeDriver: false,
     }).start()
-  }, [progress, hideIndicator, startInertiaReturn])
+  }, [progress, hideIndicator, takeOverRebound, animateHold])
 
   const handleMomentumScrollEnd = useCallback(() => {
     if (displayRef.current || returningRef.current) return
@@ -332,8 +333,8 @@ const usePullRefresh = (refreshing: boolean, onRefresh: () => void, _listRef?: S
     ? `${ICON_CIRCUMFERENCE * 0.78} ${ICON_CIRCUMFERENCE}`
     : `${ICON_CIRCUMFERENCE} ${ICON_CIRCUMFERENCE}`
   const rotate = spin.interpolate({ inputRange: [0, 1], outputRange: ['0deg', '360deg'] })
-  // 列表位移（调用方套在 Animated.View 上）：只跟刷新态 / 惯性回落走。
-  const pullOffset = hold.interpolate({ inputRange: [0, 1], outputRange: [0, PULL_TRIGGER] })
+  // 列表位移（调用方套在 Animated.View 上）。
+  const pullOffset = hold.interpolate({ inputRange: [0, 1.6], outputRange: [0, PULL_TRIGGER * 1.6] })
 
   const indicator = (
     <Animated.View
