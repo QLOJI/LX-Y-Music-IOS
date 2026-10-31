@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState, forwardRef, useImperativeHandle, useEffect } from 'react'
+import { useCallback, useMemo, useRef, useState, forwardRef, useImperativeHandle, useEffect, isValidElement } from 'react'
 import { Animated, FlatList, type FlatListProps, Keyboard, View, type NativeScrollEvent, type NativeSyntheticEvent } from 'react-native'
 import usePullRefresh from '@/components/common/usePullRefresh'
 import ListItem, { ITEM_HEIGHT } from './ListItem'
@@ -26,6 +26,8 @@ export interface ListProps {
   onPlayList?: (index: number) => void
   ListHeaderComponent?: FlatListType['ListEmptyComponent']
   ListFooterComponent?: FlatListType['ListFooterComponent']
+  /** 下拉圆圈画进列表页头内容顶部（标题文字上方），而不是列表容器顶部覆盖层。 */
+  indicatorInHeader?: boolean
   checkHomePagerIdle: boolean
   rowType?: RowInfoType
   /**
@@ -64,6 +66,7 @@ const List = forwardRef<ListType, ListProps>(
       onPlayList,
       ListHeaderComponent,
       ListFooterComponent,
+      indicatorInHeader,
       rowType,
       playingId,
       onListUpdate,
@@ -372,9 +375,16 @@ const List = forwardRef<ListType, ListProps>(
     // 底部悬浮层（迷你播放器 + 底部 Tab + 安全区）统一避让高度
     const bottomInset = useBottomOverlayInset()
 
+    // 圆圈画进页头内容顶部（标题文字上方）时，跟随列表内容一起出现；
+    // 否则保持原来的容器顶部覆盖层。
+    const mergeIndicatorIntoHeader = indicatorInHeader === true && isValidElement(ListHeaderComponent)
+    const headerComponent = mergeIndicatorIntoHeader
+      ? (<>{pullIndicator}{ListHeaderComponent}</>)
+      : ListHeaderComponent
+
     return (
       <View style={{ flex: 1, overflow: 'hidden' }}>
-        {pullIndicator}
+        {mergeIndicatorIntoHeader ? null : pullIndicator}
         <Animated.View style={{ flex: 1, transform: [{ translateY: pullOffset }] }}>
         <FlatList
         // key：numColumns 变更（旋转/分屏）时强制重挂载 FlatList——
@@ -414,7 +424,7 @@ const List = forwardRef<ListType, ListProps>(
         // refreshing={refreshing}
         onEndReachedThreshold={0.5}
         onEndReached={handleLoadMore}
-        ListHeaderComponent={ListHeaderComponent}
+        ListHeaderComponent={headerComponent}
         ListFooterComponent={footerComponent}
         />
         </Animated.View>

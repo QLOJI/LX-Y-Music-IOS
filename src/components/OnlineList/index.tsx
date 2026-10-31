@@ -41,6 +41,8 @@ export interface OnlineListProps {
   onPlayList?: ListProps['onPlayList']
   ListHeaderComponent?: ListProps['ListHeaderComponent']
   ListFooterComponent?: ListProps['ListFooterComponent']
+  /** 下拉圆圈画进页头内容顶部（标题文字上方），而不是列表容器顶部覆盖层。 */
+  indicatorInHeader?: boolean
   checkHomePagerIdle?: boolean
   rowType?: RowInfoType
   listId?: string
@@ -66,6 +68,7 @@ export default forwardRef<OnlineListType, OnlineListProps>(
       onPlayList,
       ListHeaderComponent,
       ListFooterComponent,
+      indicatorInHeader,
       checkHomePagerIdle = false,
       rowType,
       listId,
@@ -306,6 +309,7 @@ export default forwardRef<OnlineListType, OnlineListProps>(
             onPlayList={onPlayList}
             ListHeaderComponent={ListHeaderComponent}
             ListFooterComponent={ListFooterComponent}
+            indicatorInHeader={indicatorInHeader}
             checkHomePagerIdle={checkHomePagerIdle}
             rowType={rowType}
             playingId={playingId}
