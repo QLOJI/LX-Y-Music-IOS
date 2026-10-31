@@ -145,10 +145,11 @@ const SongList = forwardRef<SongListRef, SongListProps>(({
             ref={songListRef}
             listId="artist_detail"
             forcePlayList={true}
-            // 保留本页的下拉停留空白（与其它停留位页面同一套 60pt 参数），但改成
-            // 「系统回弹落定后再展开」：原来松手时系统向上收、列表同时下移，两段位移叠加
-            // 就是回弹时的上下跳。延后展开后任何时刻只有一段位移在动。其它页面未改动。
-            holdAfterSettle
+            // 本页不再做刷新停留位：停留位只能靠松手后「再把列表下移 60pt」打开，
+            // 这段位移无论和系统回弹同时做还是延后做，在返回时都会看到列表上下动一下。
+            // 本页与歌单主页 / 我的 / 播放历史 / 排行榜 / 搜索一致，只走系统自然回弹
+            // （松手后单次运动、回到静止位），圆圈位置固定。
+            holdSpace={false}
             onPlayList={onPlayList}
             onRefresh={onRefresh}
             onLoadMore={onLoadMoreSongs}

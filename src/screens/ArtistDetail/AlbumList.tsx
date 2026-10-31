@@ -101,7 +101,9 @@ export default memo(({ componentId, albums, loading, hasMore, onLoadMore, onRefr
     handlePullRefreshWithCover,
     flatListRef,
     0,
-    true,
+    // 与「所有歌曲」同口径：不做刷新停留位的下移，回弹完全交给系统（单次运动），
+    // 消除返回时列表上下动一下。
+    false,
   )
 
   return (
