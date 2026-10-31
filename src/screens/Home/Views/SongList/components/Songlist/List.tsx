@@ -177,6 +177,9 @@ export default forwardRef<ListType, ListProps>(({ header, onRefresh, onLoadMore,
 
   return (
     <View style={styles.container} onLayout={onLayout}>
+      {/* 圆圈放在列表**外面**（与「我的」/播放历史/排行榜一致）：绝对定位不会跟着
+          列表内容滚动，位置才能稳定贴在标题上方。 */}
+      {pullIndicator}
       {/* 不再用 `width == 0 ? null` 门控（2026-10-02 用户第 3 条）：那会把头部一起
           摘掉一帧。宽度由 effectiveWidth 兜底，rowInfo 首帧即可用。 */}
       <Animated.View style={{ flex: 1, transform: [{ translateY: pullOffset }] }}>
@@ -217,7 +220,6 @@ export default forwardRef<ListType, ListProps>(({ header, onRefresh, onLoadMore,
         renderItem={renderItem}
         ListHeaderComponent={(
           <View style={{ paddingTop: statusBarHeight }}>
-            {pullIndicator}
             {header}
           </View>
         )}
