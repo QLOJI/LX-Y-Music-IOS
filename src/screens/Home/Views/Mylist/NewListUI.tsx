@@ -954,7 +954,9 @@ export default memo(() => {
           <FlatList
             ref={flatListRef}
             {...pullScrollProps}
-            // 页头在本列表内，保留 iOS 安全区自动 inset：标题行才能和推荐/设置同一高度。
+            // 顶部间距只由页头里的 PageTopInset 负责（与推荐页同一个公式）：关掉 iOS
+            // 自动安全区 inset，避免两层叠加，标题才和推荐页同一条基准线。
+            contentInsetAdjustmentBehavior="never"
             data={listItems}
             contentContainerStyle={{ paddingBottom: listClearance }}
             onLayout={(e) => {

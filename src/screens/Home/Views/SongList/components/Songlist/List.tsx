@@ -176,9 +176,11 @@ export default forwardRef<ListType, ListProps>(({ header, onRefresh, onLoadMore,
         {...pullScrollProps}
         key={String(rowInfo.num)}
         ref={flatListRef}
-        // 页头在本列表内，保留 iOS 安全区自动 inset：标题行才能和推荐/设置落在同一高度
-        // （关掉会把标题抬高 62pt）。下拉/回位按实际偏移计算，不受这层 inset 影响。
+        // 顶部间距只由页头里的 PageTopInset 负责（与推荐页同一个公式）：关掉 iOS
+        // 自动安全区 inset，避免「自动 inset + PageTopInset」两层叠加，标题位置
+        // 才能和推荐页严格落在同一条基准线。
         style={styles.list}
+        contentInsetAdjustmentBehavior="never"
         // 左右内边距写在**每一行**上，不再写在外层 style（2026-10-02 统一搜索页四个 tab 的
         // 排列）：写在 style 上时整条列表一起内缩，连 ListHeaderComponent（搜索框、搜索平台、
         // 酷我等、歌曲/歌单/歌手/专辑按钮行）也被推进去 10pt —— 与「歌曲」tab 的 OnlineList
