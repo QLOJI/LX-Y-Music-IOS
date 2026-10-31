@@ -123,6 +123,9 @@ export default forwardRef<MusicListType, { header?: ReactElement }>((props, ref)
       indicatorInHeader
       // 与歌单一致：只用系统自然回弹，不做刷新位下移。
       holdSpace={false}
+      // 关掉自动安全区 inset：顶部间距由页头 paddingTop（状态栏高度）显式提供，
+      // 滚动范围恒从 0 起、静止位恒为 0，刷新前后位置固定。
+      contentInsetAdjustmentBehavior="never"
       ListHeaderComponent={header}
       onPlayList={handlePlayList}
       onRefresh={handleRefresh}

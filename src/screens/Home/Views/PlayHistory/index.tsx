@@ -14,6 +14,7 @@ import { useTheme } from '@/store/theme/hook'
 import { useSettingValue } from '@/store/setting/hook'
 import { applyOpacity } from '@/utils/colorOpacity'
 import { useButtonRadius } from '@/utils/buttonRadius'
+import { useStatusbarHeight } from '@/store/common/hook'
 import { createStyle, toast } from '@/utils/tools'
 import { designRadius, designSpacing, designTypography, pageTitleGap, pageTitleLineHeight } from '@/theme/DesignTokens'
 import PageTopInset from '@/components/common/PageTopInset'
@@ -104,6 +105,8 @@ export default memo(() => {
   const [availableDays, setAvailableDays] = useState<Set<string>>(() => new Set())
   const playerMusicInfo = usePlayerMusicInfo()
   const theme = useTheme()
+  // 状态栏高度：列表关掉 iOS 自动安全区 inset 后，用它显式补出顶部间距。
+  const statusBarHeight = useStatusbarHeight()
   const buttonOpacity = useSettingValue('theme.buttonOpacity')
   const buttonRadius = useButtonRadius()
 
@@ -276,7 +279,9 @@ export default memo(() => {
   }, [])
 
   const pageHeader = (
-    <>
+    // 关掉 iOS 自动安全区 inset 后，顶部间距在这里显式补上状态栏高度，
+    // 滚动范围恒从 0 开始，刷新前后位置固定。
+    <View style={{ paddingTop: statusBarHeight }}>
       <PageTopInset />
       <View style={styles.pageTitleRow}>
         <Text style={styles.pageTitleText} size={34} color={theme['c-font']}>
@@ -338,7 +343,7 @@ export default memo(() => {
           />
         </TouchableOpacity>
       </View>
-    </>
+    </View>
   )
 
   return (
@@ -358,8 +363,9 @@ export default memo(() => {
         indicatorInHeader
         // 与歌单一致：只用系统自然回弹，不做刷新位下移。
         holdSpace={false}
-        // 与推荐页同构：自动安全区 inset + 页头自身的 PageTopInset。
-        contentInsetAdjustmentBehavior="automatic"
+        // 关掉自动安全区 inset：顶部间距由页头 paddingTop（状态栏高度）显式提供，
+        // 滚动范围恒从 0 起、静止位恒为 0，刷新前后位置固定。
+        contentInsetAdjustmentBehavior="never"
         ListHeaderComponent={pageHeader}
         playingId={playerMusicInfo.id}
         onPlayList={handlePlayList}

@@ -28,7 +28,7 @@ import { LIST_IDS, COMPONENT_IDS } from '@/config/constant'
 import { scaleSizeH } from '@/utils/pixelRatio'
 import { designRadius, designSpacing, pageTitleGap, pageTitleLineHeight } from '@/theme/DesignTokens'
 import { useButtonRadius } from '@/utils/buttonRadius'
-import { useNavActiveId } from '@/store/common/hook'
+import { useNavActiveId, useStatusbarHeight } from '@/store/common/hook'
 import { useListBottomClearance, useListBottomClearanceFloor, resolveListBottomClearance } from '@/utils/tabBarCollapse'
 import PageTopInset from '@/components/common/PageTopInset'
 import Loading from '@/components/common/Loading'
@@ -360,6 +360,8 @@ const PlaylistCard = memo(({
 
 export default memo(() => {
   const theme = useTheme()
+  // 状态栏高度：列表关掉 iOS 自动安全区 inset 后，用它显式补出顶部间距。
+  const statusBarHeight = useStatusbarHeight()
   const buttonOpacity = useSettingValue('theme.buttonOpacity')
   // 「点击重试」按钮无静态高度：paddingVertical 10×2 + 14 号字行高 ≈ 40
   const buttonRadius = useButtonRadius()
@@ -924,7 +926,9 @@ export default memo(() => {
   }
 
   const listHeader = (
-    <View>
+    // 关掉 iOS 自动安全区 inset 后，顶部间距在这里显式补上状态栏高度，
+    // 滚动范围恒从 0 开始，刷新前后位置固定。
+    <View style={{ paddingTop: statusBarHeight }}>
       {pullIndicator}
       <PageTopInset />
       <View style={styles.pageHeader}>
@@ -954,8 +958,9 @@ export default memo(() => {
           <FlatList
             ref={flatListRef}
             {...pullScrollProps}
-            // 与推荐页同构：自动安全区 inset + 页头自身的 PageTopInset。
-            contentInsetAdjustmentBehavior="automatic"
+            // 关掉自动安全区 inset：顶部间距由页头 paddingTop（状态栏高度）显式提供，
+            // 滚动范围恒从 0 起、静止位恒为 0，刷新前后位置固定。
+            contentInsetAdjustmentBehavior="never"
             data={listItems}
             contentContainerStyle={{ paddingBottom: listClearance }}
             onLayout={(e) => {

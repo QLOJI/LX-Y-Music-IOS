@@ -8,6 +8,7 @@ import HeaderBar, { type HeaderBarType } from './HeaderBar'
 import { getBoardsList } from '@/core/leaderboard'
 import { setNavActiveId } from '@/core/common'
 import PageTopInset from '@/components/common/PageTopInset'
+import { useStatusbarHeight } from '@/store/common/hook'
 import SwipeBackArea from '@/components/common/SwipeBackArea'
 
 // 排行榜页：平台切换与榜单选择已由推荐页的排行榜区块承担（点榜单卡片跳转至此），
@@ -15,6 +16,8 @@ import SwipeBackArea from '@/components/common/SwipeBackArea'
 export default () => {
   const musicListRef = useRef<MusicListType>(null)
   const headerBarRef = useRef<HeaderBarType>(null)
+  // 状态栏高度：列表关掉 iOS 自动安全区 inset 后，用它显式补出顶部间距。
+  const statusBarHeight = useStatusbarHeight()
   // 本次挂载期间是否已通过 showBoardDetail 事件处理过一次跳榜请求。
   // 用于抑制「事件 + 挂载兜底」双路径重复 loadList（详见下方 effect 注释）。
   const handledByEventRef = useRef(false)
@@ -60,10 +63,11 @@ export default () => {
       <MusicList
         ref={musicListRef}
         header={
-          <>
+          // 关掉自动安全区 inset 后，顶部间距在这里显式补上状态栏高度。
+          <View style={{ paddingTop: statusBarHeight }}>
             <PageTopInset />
             <HeaderBar ref={headerBarRef} />
-          </>
+          </View>
         }
       />
       <SwipeBackArea onBack={handleBackToDiscovery} />

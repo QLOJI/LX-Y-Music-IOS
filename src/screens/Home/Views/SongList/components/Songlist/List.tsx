@@ -11,7 +11,7 @@ import { useI18n } from '@/lang'
 import { scaleSizeW } from '@/utils/pixelRatio'
 import { createStyle } from '@/utils/tools'
 import Text from '@/components/common/Text'
-import { useBottomOverlayInset } from '@/store/common/hook'
+import { useBottomOverlayInset, useStatusbarHeight } from '@/store/common/hook'
 
 type FlatListType = FlatListProps<ListInfoItem>
 
@@ -129,6 +129,9 @@ export default forwardRef<ListType, ListProps>(({ header, onRefresh, onLoadMore,
   const isHorizontal = useHorizontalMode()
   // 底部悬浮层（迷你播放器 + 底部 Tab + 安全区）统一避让高度
   const bottomInset = useBottomOverlayInset()
+  // 顶部状态栏高度：关掉 iOS 自动安全区 inset 后，由这里显式补回，
+  // 位置与推荐页（自动 inset + paddingTop）严格一致，且不受刷新影响。
+  const statusBarHeight = useStatusbarHeight()
 
   const rowInfo = useMemo(() => {
     // 网格行左右各 ROW_INSET 内边距（见下方 columnWrapperStyle.paddingHorizontal），
@@ -176,11 +179,11 @@ export default forwardRef<ListType, ListProps>(({ header, onRefresh, onLoadMore,
         {...pullScrollProps}
         key={String(rowInfo.num)}
         ref={flatListRef}
-        // 顶部间距与推荐页同构：iOS 自动安全区 inset（约 54pt）+ 页头自己的
-        // `max(sm, statusBarHeight - md)`。关掉自动 inset 会让标题少这 54pt、
-        // 整体上移，与推荐页错位，所以这里必须保留 automatic。
+        // 顶部间距显式由「页头 paddingTop = 状态栏高度」提供：关掉 iOS 自动安全区
+        // inset 后滚动范围恒从 0 开始，静止位固定为 0 —— 刷新前后、拉多少次都不会
+        // 漂移或贴顶。视觉高度 = 状态栏 + 页头自身间距，与推荐页一致。
         style={styles.list}
-        contentInsetAdjustmentBehavior="automatic"
+        contentInsetAdjustmentBehavior="never"
         // 左右内边距写在**每一行**上，不再写在外层 style（2026-10-02 统一搜索页四个 tab 的
         // 排列）：写在 style 上时整条列表一起内缩，连 ListHeaderComponent（搜索框、搜索平台、
         // 酷我等、歌曲/歌单/歌手/专辑按钮行）也被推进去 10pt —— 与「歌曲」tab 的 OnlineList
@@ -208,7 +211,7 @@ export default forwardRef<ListType, ListProps>(({ header, onRefresh, onLoadMore,
         // initialNumToRender={12}
         renderItem={renderItem}
         ListHeaderComponent={(
-          <View>
+          <View style={{ paddingTop: statusBarHeight }}>
             {pullIndicator}
             {header}
           </View>
