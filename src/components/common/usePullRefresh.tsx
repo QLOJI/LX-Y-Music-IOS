@@ -25,8 +25,9 @@ import { useTheme } from '@/store/theme/hook'
  * 下拉只在「从列表顶部开始的拖动」里计数：起点 > 0（列表中间）一律不算。
  */
 export const PULL_TRIGGER = 32
-/** 刷新时列表下移、给圆圈留出的空白高度（触发距离仍是 PULL_TRIGGER）。 */
-const HOLD_GAP = 24
+/** 有停留位的页面：触发距离与空白高度（比纯回弹页面大一些）。 */
+const HOLD_TRIGGER = 48
+const HOLD_GAP = 36
 export const REFRESH_MIN_MS = 900
 const FALLBACK_MS = 700
 const WATCHDOG_MS = 10000
@@ -199,9 +200,9 @@ const usePullRefresh = (
     const y = e.nativeEvent.contentOffset.y
     dragStartRef.current = y
     dragTopRef.current = y
-    // 圆圈按静止位高度定位：有安全区 inset（y 为负）时，圆环整体下移同样的量，
-    // 正好落在「静止位 → 静止位 - 32」这段新打开的空白区中心。
-    const nextTop = y <= 0 ? -y : 0
+    // 只有「有停留位」的页面才把圆圈按静止位高度定位（落在新打开的空白区中心）；
+    // 歌单主页 / 我的 / 播放历史 / 排行榜保持圆圈位置固定，不随拖动移动。
+    const nextTop = holdSpace && y <= 0 ? -y : 0
     if (indicatorTopRef.current !== nextTop) {
       indicatorTopRef.current = nextTop
       setIndicatorTop(nextTop)
@@ -210,7 +211,7 @@ const usePullRefresh = (
     pullRef.current = 0
     lastPullRef.current = 0
     lastStepRef.current = 0
-  }, [applyInset])
+  }, [applyInset, holdSpace])
 
   const handleScroll = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
     const y = e.nativeEvent.contentOffset.y
@@ -236,14 +237,14 @@ const usePullRefresh = (
     }
     const pull = start <= 0 ? Math.max(0, start - y) : 0
     pullRef.current = pull
-    // 进度按 1/32 量化，慢拉时不必每帧过桥同步。
-    const step = Math.min(1, Math.round((pull / PULL_TRIGGER) * 32) / 32)
+    // 进度按 1/32 量化，慢拉时不必每帧过桥同步（触发距离按页面口径）。
+    const step = Math.min(1, Math.round((pull / (holdSpace ? HOLD_TRIGGER : PULL_TRIGGER)) * 32) / 32)
     if (step === lastStepRef.current) return
     lastStepRef.current = step
     lastPullRef.current = pull
     progress.stopAnimation()
     progress.setValue(step)
-  }, [progress])
+  }, [progress, holdSpace])
 
   const handleScrollEndDrag = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
     const start = dragStartRef.current
@@ -252,10 +253,11 @@ const usePullRefresh = (
     const y = e.nativeEvent.contentOffset.y
     lastOffsetRef.current = y
     const pull = start == null ? pullRef.current : (start <= 0 ? Math.max(0, start - y) : 0)
+    const trigger = holdSpace ? HOLD_TRIGGER : PULL_TRIGGER
     pullRef.current = pull
-    if (start != null && start <= 0 && pull >= PULL_TRIGGER) {
+    if (start != null && start <= 0 && pull >= trigger) {
       dragTopRef.current = start
-      // 抬 inset → 停留位（start - 32）成为合法位置 → 等原生提交后用系统滚动动画滚过去。
+      // 抬 inset → 停留位（start - HOLD_GAP）成为合法位置 → 等原生提交后用系统滚动动画滚过去。
       // 不依赖系统弹簧的目标，停留位因此是固定的。
       applyInset(true)
       displayRef.current = true
@@ -278,18 +280,17 @@ const usePullRefresh = (
       }, FALLBACK_MS)
       return
     }
-    // 轻拉松手：若拖动途中抬过 inset，撤掉并动画回静止位（否则会停在中途）。
-    if (start != null && start <= 0) {
+    // 轻拉松手（未达触发位）：有停留位的页面明确动画回静止位——不依赖系统回弹，
+    // 保证任何速度/任何中间 inset 状态下都回到原位。
+    if (holdSpace && start != null && start <= 0) {
       dragTopRef.current = start
-      if (insetRef.current) {
-        applyInset(false)
-        clearTimer(scrollTimerRef)
-        scrollTimerRef.current = setTimeout(() => {
-          scrollTimerRef.current = null
-          if (displayRef.current) return
-          listRef?.current?.scrollToOffset?.({ offset: start, animated: true })
-        }, INSET_COMMIT_MS)
-      }
+      if (insetRef.current) applyInset(false)
+      clearTimer(scrollTimerRef)
+      scrollTimerRef.current = setTimeout(() => {
+        scrollTimerRef.current = null
+        if (displayRef.current) return
+        listRef?.current?.scrollToOffset?.({ offset: start, animated: true })
+      }, INSET_COMMIT_MS)
     }
     progress.stopAnimation()
     Animated.timing(progress, {
@@ -298,7 +299,7 @@ const usePullRefresh = (
       easing: Easing.out(Easing.cubic),
       useNativeDriver: false,
     }).start()
-  }, [progress, applyInset, listRef])
+  }, [progress, applyInset, listRef, holdSpace])
 
   const handleMomentumScrollEnd = useCallback(() => {
     if (displayRef.current) return
