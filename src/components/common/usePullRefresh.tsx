@@ -30,13 +30,6 @@ const HOLD_GAP = 60
 const HOLD_TRIGGER = HOLD_GAP
 export const REFRESH_MIN_MS = 900
 const FALLBACK_MS = 700
-// holdAfterSettle 页面：父级不回报 refreshing（如歌手页），只能靠兜底收起。
-// 停留位要等系统回弹落定后才展开（约 300ms）+ 240ms 渐入，兜底时间必须盖住这一段，
-// 否则空白区只亮一下就被收掉。
-const HOLD_SETTLE_FALLBACK_MS = 1500
-// 等系统回弹落定的兜底：正常由 onScroll 发现已回到静止位就立即展开。
-// 取 600ms（大于大距离下拉的回弹耗时）防止兜底先于回弹落定、两段位移又叠在一起。
-const HOLD_SETTLE_MS = 600
 const WATCHDOG_MS = 10000
 const ICON_SIZE = 26
 const ICON_RADIUS = 10
@@ -59,15 +52,6 @@ const usePullRefresh = (
    * 的留白高度。提供时圆圈**下对齐**贴在该区域底部（即标题正上方）。
    */
   indicatorArea?: { top: number, height: number, inline?: boolean },
-  /**
-   * holdSpace 页面的「停留位延后展开」：松手后先让系统把下拉过冲回弹完，回到静止位后
-   * 再单独把列表下移 HOLD_GAP。默认 false（松手即下移，与其它页面一致）。
-   *
-   * 为什么需要：松手时系统橡胶回弹向上收、transform 向下移，两段位移同时进行且速率不同，
-   * 叠加后内容会先被顶到比松手位置更靠下、再被拽回 —— 就是「回弹时上下跳」。
-   * 延后展开把两者拆成先后两段，任何时刻只有一段在动。
-   */
-  holdAfterSettle = false,
 ) => {
   const theme = useTheme()
   const progress = useRef(new Animated.Value(0)).current
@@ -88,9 +72,6 @@ const usePullRefresh = (
   // 不能每次用拖动起点——一次没回成功，下一次的起点就更低，空白会越拉越大。
   const restTopRef = useRef<number | null>(null)
   const holdAppliedRef = useRef(false)
-  // holdAfterSettle：松手达标后先挂起，等回到静止位（或超时兜底）再展开停留位。
-  const pendingHoldRef = useRef(false)
-  const holdTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const refreshingRef = useRef(refreshing)
   const displayRef = useRef(refreshing)
   const sawRefreshingRef = useRef(false)
@@ -110,35 +91,7 @@ const usePullRefresh = (
     }
   }
 
-  // 展开停留位（holdAfterSettle）：只在挂起时执行一次。此时系统回弹已落定，
-  // 列表下移是唯一在动的位移 → 不会出现上下跳。
-  const startHold = useCallback(() => {
-    if (!pendingHoldRef.current) return
-    pendingHoldRef.current = false
-    clearTimer(holdTimerRef)
-    if (!displayRef.current) return
-    holdAppliedRef.current = true
-    holdAnim.stopAnimation()
-    Animated.timing(holdAnim, {
-      toValue: 1,
-      duration: 240,
-      easing: Easing.out(Easing.cubic),
-      useNativeDriver: true,
-    }).start()
-    // 圆圈随空白区一起展开：拖动阶段已淡出（避免压在还没让开的列表行上），
-    // 这里按空白高重新淡入，正好落在空白中心。
-    progress.stopAnimation()
-    Animated.timing(progress, {
-      toValue: 1,
-      duration: 200,
-      easing: Easing.out(Easing.quad),
-      useNativeDriver: false,
-    }).start()
-  }, [progress, holdAnim])
-
   const hideIndicator = useCallback(() => {
-    pendingHoldRef.current = false
-    clearTimer(holdTimerRef)
     displayRef.current = false
     dragStartRef.current = null
     pullRef.current = 0
@@ -174,16 +127,13 @@ const usePullRefresh = (
       startedAtRef.current = Date.now()
       displayRef.current = true
       setDisplayRefreshing(true)
-      // 延后展开的页面：此刻系统还在回弹，圆圈先保持收起，等停留位展开时再一起出现。
-      if (!(holdAfterSettle && pendingHoldRef.current)) {
-        progress.stopAnimation()
-        Animated.timing(progress, {
-          toValue: 1,
-          duration: 280,
-          easing: Easing.inOut(Easing.quad),
-          useNativeDriver: false,
-        }).start()
-      }
+      progress.stopAnimation()
+      Animated.timing(progress, {
+        toValue: 1,
+        duration: 280,
+        easing: Easing.inOut(Easing.quad),
+        useNativeDriver: false,
+      }).start()
       clearTimer(watchdogRef)
       watchdogRef.current = setTimeout(() => {
         watchdogRef.current = null
@@ -228,7 +178,6 @@ const usePullRefresh = (
     clearTimer(minTimerRef)
     clearTimer(fallbackTimerRef)
     clearTimer(watchdogRef)
-    clearTimer(holdTimerRef)
   }, [])
 
   // 学「真实静止位」：只在第一次见到非拖动、非刷新、顶部区域（y ≤ 0）的偏移时记下，
@@ -244,9 +193,6 @@ const usePullRefresh = (
     // 拖动开始时不改动 contentInset：在手势进行中改滚动范围会打断 UIKit 的 pan，
     // 表现为「列表滑不动」。inset 只由「触发刷新」和「刷新收尾」两个时刻切换。
     const y = e.nativeEvent.contentOffset.y
-    // 用户又上手了：取消还没展开的停留位，别在他拖动时突然下移列表。
-    pendingHoldRef.current = false
-    clearTimer(holdTimerRef)
     // 先学静止位（此刻 dragStart 还是 null），再登记本次拖动起点。
     learnRestTop(y)
     dragStartRef.current = y
@@ -261,12 +207,6 @@ const usePullRefresh = (
     const y = e.nativeEvent.contentOffset.y
     lastOffsetRef.current = y
     if (displayRef.current) {
-      if (pendingHoldRef.current) {
-        // 延后展开停留位的页面：等系统回弹把偏移送回静止位（= 本次拖动起点），
-        // 落定后再单独展开空白区 —— 任何时刻只有一段位移在动。
-        if (y >= dragTopRef.current - 1) startHold()
-        return
-      }
       if (lastPullRef.current !== PULL_TRIGGER) {
         lastPullRef.current = PULL_TRIGGER
         lastStepRef.current = 1
@@ -296,7 +236,7 @@ const usePullRefresh = (
     lastPullRef.current = pull
     progress.stopAnimation()
     progress.setValue(step)
-  }, [progress, holdSpace, learnRestTop, startHold])
+  }, [progress, holdSpace, learnRestTop])
 
   const handleScrollEndDrag = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
     const start = dragStartRef.current
@@ -314,17 +254,7 @@ const usePullRefresh = (
       if (restTopRef.current == null) restTopRef.current = start
       // 只有「有停留位」的页面才下移列表。歌单主页 / 我的 / 播放历史 / 排行榜
       // 不做任何位移 —— 它们松手后交给系统回弹，否则收尾归零时会「猛地上跳一下」。
-      const settleHold = holdSpace && holdAfterSettle
-      if (settleHold) {
-        // 挂起停留位：等 onScroll 看到偏移回到静止位（或 600ms 兜底）再展开，
-        // 避免与系统橡胶回弹同时运动造成上下跳。
-        pendingHoldRef.current = true
-        clearTimer(holdTimerRef)
-        holdTimerRef.current = setTimeout(() => {
-          holdTimerRef.current = null
-          startHold()
-        }, HOLD_SETTLE_MS)
-      } else if (holdSpace) {
+      if (holdSpace) {
         holdAppliedRef.current = true
         holdAnim.stopAnimation()
         Animated.timing(holdAnim, {
@@ -336,27 +266,16 @@ const usePullRefresh = (
       }
       displayRef.current = true
       setDisplayRefreshing(true)
+      progress.stopAnimation()
+      progress.setValue(1)
       lastStepRef.current = 1
-      if (settleHold) {
-        // 回弹期间先把圆圈收起（它会压在还没让开的列表行上），空白展开时再淡入。
-        progress.stopAnimation()
-        Animated.timing(progress, {
-          toValue: 0,
-          duration: 140,
-          easing: Easing.out(Easing.quad),
-          useNativeDriver: false,
-        }).start()
-      } else {
-        progress.stopAnimation()
-        progress.setValue(1)
-      }
       onRefreshRef.current()
       sawRefreshingRef.current = false
       clearTimer(fallbackTimerRef)
       fallbackTimerRef.current = setTimeout(() => {
         fallbackTimerRef.current = null
         if (!sawRefreshingRef.current && !refreshingRef.current) hideIndicator()
-      }, settleHold ? HOLD_SETTLE_FALLBACK_MS : FALLBACK_MS)
+      }, FALLBACK_MS)
       return
     }
     // 轻拉松手（未达触发位）：列表交给系统自然回弹，圆圈淡出即可。
@@ -368,7 +287,7 @@ const usePullRefresh = (
       easing: Easing.out(Easing.cubic),
       useNativeDriver: false,
     }).start()
-  }, [progress, holdAnim, holdSpace, holdAfterSettle, startHold])
+  }, [progress, holdAnim, holdSpace])
 
   const handleMomentumScrollEnd = useCallback(() => {
     if (displayRef.current) return
