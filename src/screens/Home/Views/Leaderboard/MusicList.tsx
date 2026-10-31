@@ -7,6 +7,8 @@ import {
   setListDetailInfo,
 } from '@/core/leaderboard'
 import boardState from '@/store/leaderboard/state'
+import { useStatusbarHeight } from '@/store/common/hook'
+import { designSpacing } from '@/theme/DesignTokens'
 import { handlePlay } from './listAction'
 
 // export type MusicListProps = Pick<OnlineListProps,
@@ -23,6 +25,8 @@ export default forwardRef<MusicListType, { header?: ReactElement }>((props, ref)
   const { header } = props
   const listRef = useRef<OnlineListType>(null)
   const isUnmountedRef = useRef(false)
+  // 圆圈定位：下对齐贴在状态栏下方留白区域底部（标题正上方）。
+  const statusBarHeight = useStatusbarHeight()
   const handleListUpdate = useCallback((newList: LX.Music.MusicInfoOnline[]) => {
     if (isUnmountedRef.current) return
     boardState.listDetailInfo.list = newList
@@ -126,6 +130,11 @@ export default forwardRef<MusicListType, { header?: ReactElement }>((props, ref)
       // 关掉自动安全区 inset：顶部间距由页头 paddingTop（状态栏高度）显式提供，
       // 滚动范围恒从 0 起、静止位恒为 0，刷新前后位置固定。
       contentInsetAdjustmentBehavior="never"
+      // 圆圈下对齐：贴在「状态栏下方留白」区域的底部，即标题正上方。
+      indicatorArea={{
+        top: statusBarHeight,
+        height: Math.max(designSpacing.sm, statusBarHeight - designSpacing.md),
+      }}
       ListHeaderComponent={header}
       onPlayList={handlePlayList}
       onRefresh={handleRefresh}

@@ -622,7 +622,11 @@ export default memo(() => {
     setRefreshing(true)
     void refreshListInfo(true)
   }, [refreshListInfo])
-  const { indicator: pullIndicator, scrollProps: pullScrollProps, pullOffset } = usePullRefresh(refreshing, handlePullRefresh, flatListRef)
+  // 圆圈下对齐：贴在「状态栏下方留白」区域的底部，即标题正上方。
+  const { indicator: pullIndicator, scrollProps: pullScrollProps, pullOffset } = usePullRefresh(refreshing, handlePullRefresh, flatListRef, 0, false, {
+    top: statusBarHeight,
+    height: Math.max(designSpacing.sm, statusBarHeight - designSpacing.md),
+  })
 
   useEffect(() => {
     void refreshListInfo()

@@ -12,6 +12,7 @@ import { scaleSizeW } from '@/utils/pixelRatio'
 import { createStyle } from '@/utils/tools'
 import Text from '@/components/common/Text'
 import { useBottomOverlayInset, useStatusbarHeight } from '@/store/common/hook'
+import { designSpacing } from '@/theme/DesignTokens'
 
 type FlatListType = FlatListProps<ListInfoItem>
 
@@ -97,6 +98,10 @@ export default forwardRef<ListType, ListProps>(({ header, onRefresh, onLoadMore,
     status == 'refreshing',
     handlePullRefresh,
     flatListRef,
+    0,
+    false,
+    // 圆圈下对齐：贴在「状态栏下方留白」区域的底部，即标题正上方。
+    { top: statusBarHeight, height: Math.max(designSpacing.sm, statusBarHeight - designSpacing.md) },
   )
   const footerComponent = useMemo(() => {
     let label: FooterLabel
