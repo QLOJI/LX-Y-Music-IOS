@@ -69,6 +69,8 @@ const List = forwardRef<ListType, ListProps>(({ onRefresh, onLoadMore, actions }
     status == 'refreshing',
     handlePullRefresh,
     flatListRef,
+    0,
+    true,
   )
   const footerComponent = useMemo(() => {
     let label: FooterLabel

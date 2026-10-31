@@ -83,7 +83,8 @@ export default memo(({ componentId, albums, loading, hasMore, onLoadMore, onRefr
 
   const ListFooterComponent = () => {
     let text = ''
-    if (loading && albums.length > 0) text = t('list_loading')
+    // 下拉刷新期间不显示「加载中」页脚：保留原列表内容，等数据回来直接替换。
+    if (loading && !refreshing && albums.length > 0) text = t('list_loading')
     else if (!hasMore) text = t('list_end')
     return (
       <View style={styles.footer}>
@@ -99,6 +100,8 @@ export default memo(({ componentId, albums, loading, hasMore, onLoadMore, onRefr
     refreshing,
     handlePullRefreshWithCover,
     flatListRef,
+    0,
+    true,
   )
 
   return (
