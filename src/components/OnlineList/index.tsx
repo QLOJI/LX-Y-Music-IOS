@@ -45,6 +45,8 @@ export interface OnlineListProps {
   indicatorInHeader?: boolean
   /** 刷新时是否让列表下移 32pt 留出下拉停留位（默认 true）。 */
   holdSpace?: boolean
+  /** 列表顶部安全区处理方式；'never' = 由页面自己的页头负责顶部间距。 */
+  contentInsetAdjustmentBehavior?: ListProps['contentInsetAdjustmentBehavior']
   checkHomePagerIdle?: boolean
   rowType?: RowInfoType
   listId?: string
@@ -72,6 +74,7 @@ export default forwardRef<OnlineListType, OnlineListProps>(
       ListFooterComponent,
       indicatorInHeader,
       holdSpace,
+      contentInsetAdjustmentBehavior,
       checkHomePagerIdle = false,
       rowType,
       listId,
@@ -314,6 +317,7 @@ export default forwardRef<OnlineListType, OnlineListProps>(
             ListFooterComponent={ListFooterComponent}
             indicatorInHeader={indicatorInHeader}
             holdSpace={holdSpace}
+            contentInsetAdjustmentBehavior={contentInsetAdjustmentBehavior}
             checkHomePagerIdle={checkHomePagerIdle}
             rowType={rowType}
             playingId={playingId}

@@ -120,7 +120,8 @@ const usePullRefresh = (
         restoreTimerRef.current = setTimeout(() => {
           restoreTimerRef.current = null
           if (displayRef.current || dragStartRef.current != null) return
-          listRef?.current?.scrollToOffset?.({ offset: top, animated: false })
+          // 用系统滚动动画（与手动滑动/系统回弹同一速度），不要瞬移。
+          listRef?.current?.scrollToOffset?.({ offset: top, animated: true })
         }, INSET_COMMIT_MS)
       }
     }

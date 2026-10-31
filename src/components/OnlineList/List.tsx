@@ -30,6 +30,11 @@ export interface ListProps {
   indicatorInHeader?: boolean
   /** 刷新时是否让列表下移 32pt 留出下拉停留位（默认 true）。 */
   holdSpace?: boolean
+  /**
+   * 显式指定列表顶部的安全区处理方式。传 'never' 表示「页面自己负责顶部间距」
+   * （页头里已有 PageTopInset），标题位置因此与推荐页同一条基准线。
+   */
+  contentInsetAdjustmentBehavior?: 'automatic' | 'scrollableAxes' | 'never' | 'always'
   checkHomePagerIdle: boolean
   rowType?: RowInfoType
   /**
@@ -70,6 +75,7 @@ const List = forwardRef<ListType, ListProps>(
       ListFooterComponent,
       indicatorInHeader,
       holdSpace = true,
+      contentInsetAdjustmentBehavior,
       rowType,
       playingId,
       onListUpdate,
@@ -397,6 +403,7 @@ const List = forwardRef<ListType, ListProps>(
         key={`cols-${numColumns}`}
         ref={flatListRef}
         style={styles.list}
+        contentInsetAdjustmentBehavior={contentInsetAdjustmentBehavior}
         // 底部内边距：让位给底部 Tab 与悬浮迷你播放器组合后的现代首页外壳。
         // 这里用 contentContainerStyle 而不是给外层容器加 paddingBottom，是因为
         // 后者会缩短列表的滚动范围（停在胶囊上方留空白），前者让列表占满整屏。
