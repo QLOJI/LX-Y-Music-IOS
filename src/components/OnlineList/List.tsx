@@ -28,6 +28,8 @@ export interface ListProps {
   ListFooterComponent?: FlatListType['ListFooterComponent']
   /** 下拉圆圈画进列表页头内容顶部（标题文字上方），而不是列表容器顶部覆盖层。 */
   indicatorInHeader?: boolean
+  /** 刷新时是否让列表下移 32pt 留出下拉停留位（默认 true）。 */
+  holdSpace?: boolean
   checkHomePagerIdle: boolean
   rowType?: RowInfoType
   /**
@@ -67,6 +69,7 @@ const List = forwardRef<ListType, ListProps>(
       ListHeaderComponent,
       ListFooterComponent,
       indicatorInHeader,
+      holdSpace = true,
       rowType,
       playingId,
       onListUpdate,
@@ -336,6 +339,8 @@ const List = forwardRef<ListType, ListProps>(
       status == 'refreshing',
       handlePullRefresh,
       flatListRef,
+      0,
+      holdSpace,
     )
 
     const footerComponent = useMemo(() => {

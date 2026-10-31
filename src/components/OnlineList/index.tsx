@@ -43,6 +43,8 @@ export interface OnlineListProps {
   ListFooterComponent?: ListProps['ListFooterComponent']
   /** 下拉圆圈画进页头内容顶部（标题文字上方），而不是列表容器顶部覆盖层。 */
   indicatorInHeader?: boolean
+  /** 刷新时是否让列表下移 32pt 留出下拉停留位（默认 true）。 */
+  holdSpace?: boolean
   checkHomePagerIdle?: boolean
   rowType?: RowInfoType
   listId?: string
@@ -69,6 +71,7 @@ export default forwardRef<OnlineListType, OnlineListProps>(
       ListHeaderComponent,
       ListFooterComponent,
       indicatorInHeader,
+      holdSpace,
       checkHomePagerIdle = false,
       rowType,
       listId,
@@ -310,6 +313,7 @@ export default forwardRef<OnlineListType, OnlineListProps>(
             ListHeaderComponent={ListHeaderComponent}
             ListFooterComponent={ListFooterComponent}
             indicatorInHeader={indicatorInHeader}
+            holdSpace={holdSpace}
             checkHomePagerIdle={checkHomePagerIdle}
             rowType={rowType}
             playingId={playingId}
