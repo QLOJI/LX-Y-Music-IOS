@@ -117,12 +117,21 @@ const usePullRefresh = (
       // 多段程序化滚动与用户手势竞争会表现为「列表滑不动」。
       applyInset(false)
       if (!dragging) {
+        // 回位分两拍：先等原生把「撤掉 inset」提交完毕，再用系统滚动动画回位；
+        // 之后再做一次硬校正，确保无论中间被什么打断都能落到静止位。
         restoreTimerRef.current = setTimeout(() => {
           restoreTimerRef.current = null
           if (displayRef.current || dragStartRef.current != null) return
-          // 用系统滚动动画（与手动滑动/系统回弹同一速度），不要瞬移。
           listRef?.current?.scrollToOffset?.({ offset: top, animated: true })
-        }, INSET_COMMIT_MS)
+          restoreTimerRef.current = setTimeout(() => {
+            restoreTimerRef.current = null
+            if (displayRef.current || dragStartRef.current != null) return
+            const current = lastOffsetRef.current
+            if (current != null && Math.abs(current - top) > 1) {
+              listRef?.current?.scrollToOffset?.({ offset: top, animated: false })
+            }
+          }, 620)
+        }, INSET_COMMIT_MS * 2)
       }
     } else {
       // 纯回弹页面：刷新后系统可能把内容停在 offset 0（丢掉安全区那 54pt），
@@ -135,8 +144,8 @@ const usePullRefresh = (
         restTop != null &&
         last != null &&
         Math.abs(last - restTop) > 1 &&
-        last < restTop + 1 &&
-        last > restTop - PULL_TRIGGER * 3
+        last > restTop - PULL_TRIGGER * 3 &&
+        last < restTop + PULL_TRIGGER * 3
       ) {
         listRef?.current?.scrollToOffset?.({ offset: restTop, animated: true })
       }
