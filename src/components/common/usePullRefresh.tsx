@@ -61,6 +61,10 @@ const usePullRefresh = (
   const dragStartRef = useRef<number | null>(null)
   // 本次拖动的静止位（列表顶部的当前偏移，可能是 0，也可能因安全区 inset 为负）。
   const dragTopRef = useRef(0)
+  // 列表的「真实静止位」：只在挂载后/非拖动时学一次，之后永远用它当回位目标。
+  // 不能每次用拖动起点——一次没回成功，下一次的起点就更低，空白会越拉越大。
+  const restTopRef = useRef<number | null>(null)
+  const holdAppliedRef = useRef(false)
   // 圆圈在容器内的纵向位置：等于静止位到容器顶的距离（无安全区 inset 时为 0）。
   const [indicatorTop, setIndicatorTop] = useState(0)
   const indicatorTopRef = useRef(0)
@@ -103,10 +107,13 @@ const usePullRefresh = (
     setDisplayRefreshing(false)
     clearTimer(scrollTimerRef)
     clearTimer(restoreTimerRef)
-    if (holdSpace && insetRef.current) {
-      const top = dragTopRef.current
+    if (holdSpace && holdAppliedRef.current) {
+      holdAppliedRef.current = false
+      // 回位目标永远是「学到的真实静止位」，不是本次拖动起点——一次没回成功也不会累积偏移。
+      const top = restTopRef.current ?? dragTopRef.current
       if (dragging) {
         applyInset(false)
+        listRef?.current?.scrollToOffset?.({ offset: top, animated: false })
       } else {
         // 保持 inset 先动画回静止位（target 合法），落定后再撤 inset；再留一次兜底。
         listRef?.current?.scrollToOffset?.({ offset: top, animated: true })
@@ -120,6 +127,9 @@ const usePullRefresh = (
           }, 220)
         }, RETURN_ANIM_MS)
       }
+    } else if (insetRef.current) {
+      // 兜底：没有记录到 hold 但 inset 还开着，也要撤掉。
+      applyInset(false)
     }
     progress.stopAnimation()
     Animated.timing(progress, {
@@ -193,25 +203,43 @@ const usePullRefresh = (
     clearTimer(restoreTimerRef)
   }, [])
 
+  // 学「真实静止位」：只在第一次见到非拖动、非刷新、顶部区域（y ≤ 0）的偏移时记下，
+  // 之后所有回位都用它，避免一次没回到位导致起点越来越低、空白越拉越大。
+  const learnRestTop = useCallback((y: number) => {
+    if (restTopRef.current != null || y > 0 || dragStartRef.current != null || displayRef.current) return
+    restTopRef.current = y
+    if (holdSpace) {
+      const nextTop = -y
+      if (indicatorTopRef.current !== nextTop) {
+        indicatorTopRef.current = nextTop
+        setIndicatorTop(nextTop)
+      }
+    }
+  }, [holdSpace])
+
   const handleScrollBeginDrag = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
     clearTimer(scrollTimerRef)
     clearTimer(restoreTimerRef)
     if (!displayRef.current && insetRef.current) applyInset(false)
     const y = e.nativeEvent.contentOffset.y
+    // 先学静止位（此刻 dragStart 还是 null），再登记本次拖动起点。
+    learnRestTop(y)
     dragStartRef.current = y
     dragTopRef.current = y
     // 只有「有停留位」的页面才把圆圈按静止位高度定位（落在新打开的空白区中心）；
     // 歌单主页 / 我的 / 播放历史 / 排行榜保持圆圈位置固定，不随拖动移动。
-    const nextTop = holdSpace && y <= 0 ? -y : 0
-    if (indicatorTopRef.current !== nextTop) {
-      indicatorTopRef.current = nextTop
-      setIndicatorTop(nextTop)
+    if (holdSpace && restTopRef.current != null) {
+      const nextTop = -restTopRef.current
+      if (indicatorTopRef.current !== nextTop) {
+        indicatorTopRef.current = nextTop
+        setIndicatorTop(nextTop)
+      }
     }
     lastOffsetRef.current = y
     pullRef.current = 0
     lastPullRef.current = 0
     lastStepRef.current = 0
-  }, [applyInset, holdSpace])
+  }, [applyInset, holdSpace, learnRestTop])
 
   const handleScroll = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
     const y = e.nativeEvent.contentOffset.y
@@ -226,6 +254,7 @@ const usePullRefresh = (
     }
     const start = dragStartRef.current
     if (start == null) {
+      learnRestTop(y)
       if (lastPullRef.current !== 0) {
         lastPullRef.current = 0
         pullRef.current = 0
@@ -244,7 +273,7 @@ const usePullRefresh = (
     lastPullRef.current = pull
     progress.stopAnimation()
     progress.setValue(step)
-  }, [progress, holdSpace])
+  }, [progress, holdSpace, learnRestTop])
 
   const handleScrollEndDrag = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
     const start = dragStartRef.current
@@ -257,8 +286,10 @@ const usePullRefresh = (
     pullRef.current = pull
     if (start != null && start <= 0 && pull >= trigger) {
       dragTopRef.current = start
-      // 抬 inset → 停留位（start - HOLD_GAP）成为合法位置 → 等原生提交后用系统滚动动画滚过去。
-      // 不依赖系统弹簧的目标，停留位因此是固定的。
+      const restTop = restTopRef.current ?? start
+      // 抬 inset → 停留位（静止位 - HOLD_GAP）成为合法位置 → 等原生提交后用系统滚动动画滚过去。
+      // 目标固定用「真实静止位」，不随本次拖动起点漂移。
+      holdAppliedRef.current = true
       applyInset(true)
       displayRef.current = true
       setDisplayRefreshing(true)
@@ -270,7 +301,7 @@ const usePullRefresh = (
       scrollTimerRef.current = setTimeout(() => {
         scrollTimerRef.current = null
         if (!displayRef.current) return
-        listRef?.current?.scrollToOffset?.({ offset: start - HOLD_GAP, animated: true })
+        listRef?.current?.scrollToOffset?.({ offset: restTop - HOLD_GAP, animated: true })
       }, INSET_COMMIT_MS)
       sawRefreshingRef.current = false
       clearTimer(fallbackTimerRef)
@@ -364,7 +395,9 @@ const usePullRefresh = (
       onMomentumScrollEnd: handleMomentumScrollEnd,
       scrollEventThrottle: 16,
       bounces: true,
-      contentInset: insetTop ? { top: insetTop } : undefined,
+      // 只有真正需要停留位时才带 contentInset；恒传 undefined 会让部分页面
+      // 丢掉了 iOS 安全区自动 inset（标题整体上移，和推荐页错位）。
+      ...(insetTop > 0 ? { contentInset: { top: insetTop } } : {}),
     },
   }
 }
