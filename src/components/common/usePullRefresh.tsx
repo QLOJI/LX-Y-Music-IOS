@@ -53,7 +53,7 @@ const usePullRefresh = (
    * 纯回弹页面的圆圈定位区：`top` 为容器顶（一般 = 状态栏高度），`height` 为标题上方
    * 的留白高度。提供时圆圈**下对齐**贴在该区域底部（即标题正上方）。
    */
-  indicatorArea?: { top: number, height: number },
+  indicatorArea?: { top: number, height: number, inline?: boolean },
 ) => {
   const theme = useTheme()
   const progress = useRef(new Animated.Value(0)).current
@@ -377,18 +377,25 @@ const usePullRefresh = (
     : 0
   // 纯回弹页面若给了定位区：圆圈下对齐贴在标题上方；否则维持原几何。
   const useArea = !holdSpace && indicatorArea != null
-  const areaTop = useArea ? indicatorArea!.top : topOffset
   const areaHeight = useArea ? indicatorArea!.height : ringGap
+  // inline 模式：由调用方把圆圈放进页头里正常排版（不用绝对定位），
+  // 适合「绝对定位坐标系不可靠」的页面（如歌单主页）。
+  const isInline = useArea && indicatorArea!.inline === true
+  const indicatorStyle = isInline
+    ? { height: areaHeight, alignItems: 'center' as const, justifyContent: 'center' as const }
+    : {
+        ...styles.indicator,
+        top: useArea ? indicatorArea!.top : topOffset,
+        height: areaHeight,
+        justifyContent: (useArea ? 'flex-end' : 'center') as 'flex-end' | 'center',
+      }
 
   const indicator = (
     <Animated.View
       pointerEvents="none"
       style={[
-        styles.indicator,
+        indicatorStyle,
         {
-          top: areaTop,
-          height: areaHeight,
-          justifyContent: useArea ? 'flex-end' : 'center',
           opacity: progress,
           transform: [{ translateY: ringTranslate }],
         },
