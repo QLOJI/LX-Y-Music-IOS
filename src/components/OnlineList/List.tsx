@@ -35,6 +35,8 @@ export interface ListProps {
    * （页头里已有 PageTopInset），标题位置因此与推荐页同一条基准线。
    */
   contentInsetAdjustmentBehavior?: 'automatic' | 'scrollableAxes' | 'never' | 'always'
+  /** 圆圈定位区（纯回弹页面用）：圆圈下对齐贴在该区域底部，即标题正上方。 */
+  indicatorArea?: { top: number, height: number }
   checkHomePagerIdle: boolean
   rowType?: RowInfoType
   /**
@@ -76,6 +78,7 @@ const List = forwardRef<ListType, ListProps>(
       indicatorInHeader,
       holdSpace = true,
       contentInsetAdjustmentBehavior,
+      indicatorArea,
       rowType,
       playingId,
       onListUpdate,
@@ -347,6 +350,7 @@ const List = forwardRef<ListType, ListProps>(
       flatListRef,
       0,
       holdSpace,
+      indicatorArea,
     )
 
     const footerComponent = useMemo(() => {

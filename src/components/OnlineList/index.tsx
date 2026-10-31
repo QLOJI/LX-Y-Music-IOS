@@ -47,6 +47,8 @@ export interface OnlineListProps {
   holdSpace?: boolean
   /** 列表顶部安全区处理方式；'never' = 由页面自己的页头负责顶部间距。 */
   contentInsetAdjustmentBehavior?: ListProps['contentInsetAdjustmentBehavior']
+  /** 圆圈定位区（纯回弹页面用）：圆圈下对齐贴在该区域底部，即标题正上方。 */
+  indicatorArea?: ListProps['indicatorArea']
   checkHomePagerIdle?: boolean
   rowType?: RowInfoType
   listId?: string
@@ -75,6 +77,7 @@ export default forwardRef<OnlineListType, OnlineListProps>(
       indicatorInHeader,
       holdSpace,
       contentInsetAdjustmentBehavior,
+      indicatorArea,
       checkHomePagerIdle = false,
       rowType,
       listId,
@@ -318,6 +321,7 @@ export default forwardRef<OnlineListType, OnlineListProps>(
             indicatorInHeader={indicatorInHeader}
             holdSpace={holdSpace}
             contentInsetAdjustmentBehavior={contentInsetAdjustmentBehavior}
+            indicatorArea={indicatorArea}
             checkHomePagerIdle={checkHomePagerIdle}
             rowType={rowType}
             playingId={playingId}

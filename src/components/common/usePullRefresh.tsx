@@ -49,6 +49,11 @@ const usePullRefresh = (
   topOffset = 0,
   /** true = 刷新时给列表留出 32pt 停留位；false = 只用系统回弹，不做任何干预。 */
   holdSpace = false,
+  /**
+   * 纯回弹页面的圆圈定位区：`top` 为容器顶（一般 = 状态栏高度），`height` 为标题上方
+   * 的留白高度。提供时圆圈**下对齐**贴在该区域底部（即标题正上方）。
+   */
+  indicatorArea?: { top: number, height: number },
 ) => {
   const theme = useTheme()
   const progress = useRef(new Animated.Value(0)).current
@@ -389,6 +394,10 @@ const usePullRefresh = (
   const ringTranslate = holdSpace
     ? progress.interpolate({ inputRange: [0, 1], outputRange: [-ringGap / 2, 0] })
     : 0
+  // 纯回弹页面若给了定位区：圆圈下对齐贴在标题上方；否则维持原几何。
+  const useArea = !holdSpace && indicatorArea != null
+  const areaTop = useArea ? indicatorArea!.top : topOffset + indicatorTop
+  const areaHeight = useArea ? indicatorArea!.height : ringGap
 
   const indicator = (
     <Animated.View
@@ -396,8 +405,9 @@ const usePullRefresh = (
       style={[
         styles.indicator,
         {
-          top: topOffset + indicatorTop,
-          height: ringGap,
+          top: areaTop,
+          height: areaHeight,
+          justifyContent: useArea ? 'flex-end' : 'center',
           opacity: progress,
           transform: [{ translateY: ringTranslate }],
         },
