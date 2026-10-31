@@ -329,7 +329,8 @@ export default memo(() => {
             keyExtractor={item => `${item.id}-${item.isCollected ? 'collected' : 'created'}`}
             showsVerticalScrollIndicator={false}
             ListEmptyComponent={
-              loading ? null : (
+              // 下拉刷新期间不显示「暂无数据」占位，只保留下拉动画。
+              (loading || refreshing) ? null : (
                 <View style={styles.emptyContainer}>
                   <Text style={styles.emptyText}>
                     {playlists.length === 0 ? t('list_empty') : ''}

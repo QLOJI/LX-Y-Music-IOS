@@ -329,7 +329,8 @@ export default memo(() => {
             keyExtractor={item => `${item.id}-${item.isCollected ? 'collected' : 'created'}`}
             showsVerticalScrollIndicator={false}
             ListEmptyComponent={
-              loading ? null : (
+              // 下拉刷新期间不显示「暂无数据」/未登录占位，只保留下拉动画。
+              (loading || refreshing) ? null : (
                 <View style={styles.emptyContainer}>
                   {/* 无 Cookie 时不能只说「列表为空」，否则用户分不清「没登录」和「歌单被清空」 */}
                   <Text style={styles.emptyText}>
