@@ -107,41 +107,21 @@ const usePullRefresh = (
     setDisplayRefreshing(false)
     clearTimer(scrollTimerRef)
     clearTimer(restoreTimerRef)
+    // 只有真正施加过停留位的页面才需要收尾；其它页面（歌单主页 / 我的 / 播放历史 /
+    // 排行榜）对列表零干预 —— 下拉、回弹、刷新全部交给系统，避免和手势打架锁死。
     if (holdSpace && holdAppliedRef.current) {
       holdAppliedRef.current = false
       // 回位目标永远是「学到的真实静止位」，不是本次拖动起点——一次没回成功也不会累积偏移。
       const top = restTopRef.current ?? dragTopRef.current
-      if (dragging) {
-        applyInset(false)
-        listRef?.current?.scrollToOffset?.({ offset: top, animated: false })
-      } else {
-        // 保持 inset 先动画回静止位（target 合法），落定后再撤 inset；再留一次兜底。
-        listRef?.current?.scrollToOffset?.({ offset: top, animated: true })
+      // 撤 inset 后只做一次非动画回位，不做「先动画再撤 inset」的多段时序：
+      // 多段程序化滚动与用户手势竞争会表现为「列表滑不动」。
+      applyInset(false)
+      if (!dragging) {
         restoreTimerRef.current = setTimeout(() => {
           restoreTimerRef.current = null
-          applyInset(false)
-          restoreTimerRef.current = setTimeout(() => {
-            restoreTimerRef.current = null
-            if (displayRef.current || dragStartRef.current != null) return
-            listRef?.current?.scrollToOffset?.({ offset: top, animated: false })
-          }, 220)
-        }, RETURN_ANIM_MS)
-      }
-    } else {
-      if (insetRef.current) applyInset(false)
-      // 纯回弹页面：刷新结束若停在了「被弹到 0」的贴顶位置（系统回弹目标是 0，
-      // 不是安全区 inset 下的真实静止位），显式回到真实静止位，标题才和推荐页齐平。
-      const restTop = restTopRef.current
-      const last = lastOffsetRef.current
-      if (
-        !dragging &&
-        restTop != null &&
-        last != null &&
-        // 只在仍停在顶部附近时纠正，用户已经滚进列表内容就不要拽回来。
-        last > restTop - PULL_TRIGGER * 2 &&
-        last < restTop + 1
-      ) {
-        listRef?.current?.scrollToOffset?.({ offset: restTop, animated: true })
+          if (displayRef.current || dragStartRef.current != null) return
+          listRef?.current?.scrollToOffset?.({ offset: top, animated: false })
+        }, INSET_COMMIT_MS)
       }
     }
     progress.stopAnimation()
@@ -233,7 +213,8 @@ const usePullRefresh = (
   const handleScrollBeginDrag = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
     clearTimer(scrollTimerRef)
     clearTimer(restoreTimerRef)
-    if (!displayRef.current && insetRef.current) applyInset(false)
+    // 拖动开始时不改动 contentInset：在手势进行中改滚动范围会打断 UIKit 的 pan，
+    // 表现为「列表滑不动」。inset 只由「触发刷新」和「刷新收尾」两个时刻切换。
     const y = e.nativeEvent.contentOffset.y
     // 先学静止位（此刻 dragStart 还是 null），再登记本次拖动起点。
     learnRestTop(y)
@@ -252,7 +233,7 @@ const usePullRefresh = (
     pullRef.current = 0
     lastPullRef.current = 0
     lastStepRef.current = 0
-  }, [applyInset, holdSpace, learnRestTop])
+  }, [holdSpace, learnRestTop])
 
   const handleScroll = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
     const y = e.nativeEvent.contentOffset.y
