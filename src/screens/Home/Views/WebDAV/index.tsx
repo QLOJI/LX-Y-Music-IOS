@@ -761,6 +761,8 @@ export default memo(() => {
     refreshing,
     handlePullRefresh,
     listRef,
+    0,
+    true,
   )
 
   const handlePlay = useCallback(

@@ -295,6 +295,8 @@ export default memo(() => {
     refreshing,
     handlePullRefresh,
     flatListRef,
+    0,
+    true,
   )
 
   return (

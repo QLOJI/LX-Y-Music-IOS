@@ -186,6 +186,8 @@ export default forwardRef(({ header, searchType, source }: SearchResultListProps
     isRefreshing,
     handlePullRefresh,
     flatListRef,
+    0,
+    true,
   )
 
   return (

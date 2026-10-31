@@ -121,6 +121,8 @@ export default forwardRef<MusicListType, { header?: ReactElement }>((props, ref)
       ref={listRef}
       // 页头（状态栏占位 + 榜单标题栏）在列表内：圆圈画到页头内容顶部，显示在标题文字上方。
       indicatorInHeader
+      // 与歌单一致：只用系统自然回弹，不做刷新位下移。
+      holdSpace={false}
       ListHeaderComponent={header}
       onPlayList={handlePlayList}
       onRefresh={handleRefresh}

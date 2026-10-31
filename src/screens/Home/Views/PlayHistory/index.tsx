@@ -110,7 +110,7 @@ export default memo(() => {
   const isRange = !!endDate && endDate !== startDate
   const title = isRange ? `${startDate} ~ ${endDate}` : startDate
 
-  const loadHistory = useCallback(() => {
+  const loadHistory = useCallback((isPull = false) => {
     const start = parseDateText(startDate)
     const end = parseDateText(isRange ? endDate : startDate)
     if (!start || !end) return
@@ -119,7 +119,9 @@ export default memo(() => {
     const endDay = getDayStart(end)
     const startTime = Math.min(startDay, endDay)
     const endTime = Math.max(startDay, endDay) + DAY - 1
-    listRef.current?.setStatus('loading')
+    // 下拉刷新用 'refreshing'（列表保留原内容、不显示「加载中」页脚）；
+    // 程序加载（首次进入 / 日期切换 / 记录更新）仍用 'loading'。
+    listRef.current?.setStatus(isPull ? 'refreshing' : 'loading')
     void getPlayHistoryByRange(startTime, endTime)
       .then((history) => {
         const nextList = history.map(normalizeHistoryMusic)
@@ -137,6 +139,11 @@ export default memo(() => {
   const loadAvailableDays = useCallback(() => {
     void getPlayHistoryDays().then(days => { setAvailableDays(days) }).catch(() => {})
   }, [])
+
+  // 下拉刷新走 refreshing 状态（不闪「加载中」），程序加载走 loading。
+  const handlePullRefresh = useCallback(() => {
+    loadHistory(true)
+  }, [loadHistory])
 
   useEffect(() => {
     loadHistory()
@@ -349,10 +356,12 @@ export default memo(() => {
         forcePlayList
         // 页头（标题 + 日期栏）在列表内：圆圈画到页头内容顶部，显示在标题文字上方。
         indicatorInHeader
+        // 与歌单一致：只用系统自然回弹，不做刷新位下移。
+        holdSpace={false}
         ListHeaderComponent={pageHeader}
         playingId={playerMusicInfo.id}
         onPlayList={handlePlayList}
-        onRefresh={loadHistory}
+        onRefresh={handlePullRefresh}
         onLoadMore={() => {}}
         checkHomePagerIdle
       />

@@ -189,6 +189,8 @@ export default memo(({ type, onOpenDetail, active = true }: Props) => {
     type === 'home' && refreshing,
     handleRefresh,
     playlistListRef,
+    0,
+    true,
   )
 
   const handlePlayList = useCallback((index: number) => {

@@ -141,7 +141,7 @@ export default memo(({ onOpenDetail, active = true }: Props) => {
   }
 
   // 自绘下拉刷新：不改变列表 inset，触发/结束都不会上下跳，刷新后顶部距离不变。
-  const { indicator: pullIndicator, scrollProps: pullScrollProps, pullOffset } = usePullRefresh(refreshing, handleRefresh, flatListRef)
+  const { indicator: pullIndicator, scrollProps: pullScrollProps, pullOffset } = usePullRefresh(refreshing, handleRefresh, flatListRef, 0, true)
 
   // 空列表渲染：只有这里能区分「加载中 / 加载失败 / 真的没有歌单」，
   // 并为失败提供「重新加载」入口（旧写法整块交给 FlatList 空数据默认渲染，什么都没有）
