@@ -925,7 +925,6 @@ export default memo(() => {
 
   const listHeader = (
     <View>
-      {pullIndicator}
       <PageTopInset />
       <View style={styles.pageHeader}>
         <Text style={styles.pageTitle} size={34} color={theme['c-font']}>
@@ -938,6 +937,8 @@ export default memo(() => {
 
   const listPanel = (
     <View style={[styles.content, { overflow: 'hidden' }]}>
+      {/* 圆圈统一放在列表可视区顶部（与歌单及其它列表页一致）。 */}
+      {pullIndicator}
       {hasError ? (
         <View style={styles.errorContainer}>
           <Text size={16} color={theme['c-font']} style={styles.errorText}>加载失败</Text>
