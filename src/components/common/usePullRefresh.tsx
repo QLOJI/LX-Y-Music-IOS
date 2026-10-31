@@ -93,16 +93,25 @@ const usePullRefresh = (
     lastStepRef.current = 0
     setDisplayRefreshing(false)
     if (holdSpace) {
-      // 先撤掉停留位 inset；等原生把 inset 提交后再强制回顶。
-      // 用非动画回顶：32pt 的收尾不值得为动画引入任何时序竞争，必须保证一定回去。
-      applyInset(false)
       clearTimer(restoreTimerRef)
-      if (!dragging) {
+      if (dragging) {
+        // 手指按着：直接撤 inset，交给手势。
+        applyInset(false)
+      } else {
+        // 保持 inset 的前提下先动画回顶（offset 0 是合法目标），
+        // 动画结束后再撤 inset —— 顺序反了会被 inset 提交打断，导致停在停留位。
+        // 用系统自带的滚动动画，速度自然、不跳。
+        listRef?.current?.scrollToOffset?.({ offset: 0, animated: true })
         restoreTimerRef.current = setTimeout(() => {
           restoreTimerRef.current = null
-          if (displayRef.current) return
-          listRef?.current?.scrollToOffset?.({ offset: 0, animated: false })
-        }, 80)
+          applyInset(false)
+          // 兜底：动画被中断（再次触摸/系统插帧）时，补一次非动画回顶。
+          restoreTimerRef.current = setTimeout(() => {
+            restoreTimerRef.current = null
+            if (displayRef.current || dragStartRef.current != null) return
+            listRef?.current?.scrollToOffset?.({ offset: 0, animated: false })
+          }, 220)
+        }, 340)
       }
     }
     progress.stopAnimation()
@@ -178,14 +187,15 @@ const usePullRefresh = (
   }, [])
 
   const handleScrollBeginDrag = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
-    // 新手势开始：取消可能还在等待的「回顶」，交给用户。
+    // 新手势开始：取消可能还在等待的「回顶」，并把停留位 inset 撤掉（刷新中除外）。
     clearTimer(restoreTimerRef)
+    if (!displayRef.current) applyInset(false)
     dragStartRef.current = e.nativeEvent.contentOffset.y
     lastOffsetRef.current = dragStartRef.current
     pullRef.current = 0
     lastPullRef.current = 0
     lastStepRef.current = 0
-  }, [])
+  }, [applyInset])
 
   const handleScroll = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
     const y = e.nativeEvent.contentOffset.y
