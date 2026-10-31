@@ -1,5 +1,5 @@
 import { memo, useEffect, useRef, useCallback, useState } from 'react'
-import { View, FlatList, TouchableOpacity } from 'react-native'
+import { View, FlatList, TouchableOpacity, Animated } from 'react-native'
 import usePullRefresh from '@/components/common/usePullRefresh'
 import Image from '@/components/common/Image'
 import OnlineList, { type OnlineListType } from '@/components/OnlineList'
@@ -185,7 +185,7 @@ export default memo(({ type, onOpenDetail, active = true }: Props) => {
   }, [type, loadPlaylists, fetchSongs])
 
   // 自绘下拉刷新：不改变列表 inset，触发/结束都不会上下跳，刷新后顶部距离不变。
-  const { indicator: pullIndicator, scrollProps: pullScrollProps } = usePullRefresh(
+  const { indicator: pullIndicator, scrollProps: pullScrollProps, pullOffset } = usePullRefresh(
     type === 'home' && refreshing,
     handleRefresh,
     playlistListRef,
@@ -242,6 +242,7 @@ export default memo(({ type, onOpenDetail, active = true }: Props) => {
     return (
       <View style={{ flex: 1, overflow: 'hidden' }}>
         {pullIndicator}
+        <Animated.View style={{ flex: 1, transform: [{ translateY: pullOffset }] }}>
         <FlatList
           ref={playlistListRef}
           {...pullScrollProps}
@@ -259,6 +260,7 @@ export default memo(({ type, onOpenDetail, active = true }: Props) => {
           keyExtractor={(item) => item.id}
           ListEmptyComponent={renderEmpty()}
         />
+        </Animated.View>
       </View>
     )
   }

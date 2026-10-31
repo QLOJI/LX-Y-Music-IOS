@@ -1,5 +1,5 @@
 import { useRef, useState, useMemo, useCallback, forwardRef, useImperativeHandle, type ReactElement } from 'react'
-import { FlatList, View, type FlatListProps, Keyboard, useWindowDimensions } from 'react-native'
+import { Animated, FlatList, View, type FlatListProps, Keyboard, useWindowDimensions } from 'react-native'
 import usePullRefresh from '@/components/common/usePullRefresh'
 
 import ListItem from './ListItem'
@@ -93,7 +93,7 @@ export default forwardRef<ListType, ListProps>(({ header, onRefresh, onLoadMore,
   const handlePullRefresh = useCallback(() => {
     onRefresh()
   }, [onRefresh])
-  const { indicator: pullIndicator, scrollProps: pullScrollProps } = usePullRefresh(
+  const { indicator: pullIndicator, scrollProps: pullScrollProps, pullOffset } = usePullRefresh(
     status == 'refreshing',
     handlePullRefresh,
     flatListRef,
@@ -171,6 +171,7 @@ export default forwardRef<ListType, ListProps>(({ header, onRefresh, onLoadMore,
     <View style={styles.container} onLayout={onLayout}>
       {/* 不再用 `width == 0 ? null` 门控（2026-10-02 用户第 3 条）：那会把头部一起
           摘掉一帧。宽度由 effectiveWidth 兜底，rowInfo 首帧即可用。 */}
+      <Animated.View style={{ flex: 1, transform: [{ translateY: pullOffset }] }}>
       <FlatList
         {...pullScrollProps}
         key={String(rowInfo.num)}
@@ -220,6 +221,7 @@ export default forwardRef<ListType, ListProps>(({ header, onRefresh, onLoadMore,
         delaysContentTouches={false}
         ListFooterComponent={footerComponent}
       />
+      </Animated.View>
     </View>
   )
 })

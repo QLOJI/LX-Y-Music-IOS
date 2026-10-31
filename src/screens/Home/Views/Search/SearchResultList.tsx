@@ -1,5 +1,5 @@
 import { forwardRef, useImperativeHandle, useRef, useState, useCallback, useEffect, type ReactElement } from 'react'
-import { FlatList, Keyboard, View } from 'react-native'
+import { Animated, FlatList, Keyboard, View } from 'react-native'
 import usePullRefresh from '@/components/common/usePullRefresh'
 import wyMusicSearch from '@/utils/musicSdk/wy/musicSearch'
 import txMusicSearch from '@/utils/musicSdk/tx/musicSearch'
@@ -182,7 +182,7 @@ export default forwardRef(({ header, searchType, source }: SearchResultListProps
     setIsRefreshing(true)
     handleLoad(searchInfoRef.current.text, 1, true)
   }, [handleLoad])
-  const { indicator: pullIndicator, scrollProps: pullScrollProps } = usePullRefresh(
+  const { indicator: pullIndicator, scrollProps: pullScrollProps, pullOffset } = usePullRefresh(
     isRefreshing,
     handlePullRefresh,
     flatListRef,
@@ -191,6 +191,7 @@ export default forwardRef(({ header, searchType, source }: SearchResultListProps
   return (
     <View style={{ flex: 1, overflow: 'hidden' }}>
       {pullIndicator}
+      <Animated.View style={{ flex: 1, transform: [{ translateY: pullOffset }] }}>
       <FlatList
       ref={flatListRef}
       {...pullScrollProps}
@@ -226,6 +227,7 @@ export default forwardRef(({ header, searchType, source }: SearchResultListProps
       }}
       onEndReachedThreshold={0.5}
       />
+      </Animated.View>
     </View>
   )
 })

@@ -620,7 +620,7 @@ export default memo(() => {
     setRefreshing(true)
     void refreshListInfo(true)
   }, [refreshListInfo])
-  const { indicator: pullIndicator, scrollProps: pullScrollProps } = usePullRefresh(refreshing, handlePullRefresh, flatListRef)
+  const { indicator: pullIndicator, scrollProps: pullScrollProps, pullOffset } = usePullRefresh(refreshing, handlePullRefresh, flatListRef)
 
   useEffect(() => {
     void refreshListInfo()
@@ -950,6 +950,7 @@ export default memo(() => {
         </View>
       ) : (
         <>
+          <Animated.View style={{ flex: 1, transform: [{ translateY: pullOffset }] }}>
           <FlatList
             ref={flatListRef}
             {...pullScrollProps}
@@ -973,6 +974,7 @@ export default memo(() => {
             style={styles.listContainer}
             scrollEnabled={draggingIndex == null}
           />
+          </Animated.View>
           <ListNameEdit ref={listNameEditRef} />
           <ListMusicSort ref={listMusicSortRef} />
           <DuplicateMusic ref={duplicateMusicRef} />

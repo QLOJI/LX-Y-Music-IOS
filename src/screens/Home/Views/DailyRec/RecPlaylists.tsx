@@ -1,5 +1,5 @@
 import { memo, useEffect, useState, useCallback, useRef } from 'react'
-import { View, FlatList, Keyboard, TouchableOpacity } from 'react-native'
+import { View, FlatList, Keyboard, TouchableOpacity, Animated } from 'react-native'
 import usePullRefresh from '@/components/common/usePullRefresh'
 import Text from '@/components/common/Text'
 import { useSettingValue } from '@/store/setting/hook'
@@ -116,7 +116,7 @@ export default memo(({ onOpenDetail, active = true }: { onOpenDetail: (info: any
   }
 
   // 自绘下拉刷新：不改变列表 inset，触发/结束都不会上下跳，刷新后顶部距离不变。
-  const { indicator: pullIndicator, scrollProps: pullScrollProps } = usePullRefresh(refreshing, handleRefresh, flatListRef)
+  const { indicator: pullIndicator, scrollProps: pullScrollProps, pullOffset } = usePullRefresh(refreshing, handleRefresh, flatListRef)
 
   // 空列表渲染：区分「未登录 / 加载失败 / 真的没有歌单」，并为失败/空数据提供重试入口。
   const renderEmpty = () => {
@@ -152,6 +152,7 @@ export default memo(({ onOpenDetail, active = true }: { onOpenDetail: (info: any
   return (
     <View style={{ flex: 1, overflow: 'hidden' }}>
       {pullIndicator}
+      <Animated.View style={{ flex: 1, transform: [{ translateY: pullOffset }] }}>
       <FlatList
         ref={flatListRef}
         {...pullScrollProps}
@@ -172,6 +173,7 @@ export default memo(({ onOpenDetail, active = true }: { onOpenDetail: (info: any
         keyExtractor={item => String(item.id)}
         ListEmptyComponent={renderEmpty()}
       />
+      </Animated.View>
     </View>
   )
 })

@@ -1,5 +1,6 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
+  Animated,
   AppState,
   FlatList,
   Keyboard,
@@ -15,7 +16,6 @@ import Text from '@/components/common/Text'
 import MarqueeText from '@/components/common/MarqueeText'
 import Button from '@/components/common/Button'
 import Image from '@/components/common/Image'
-import { refreshCoverCaches } from '@/core/music/coverUrl'
 import { Icon } from '@/components/common/Icon'
 import { SvgIcon } from '@/components/common/SvgIcon'
 import { useTheme } from '@/store/theme/hook'
@@ -755,10 +755,9 @@ export default memo(() => {
   )
 
   const handlePullRefresh = useCallback(() => {
-    setTimeout(refreshCoverCaches, 0)
     handleRefresh()
   }, [handleRefresh])
-  const { indicator: pullIndicator, scrollProps: pullScrollProps } = usePullRefresh(
+  const { indicator: pullIndicator, scrollProps: pullScrollProps, pullOffset } = usePullRefresh(
     refreshing,
     handlePullRefresh,
     listRef,
@@ -1433,6 +1432,7 @@ export default memo(() => {
   const renderList = () => (
     <View style={[styles.listPage, { overflow: 'hidden' }]}>
       {pullIndicator}
+      <Animated.View style={{ flex: 1, transform: [{ translateY: pullOffset }] }}>
       <FlatList
         {...pullScrollProps}
         key={`cols-${numColumns}`}
@@ -1571,6 +1571,7 @@ export default memo(() => {
           </View>
         }
       />
+      </Animated.View>
     </View>
   )
 

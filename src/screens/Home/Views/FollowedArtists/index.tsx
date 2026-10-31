@@ -1,5 +1,5 @@
 import { memo, useState, useCallback, useRef, useEffect } from 'react'
-import { View, FlatList, Keyboard } from 'react-native'
+import { View, FlatList, Keyboard, Animated } from 'react-native'
 import usePullRefresh from '@/components/common/usePullRefresh'
 import ListItem from './ListItem'
 import { useWyFollowedArtists } from '@/store/user/hook.ts'
@@ -53,7 +53,7 @@ export default memo(() => {
   useEffect(() => {
     if (!loading) setPullRefreshing(false)
   }, [loading])
-  const { indicator: pullIndicator, scrollProps: pullScrollProps } = usePullRefresh(
+  const { indicator: pullIndicator, scrollProps: pullScrollProps, pullOffset } = usePullRefresh(
     pullRefreshing,
     handlePullRefresh,
     flatListRef,
@@ -73,6 +73,7 @@ export default memo(() => {
       <DetailPageTitle title={t('nav_followed_artists')} />
       <View style={{ flex: 1, overflow: 'hidden' }}>
       {pullIndicator}
+      <Animated.View style={{ flex: 1, transform: [{ translateY: pullOffset }] }}>
       <FlatList
         ref={flatListRef}
         {...pullScrollProps}
@@ -92,6 +93,7 @@ export default memo(() => {
         keyExtractor={item => String(item.id)}
         columnWrapperStyle={isHorizontal ? styles.columnWrapper : undefined}
       />
+      </Animated.View>
       </View>
       <SwipeBackArea onBack={handleBackToLove} />
     </View>

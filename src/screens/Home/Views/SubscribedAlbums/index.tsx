@@ -1,5 +1,5 @@
 import { memo, useState, useCallback, useEffect, useRef } from 'react'
-import { View, FlatList, Keyboard } from 'react-native'
+import { View, FlatList, Keyboard, Animated } from 'react-native'
 import usePullRefresh from '@/components/common/usePullRefresh'
 import { useWySubscribedAlbums } from '@/store/user/hook'
 import wyApi from '@/utils/musicSdk/wy/user'
@@ -70,7 +70,7 @@ export default memo(() => {
   const handlePullRefresh = useCallback(() => {
     onRefresh(true)
   }, [onRefresh])
-  const { indicator: pullIndicator, scrollProps: pullScrollProps } = usePullRefresh(
+  const { indicator: pullIndicator, scrollProps: pullScrollProps, pullOffset } = usePullRefresh(
     refreshing,
     handlePullRefresh,
     flatListRef,
@@ -96,6 +96,7 @@ export default memo(() => {
       ) : (
         <View style={{ flex: 1, overflow: 'hidden' }}>
           {pullIndicator}
+          <Animated.View style={{ flex: 1, transform: [{ translateY: pullOffset }] }}>
           <FlatList
           ref={flatListRef}
           {...pullScrollProps}
@@ -115,6 +116,7 @@ export default memo(() => {
           keyExtractor={item => String(item.id)}
           columnWrapperStyle={isHorizontal ? styles.columnWrapper : undefined}
           />
+          </Animated.View>
         </View>
       )}
       <SwipeBackArea onBack={handleBackToLove} />

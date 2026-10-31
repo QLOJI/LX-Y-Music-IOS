@@ -1,5 +1,5 @@
 import { memo, useEffect, useState, useCallback, useRef } from 'react'
-import { View, FlatList, BackHandler, StyleSheet, Keyboard, ActivityIndicator } from 'react-native'
+import { View, FlatList, BackHandler, StyleSheet, Keyboard, ActivityIndicator, Animated } from 'react-native'
 import usePullRefresh from '@/components/common/usePullRefresh'
 import ListItem from './ListItem'
 import wyApi from '@/utils/musicSdk/wy/user'
@@ -248,7 +248,7 @@ export default memo(() => {
   useEffect(() => {
     if (!loading) setPullRefreshing(false)
   }, [loading])
-  const { indicator: pullIndicator, scrollProps: pullScrollProps } = usePullRefresh(
+  const { indicator: pullIndicator, scrollProps: pullScrollProps, pullOffset } = usePullRefresh(
     pullRefreshing,
     handlePullRefresh,
     flatListRef,
@@ -261,6 +261,7 @@ export default memo(() => {
         {listReady ? (
           <View style={{ flex: 1, overflow: 'hidden' }}>
           {pullIndicator}
+          <Animated.View style={{ flex: 1, transform: [{ translateY: pullOffset }] }}>
           <FlatList
             ref={flatListRef}
             {...pullScrollProps}
@@ -280,6 +281,7 @@ export default memo(() => {
             )}
             keyExtractor={item => String(item.id)}
           />
+          </Animated.View>
           </View>
         ) : (
           <View style={styles.loadingContainer}>
