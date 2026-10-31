@@ -1,5 +1,5 @@
 import { memo, useMemo, useState, useEffect, useCallback, useRef } from 'react'
-import { FlatList, View } from 'react-native'
+import { Animated, FlatList, View } from 'react-native'
 import usePullRefresh from '@/components/common/usePullRefresh'
 import AlbumListItem from './AlbumListItem'
 import { useHorizontalMode, useLayout } from '@/utils/hooks'
@@ -95,7 +95,7 @@ export default memo(({ componentId, albums, loading, hasMore, onLoadMore, onRefr
   const handlePullRefreshWithCover = useCallback(() => {
     handlePullRefresh()
   }, [handlePullRefresh])
-  const { indicator: pullIndicator, scrollProps: pullScrollProps } = usePullRefresh(
+  const { indicator: pullIndicator, scrollProps: pullScrollProps, pullOffset } = usePullRefresh(
     refreshing,
     handlePullRefreshWithCover,
     flatListRef,
@@ -105,6 +105,7 @@ export default memo(({ componentId, albums, loading, hasMore, onLoadMore, onRefr
     <View style={[styles.container, { overflow: 'hidden' }]} onLayout={onLayout}>
       {pullIndicator}
       {width > 0 && (
+        <Animated.View style={{ flex: 1, transform: [{ translateY: pullOffset }] }}>
         <FlatList
           ref={flatListRef}
           {...pullScrollProps}
@@ -121,6 +122,7 @@ export default memo(({ componentId, albums, loading, hasMore, onLoadMore, onRefr
           ListFooterComponent={ListFooterComponent}
           columnWrapperStyle={rowInfo.num > 1 ? styles.row : undefined}
         />
+        </Animated.View>
       )}
     </View>
   )

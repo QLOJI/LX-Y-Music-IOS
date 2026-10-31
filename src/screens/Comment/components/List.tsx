@@ -1,5 +1,5 @@
 import { useMemo, useRef, useState, forwardRef, useImperativeHandle, useCallback } from 'react'
-import { FlatList, type FlatListProps, View } from 'react-native'
+import { Animated, FlatList, type FlatListProps, View } from 'react-native'
 import usePullRefresh from '@/components/common/usePullRefresh'
 
 // import { useMusicList } from '@/store/list/hook'
@@ -65,7 +65,7 @@ const List = forwardRef<ListType, ListProps>(({ onRefresh, onLoadMore, actions }
   const handlePullRefresh = useCallback(() => {
     onRefresh()
   }, [onRefresh])
-  const { indicator: pullIndicator, scrollProps: pullScrollProps } = usePullRefresh(
+  const { indicator: pullIndicator, scrollProps: pullScrollProps, pullOffset } = usePullRefresh(
     status == 'refreshing',
     handlePullRefresh,
     flatListRef,
@@ -94,6 +94,7 @@ const List = forwardRef<ListType, ListProps>(({ onRefresh, onLoadMore, actions }
   return (
     <View style={{ flex: 1, overflow: 'hidden' }}>
       {pullIndicator}
+      <Animated.View style={{ flex: 1, transform: [{ translateY: pullOffset }] }}>
       <FlatList
       ref={flatListRef}
       {...pullScrollProps}
@@ -112,6 +113,7 @@ const List = forwardRef<ListType, ListProps>(({ onRefresh, onLoadMore, actions }
       onEndReached={handleLoadMore}
       ListFooterComponent={footerComponent}
       />
+      </Animated.View>
     </View>
   )
 })
