@@ -26,8 +26,8 @@ import { useTheme } from '@/store/theme/hook'
  */
 export const PULL_TRIGGER = 32
 /** 有停留位的页面：触发距离与空白高度（比纯回弹页面大一些）。 */
-const HOLD_TRIGGER = 48
-const HOLD_GAP = 36
+const HOLD_TRIGGER = 60
+const HOLD_GAP = 44
 export const REFRESH_MIN_MS = 900
 const FALLBACK_MS = 700
 const WATCHDOG_MS = 10000
@@ -280,17 +280,11 @@ const usePullRefresh = (
       }, FALLBACK_MS)
       return
     }
-    // 轻拉松手（未达触发位）：有停留位的页面明确动画回静止位——不依赖系统回弹，
-    // 保证任何速度/任何中间 inset 状态下都回到原位。
-    if (holdSpace && start != null && start <= 0) {
+    // 轻拉松手（未达触发位）：撤掉可能存在的 inset，然后交给系统自然回弹。
+    // 不再叠加程序化滚动——两段动画同时跑就是「上下抖动」的来源。
+    if (start != null && start <= 0) {
       dragTopRef.current = start
       if (insetRef.current) applyInset(false)
-      clearTimer(scrollTimerRef)
-      scrollTimerRef.current = setTimeout(() => {
-        scrollTimerRef.current = null
-        if (displayRef.current) return
-        listRef?.current?.scrollToOffset?.({ offset: start, animated: true })
-      }, INSET_COMMIT_MS)
     }
     progress.stopAnimation()
     Animated.timing(progress, {
@@ -320,6 +314,8 @@ const usePullRefresh = (
     ? `${ICON_CIRCUMFERENCE * 0.78} ${ICON_CIRCUMFERENCE}`
     : `${ICON_CIRCUMFERENCE} ${ICON_CIRCUMFERENCE}`
   const rotate = spin.interpolate({ inputRange: [0, 1], outputRange: ['0deg', '360deg'] })
+  // 纯回弹页面保持原来的 32pt 圆圈几何；有停留位的页面才用更大的空白高度。
+  const ringGap = holdSpace ? HOLD_GAP : PULL_TRIGGER
 
   const indicator = (
     <Animated.View
@@ -328,11 +324,12 @@ const usePullRefresh = (
         styles.indicator,
         {
           top: topOffset + indicatorTop,
+          height: ringGap,
           opacity: progress,
           transform: [{
             translateY: progress.interpolate({
               inputRange: [0, 1],
-              outputRange: [-HOLD_GAP, 0],
+              outputRange: [-ringGap, 0],
             }),
           }],
         },
