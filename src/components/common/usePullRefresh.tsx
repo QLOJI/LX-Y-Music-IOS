@@ -124,6 +124,22 @@ const usePullRefresh = (
           listRef?.current?.scrollToOffset?.({ offset: top, animated: true })
         }, INSET_COMMIT_MS)
       }
+    } else {
+      // 纯回弹页面：刷新后系统可能把内容停在 offset 0（丢掉安全区那 54pt），
+      // 标题就整体上移。回到刷新前记录的静止位，保证每次刷新后标题高度一致。
+      // 只在「仍停在顶部附近」时纠正，用户已经滑进列表内容就不要拽回来。
+      const restTop = restTopRef.current
+      const last = lastOffsetRef.current
+      if (
+        !dragging &&
+        restTop != null &&
+        last != null &&
+        Math.abs(last - restTop) > 1 &&
+        last < restTop + 1 &&
+        last > restTop - PULL_TRIGGER * 3
+      ) {
+        listRef?.current?.scrollToOffset?.({ offset: restTop, animated: true })
+      }
     }
     progress.stopAnimation()
     Animated.timing(progress, {
@@ -200,7 +216,9 @@ const usePullRefresh = (
   // 学「真实静止位」：只在第一次见到非拖动、非刷新、顶部区域（y ≤ 0）的偏移时记下，
   // 之后所有回位都用它，避免一次没回到位导致起点越来越低、空白越拉越大。
   const learnRestTop = useCallback((y: number) => {
-    if (restTopRef.current != null || y > 0 || dragStartRef.current != null || displayRef.current) return
+    // 只学负偏移：有安全区 inset 的列表静止位是负值（如 -54）；y ≥ 0 的列表说明
+    // 没有自动 inset，此时静止位就是 0，由「下拉达标时的拖动起点」兜底确定。
+    if (restTopRef.current != null || y >= 0 || dragStartRef.current != null || displayRef.current) return
     restTopRef.current = y
     if (holdSpace) {
       const nextTop = -y
@@ -282,7 +300,10 @@ const usePullRefresh = (
     pullRef.current = pull
     if (start != null && start <= 0 && pull >= trigger) {
       dragTopRef.current = start
-      const restTop = restTopRef.current ?? start
+      // 达标时的拖动起点就是「用户看到的静止位」，比任何采样都可靠（无自动 inset 的
+      // 列表只能从这里拿到 0）。只写一次，之后永远用它回位，避免一次没回成功就累积偏移。
+      if (restTopRef.current == null) restTopRef.current = start
+      const restTop = restTopRef.current
       // 抬 inset → 停留位（静止位 - HOLD_GAP）成为合法位置 → 等原生提交后用系统滚动动画滚过去。
       // 目标固定用「真实静止位」，不随本次拖动起点漂移。
       holdAppliedRef.current = true
