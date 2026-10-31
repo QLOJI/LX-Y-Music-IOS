@@ -1,5 +1,5 @@
 import { useRef, useState, useMemo, useCallback, forwardRef, useImperativeHandle, type ReactElement } from 'react'
-import { Animated, FlatList, View, type FlatListProps, Keyboard, useWindowDimensions } from 'react-native'
+import { FlatList, View, type FlatListProps, Keyboard, useWindowDimensions } from 'react-native'
 import usePullRefresh from '@/components/common/usePullRefresh'
 
 import ListItem from './ListItem'
@@ -94,14 +94,16 @@ export default forwardRef<ListType, ListProps>(({ header, onRefresh, onLoadMore,
   const handlePullRefresh = useCallback(() => {
     onRefresh()
   }, [onRefresh])
-  const { indicator: pullIndicator, scrollProps: pullScrollProps, pullOffset } = usePullRefresh(
+  const { indicator: pullIndicator, scrollProps: pullScrollProps } = usePullRefresh(
     status == 'refreshing',
     handlePullRefresh,
     flatListRef,
     0,
     false,
     // 与「我的」页完全相同的方案：绝对定位在下对齐区，圆圈贴在标题正上方。
-    { top: statusBarHeight - 5, height: headerTopGap },
+    // top 用固定值（与「我的」页在刘海机上实测一致）：本页可能在状态栏测量前就挂载，
+    // 依赖 hook 的值会拿到 6，圆圈就贴到屏幕顶端。
+    { top: 55, height: headerTopGap },
   )
   const footerComponent = useMemo(() => {
     let label: FooterLabel
@@ -186,8 +188,9 @@ export default forwardRef<ListType, ListProps>(({ header, onRefresh, onLoadMore,
           也就不会在刷新收尾时把内容顶一下。 */}
       {pullIndicator}
       {/* 不再用 `width == 0 ? null` 门控（2026-10-02 用户第 3 条）：那会把头部一起
-          摘掉一帧。宽度由 effectiveWidth 兜底，rowInfo 首帧即可用。 */}
-      <Animated.View style={{ flex: 1, transform: [{ translateY: pullOffset }] }}>
+          摘掉一帧。宽度由 effectiveWidth 兜底，rowInfo 首帧即可用。
+          本页无停留位（holdSpace=false），不需要外层的 transform 包裹：那一层在惯性
+          滚动时会让内容多走一次合成，是「松手上跳」的来源之一。 */}
       <FlatList
         {...pullScrollProps}
         key={String(rowInfo.num)}
@@ -238,7 +241,6 @@ export default forwardRef<ListType, ListProps>(({ header, onRefresh, onLoadMore,
         delaysContentTouches={false}
         ListFooterComponent={footerComponent}
       />
-      </Animated.View>
     </View>
   )
 })
