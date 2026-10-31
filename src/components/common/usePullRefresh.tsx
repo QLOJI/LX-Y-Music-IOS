@@ -12,15 +12,15 @@ import { useTheme } from '@/store/theme/hook'
 /**
  * 自绘下拉刷新（不依赖系统 UIRefreshControl）。
  *
- * 最终策略：**列表只做系统自动回弹，不再额外下移/上移**。
- * 前几版在刷新态把列表下移 32pt 形成「刷新位」，松手后系统先弹回顶部、再滑下去，
- * 两段运动叠在一起就是「先向上一点、再向下一点」，还伴随跳变。现在：
- *   · 拖动阶段：圆圈跟手淡入，列表位移完全由系统橡胶回弹提供；
- *   · 松手：列表自动回弹到原位，圆圈按缓动轻轻贴到目标位置并旋转；
- *   · 刷新结束：圆圈轻轻淡出。
- * 全程不调用 scrollToOffset、不设 contentInset、不在拖动中改 transform，
- * 因此标题位置始终是列表的自然静止位（与推荐页同一水平线）。
+ * 两种回弹策略：
+ *  · holdSpace = false（歌单主页 / 我的 / 播放历史 / 排行榜）：完全不干预，松手后
+ *    列表只做系统橡胶回弹，圆圈缓动淡出；
+ *  · holdSpace = true（歌单详情歌曲列表 / 每日推荐 / WebDAV / 关注歌手 / 专辑等）：
+ *    下拉越过 PULL_TRIGGER 时把 `contentInset.top` 抬到 32pt —— 系统允许的静止位置
+ *    随之变成「顶部 - 32pt」，松手后系统**一次**回弹并停在停留位，不再先弹回顶部再
+ *    滑下来（没有上下跳动）。刷新结束撤掉 inset，并（若仍停在停留位）滚回顶部。
  *
+ * 不用 transform 逐帧补偿、不在拖动中改 transform（那会造成拉不动/抖动）。
  * 下拉只在「从列表顶部开始的拖动」里计数：起点 > 0（列表中间）一律不算。
  */
 export const PULL_TRIGGER = 32
@@ -39,31 +39,32 @@ const AnimatedCircle = Animated.createAnimatedComponent(Circle)
 const usePullRefresh = (
   refreshing: boolean,
   onRefresh: () => void,
-  _listRef?: ScrollListRef,
+  listRef?: ScrollListRef,
   topOffset = 0,
-  /** true = 刷新时给列表留出 32pt 下拉停留位；false = 只用系统回弹，不做任何列表位移。 */
+  /** true = 刷新时给列表留出 32pt 停留位；false = 只用系统回弹，不做任何干预。 */
   holdSpace = false,
 ) => {
   const theme = useTheme()
-  // 圆圈进度：拖动时跟手，刷新时保持满格。
   const progress = useRef(new Animated.Value(0)).current
-  // 列表位移（0~1 系数，乘 32pt）：只有 holdSpace 的页面在刷新态使用。
-  const hold = useRef(new Animated.Value(0)).current
+  // 兼容调用方的 translateY 包裹层：恒为 0（本 hook 不再用 transform 移动列表）。
+  const pullOffset = useRef(new Animated.Value(0)).current
   const spin = useRef(new Animated.Value(0)).current
   const pullRef = useRef(0)
   const lastPullRef = useRef(-1)
+  const lastOffsetRef = useRef<number | null>(null)
   const dragStartRef = useRef<number | null>(null)
   const refreshingRef = useRef(refreshing)
   const displayRef = useRef(refreshing)
   const sawRefreshingRef = useRef(false)
   const [displayRefreshing, setDisplayRefreshing] = useState(refreshing)
+  const [insetTop, setInsetTop] = useState(0)
+  const insetRef = useRef(false)
   const onRefreshRef = useRef(onRefresh)
   onRefreshRef.current = onRefresh
   const startedAtRef = useRef(refreshing ? Date.now() : 0)
   const minTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const fallbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const watchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const holdDelayRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   refreshingRef.current = refreshing
 
   const clearTimer = (ref: React.MutableRefObject<ReturnType<typeof setTimeout> | null>) => {
@@ -73,6 +74,13 @@ const usePullRefresh = (
     }
   }
 
+  /** 开关 32pt 停留位（只动 contentInset，不动 scrollToOffset，不移动已有内容）。 */
+  const applyInset = useCallback((on: boolean) => {
+    if (!holdSpace || insetRef.current === on) return
+    insetRef.current = on
+    setInsetTop(on ? PULL_TRIGGER : 0)
+  }, [holdSpace])
+
   const hideIndicator = useCallback(() => {
     const dragging = dragStartRef.current != null
     displayRef.current = false
@@ -80,18 +88,12 @@ const usePullRefresh = (
     pullRef.current = 0
     lastPullRef.current = 0
     setDisplayRefreshing(false)
-    clearTimer(holdDelayRef)
     if (holdSpace) {
-      hold.stopAnimation()
-      if (dragging) {
-        hold.setValue(0)
-      } else {
-        Animated.timing(hold, {
-          toValue: 0,
-          duration: 460,
-          easing: Easing.inOut(Easing.quad),
-          useNativeDriver: false,
-        }).start()
+      applyInset(false)
+      // 只在自己还停在停留位附近时滚回顶部；用户已滚到列表中间就不要拽回去。
+      const last = lastOffsetRef.current
+      if (!dragging && last != null && last > -PULL_TRIGGER - 24 && last < 0) {
+        listRef?.current?.scrollToOffset?.({ offset: 0, animated: true })
       }
     }
     progress.stopAnimation()
@@ -101,7 +103,7 @@ const usePullRefresh = (
       easing: Easing.out(Easing.cubic),
       useNativeDriver: false,
     }).start()
-  }, [progress, hold, holdSpace])
+  }, [progress, holdSpace, applyInset, listRef])
 
   useEffect(() => {
     if (refreshing) {
@@ -111,7 +113,6 @@ const usePullRefresh = (
       startedAtRef.current = Date.now()
       displayRef.current = true
       setDisplayRefreshing(true)
-      // 圆圈轻轻贴到目标位置（缓入+缓出）。
       progress.stopAnimation()
       Animated.timing(progress, {
         toValue: 1,
@@ -119,22 +120,6 @@ const usePullRefresh = (
         easing: Easing.inOut(Easing.quad),
         useNativeDriver: false,
       }).start()
-      // 需要下拉停留位的页面：等系统回弹落定后，用一段平滑下移形成 32pt 刷新位。
-      if (holdSpace) {
-        clearTimer(holdDelayRef)
-        holdDelayRef.current = setTimeout(() => {
-          holdDelayRef.current = null
-          // 手指正按着列表时不做位移动画（拖动中改 transform 会抖）。
-          if (!displayRef.current || dragStartRef.current != null) return
-          hold.stopAnimation()
-          Animated.timing(hold, {
-            toValue: 1,
-            duration: 380,
-            easing: Easing.inOut(Easing.quad),
-            useNativeDriver: false,
-          }).start()
-        }, 200)
-      }
       clearTimer(watchdogRef)
       watchdogRef.current = setTimeout(() => {
         watchdogRef.current = null
@@ -156,7 +141,7 @@ const usePullRefresh = (
       hideIndicator()
     }, remain)
     return () => { clearTimer(minTimerRef) }
-  }, [refreshing, progress, hideIndicator, hold, holdSpace])
+  }, [refreshing, progress, hideIndicator])
 
   // 刷新中旋转圆环
   useEffect(() => {
@@ -179,23 +164,19 @@ const usePullRefresh = (
   useEffect(() => () => {
     clearTimer(minTimerRef)
     clearTimer(fallbackTimerRef)
-    clearTimer(holdDelayRef)
     clearTimer(watchdogRef)
   }, [])
 
   const handleScrollBeginDrag = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
-    // 刷新中按住列表：保持停留位；非刷新态开始新手势时把残留位移归零。
-    if (!displayRef.current && holdSpace) {
-      clearTimer(holdDelayRef)
-      hold.stopAnimation()
-      hold.setValue(0)
-    }
     dragStartRef.current = e.nativeEvent.contentOffset.y
+    lastOffsetRef.current = dragStartRef.current
     pullRef.current = 0
     lastPullRef.current = 0
-  }, [hold, holdSpace])
+  }, [])
 
   const handleScroll = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
+    const y = e.nativeEvent.contentOffset.y
+    lastOffsetRef.current = y
     if (displayRef.current) {
       if (lastPullRef.current !== PULL_TRIGGER) {
         lastPullRef.current = PULL_TRIGGER
@@ -214,22 +195,27 @@ const usePullRefresh = (
       return
     }
     // 只有「从顶部区域开始的拖动」才算下拉：起点在列表中间时一律为 0。
-    const pull = start <= 0 ? Math.max(0, start - e.nativeEvent.contentOffset.y) : 0
+    const pull = start <= 0 ? Math.max(0, start - y) : 0
     pullRef.current = pull
+    // 越过阈值立即抬高 inset：系统允许的静止位提前变成 -32，
+    // 松手后的回弹直接停在那里，不会先弹回顶部再滑下来。
+    if (holdSpace && pull >= PULL_TRIGGER) applyInset(true)
     if (pull === lastPullRef.current) return
     lastPullRef.current = pull
     progress.stopAnimation()
     progress.setValue(Math.min(1, pull / PULL_TRIGGER))
-  }, [progress])
+  }, [progress, holdSpace, applyInset])
 
   const handleScrollEndDrag = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
     const start = dragStartRef.current
     dragStartRef.current = null
     if (displayRef.current) return
     const y = e.nativeEvent.contentOffset.y
+    lastOffsetRef.current = y
     const pull = start == null ? pullRef.current : (start <= 0 ? Math.max(0, start - y) : 0)
     pullRef.current = pull
     if (start != null && start <= 0 && pull >= PULL_TRIGGER) {
+      applyInset(true)
       displayRef.current = true
       setDisplayRefreshing(true)
       progress.stopAnimation()
@@ -243,7 +229,8 @@ const usePullRefresh = (
       }, FALLBACK_MS)
       return
     }
-    // 轻拉松手：列表交给系统自动回弹，圆圈按缓动淡出。
+    // 轻拉松手：撤掉可能已经抬起的 inset，让系统自然弹回顶部；圆圈缓动淡出。
+    applyInset(false)
     progress.stopAnimation()
     Animated.timing(progress, {
       toValue: 0,
@@ -251,7 +238,7 @@ const usePullRefresh = (
       easing: Easing.out(Easing.cubic),
       useNativeDriver: false,
     }).start()
-  }, [progress, hideIndicator])
+  }, [progress, hideIndicator, applyInset])
 
   const handleMomentumScrollEnd = useCallback(() => {
     if (displayRef.current) return
@@ -271,8 +258,6 @@ const usePullRefresh = (
     ? `${ICON_CIRCUMFERENCE * 0.78} ${ICON_CIRCUMFERENCE}`
     : `${ICON_CIRCUMFERENCE} ${ICON_CIRCUMFERENCE}`
   const rotate = spin.interpolate({ inputRange: [0, 1], outputRange: ['0deg', '360deg'] })
-  // 列表位移：holdSpace 页面在刷新态下移 32pt 留出下拉停留位；其它页面恒为 0。
-  const pullOffset = hold.interpolate({ inputRange: [0, 1], outputRange: [0, PULL_TRIGGER] })
 
   const indicator = (
     <Animated.View
@@ -320,6 +305,7 @@ const usePullRefresh = (
       onMomentumScrollEnd: handleMomentumScrollEnd,
       scrollEventThrottle: 16,
       bounces: true,
+      contentInset: insetTop ? { top: insetTop } : undefined,
     },
   }
 }
