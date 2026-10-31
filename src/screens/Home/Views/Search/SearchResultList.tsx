@@ -10,7 +10,8 @@ import SingerListItem from '../FollowedArtists/ListItem'
 import AlbumListItem from '../../Views/SubscribedAlbums/ListItem'
 import { log } from '@/utils/log'
 import { createStyle, toast } from '@/utils/tools'
-import { useBottomOverlayInset } from '@/store/common/hook'
+import { useBottomOverlayInset, useStatusbarHeight } from '@/store/common/hook'
+import { designSpacing } from '@/theme/DesignTokens'
 
 interface SearchResultListProps {
   header?: ReactElement
@@ -28,6 +29,11 @@ export default forwardRef(({ header, searchType, source }: SearchResultListProps
   const isHorizontal = useHorizontalMode()
   // 底部悬浮层（迷你播放器 + 底部 Tab + 安全区）统一避让高度
   const bottomInset = useBottomOverlayInset()
+  // 圆圈定位与「我的」页同源：下对齐贴在「状态栏下方留白」区域底部，即搜索框正上方。
+  // 本页可能在状态栏测量前挂载，拿不到真实值（≈6）时用 60 兜底。
+  const statusBarRaw = useStatusbarHeight()
+  const statusBarHeight = statusBarRaw > 20 ? statusBarRaw : 60
+  const indicatorTopGap = Math.max(designSpacing.sm, statusBarHeight - designSpacing.md)
 
   useEffect(() => {
     searchTypeRef.current = searchType
@@ -190,6 +196,8 @@ export default forwardRef(({ header, searchType, source }: SearchResultListProps
     // 纯系统回弹（与搜索「歌曲」tab 及其它纯回弹页一致）：不下移停留位，
     // 避免松手后列表 60pt 位移与系统回弹叠加造成的上下跳 / 迅速回弹。
     false,
+    // 圆圈位置对齐「我的」页（下移，贴搜索框上方），不再贴屏幕顶端。
+    { top: statusBarHeight - 5, height: indicatorTopGap },
   )
 
   return (

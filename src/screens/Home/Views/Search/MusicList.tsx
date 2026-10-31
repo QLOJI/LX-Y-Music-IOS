@@ -2,6 +2,8 @@ import { forwardRef, useEffect, useImperativeHandle, useRef } from 'react'
 import OnlineList, { type OnlineListType, type OnlineListProps } from '@/components/OnlineList'
 import { search } from '@/core/search/music'
 import { stageOnlineListToDefault } from '@/core/playListToDefault'
+import { useStatusbarHeight } from '@/store/common/hook'
+import { designSpacing } from '@/theme/DesignTokens'
 import searchMusicState, { type Source } from '@/store/search/music/state'
 
 // export type MusicListProps = Pick<OnlineListProps,
@@ -16,6 +18,11 @@ export interface MusicListType {
 
 export default forwardRef<MusicListType, { header?: OnlineListProps['ListHeaderComponent'] }>(({ header }, ref) => {
   const listRef = useRef<OnlineListType>(null)
+  // 圆圈定位与「我的」页同源：下对齐贴在「状态栏下方留白」区域底部，即搜索框正上方。
+  // 本页可能在状态栏测量前挂载，拿不到真实值（≈6）时用 60 兜底，避免圆圈贴到屏幕顶端。
+  const statusBarRaw = useStatusbarHeight()
+  const statusBarHeight = statusBarRaw > 20 ? statusBarRaw : 60
+  const indicatorTopGap = Math.max(designSpacing.sm, statusBarHeight - designSpacing.md)
   const searchInfoRef = useRef<{ text: string, source: Source }>({ text: '', source: 'kw' })
   const isUnmountedRef = useRef(false)
   useImperativeHandle(
@@ -137,6 +144,8 @@ export default forwardRef<MusicListType, { header?: OnlineListProps['ListHeaderC
       // 与系统橡胶回弹同时进行，表现为回弹时上下跳、且收得特别快。本页与
       // 歌单主页 / 我的 / 播放历史 / 排行榜一致，不做任何列表位移。
       holdSpace={false}
+      // 圆圈位置对齐「我的」页（下移，贴搜索框上方），不再贴屏幕顶端。
+      indicatorArea={{ top: statusBarHeight - 5, height: indicatorTopGap }}
       checkHomePagerIdle
     />
   )
