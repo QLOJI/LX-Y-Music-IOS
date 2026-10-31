@@ -51,6 +51,8 @@ const usePullRefresh = (
   const spin = useRef(new Animated.Value(0)).current
   const pullRef = useRef(0)
   const lastPullRef = useRef(-1)
+  // 圆圈进度的量化值：按 1/32 步进，避免慢拉时每帧都通过桥同步一次进度（卡顿来源之一）。
+  const lastStepRef = useRef(-1)
   const lastOffsetRef = useRef<number | null>(null)
   const dragStartRef = useRef<number | null>(null)
   const refreshingRef = useRef(refreshing)
@@ -88,6 +90,7 @@ const usePullRefresh = (
     dragStartRef.current = null
     pullRef.current = 0
     lastPullRef.current = 0
+    lastStepRef.current = 0
     setDisplayRefreshing(false)
     if (holdSpace) {
       // 先撤掉停留位 inset；等原生把 inset 提交后再强制回顶。
@@ -181,6 +184,7 @@ const usePullRefresh = (
     lastOffsetRef.current = dragStartRef.current
     pullRef.current = 0
     lastPullRef.current = 0
+    lastStepRef.current = 0
   }, [])
 
   const handleScroll = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
@@ -189,6 +193,7 @@ const usePullRefresh = (
     if (displayRef.current) {
       if (lastPullRef.current !== PULL_TRIGGER) {
         lastPullRef.current = PULL_TRIGGER
+        lastStepRef.current = 1
         progress.setValue(1)
       }
       return
@@ -198,6 +203,7 @@ const usePullRefresh = (
       if (lastPullRef.current !== 0) {
         lastPullRef.current = 0
         pullRef.current = 0
+        lastStepRef.current = 0
         progress.stopAnimation()
         progress.setValue(0)
       }
@@ -209,10 +215,13 @@ const usePullRefresh = (
     // 越过阈值立即抬高 inset：系统允许的静止位提前变成 -32，
     // 松手后的回弹直接停在那里，不会先弹回顶部再滑下来。
     if (holdSpace && pull >= PULL_TRIGGER) applyInset(true)
-    if (pull === lastPullRef.current) return
+    // 进度按 1/32 量化：慢拉时不必每帧都过桥同步（32 步的视觉精度足够）。
+    const step = Math.min(1, Math.round((pull / PULL_TRIGGER) * 32) / 32)
+    if (step === lastStepRef.current) return
+    lastStepRef.current = step
     lastPullRef.current = pull
     progress.stopAnimation()
-    progress.setValue(Math.min(1, pull / PULL_TRIGGER))
+    progress.setValue(step)
   }, [progress, holdSpace, applyInset])
 
   const handleScrollEndDrag = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
@@ -229,6 +238,7 @@ const usePullRefresh = (
       setDisplayRefreshing(true)
       progress.stopAnimation()
       progress.setValue(1)
+      lastStepRef.current = 1
       onRefreshRef.current()
       sawRefreshingRef.current = false
       clearTimer(fallbackTimerRef)
