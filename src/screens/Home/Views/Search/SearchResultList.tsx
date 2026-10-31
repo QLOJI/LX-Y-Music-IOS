@@ -187,7 +187,9 @@ export default forwardRef(({ header, searchType, source }: SearchResultListProps
     handlePullRefresh,
     flatListRef,
     0,
-    true,
+    // 纯系统回弹（与搜索「歌曲」tab 及其它纯回弹页一致）：不下移停留位，
+    // 避免松手后列表 60pt 位移与系统回弹叠加造成的上下跳 / 迅速回弹。
+    false,
   )
 
   return (

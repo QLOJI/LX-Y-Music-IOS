@@ -133,6 +133,10 @@ export default forwardRef<MusicListType, { header?: OnlineListProps['ListHeaderC
       onPlayList={handlePlayList}
       onRefresh={handleRefresh}
       onLoadMore={handleLoadMore}
+      // 搜索结果改为纯系统回弹：原来的刷新停留位会在松手后把列表 translateY 60pt，
+      // 与系统橡胶回弹同时进行，表现为回弹时上下跳、且收得特别快。本页与
+      // 歌单主页 / 我的 / 播放历史 / 排行榜一致，不做任何列表位移。
+      holdSpace={false}
       checkHomePagerIdle
     />
   )
