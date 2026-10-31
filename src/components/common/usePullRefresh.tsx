@@ -55,7 +55,11 @@ const usePullRefresh = (
 ) => {
   const theme = useTheme()
   const progress = useRef(new Animated.Value(0)).current
-  const pullOffset = useRef(new Animated.Value(0)).current
+  // 刷新态的列表下移（0~1 系数，乘 HOLD_GAP）。只在手指松开后 / 刷新收尾时做一次性
+  // 动画——拖动过程中恒为 0，绝不逐帧改 transform（那会和 pan 打架）。
+  // 用 transform 而不是 contentInset / scrollToOffset：后两者会改动滚动状态，
+  // 与手势竞争时表现为「上下滑动被锁住」。
+  const holdAnim = useRef(new Animated.Value(0)).current
   const spin = useRef(new Animated.Value(0)).current
   const pullRef = useRef(0)
   const lastPullRef = useRef(-1)
@@ -72,8 +76,6 @@ const usePullRefresh = (
   const displayRef = useRef(refreshing)
   const sawRefreshingRef = useRef(false)
   const [displayRefreshing, setDisplayRefreshing] = useState(refreshing)
-  const [insetTop, setInsetTop] = useState(0)
-  const insetRef = useRef(false)
   const onRefreshRef = useRef(onRefresh)
   onRefreshRef.current = onRefresh
   const startedAtRef = useRef(refreshing ? Date.now() : 0)
@@ -89,30 +91,25 @@ const usePullRefresh = (
     }
   }
 
-  const applyInset = useCallback((on: boolean) => {
-    if (!holdSpace || insetRef.current === on) return
-    insetRef.current = on
-    setInsetTop(on ? HOLD_GAP : 0)
-  }, [holdSpace])
-
   const hideIndicator = useCallback(() => {
-    const dragging = dragStartRef.current != null
     displayRef.current = false
     dragStartRef.current = null
     pullRef.current = 0
     lastPullRef.current = 0
     lastStepRef.current = 0
     setDisplayRefreshing(false)
-    // 收尾**只撤 inset，不做任何程序化滚动**。
-    // 之前用 scrollToOffset 把列表拽回静止位，程序化滚动与用户手势竞争，表现为
-    // 「刷新后上下滑动被锁住/被弹回」。现在把位置完全交给系统：
-    //   · holdSpace 页面：inset 36 → 0，UIScrollView 自己把内容弹回顶部；
-    //   · 纯回弹页面：本来就没有动过列表。
+    // 收尾：把刷新态的列表下移（transform）平滑归零。
+    // 全程不改滚动偏移、不改 contentInset —— 列表一定回到原位，也不会锁住滑动。
     if (holdAppliedRef.current) {
       holdAppliedRef.current = false
-      applyInset(false)
+      holdAnim.stopAnimation()
+      Animated.timing(holdAnim, {
+        toValue: 0,
+        duration: 320,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      }).start()
     }
-    void dragging
     progress.stopAnimation()
     Animated.timing(progress, {
       toValue: 0,
@@ -120,7 +117,7 @@ const usePullRefresh = (
       easing: Easing.out(Easing.cubic),
       useNativeDriver: false,
     }).start()
-  }, [progress, holdSpace, applyInset, listRef])
+  }, [progress, holdAnim])
 
   useEffect(() => {
     if (refreshing) {
@@ -255,10 +252,16 @@ const usePullRefresh = (
       // 达标时的拖动起点就是「用户看到的静止位」，比任何采样都可靠（无自动 inset 的
       // 列表只能从这里拿到 0）。只写一次，之后永远用它回位，避免一次没回成功就累积偏移。
       if (restTopRef.current == null) restTopRef.current = start
-      // 只把 inset 抬到 HOLD_GAP：系统允许的静止位随之变成「静止位 - HOLD_GAP」，
-      // 松手后系统**自己**停在停留位 —— 不发 scrollToOffset，避免与手势/回弹竞争。
+      // 手指已离开：用 transform 把列表下移出一个停留位（一次性动画）。
+      // 不碰滚动偏移/inset，所以既不会被手势抢，也不会在收尾时回不去。
       holdAppliedRef.current = true
-      applyInset(true)
+      holdAnim.stopAnimation()
+      Animated.timing(holdAnim, {
+        toValue: 1,
+        duration: 220,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      }).start()
       displayRef.current = true
       setDisplayRefreshing(true)
       progress.stopAnimation()
@@ -273,15 +276,8 @@ const usePullRefresh = (
       }, FALLBACK_MS)
       return
     }
-    // 轻拉松手（未达触发位）：必须回到初始静止位。
-    // 有停留位的页面显式动画回位（拖动中可能抬过 inset，系统回弹不可靠）；
-    // 纯回弹页面交给系统（只在确实抬过 inset 时才需要先撤掉）。
-    if (start != null && start <= 0) {
-      dragTopRef.current = start
-      // 轻拉未达阈值：只撤掉可能抬起的 inset，位置交给系统回弹（不做程序化滚动，
-      // 否则与系统回弹叠加/与手势竞争，会锁住上下滑动）。
-      if (insetRef.current) applyInset(false)
-    }
+    // 轻拉松手（未达触发位）：列表交给系统自然回弹，圆圈淡出即可。
+    if (start != null && start <= 0) dragTopRef.current = start
     progress.stopAnimation()
     Animated.timing(progress, {
       toValue: 0,
@@ -289,7 +285,7 @@ const usePullRefresh = (
       easing: Easing.out(Easing.cubic),
       useNativeDriver: false,
     }).start()
-  }, [progress, applyInset, listRef, holdSpace])
+  }, [progress, holdAnim])
 
   const handleMomentumScrollEnd = useCallback(() => {
     if (displayRef.current) return
@@ -361,6 +357,11 @@ const usePullRefresh = (
     </Animated.View>
   )
 
+  // 列表下移量（调用方套在 Animated.View 上）：只由刷新态的 holdAnim 驱动。
+  const pullOffset = holdSpace
+    ? holdAnim.interpolate({ inputRange: [0, 1], outputRange: [0, HOLD_GAP] })
+    : holdAnim
+
   return {
     indicator,
     pullOffset,
@@ -371,9 +372,7 @@ const usePullRefresh = (
       onMomentumScrollEnd: handleMomentumScrollEnd,
       scrollEventThrottle: 16,
       bounces: true,
-      // 只有真正需要停留位时才带 contentInset；恒传 undefined 会让部分页面
-      // 丢掉了 iOS 安全区自动 inset（标题整体上移，和推荐页错位）。
-      ...(insetTop > 0 ? { contentInset: { top: insetTop } } : {}),
+      // 完全不传 contentInset：滚动范围保持不变，列表才能正常上下滑。
     },
   }
 }
