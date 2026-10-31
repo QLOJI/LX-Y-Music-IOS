@@ -65,6 +65,7 @@ const usePullRefresh = (
   const minTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const fallbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const watchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const restoreTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   refreshingRef.current = refreshing
 
   const clearTimer = (ref: React.MutableRefObject<ReturnType<typeof setTimeout> | null>) => {
@@ -89,11 +90,16 @@ const usePullRefresh = (
     lastPullRef.current = 0
     setDisplayRefreshing(false)
     if (holdSpace) {
+      // 先撤掉停留位 inset；等原生把 inset 提交后再强制回顶。
+      // 用非动画回顶：32pt 的收尾不值得为动画引入任何时序竞争，必须保证一定回去。
       applyInset(false)
-      // 只在自己还停在停留位附近时滚回顶部；用户已滚到列表中间就不要拽回去。
-      const last = lastOffsetRef.current
-      if (!dragging && last != null && last > -PULL_TRIGGER - 24 && last < 0) {
-        listRef?.current?.scrollToOffset?.({ offset: 0, animated: true })
+      clearTimer(restoreTimerRef)
+      if (!dragging) {
+        restoreTimerRef.current = setTimeout(() => {
+          restoreTimerRef.current = null
+          if (displayRef.current) return
+          listRef?.current?.scrollToOffset?.({ offset: 0, animated: false })
+        }, 80)
       }
     }
     progress.stopAnimation()
@@ -165,9 +171,12 @@ const usePullRefresh = (
     clearTimer(minTimerRef)
     clearTimer(fallbackTimerRef)
     clearTimer(watchdogRef)
+    clearTimer(restoreTimerRef)
   }, [])
 
   const handleScrollBeginDrag = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
+    // 新手势开始：取消可能还在等待的「回顶」，交给用户。
+    clearTimer(restoreTimerRef)
     dragStartRef.current = e.nativeEvent.contentOffset.y
     lastOffsetRef.current = dragStartRef.current
     pullRef.current = 0
