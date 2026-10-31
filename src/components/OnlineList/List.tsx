@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useRef, useState, forwardRef, useImperativeHandle, useEffect } from 'react'
-import { FlatList, type FlatListProps, Keyboard, View, type NativeScrollEvent, type NativeSyntheticEvent } from 'react-native'
+import { Animated, FlatList, type FlatListProps, Keyboard, View, type NativeScrollEvent, type NativeSyntheticEvent } from 'react-native'
 import usePullRefresh from '@/components/common/usePullRefresh'
 import ListItem, { ITEM_HEIGHT } from './ListItem'
 import { createStyle, getRowInfo, type RowInfoType } from '@/utils/tools'
@@ -329,7 +329,7 @@ const List = forwardRef<ListType, ListProps>(
       // 才会重新下载，避免每次下拉都把整屏封面重载一遍。
       onRefresh()
     }, [onRefresh])
-    const { indicator: pullIndicator, scrollProps: pullScrollProps } = usePullRefresh(
+    const { indicator: pullIndicator, scrollProps: pullScrollProps, pullOffset } = usePullRefresh(
       status == 'refreshing',
       handlePullRefresh,
       flatListRef,
@@ -375,6 +375,7 @@ const List = forwardRef<ListType, ListProps>(
     return (
       <View style={{ flex: 1, overflow: 'hidden' }}>
         {pullIndicator}
+        <Animated.View style={{ flex: 1, transform: [{ translateY: pullOffset }] }}>
         <FlatList
         // key：numColumns 变更（旋转/分屏）时强制重挂载 FlatList——
         // RN 不支持运行中变更 numColumns，直接改值会崩溃；重挂载时数据保存在本组件 state 中不丢失
@@ -416,6 +417,7 @@ const List = forwardRef<ListType, ListProps>(
         ListHeaderComponent={ListHeaderComponent}
         ListFooterComponent={footerComponent}
         />
+        </Animated.View>
       </View>
     )
   },
