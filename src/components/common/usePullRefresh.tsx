@@ -31,8 +31,6 @@ const HOLD_TRIGGER = HOLD_GAP
 export const REFRESH_MIN_MS = 900
 const FALLBACK_MS = 700
 const WATCHDOG_MS = 10000
-const INSET_COMMIT_MS = 60
-const RETURN_ANIM_MS = 340
 const ICON_SIZE = 26
 const ICON_RADIUS = 10
 const ICON_STROKE = 2.4
@@ -82,8 +80,6 @@ const usePullRefresh = (
   const minTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const fallbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const watchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const scrollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const restoreTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   refreshingRef.current = refreshing
 
   const clearTimer = (ref: React.MutableRefObject<ReturnType<typeof setTimeout> | null>) => {
@@ -107,51 +103,16 @@ const usePullRefresh = (
     lastPullRef.current = 0
     lastStepRef.current = 0
     setDisplayRefreshing(false)
-    clearTimer(scrollTimerRef)
-    clearTimer(restoreTimerRef)
-    // 只有真正施加过停留位的页面才需要收尾；其它页面（歌单主页 / 我的 / 播放历史 /
-    // 排行榜）对列表零干预 —— 下拉、回弹、刷新全部交给系统，避免和手势打架锁死。
-    if (holdSpace && holdAppliedRef.current) {
+    // 收尾**只撤 inset，不做任何程序化滚动**。
+    // 之前用 scrollToOffset 把列表拽回静止位，程序化滚动与用户手势竞争，表现为
+    // 「刷新后上下滑动被锁住/被弹回」。现在把位置完全交给系统：
+    //   · holdSpace 页面：inset 36 → 0，UIScrollView 自己把内容弹回顶部；
+    //   · 纯回弹页面：本来就没有动过列表。
+    if (holdAppliedRef.current) {
       holdAppliedRef.current = false
-      // 回位目标永远是「学到的真实静止位」，不是本次拖动起点——一次没回成功也不会累积偏移。
-      const top = restTopRef.current ?? dragTopRef.current
-      // 撤 inset 后只做一次非动画回位，不做「先动画再撤 inset」的多段时序：
-      // 多段程序化滚动与用户手势竞争会表现为「列表滑不动」。
       applyInset(false)
-      if (!dragging) {
-        // 回位分两拍：先等原生把「撤掉 inset」提交完毕，再用系统滚动动画回位；
-        // 之后再做一次硬校正，确保无论中间被什么打断都能落到静止位。
-        restoreTimerRef.current = setTimeout(() => {
-          restoreTimerRef.current = null
-          if (displayRef.current || dragStartRef.current != null) return
-          listRef?.current?.scrollToOffset?.({ offset: top, animated: true })
-          restoreTimerRef.current = setTimeout(() => {
-            restoreTimerRef.current = null
-            if (displayRef.current || dragStartRef.current != null) return
-            const current = lastOffsetRef.current
-            if (current != null && Math.abs(current - top) > 1) {
-              listRef?.current?.scrollToOffset?.({ offset: top, animated: false })
-            }
-          }, 620)
-        }, INSET_COMMIT_MS * 2)
-      }
-    } else {
-      // 纯回弹页面：刷新后系统可能把内容停在 offset 0（丢掉安全区那 54pt），
-      // 标题就整体上移。回到刷新前记录的静止位，保证每次刷新后标题高度一致。
-      // 只在「仍停在顶部附近」时纠正，用户已经滑进列表内容就不要拽回来。
-      const restTop = restTopRef.current
-      const last = lastOffsetRef.current
-      if (
-        !dragging &&
-        restTop != null &&
-        last != null &&
-        Math.abs(last - restTop) > 1 &&
-        last > restTop - PULL_TRIGGER * 3 &&
-        last < restTop + PULL_TRIGGER * 3
-      ) {
-        listRef?.current?.scrollToOffset?.({ offset: restTop, animated: true })
-      }
     }
+    void dragging
     progress.stopAnimation()
     Animated.timing(progress, {
       toValue: 0,
@@ -220,8 +181,6 @@ const usePullRefresh = (
     clearTimer(minTimerRef)
     clearTimer(fallbackTimerRef)
     clearTimer(watchdogRef)
-    clearTimer(scrollTimerRef)
-    clearTimer(restoreTimerRef)
   }, [])
 
   // 学「真实静止位」：只在第一次见到非拖动、非刷新、顶部区域（y ≤ 0）的偏移时记下，
@@ -234,8 +193,6 @@ const usePullRefresh = (
   }, [])
 
   const handleScrollBeginDrag = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
-    clearTimer(scrollTimerRef)
-    clearTimer(restoreTimerRef)
     // 拖动开始时不改动 contentInset：在手势进行中改滚动范围会打断 UIKit 的 pan，
     // 表现为「列表滑不动」。inset 只由「触发刷新」和「刷新收尾」两个时刻切换。
     const y = e.nativeEvent.contentOffset.y
@@ -298,9 +255,8 @@ const usePullRefresh = (
       // 达标时的拖动起点就是「用户看到的静止位」，比任何采样都可靠（无自动 inset 的
       // 列表只能从这里拿到 0）。只写一次，之后永远用它回位，避免一次没回成功就累积偏移。
       if (restTopRef.current == null) restTopRef.current = start
-      const restTop = restTopRef.current
-      // 抬 inset → 停留位（静止位 - HOLD_GAP）成为合法位置 → 等原生提交后用系统滚动动画滚过去。
-      // 目标固定用「真实静止位」，不随本次拖动起点漂移。
+      // 只把 inset 抬到 HOLD_GAP：系统允许的静止位随之变成「静止位 - HOLD_GAP」，
+      // 松手后系统**自己**停在停留位 —— 不发 scrollToOffset，避免与手势/回弹竞争。
       holdAppliedRef.current = true
       applyInset(true)
       displayRef.current = true
@@ -309,12 +265,6 @@ const usePullRefresh = (
       progress.setValue(1)
       lastStepRef.current = 1
       onRefreshRef.current()
-      clearTimer(scrollTimerRef)
-      scrollTimerRef.current = setTimeout(() => {
-        scrollTimerRef.current = null
-        if (!displayRef.current) return
-        listRef?.current?.scrollToOffset?.({ offset: restTop - HOLD_GAP, animated: true })
-      }, INSET_COMMIT_MS)
       sawRefreshingRef.current = false
       clearTimer(fallbackTimerRef)
       fallbackTimerRef.current = setTimeout(() => {
@@ -328,18 +278,9 @@ const usePullRefresh = (
     // 纯回弹页面交给系统（只在确实抬过 inset 时才需要先撤掉）。
     if (start != null && start <= 0) {
       dragTopRef.current = start
-      const restTop = restTopRef.current ?? start
-      if (holdSpace) {
-        if (insetRef.current) applyInset(false)
-        clearTimer(scrollTimerRef)
-        scrollTimerRef.current = setTimeout(() => {
-          scrollTimerRef.current = null
-          if (displayRef.current || dragStartRef.current != null) return
-          listRef?.current?.scrollToOffset?.({ offset: restTop, animated: true })
-        }, INSET_COMMIT_MS)
-      } else if (insetRef.current) {
-        applyInset(false)
-      }
+      // 轻拉未达阈值：只撤掉可能抬起的 inset，位置交给系统回弹（不做程序化滚动，
+      // 否则与系统回弹叠加/与手势竞争，会锁住上下滑动）。
+      if (insetRef.current) applyInset(false)
     }
     progress.stopAnimation()
     Animated.timing(progress, {
