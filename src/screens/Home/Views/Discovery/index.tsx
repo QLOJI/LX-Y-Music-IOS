@@ -455,7 +455,18 @@ export default memo(() => {
     <View style={styles.container}>
       <ScrollView
         style={selectedPlaylist ? { opacity: 0 } : null}
-        contentContainerStyle={[styles.scrollContent, { paddingBottom: bottomInset }]}
+        contentContainerStyle={[styles.scrollContent, {
+          paddingBottom: bottomInset,
+          // 顶部间距改由内容显式提供（见下面 contentInsetAdjustmentBehavior 的说明）：
+          // 与原先 iOS 自动安全区 inset 的高度同源（useStatusbarHeight = 安全区顶部），
+          // 标题位置保持不变。
+          paddingTop: statusBarHeight,
+        }]}
+        // 关掉 iOS 自动安全区 inset：用自动 inset 时，列表的静止位是负偏移（-安全区顶部），
+        // 下拉松手的高速回弹里一旦被重新夹取（inset / contentSize 变化时 RN 会夹 contentOffset），
+        // 落点就会在 0 与 -安全区顶部 之间来回，观感是整页上下跳一下。
+        // 本页与歌单 / 我的等页面同构：静止位固定为 0，顶部间距显式补在内容里。
+        contentInsetAdjustmentBehavior="never"
         onScrollBeginDrag={Keyboard.dismiss}
         showsVerticalScrollIndicator={false}
         pointerEvents={selectedPlaylist ? 'none' : 'auto'}
