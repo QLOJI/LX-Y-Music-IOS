@@ -52,8 +52,17 @@ const usePullRefresh = (
    * 的留白高度。提供时圆圈**下对齐**贴在该区域底部（即标题正上方）。
    */
   indicatorArea?: { top: number, height: number, inline?: boolean },
+  /**
+   * 停留位交给系统 RefreshControl 承载（这些页面必须同时 holdSpace=false）：
+   *   · 圆圈仍按停留位几何（60pt 空白区、圆圈居中），下拉进度也按 60pt 口径；
+   *   · 但 hook 自己**不触发刷新、不做任何列表位移** —— 触发与「停在停留位 / 系统收回收」
+   *     全部由原生 UIRefreshControl 负责，所以松手与返回都是 iOS 自己的弹簧，没有额外位移。
+   */
+  nativeHold = false,
 ) => {
   const theme = useTheme()
+  // 圆圈几何口径：自己的停留位 or 系统承载的停留位，都是 60pt 空白。
+  const holdGeometry = holdSpace || nativeHold
   const progress = useRef(new Animated.Value(0)).current
   // 刷新态的列表下移（0~1 系数，乘 HOLD_GAP）。只在手指松开后 / 刷新收尾时做一次性
   // 动画——拖动过程中恒为 0，绝不逐帧改 transform（那会和 pan 打架）。
@@ -230,13 +239,13 @@ const usePullRefresh = (
     pullRef.current = pull
     // 进度按 1/32 量化，慢拉时不必每帧过桥同步（触发距离按页面口径）。
     // 注意：拖动过程中**绝不**改 inset —— 那会让系统可回弹范围变化、松手后停在半路。
-    const step = Math.min(1, Math.round((pull / (holdSpace ? HOLD_TRIGGER : PULL_TRIGGER)) * 32) / 32)
+    const step = Math.min(1, Math.round((pull / (holdGeometry ? HOLD_TRIGGER : PULL_TRIGGER)) * 32) / 32)
     if (step === lastStepRef.current) return
     lastStepRef.current = step
     lastPullRef.current = pull
     progress.stopAnimation()
     progress.setValue(step)
-  }, [progress, holdSpace, learnRestTop])
+  }, [progress, holdGeometry, learnRestTop])
 
   const handleScrollEndDrag = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
     const start = dragStartRef.current
@@ -245,7 +254,7 @@ const usePullRefresh = (
     const y = e.nativeEvent.contentOffset.y
     lastOffsetRef.current = y
     const pull = start == null ? pullRef.current : (start <= 0 ? Math.max(0, start - y) : 0)
-    const trigger = holdSpace ? HOLD_TRIGGER : PULL_TRIGGER
+    const trigger = holdGeometry ? HOLD_TRIGGER : PULL_TRIGGER
     pullRef.current = pull
     if (start != null && start <= 0 && pull >= trigger) {
       dragTopRef.current = start
@@ -269,7 +278,8 @@ const usePullRefresh = (
       progress.stopAnimation()
       progress.setValue(1)
       lastStepRef.current = 1
-      onRefreshRef.current()
+      // 系统 RefreshControl 自己会在松手越过阈值时回调 onRefresh；这里再调一次会双请求。
+      if (!nativeHold) onRefreshRef.current()
       sawRefreshingRef.current = false
       clearTimer(fallbackTimerRef)
       fallbackTimerRef.current = setTimeout(() => {
@@ -287,7 +297,7 @@ const usePullRefresh = (
       easing: Easing.out(Easing.cubic),
       useNativeDriver: false,
     }).start()
-  }, [progress, holdAnim, holdSpace])
+  }, [progress, holdAnim, holdSpace, holdGeometry, nativeHold])
 
   const handleMomentumScrollEnd = useCallback(() => {
     if (displayRef.current) return
@@ -310,12 +320,13 @@ const usePullRefresh = (
   const rotate = spin.interpolate({ inputRange: [0, 1], outputRange: ['0deg', '360deg'] })
   // 纯回弹页面保持原来的 32pt 圆圈几何、位置固定；有停留位的页面用更大的空白高度，
   // 圆圈随下拉距离移动，始终停在下拉出来的空白区中心，达到触发高度后固定不再移动。
-  const ringGap = holdSpace ? HOLD_GAP : PULL_TRIGGER
-  const ringTranslate = holdSpace
+  // nativeHold 同样是「有空白区」的几何（空白由系统 RefreshControl 撑开），圆圈居中。
+  const ringGap = holdGeometry ? HOLD_GAP : PULL_TRIGGER
+  const ringTranslate = holdGeometry
     ? progress.interpolate({ inputRange: [0, 1], outputRange: [-ringGap / 2, 0] })
     : 0
   // 纯回弹页面若给了定位区：圆圈下对齐贴在标题上方；否则维持原几何。
-  const useArea = !holdSpace && indicatorArea != null
+  const useArea = !holdGeometry && indicatorArea != null
   const areaHeight = useArea ? indicatorArea!.height : ringGap
   // inline 模式：由调用方把圆圈放进页头里正常排版（不用绝对定位），
   // 适合「绝对定位坐标系不可靠」的页面（如歌单主页）。
