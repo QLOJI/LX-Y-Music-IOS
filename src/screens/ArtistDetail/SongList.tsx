@@ -175,9 +175,11 @@ const SongList = forwardRef<SongListRef, SongListProps>(({
             ref={songListRef}
             listId="artist_detail"
             forcePlayList={true}
-            // 下拉规则与「每日推荐」歌曲列表一致（OnlineList 默认 holdSpace）：
-            // 松手达到阈值时列表下移 60pt 生成停留空白、圆圈停在空白中心，刷新收尾收回；
-            // 未达阈值则只走系统自然回弹，不生成空白。
+            // 停留位交给系统 RefreshControl：停留与收回都由 iOS 完成，没有我们自己的
+            // transform 位移（消除松手瞬间「系统回弹 + 下移」叠加造成的猛跳）。
+            // 控件高度钉在 60pt；refreshing 走本页的 refreshing→idle/end 状态闭环。
+            holdSpace={false}
+            nativeRefresh
             onPlayList={onPlayList}
             onRefresh={handleListRefresh}
             onLoadMore={onLoadMoreSongs}
