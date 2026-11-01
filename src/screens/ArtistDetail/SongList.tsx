@@ -52,8 +52,8 @@ const SongList = forwardRef<SongListRef, SongListProps>(({
   // "播放时列表只显示 12 首下方空白"。引用相同（内容由 OnlineList 自身已更新）时
   // 跳过 setList，阻断回环；仅在真实分页/排序/刷新产生新引用时才同步。
   const lastSyncedListRef = useRef<LX.Music.MusicInfoOnline[] | null>(null)
-  // 下拉刷新由系统 RefreshControl 触发：刷新期间保持 status='refreshing'，让系统刷新控件
-  // 把列表停在停留位；数据落地（loading 回落）后交还 idle/end，系统再自然收回。
+  // 下拉刷新沿用「每日推荐」的状态节奏：松手触发后先把 status 置为 refreshing，
+  // 数据落地（loading 回落）后再交还 idle/end —— 停留空白由 hook 按这个状态收尾。
   const pullRefreshingRef = useRef(false)
   const refreshSawLoadingRef = useRef(false)
 
@@ -175,11 +175,9 @@ const SongList = forwardRef<SongListRef, SongListProps>(({
             ref={songListRef}
             listId="artist_detail"
             forcePlayList={true}
-            // 停留位交给系统 RefreshControl：刷新期间 iOS 把列表停在刷新位（60pt 空白、
-            // 圆圈居中），数据回来由系统弹簧收回。松手与返回都是系统行为，没有我们自己的
-            // transform 位移 —— 既保留停留位，又不会「猛跳回初始位置」。
-            holdSpace={false}
-            nativeRefresh
+            // 下拉规则与「每日推荐」歌曲列表一致（OnlineList 默认 holdSpace）：
+            // 松手达到阈值时列表下移 60pt 生成停留空白、圆圈停在空白中心，刷新收尾收回；
+            // 未达阈值则只走系统自然回弹，不生成空白。
             onPlayList={onPlayList}
             onRefresh={handleListRefresh}
             onLoadMore={onLoadMoreSongs}

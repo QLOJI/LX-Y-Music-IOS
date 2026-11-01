@@ -292,12 +292,9 @@ export default forwardRef<MusicListType, MusicListProps>(({ componentId, isCreat
                 listId={`${info.source}__${info.id}`}
                 isCreator={finalIsCreator}
                 playingId={playingId}
-                // 刷新停留位交给系统 RefreshControl：刷新期间 iOS 把列表停在刷新位
-                // （60pt 空白，圆圈居中），数据回来由系统弹簧收回 —— 松手与返回都是系统行为，
-                // 没有我们自己的 transform 位移，所以不会「猛跳回初始位置」。
-                // 歌单详情只有一个组件，改后所有歌单一致。
-                holdSpace={false}
-                nativeRefresh
+                // 下拉规则与「每日推荐」歌曲列表一致（OnlineList 默认 holdSpace）：
+                // 达标松手后列表下移 60pt 生成停留空白、圆圈居中，刷新收尾收回；
+                // 未达阈值只走系统自然回弹。歌单详情只有一个组件，所有歌单一致。
     />
   )
 })

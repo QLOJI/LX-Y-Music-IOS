@@ -1,5 +1,5 @@
 import { memo, useMemo, useState, useEffect, useCallback, useRef } from 'react'
-import { Animated, FlatList, RefreshControl, View } from 'react-native'
+import { Animated, FlatList, View } from 'react-native'
 import usePullRefresh from '@/components/common/usePullRefresh'
 import AlbumListItem from './AlbumListItem'
 import { useHorizontalMode, useLayout } from '@/utils/hooks'
@@ -101,10 +101,8 @@ export default memo(({ componentId, albums, loading, hasMore, onLoadMore, onRefr
     handlePullRefreshWithCover,
     flatListRef,
     0,
-    // 与「所有歌曲」同口径：停留位交给系统 RefreshControl（第 7 参 nativeHold），
-    // hook 自己不做触发与位移；圆圈仍按停留位几何（60pt 空白）显示。
-    false,
-    undefined,
+    // 与「所有歌曲」「每日推荐」同口径：达标松手后列表下移 60pt 生成停留空白，
+    // 刷新收尾收回；未达阈值只走系统自然回弹。
     true,
   )
 
@@ -116,15 +114,6 @@ export default memo(({ componentId, albums, loading, hasMore, onLoadMore, onRefr
         <FlatList
           ref={flatListRef}
           {...pullScrollProps}
-          // 系统刷新控件承载停留位与收回：刷新期间 iOS 把列表停在刷新位，
-          // 数据回来由系统弹簧收回；系统转圈透明，只显示自绘圆圈。
-          refreshControl={(
-            <RefreshControl
-              refreshing={refreshing}
-              onRefresh={handlePullRefreshWithCover}
-              tintColor="transparent"
-            />
-          )}
           key={String(rowInfo.num) + viewMode}
           numColumns={rowInfo.num}
           data={list}
