@@ -29,6 +29,9 @@ export const PULL_TRIGGER = 32
 const HOLD_GAP = 60
 const HOLD_TRIGGER = HOLD_GAP
 export const REFRESH_MIN_MS = 900
+// 停留位/圆圈的**硬性**最短停留：从松手触发那一刻算起。页面刷新状态回得太快、或干脆没回报
+// refreshing 时，也保证停留画面能停留这么久，不会「松手就收」。
+const HOLD_MIN_MS = 1200
 const FALLBACK_MS = 700
 const WATCHDOG_MS = 10000
 const ICON_SIZE = 26
@@ -70,6 +73,9 @@ const usePullRefresh = (
   // 拖动阶段的「停住」系数（0~1，负数方向抵消过冲）：下拉超过触发高度后，
   // 用反向 transform 把多拉出来的部分抵掉，列表视觉上停在停留位不再跟手下移。
   const lastPinRef = useRef(0)
+  // 本次刷新的触发时刻（松手那一刻），用于 HOLD_MIN_MS 硬性最短停留。
+  const triggerAtRef = useRef(0)
+  const holdMinTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const spin = useRef(new Animated.Value(0)).current
   const pullRef = useRef(0)
   const lastPullRef = useRef(-1)
@@ -102,6 +108,17 @@ const usePullRefresh = (
   }
 
   const hideIndicator = useCallback(() => {
+    // 硬性最短停留：从松手触发算起不足 HOLD_MIN_MS 就推迟，保证停留画面一定看得见。
+    // 只对停留位页面生效（其它页面保持原有节奏）。
+    const holdRemain = holdSpace ? HOLD_MIN_MS - (Date.now() - triggerAtRef.current) : 0
+    if (holdRemain > 0) {
+      clearTimer(holdMinTimerRef)
+      holdMinTimerRef.current = setTimeout(() => {
+        holdMinTimerRef.current = null
+        hideIndicator()
+      }, holdRemain)
+      return
+    }
     displayRef.current = false
     lastPinRef.current = 0
     dragStartRef.current = null
@@ -128,7 +145,7 @@ const usePullRefresh = (
       easing: Easing.out(Easing.cubic),
       useNativeDriver: false,
     }).start()
-  }, [progress, holdAnim])
+  }, [progress, holdAnim, holdSpace])
 
   useEffect(() => {
     if (refreshing) {
@@ -189,6 +206,7 @@ const usePullRefresh = (
     clearTimer(minTimerRef)
     clearTimer(fallbackTimerRef)
     clearTimer(watchdogRef)
+    clearTimer(holdMinTimerRef)
   }, [])
 
   // 学「真实静止位」：只在第一次见到非拖动、非刷新、顶部区域（y ≤ 0）的偏移时记下，
@@ -291,6 +309,7 @@ const usePullRefresh = (
         }).start()
       }
       displayRef.current = true
+      triggerAtRef.current = Date.now()
       setDisplayRefreshing(true)
       progress.stopAnimation()
       progress.setValue(1)
