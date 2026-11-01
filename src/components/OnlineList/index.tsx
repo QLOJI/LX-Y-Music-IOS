@@ -45,8 +45,8 @@ export interface OnlineListProps {
   indicatorInHeader?: boolean
   /** 刷新时是否让列表下移 32pt 留出下拉停留位（默认 true）。 */
   holdSpace?: boolean
-  /** 停留位改由系统 RefreshControl 承载（同时需 holdSpace={false}）。 */
-  nativeRefresh?: boolean
+  /** 停留位页面：下拉超量时视觉停在停留位（抵消过冲），消除松手时的上下跳。 */
+  pinOnOverscroll?: boolean
   /** 列表顶部安全区处理方式；'never' = 由页面自己的页头负责顶部间距。 */
   contentInsetAdjustmentBehavior?: ListProps['contentInsetAdjustmentBehavior']
   /** 圆圈定位区（纯回弹页面用）：圆圈下对齐贴在该区域底部，即标题正上方。 */
@@ -78,7 +78,7 @@ export default forwardRef<OnlineListType, OnlineListProps>(
       ListFooterComponent,
       indicatorInHeader,
       holdSpace,
-      nativeRefresh,
+      pinOnOverscroll,
       contentInsetAdjustmentBehavior,
       indicatorArea,
       checkHomePagerIdle = false,
@@ -323,7 +323,7 @@ export default forwardRef<OnlineListType, OnlineListProps>(
             ListFooterComponent={ListFooterComponent}
             indicatorInHeader={indicatorInHeader}
             holdSpace={holdSpace}
-            nativeRefresh={nativeRefresh}
+            pinOnOverscroll={pinOnOverscroll}
             contentInsetAdjustmentBehavior={contentInsetAdjustmentBehavior}
             indicatorArea={indicatorArea}
             checkHomePagerIdle={checkHomePagerIdle}

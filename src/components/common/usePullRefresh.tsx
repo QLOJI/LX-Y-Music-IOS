@@ -53,24 +53,23 @@ const usePullRefresh = (
    */
   indicatorArea?: { top: number, height: number, inline?: boolean },
   /**
-   * 停留位交给系统 RefreshControl 承载（这些页面必须同时 holdSpace=false）：
-   *   · 圆圈仍按停留位几何（60pt 空白区、圆圈居中），下拉进度也按 60pt 口径；
-   *   · hook 自己**不触发刷新、不做任何列表位移** —— 触发、停在停留位、收回全部由
-   *     原生 UIRefreshControl 负责，不存在 transform 与系统回弹叠加造成的「先上后下」。
-   *   · `nativeRefreshing` 一并返回，用作 RefreshControl 的 refreshing（只认页面回报的
-   *     刷新态，并按最短显示时长延迟回落，保证停留画面不会一闪就没）。
+   * 停留位页面「拖动超量停住」：下拉超过触发高度后，用反向 transform 抵消多拉出来的
+   * 部分，让列表视觉上停在停留位、不跟手下移。松手时只剩很短一段位移要补，系统回弹与
+   * 停留位动画互相抵消，避免「先被系统拽回原位、再被推下去」的上下跳。
+   * 默认 false（其它停留位页面保持原样）。
    */
-  nativeHold = false,
+  pinOnOverscroll = false,
 ) => {
   const theme = useTheme()
-  // 圆圈几何口径：自己的停留位 or 系统承载的停留位，都是 60pt 空白。
-  const holdGeometry = holdSpace || nativeHold
   const progress = useRef(new Animated.Value(0)).current
   // 刷新态的列表下移（0~1 系数，乘 HOLD_GAP）。只在手指松开后 / 刷新收尾时做一次性
   // 动画——拖动过程中恒为 0，绝不逐帧改 transform（那会和 pan 打架）。
   // 用 transform 而不是 contentInset / scrollToOffset：后两者会改动滚动状态，
   // 与手势竞争时表现为「上下滑动被锁住」。
   const holdAnim = useRef(new Animated.Value(0)).current
+  // 拖动阶段的「停住」系数（0~1，负数方向抵消过冲）：下拉超过触发高度后，
+  // 用反向 transform 把多拉出来的部分抵掉，列表视觉上停在停留位不再跟手下移。
+  const lastPinRef = useRef(0)
   const spin = useRef(new Animated.Value(0)).current
   const pullRef = useRef(0)
   const lastPullRef = useRef(-1)
@@ -93,11 +92,6 @@ const usePullRefresh = (
   const minTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const fallbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const watchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  // 系统 RefreshControl 专用的刷新态：只由页面回报的 refreshing 驱动（原生控件触发后才为 true），
-  // 并按最短显示时长延迟回落 —— 否则数据一回来控件立刻收回，停留画面看不到。
-  const [nativeRefreshing, setNativeRefreshing] = useState(false)
-  const nativeStartedAtRef = useRef(0)
-  const nativeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   refreshingRef.current = refreshing
 
   const clearTimer = (ref: React.MutableRefObject<ReturnType<typeof setTimeout> | null>) => {
@@ -109,6 +103,7 @@ const usePullRefresh = (
 
   const hideIndicator = useCallback(() => {
     displayRef.current = false
+    lastPinRef.current = 0
     dragStartRef.current = null
     pullRef.current = 0
     lastPullRef.current = 0
@@ -174,27 +169,6 @@ const usePullRefresh = (
   }, [refreshing, progress, hideIndicator])
 
   useEffect(() => {
-    if (refreshing) {
-      clearTimer(nativeTimerRef)
-      nativeStartedAtRef.current = Date.now()
-      setNativeRefreshing(true)
-      return
-    }
-    if (!nativeRefreshing) return
-    const remain = REFRESH_MIN_MS - (Date.now() - nativeStartedAtRef.current)
-    clearTimer(nativeTimerRef)
-    if (remain <= 0) {
-      setNativeRefreshing(false)
-      return
-    }
-    nativeTimerRef.current = setTimeout(() => {
-      nativeTimerRef.current = null
-      setNativeRefreshing(false)
-    }, remain)
-    return () => { clearTimer(nativeTimerRef) }
-  }, [refreshing, nativeRefreshing])
-
-  useEffect(() => {
     if (!displayRefreshing) {
       spin.stopAnimation()
       spin.setValue(0)
@@ -215,7 +189,6 @@ const usePullRefresh = (
     clearTimer(minTimerRef)
     clearTimer(fallbackTimerRef)
     clearTimer(watchdogRef)
-    clearTimer(nativeTimerRef)
   }, [])
 
   // 学「真实静止位」：只在第一次见到非拖动、非刷新、顶部区域（y ≤ 0）的偏移时记下，
@@ -266,15 +239,26 @@ const usePullRefresh = (
     }
     const pull = start <= 0 ? Math.max(0, start - y) : 0
     pullRef.current = pull
+    // 停留位页面的拖动「停住」：超过触发高度后不再跟手下移（用反向 transform 抵消多拉的
+    // 部分）。这样松手时列表本来就在停留位附近，系统回弹与停留位动画的净位移只剩很短一段，
+    // 不会出现「先被系统拽回原位、再被 transform 推下去」的上下跳。
+    if (holdSpace && pinOnOverscroll) {
+      const pin = Math.max(0, pull - HOLD_TRIGGER) / HOLD_GAP
+      if (pin !== lastPinRef.current) {
+        lastPinRef.current = pin
+        holdAnim.stopAnimation()
+        holdAnim.setValue(-pin)
+      }
+    }
     // 进度按 1/32 量化，慢拉时不必每帧过桥同步（触发距离按页面口径）。
     // 注意：拖动过程中**绝不**改 inset —— 那会让系统可回弹范围变化、松手后停在半路。
-    const step = Math.min(1, Math.round((pull / (holdGeometry ? HOLD_TRIGGER : PULL_TRIGGER)) * 32) / 32)
+    const step = Math.min(1, Math.round((pull / (holdSpace ? HOLD_TRIGGER : PULL_TRIGGER)) * 32) / 32)
     if (step === lastStepRef.current) return
     lastStepRef.current = step
     lastPullRef.current = pull
     progress.stopAnimation()
     progress.setValue(step)
-  }, [progress, holdGeometry, learnRestTop])
+  }, [progress, holdSpace, pinOnOverscroll, learnRestTop, holdAnim])
 
   const handleScrollEndDrag = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
     const start = dragStartRef.current
@@ -283,7 +267,7 @@ const usePullRefresh = (
     const y = e.nativeEvent.contentOffset.y
     lastOffsetRef.current = y
     const pull = start == null ? pullRef.current : (start <= 0 ? Math.max(0, start - y) : 0)
-    const trigger = holdGeometry ? HOLD_TRIGGER : PULL_TRIGGER
+    const trigger = holdSpace ? HOLD_TRIGGER : PULL_TRIGGER
     pullRef.current = pull
     if (start != null && start <= 0 && pull >= trigger) {
       dragTopRef.current = start
@@ -294,11 +278,15 @@ const usePullRefresh = (
       // 不做任何位移 —— 它们松手后交给系统回弹，否则收尾归零时会「猛地上跳一下」。
       if (holdSpace) {
         holdAppliedRef.current = true
+        lastPinRef.current = 0
         holdAnim.stopAnimation()
+        // 拖动阶段已经用反向 transform 抵消了过冲（holdAnim 停在负值），松手后只需把它
+        // 平移到 +1（停留位）。用线性、约一个系统回弹的时长，让这段位移与系统回弹互相抵消，
+        // 视觉上几乎停在原地；不用 ease-out —— 那会让列表先往下冲再回弹。
         Animated.timing(holdAnim, {
           toValue: 1,
-          duration: 220,
-          easing: Easing.out(Easing.cubic),
+          duration: pinOnOverscroll ? 360 : 220,
+          easing: pinOnOverscroll ? Easing.linear : Easing.out(Easing.cubic),
           useNativeDriver: true,
         }).start()
       }
@@ -307,8 +295,7 @@ const usePullRefresh = (
       progress.stopAnimation()
       progress.setValue(1)
       lastStepRef.current = 1
-      // 系统 RefreshControl 自己会在松手越过阈值时回调 onRefresh；这里再调一次会双请求。
-      if (!nativeHold) onRefreshRef.current()
+      onRefreshRef.current()
       sawRefreshingRef.current = false
       clearTimer(fallbackTimerRef)
       fallbackTimerRef.current = setTimeout(() => {
@@ -319,6 +306,17 @@ const usePullRefresh = (
     }
     // 轻拉松手（未达触发位）：列表交给系统自然回弹，圆圈淡出即可。
     if (start != null && start <= 0) dragTopRef.current = start
+    if (holdSpace && pinOnOverscroll && lastPinRef.current !== 0) {
+      // 拖回去了：撤掉拖动阶段的「停住」补偿，内容重新跟手/回原位。
+      lastPinRef.current = 0
+      holdAnim.stopAnimation()
+      Animated.timing(holdAnim, {
+        toValue: 0,
+        duration: 160,
+        easing: Easing.out(Easing.quad),
+        useNativeDriver: true,
+      }).start()
+    }
     progress.stopAnimation()
     Animated.timing(progress, {
       toValue: 0,
@@ -326,7 +324,7 @@ const usePullRefresh = (
       easing: Easing.out(Easing.cubic),
       useNativeDriver: false,
     }).start()
-  }, [progress, holdAnim, holdSpace, holdGeometry, nativeHold])
+  }, [progress, holdAnim, holdSpace, pinOnOverscroll])
 
   const handleMomentumScrollEnd = useCallback(() => {
     if (displayRef.current) return
@@ -349,12 +347,12 @@ const usePullRefresh = (
   const rotate = spin.interpolate({ inputRange: [0, 1], outputRange: ['0deg', '360deg'] })
   // 纯回弹页面保持原来的 32pt 圆圈几何、位置固定；有停留位的页面用更大的空白高度，
   // 圆圈随下拉距离移动，始终停在下拉出来的空白区中心，达到触发高度后固定不再移动。
-  const ringGap = holdGeometry ? HOLD_GAP : PULL_TRIGGER
-  const ringTranslate = holdGeometry
+  const ringGap = holdSpace ? HOLD_GAP : PULL_TRIGGER
+  const ringTranslate = holdSpace
     ? progress.interpolate({ inputRange: [0, 1], outputRange: [-ringGap / 2, 0] })
     : 0
   // 纯回弹页面若给了定位区：圆圈下对齐贴在标题上方；否则维持原几何。
-  const useArea = !holdGeometry && indicatorArea != null
+  const useArea = !holdSpace && indicatorArea != null
   const areaHeight = useArea ? indicatorArea!.height : ringGap
   // inline 模式：由调用方把圆圈放进页头里正常排版（不用绝对定位），
   // 适合「绝对定位坐标系不可靠」的页面（如歌单主页）。
@@ -406,8 +404,6 @@ const usePullRefresh = (
   return {
     indicator,
     pullOffset,
-    // nativeHold 页面用它驱动 RefreshControl 的 refreshing（含最短显示时长）。
-    nativeRefreshing,
     scrollProps: {
       onScroll: handleScroll,
       onScrollBeginDrag: handleScrollBeginDrag,
