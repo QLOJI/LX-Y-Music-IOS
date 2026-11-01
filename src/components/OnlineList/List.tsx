@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useRef, useState, forwardRef, useImperativeHandle, useEffect, isValidElement } from 'react'
-import { Animated, FlatList, type FlatListProps, Keyboard, View, type NativeScrollEvent, type NativeSyntheticEvent } from 'react-native'
+import { Animated, FlatList, type FlatListProps, Keyboard, RefreshControl, View, type NativeScrollEvent, type NativeSyntheticEvent } from 'react-native'
 import usePullRefresh from '@/components/common/usePullRefresh'
 import ListItem, { ITEM_HEIGHT } from './ListItem'
 import { createStyle, getRowInfo, type RowInfoType } from '@/utils/tools'
@@ -30,6 +30,11 @@ export interface ListProps {
   indicatorInHeader?: boolean
   /** 刷新时是否让列表下移 32pt 留出下拉停留位（默认 true）。 */
   holdSpace?: boolean
+  /**
+   * 停留位改由系统 RefreshControl 承载（必须同时 holdSpace=false）：
+   * 停留、收回都由 iOS 完成，没有 transform 与系统回弹叠加；圆圈仍按 60pt 停留位几何显示。
+   */
+  nativeRefresh?: boolean
   /**
    * 显式指定列表顶部的安全区处理方式。传 'never' 表示「页面自己负责顶部间距」
    * （页头里已有 PageTopInset），标题位置因此与推荐页同一条基准线。
@@ -77,6 +82,7 @@ const List = forwardRef<ListType, ListProps>(
       ListFooterComponent,
       indicatorInHeader,
       holdSpace = true,
+      nativeRefresh,
       contentInsetAdjustmentBehavior,
       indicatorArea,
       rowType,
@@ -344,13 +350,20 @@ const List = forwardRef<ListType, ListProps>(
       // 才会重新下载，避免每次下拉都把整屏封面重载一遍。
       onRefresh()
     }, [onRefresh])
-    const { indicator: pullIndicator, scrollProps: pullScrollProps, pullOffset } = usePullRefresh(
+    const {
+      indicator: pullIndicator,
+      scrollProps: pullScrollProps,
+      pullOffset,
+      nativeRefreshing: pullNativeRefreshing,
+    } = usePullRefresh(
       status == 'refreshing',
       handlePullRefresh,
       flatListRef,
       0,
-      holdSpace,
+      // nativeRefresh 页面由系统控件负责停留位，hook 这边必须关掉自己的下移位移。
+      nativeRefresh ? false : holdSpace,
       indicatorArea,
+      nativeRefresh,
     )
 
     const footerComponent = useMemo(() => {
@@ -427,6 +440,16 @@ const List = forwardRef<ListType, ListProps>(
         // 触发一次，VirtualizedList 的渲染窗口无法跟随滚动推进，表现为
         // 列表滚动到下方一片空白。pullScrollProps 内同值（16）。
         {...pullScrollProps}
+        // 系统下拉刷新控件只在 nativeRefresh 页面挂载：刷新期间由 iOS 把列表停在刷新位、
+        // 数据回来由系统弹簧收回。refreshing 用 hook 处理过最短显示时长的状态，
+        // 否则数据一回来（缓存/快网）控件立刻收回，停留画面看不到。
+        refreshControl={nativeRefresh ? (
+          <RefreshControl
+            refreshing={pullNativeRefreshing}
+            onRefresh={onRefresh}
+            tintColor="transparent"
+          />
+        ) : undefined}
         // 列表头部的按钮触摸立即下发，避免概率性点击无响应
         delaysContentTouches={false}
         // 行数据原地更新（musicInfoUpdate）+ 播放状态变化时驱动对应行重渲染；
