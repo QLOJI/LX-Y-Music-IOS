@@ -52,6 +52,10 @@ const SongList = forwardRef<SongListRef, SongListProps>(({
   // "播放时列表只显示 12 首下方空白"。引用相同（内容由 OnlineList 自身已更新）时
   // 跳过 setList，阻断回环；仅在真实分页/排序/刷新产生新引用时才同步。
   const lastSyncedListRef = useRef<LX.Music.MusicInfoOnline[] | null>(null)
+  // 下拉刷新由系统 RefreshControl 触发：刷新期间保持 status='refreshing'，让系统刷新控件
+  // 把列表停在停留位；数据落地（loading 回落）后交还 idle/end，系统再自然收回。
+  const pullRefreshingRef = useRef(false)
+  const refreshSawLoadingRef = useRef(false)
 
   useImperativeHandle(ref, () => ({
     scrollToInfo: (info) => {
@@ -66,19 +70,45 @@ const SongList = forwardRef<SongListRef, SongListProps>(({
     void playOnlineListEnsureAll(listId, songs.list, index, onLoadAllSongs)
   }, [songs.list, artistId, onLoadAllSongs])
 
+  const handleListRefresh = useCallback(() => {
+    pullRefreshingRef.current = true
+    refreshSawLoadingRef.current = false
+    songListRef.current?.setStatus('refreshing')
+    onRefresh()
+  }, [onRefresh])
+
   useEffect(() => {
-    if (activeTab === 'songs') {
-      // 下一页加载期间也必须保持 loading，避免 iOS FlatList 的 onEndReached
-      // 连续触发多个分页请求；之前只有“首屏为空”时才设 loading，导致滚动
-      // 到底部时状态立刻回到 idle，分页请求互相覆盖/丢页。
-      // 不再显示「加载中」页脚：刷新/切排序期间保留旧列表，等数据回来直接替换。
-      songListRef.current?.setStatus(songs.hasMore ? 'idle' : 'end')
-      // page 表示“下一次要请求的页码”：首屏返回后 page=2，但列表仍应替换；
-      // 从第二页返回后 page=3，才是追加已有列表。
-      if (lastSyncedListRef.current !== songs.list) {
-        lastSyncedListRef.current = songs.list
-        songListRef.current?.setList(songs.list, songs.page > 2, false)
+    if (activeTab !== 'songs') {
+      // 切走时清掉刷新标记，避免切回来还挂着 refreshing。
+      pullRefreshingRef.current = false
+      refreshSawLoadingRef.current = false
+      return
+    }
+    // 下一页加载期间也必须保持 loading，避免 iOS FlatList 的 onEndReached
+    // 连续触发多个分页请求；之前只有“首屏为空”时才设 loading，导致滚动
+    // 到底部时状态立刻回到 idle，分页请求互相覆盖/丢页。
+    // 不再显示「加载中」页脚：刷新/切排序期间保留旧列表，等数据回来直接替换。
+    if (pullRefreshingRef.current) {
+      if (songs.loading) {
+        refreshSawLoadingRef.current = true
+        songListRef.current?.setStatus('refreshing')
+      } else if (refreshSawLoadingRef.current) {
+        pullRefreshingRef.current = false
+        refreshSawLoadingRef.current = false
+        songListRef.current?.setStatus(songs.hasMore ? 'idle' : 'end')
+      } else {
+        // 刷新请求还没真正开始（loading 尚未翻起）：先保持 refreshing，
+        // 别让系统刷新控件提前把列表收回。
+        songListRef.current?.setStatus('refreshing')
       }
+    } else {
+      songListRef.current?.setStatus(songs.hasMore ? 'idle' : 'end')
+    }
+    // page 表示“下一次要请求的页码”：首屏返回后 page=2，但列表仍应替换；
+    // 从第二页返回后 page=3，才是追加已有列表。
+    if (lastSyncedListRef.current !== songs.list) {
+      lastSyncedListRef.current = songs.list
+      songListRef.current?.setList(songs.list, songs.page > 2, false)
     }
   }, [songs.list, songs.loading, songs.hasMore, songs.page, activeTab])
 
@@ -145,13 +175,13 @@ const SongList = forwardRef<SongListRef, SongListProps>(({
             ref={songListRef}
             listId="artist_detail"
             forcePlayList={true}
-            // 本页不再做刷新停留位：停留位只能靠松手后「再把列表下移 60pt」打开，
-            // 这段位移无论和系统回弹同时做还是延后做，在返回时都会看到列表上下动一下。
-            // 本页与歌单主页 / 我的 / 播放历史 / 排行榜 / 搜索一致，只走系统自然回弹
-            // （松手后单次运动、回到静止位），圆圈位置固定。
+            // 停留位交给系统 RefreshControl：刷新期间 iOS 把列表停在刷新位（60pt 空白、
+            // 圆圈居中），数据回来由系统弹簧收回。松手与返回都是系统行为，没有我们自己的
+            // transform 位移 —— 既保留停留位，又不会「猛跳回初始位置」。
             holdSpace={false}
+            nativeRefresh
             onPlayList={onPlayList}
-            onRefresh={onRefresh}
+            onRefresh={handleListRefresh}
             onLoadMore={onLoadMoreSongs}
             onListUpdate={onSongListUpdate}
             playingId={playingId}

@@ -292,10 +292,12 @@ export default forwardRef<MusicListType, MusicListProps>(({ componentId, isCreat
                 listId={`${info.source}__${info.id}`}
                 isCreator={finalIsCreator}
                 playingId={playingId}
-                // 松手后只走系统自然回弹：原先的 60pt 停留位是松手后再把列表平移一段
-                // （220ms 的 transform），与系统回弹叠加/前后衔接都会让列表不由系统带着回原位，
-                // 表现为「猛跳回初始位置」。歌单详情只有一个组件，改后所有歌单一致。
+                // 刷新停留位交给系统 RefreshControl：刷新期间 iOS 把列表停在刷新位
+                // （60pt 空白，圆圈居中），数据回来由系统弹簧收回 —— 松手与返回都是系统行为，
+                // 没有我们自己的 transform 位移，所以不会「猛跳回初始位置」。
+                // 歌单详情只有一个组件，改后所有歌单一致。
                 holdSpace={false}
+                nativeRefresh
     />
   )
 })
