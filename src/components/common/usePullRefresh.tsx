@@ -29,6 +29,13 @@ export const PULL_TRIGGER = 32
 const HOLD_GAP = 60
 const HOLD_TRIGGER = HOLD_GAP
 export const REFRESH_MIN_MS = 900
+/**
+ * 松手后系统橡胶回弹大致落定所需的时间（ms）。
+ * 用途：**不要在回弹还没结束时替换列表数据** —— 那次 contentSize 变化会让 UIScrollView
+ * 把当前的负偏移（回弹中）夹回 0，观感就是「松手后列表被往上拽一下」。页面的下拉刷新
+ * 结果在这个时间之后再落地（见 SonglistDetail / ArtistDetail 的 refresh 分支）。
+ */
+export const PULL_SETTLE_MS = 450
 // 停留位/圆圈的**硬性**最短停留：从松手触发那一刻算起。页面刷新状态回得太快、或干脆没回报
 // refreshing 时，也保证停留画面能停留这么久，不会「松手就收」。
 const HOLD_MIN_MS = 1200
