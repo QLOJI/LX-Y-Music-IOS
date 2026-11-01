@@ -17,12 +17,6 @@ import { useBottomOverlayInset } from '@/store/common/hook'
 type FlatListType = FlatListProps<LX.Music.MusicInfoOnline>
 export type { RowInfoType }
 
-// syncHoldWithScroll 需要把 onScroll 作为原生事件映射（Animated.event + useNativeDriver），
-// 而 RN 要求 VirtualizedList 系的组件外层是 Animated 组件 —— 否则进入页面就直接抛
-// 「Components based on VirtualizedList must be wrapped with Animated.createAnimatedComponent」。
-// 只有启用该模式的列表走这个包装，其它列表仍用普通 FlatList。
-const AnimatedFlatList: any = Animated.createAnimatedComponent(FlatList as any)
-
 export interface ListProps {
   onShowMenu: (musicInfo: LX.Music.MusicInfoOnline, index: number, position: Position) => void
   onMuiltSelectMode: () => void
@@ -36,11 +30,6 @@ export interface ListProps {
   indicatorInHeader?: boolean
   /** 刷新时是否让列表下移 32pt 留出下拉停留位（默认 true）。 */
   holdSpace?: boolean
-  /**
-   * 停留位改由滚动偏移原生驱动（见 usePullRefresh 第 8 参）：松手后的系统回弹逐帧被抵消，
-   * 不会出现「惯性拽一下再回来」。只对 holdSpace 页面有意义。
-   */
-  syncHoldWithScroll?: boolean
   /**
    * 显式指定列表顶部的安全区处理方式。传 'never' 表示「页面自己负责顶部间距」
    * （页头里已有 PageTopInset），标题位置因此与推荐页同一条基准线。
@@ -88,7 +77,6 @@ const List = forwardRef<ListType, ListProps>(
       ListFooterComponent,
       indicatorInHeader,
       holdSpace = true,
-      syncHoldWithScroll,
       contentInsetAdjustmentBehavior,
       indicatorArea,
       rowType,
@@ -363,7 +351,6 @@ const List = forwardRef<ListType, ListProps>(
       0,
       holdSpace,
       indicatorArea,
-      syncHoldWithScroll,
     )
 
     const footerComponent = useMemo(() => {
@@ -410,15 +397,11 @@ const List = forwardRef<ListType, ListProps>(
       ? (<>{pullIndicator}{ListHeaderComponent}</>)
       : ListHeaderComponent
 
-    // syncHoldWithScroll：onScroll 是原生事件映射，必须用 Animated 包装的 FlatList
-    // 才能开 useNativeDriver（见文件头注释）；其它列表保持普通 FlatList。
-    const ListComponent: any = syncHoldWithScroll ? AnimatedFlatList : FlatList
-
     return (
       <View style={{ flex: 1, overflow: 'hidden' }}>
         {mergeIndicatorIntoHeader ? null : pullIndicator}
         <Animated.View style={{ flex: 1, transform: [{ translateY: pullOffset }] }}>
-        <ListComponent
+        <FlatList
         // key：numColumns 变更（旋转/分屏）时强制重挂载 FlatList——
         // RN 不支持运行中变更 numColumns，直接改值会崩溃；重挂载时数据保存在本组件 state 中不丢失
         key={`cols-${numColumns}`}

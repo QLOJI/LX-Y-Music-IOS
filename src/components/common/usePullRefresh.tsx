@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   Animated,
   Easing,
@@ -36,6 +36,12 @@ export const REFRESH_MIN_MS = 900
  * 结果在这个时间之后再落地（见 SonglistDetail / ArtistDetail 的 refresh 分支）。
  */
 export const PULL_SETTLE_MS = 450
+/**
+ * 停留位进/出的弹簧参数：临界阻尼附近（阻尼比 ≈0.97），自然频率 ≈13.4 rad/s，
+ * 约 0.4~0.5s 收住 —— 与 UIKit 橡胶回弹的节奏同一量级，替代原先固定 220ms/320ms 的位移。
+ */
+const HOLD_SPRING_STIFFNESS = 180
+const HOLD_SPRING_DAMPING = 26
 // 停留位/圆圈的**硬性**最短停留：从松手触发那一刻算起。页面刷新状态回得太快、或干脆没回报
 // refreshing 时，也保证停留画面能停留这么久，不会「松手就收」。
 const HOLD_MIN_MS = 1200
@@ -62,24 +68,9 @@ const usePullRefresh = (
    * 的留白高度。提供时圆圈**下对齐**贴在该区域底部（即标题正上方）。
    */
   indicatorArea?: { top: number, height: number, inline?: boolean },
-  /**
-   * 停留位的 transform 改为**由滚动偏移原生驱动**（不再是松手后的一段独立动画）：
-   *   `translateY = (contentOffset.y + 60) × holdMode`，其中 holdMode 在下拉超过 60pt 时置 1、
-   *   收起时归 0。这样系统橡胶回弹的每一帧（含松手初速度）都被逐帧抵消，列表在视觉上
-   *   牢牢停在停留位，不会出现「惯性拽一下再回来」；拖动超过 60pt 后的部分也不再跟手。
-   * 必须是 holdSpace 页面；其它页面保持原实现。
-   */
-  syncHoldWithScroll = false,
 ) => {
   const theme = useTheme()
   const progress = useRef(new Animated.Value(0)).current
-  // syncHoldWithScroll 专用：滚动偏移（原生事件映射）与停留位开关。
-  const scrollY = useRef(new Animated.Value(0)).current
-  const holdMode = useRef(new Animated.Value(0)).current
-  const holdModeRef = useRef(0)
-  // 本次拖动是否到达过停留位（带一点回拖余量）：用于松手判定「用户确实拉到位了」。
-  // 视觉上列表在 60pt 处就停住了，松手时实际偏移可能刚好差零点几 pt，不能只看松手值。
-  const holdIntentRef = useRef(false)
   // 刷新态的列表下移（0~1 系数，乘 HOLD_GAP）。只在手指松开后 / 刷新收尾时做一次性
   // 动画——拖动过程中恒为 0，绝不逐帧改 transform（那会和 pan 打架）。
   // 用 transform 而不是 contentInset / scrollToOffset：后两者会改动滚动状态，
@@ -119,17 +110,6 @@ const usePullRefresh = (
     }
   }
 
-  // syncHoldWithScroll 的 transform：y∈[-∞,0] 时 = y + 60，y>0 时夹在 60；再乘 holdMode。
-  // 全部是 Animated 原生节点，跟随滚动逐帧更新。
-  const syncPullOffset = useMemo(() => Animated.multiply(
-    scrollY.interpolate({
-      inputRange: [-100000, 0],
-      outputRange: [-100000 + HOLD_GAP, HOLD_GAP],
-      extrapolateRight: 'clamp',
-    }),
-    holdMode,
-  ), [scrollY, holdMode])
-
   const hideIndicator = useCallback(() => {
     // 硬性最短停留：从松手触发算起不足 HOLD_MIN_MS 就推迟，保证停留画面一定看得见。
     // 只对停留位页面生效（其它页面保持原有节奏）。
@@ -152,25 +132,15 @@ const usePullRefresh = (
     // 全程不改滚动偏移、不改 contentInset —— 列表一定回到原位，也不会锁住滑动。
     if (holdAppliedRef.current) {
       holdAppliedRef.current = false
-      if (syncHoldWithScroll) {
-        // 原生同步模式：把 holdMode 从 1 归零，停留位高度按 60→0 平滑收回。
-        holdModeRef.current = 0
-        holdMode.stopAnimation()
-        Animated.timing(holdMode, {
-          toValue: 0,
-          duration: 320,
-          easing: Easing.out(Easing.cubic),
-          useNativeDriver: true,
-        }).start()
-      } else {
-        holdAnim.stopAnimation()
-        Animated.timing(holdAnim, {
-          toValue: 0,
-          duration: 320,
-          easing: Easing.out(Easing.cubic),
-          useNativeDriver: true,
-        }).start()
-      }
+      holdAnim.stopAnimation()
+      // 收回同样走弹簧（与系统回弹同一量级的速度），不再用固定 320ms。
+      Animated.spring(holdAnim, {
+        toValue: 0,
+        stiffness: HOLD_SPRING_STIFFNESS,
+        damping: HOLD_SPRING_DAMPING,
+        mass: 1,
+        useNativeDriver: true,
+      }).start()
     }
     progress.stopAnimation()
     Animated.timing(progress, {
@@ -179,7 +149,7 @@ const usePullRefresh = (
       easing: Easing.out(Easing.cubic),
       useNativeDriver: false,
     }).start()
-  }, [progress, holdAnim, holdSpace, syncHoldWithScroll, holdMode])
+  }, [progress, holdAnim, holdSpace])
 
   useEffect(() => {
     if (refreshing) {
@@ -264,7 +234,6 @@ const usePullRefresh = (
     pullRef.current = 0
     lastPullRef.current = 0
     lastStepRef.current = 0
-    holdIntentRef.current = false
   }, [learnRestTop])
 
   const handleScroll = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
@@ -292,19 +261,6 @@ const usePullRefresh = (
     }
     const pull = start <= 0 ? Math.max(0, start - y) : 0
     pullRef.current = pull
-    // 原生同步模式：越过 60pt 打开停留位开关（此后列表由滚动偏移逐帧钉在停留位），
-    // 拖回 60pt 以内再关掉。只在跨越时写一次，不逐帧过桥。
-    if (syncHoldWithScroll) {
-      const next = pull >= HOLD_TRIGGER ? 1 : 0
-      if (holdModeRef.current !== next) {
-        holdModeRef.current = next
-        holdMode.setValue(next)
-      }
-      // 到达过停留位就一直算「有刷新意图」，只有明显拖回去（< 45pt）才撤销，
-      // 这样在停留位附近松手（差零点几 pt）不会被误判成轻拉。
-      if (pull >= HOLD_TRIGGER) holdIntentRef.current = true
-      else if (pull < HOLD_TRIGGER - 15) holdIntentRef.current = false
-    }
     // 进度按 1/32 量化，慢拉时不必每帧过桥同步（触发距离按页面口径）。
     // 注意：拖动过程中**绝不**改 inset —— 那会让系统可回弹范围变化、松手后停在半路。
     const step = Math.min(1, Math.round((pull / (holdSpace ? HOLD_TRIGGER : PULL_TRIGGER)) * 32) / 32)
@@ -313,7 +269,7 @@ const usePullRefresh = (
     lastPullRef.current = pull
     progress.stopAnimation()
     progress.setValue(step)
-  }, [progress, holdSpace, syncHoldWithScroll, holdMode, learnRestTop])
+  }, [progress, holdSpace, learnRestTop])
 
   const handleScrollEndDrag = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
     const start = dragStartRef.current
@@ -324,11 +280,7 @@ const usePullRefresh = (
     const pull = start == null ? pullRef.current : (start <= 0 ? Math.max(0, start - y) : 0)
     const trigger = holdSpace ? HOLD_TRIGGER : PULL_TRIGGER
     pullRef.current = pull
-    // syncHoldWithScroll 页面：下拉越过 60pt 后列表视觉上就「停住」了，用户在停留位松手时
-    // 实际偏移可能刚好差零点几 pt 没到阈值 —— 只要本次拖动打开过停留位（holdMode=1），
-    // 松手就按触发处理，否则会被判成轻拉、直接弹回原位（就是「拉到停留位又被拽回去」）。
-    const pinEngaged = syncHoldWithScroll && holdIntentRef.current
-    if (start != null && start <= 0 && (pull >= trigger || pinEngaged)) {
+    if (start != null && start <= 0 && pull >= trigger) {
       dragTopRef.current = start
       // 达标时的拖动起点就是「用户看到的静止位」，比任何采样都可靠（无自动 inset 的
       // 列表只能从这里拿到 0）。只写一次，之后永远用它回位，避免一次没回成功就累积偏移。
@@ -337,22 +289,16 @@ const usePullRefresh = (
       // 不做任何位移 —— 它们松手后交给系统回弹，否则收尾归零时会「猛地上跳一下」。
       if (holdSpace) {
         holdAppliedRef.current = true
-        if (syncHoldWithScroll) {
-          // 原生同步：holdMode 在拖动阶段已打开，这里只兜底一次（例如松手帧刚好跨过阈值）。
-          // 不再启动独立的位移动画 —— 停留位完全由滚动偏移原生驱动。
-          if (holdModeRef.current !== 1) {
-            holdModeRef.current = 1
-            holdMode.setValue(1)
-          }
-        } else {
-          holdAnim.stopAnimation()
-          Animated.timing(holdAnim, {
-            toValue: 1,
-            duration: 220,
-            easing: Easing.out(Easing.cubic),
-            useNativeDriver: true,
-          }).start()
-        }
+        holdAnim.stopAnimation()
+        // 停留位（60pt）用弹簧动画到位：接近 UIKit 橡胶回弹的临界阻尼（约 0.4~0.5s、
+        // 由快到慢收住），不再是固定 220ms 的机械位移。
+        Animated.spring(holdAnim, {
+          toValue: 1,
+          stiffness: HOLD_SPRING_STIFFNESS,
+          damping: HOLD_SPRING_DAMPING,
+          mass: 1,
+          useNativeDriver: true,
+        }).start()
       }
       displayRef.current = true
       triggerAtRef.current = Date.now()
@@ -371,11 +317,6 @@ const usePullRefresh = (
     }
     // 轻拉松手（未达触发位）：列表交给系统自然回弹，圆圈淡出即可。
     if (start != null && start <= 0) dragTopRef.current = start
-    if (syncHoldWithScroll && holdModeRef.current !== 0) {
-      // 拖回去了：关掉停留位开关，列表恢复跟手/回原位。
-      holdModeRef.current = 0
-      holdMode.setValue(0)
-    }
     progress.stopAnimation()
     Animated.timing(progress, {
       toValue: 0,
@@ -383,7 +324,7 @@ const usePullRefresh = (
       easing: Easing.out(Easing.cubic),
       useNativeDriver: false,
     }).start()
-  }, [progress, holdAnim, holdSpace, syncHoldWithScroll, holdMode])
+  }, [progress, holdAnim, holdSpace])
 
   const handleMomentumScrollEnd = useCallback(() => {
     if (displayRef.current) return
@@ -455,31 +396,16 @@ const usePullRefresh = (
     </Animated.View>
   )
 
-  // 列表下移量（调用方套在 Animated.View 上）：
-  //  · syncHoldWithScroll：由滚动偏移原生驱动（逐帧抵消系统回弹，含松手初速度）；
-  //  · 其它停留位页面：仍由刷新态的 holdAnim 驱动。
+  // 列表下移量（调用方套在 Animated.View 上）：只由刷新态的 holdAnim 驱动。
   const pullOffset = holdSpace
-    ? (syncHoldWithScroll
-        ? syncPullOffset
-        : holdAnim.interpolate({ inputRange: [0, 1], outputRange: [0, HOLD_GAP] }))
+    ? holdAnim.interpolate({ inputRange: [0, 1], outputRange: [0, HOLD_GAP] })
     : holdAnim
-
-  // syncHoldWithScroll 需要把滚动偏移映射进 Animated（原生驱动），同时保留 JS 侧的
-  // 圆圈进度/触发判断 —— Animated.event 的 listener 正好提供这两者。
-  const onScroll = useMemo((): any => (
-    syncHoldWithScroll
-      ? Animated.event(
-        [{ nativeEvent: { contentOffset: { y: scrollY } } }],
-        { useNativeDriver: true, listener: handleScroll },
-      )
-      : handleScroll
-  ), [syncHoldWithScroll, scrollY, handleScroll])
 
   return {
     indicator,
     pullOffset,
     scrollProps: {
-      onScroll,
+      onScroll: handleScroll,
       onScrollBeginDrag: handleScrollBeginDrag,
       onScrollEndDrag: handleScrollEndDrag,
       onMomentumScrollEnd: handleMomentumScrollEnd,
