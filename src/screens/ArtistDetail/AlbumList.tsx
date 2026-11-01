@@ -13,6 +13,10 @@ import { useBottomOverlayInset } from '@/store/common/hook'
 const MIN_WIDTH = scaleSizeW(120)
 const HORIZONTAL_SPACING = 24
 
+// lockHold 把 onScroll 作为原生事件映射（Animated.event + useNativeDriver），
+// RN 要求 VirtualizedList 系组件外层是 Animated 组件，否则挂载时抛 invariant。
+const AnimatedFlatList: any = Animated.createAnimatedComponent(FlatList as any)
+
 interface AlbumListProps {
   componentId: string
   albums: any[]
@@ -104,14 +108,19 @@ export default memo(({ componentId, albums, loading, hasMore, onLoadMore, onRefr
     // 自绘停留位（60/60）：平时没有空白，下拉达标松手后才生成，刷新收尾收回；
     // 停留画面有 1.2s 硬性最短显示。
     true,
+    undefined,
+    // 第 7 参 lockHold：松手回弹越过 60pt 线后把列表钉住，空白不会小于 60pt。
+    true,
   )
+  // lockHold 的 onScroll 是原生事件映射，列表必须是 Animated 包装的 FlatList。
+  const ListComponent: any = AnimatedFlatList
 
   return (
     <View style={[styles.container, { overflow: 'hidden' }]} onLayout={onLayout}>
       {pullIndicator}
       {width > 0 && (
         <Animated.View style={{ flex: 1, transform: [{ translateY: pullOffset }] }}>
-        <FlatList
+        <ListComponent
           ref={flatListRef}
           {...pullScrollProps}
           key={String(rowInfo.num) + viewMode}
