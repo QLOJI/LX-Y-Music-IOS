@@ -52,8 +52,19 @@ const usePullRefresh = (
    * 的留白高度。提供时圆圈**下对齐**贴在该区域底部（即标题正上方）。
    */
   indicatorArea?: { top: number, height: number, inline?: boolean },
+  /**
+   * 停留位交给系统 RefreshControl 承载（这些页面必须同时 holdSpace=false）：
+   *   · 圆圈仍按停留位几何（60pt 空白区、圆圈居中），下拉进度也按 60pt 口径；
+   *   · hook 自己**不触发刷新、不做任何列表位移** —— 触发、停在停留位、收回全部由
+   *     原生 UIRefreshControl 负责，不存在 transform 与系统回弹叠加造成的「先上后下」。
+   *   · `nativeRefreshing` 一并返回，用作 RefreshControl 的 refreshing（只认页面回报的
+   *     刷新态，并按最短显示时长延迟回落，保证停留画面不会一闪就没）。
+   */
+  nativeHold = false,
 ) => {
   const theme = useTheme()
+  // 圆圈几何口径：自己的停留位 or 系统承载的停留位，都是 60pt 空白。
+  const holdGeometry = holdSpace || nativeHold
   const progress = useRef(new Animated.Value(0)).current
   // 刷新态的列表下移（0~1 系数，乘 HOLD_GAP）。只在手指松开后 / 刷新收尾时做一次性
   // 动画——拖动过程中恒为 0，绝不逐帧改 transform（那会和 pan 打架）。
@@ -82,6 +93,11 @@ const usePullRefresh = (
   const minTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const fallbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const watchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // 系统 RefreshControl 专用的刷新态：只由页面回报的 refreshing 驱动（原生控件触发后才为 true），
+  // 并按最短显示时长延迟回落 —— 否则数据一回来控件立刻收回，停留画面看不到。
+  const [nativeRefreshing, setNativeRefreshing] = useState(false)
+  const nativeStartedAtRef = useRef(0)
+  const nativeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   refreshingRef.current = refreshing
 
   const clearTimer = (ref: React.MutableRefObject<ReturnType<typeof setTimeout> | null>) => {
@@ -158,6 +174,27 @@ const usePullRefresh = (
   }, [refreshing, progress, hideIndicator])
 
   useEffect(() => {
+    if (refreshing) {
+      clearTimer(nativeTimerRef)
+      nativeStartedAtRef.current = Date.now()
+      setNativeRefreshing(true)
+      return
+    }
+    if (!nativeRefreshing) return
+    const remain = REFRESH_MIN_MS - (Date.now() - nativeStartedAtRef.current)
+    clearTimer(nativeTimerRef)
+    if (remain <= 0) {
+      setNativeRefreshing(false)
+      return
+    }
+    nativeTimerRef.current = setTimeout(() => {
+      nativeTimerRef.current = null
+      setNativeRefreshing(false)
+    }, remain)
+    return () => { clearTimer(nativeTimerRef) }
+  }, [refreshing, nativeRefreshing])
+
+  useEffect(() => {
     if (!displayRefreshing) {
       spin.stopAnimation()
       spin.setValue(0)
@@ -178,6 +215,7 @@ const usePullRefresh = (
     clearTimer(minTimerRef)
     clearTimer(fallbackTimerRef)
     clearTimer(watchdogRef)
+    clearTimer(nativeTimerRef)
   }, [])
 
   // 学「真实静止位」：只在第一次见到非拖动、非刷新、顶部区域（y ≤ 0）的偏移时记下，
@@ -230,13 +268,13 @@ const usePullRefresh = (
     pullRef.current = pull
     // 进度按 1/32 量化，慢拉时不必每帧过桥同步（触发距离按页面口径）。
     // 注意：拖动过程中**绝不**改 inset —— 那会让系统可回弹范围变化、松手后停在半路。
-    const step = Math.min(1, Math.round((pull / (holdSpace ? HOLD_TRIGGER : PULL_TRIGGER)) * 32) / 32)
+    const step = Math.min(1, Math.round((pull / (holdGeometry ? HOLD_TRIGGER : PULL_TRIGGER)) * 32) / 32)
     if (step === lastStepRef.current) return
     lastStepRef.current = step
     lastPullRef.current = pull
     progress.stopAnimation()
     progress.setValue(step)
-  }, [progress, holdSpace, learnRestTop])
+  }, [progress, holdGeometry, learnRestTop])
 
   const handleScrollEndDrag = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
     const start = dragStartRef.current
@@ -245,7 +283,7 @@ const usePullRefresh = (
     const y = e.nativeEvent.contentOffset.y
     lastOffsetRef.current = y
     const pull = start == null ? pullRef.current : (start <= 0 ? Math.max(0, start - y) : 0)
-    const trigger = holdSpace ? HOLD_TRIGGER : PULL_TRIGGER
+    const trigger = holdGeometry ? HOLD_TRIGGER : PULL_TRIGGER
     pullRef.current = pull
     if (start != null && start <= 0 && pull >= trigger) {
       dragTopRef.current = start
@@ -269,7 +307,8 @@ const usePullRefresh = (
       progress.stopAnimation()
       progress.setValue(1)
       lastStepRef.current = 1
-      onRefreshRef.current()
+      // 系统 RefreshControl 自己会在松手越过阈值时回调 onRefresh；这里再调一次会双请求。
+      if (!nativeHold) onRefreshRef.current()
       sawRefreshingRef.current = false
       clearTimer(fallbackTimerRef)
       fallbackTimerRef.current = setTimeout(() => {
@@ -287,7 +326,7 @@ const usePullRefresh = (
       easing: Easing.out(Easing.cubic),
       useNativeDriver: false,
     }).start()
-  }, [progress, holdAnim, holdSpace])
+  }, [progress, holdAnim, holdSpace, holdGeometry, nativeHold])
 
   const handleMomentumScrollEnd = useCallback(() => {
     if (displayRef.current) return
@@ -310,12 +349,12 @@ const usePullRefresh = (
   const rotate = spin.interpolate({ inputRange: [0, 1], outputRange: ['0deg', '360deg'] })
   // 纯回弹页面保持原来的 32pt 圆圈几何、位置固定；有停留位的页面用更大的空白高度，
   // 圆圈随下拉距离移动，始终停在下拉出来的空白区中心，达到触发高度后固定不再移动。
-  const ringGap = holdSpace ? HOLD_GAP : PULL_TRIGGER
-  const ringTranslate = holdSpace
+  const ringGap = holdGeometry ? HOLD_GAP : PULL_TRIGGER
+  const ringTranslate = holdGeometry
     ? progress.interpolate({ inputRange: [0, 1], outputRange: [-ringGap / 2, 0] })
     : 0
   // 纯回弹页面若给了定位区：圆圈下对齐贴在标题上方；否则维持原几何。
-  const useArea = !holdSpace && indicatorArea != null
+  const useArea = !holdGeometry && indicatorArea != null
   const areaHeight = useArea ? indicatorArea!.height : ringGap
   // inline 模式：由调用方把圆圈放进页头里正常排版（不用绝对定位），
   // 适合「绝对定位坐标系不可靠」的页面（如歌单主页）。
@@ -367,6 +406,8 @@ const usePullRefresh = (
   return {
     indicator,
     pullOffset,
+    // nativeHold 页面用它驱动 RefreshControl 的 refreshing（含最短显示时长）。
+    nativeRefreshing,
     scrollProps: {
       onScroll: handleScroll,
       onScrollBeginDrag: handleScrollBeginDrag,
