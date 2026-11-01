@@ -1,5 +1,5 @@
 import { memo, useMemo, useState, useEffect, useCallback, useRef } from 'react'
-import { Animated, FlatList, View } from 'react-native'
+import { Animated, FlatList, RefreshControl, View } from 'react-native'
 import usePullRefresh from '@/components/common/usePullRefresh'
 import AlbumListItem from './AlbumListItem'
 import { useHorizontalMode, useLayout } from '@/utils/hooks'
@@ -96,13 +96,20 @@ export default memo(({ componentId, albums, loading, hasMore, onLoadMore, onRefr
   const handlePullRefreshWithCover = useCallback(() => {
     handlePullRefresh()
   }, [handlePullRefresh])
-  const { indicator: pullIndicator, scrollProps: pullScrollProps, pullOffset } = usePullRefresh(
+  const {
+    indicator: pullIndicator,
+    scrollProps: pullScrollProps,
+    pullOffset,
+    nativeRefreshing: pullNativeRefreshing,
+  } = usePullRefresh(
     refreshing,
     handlePullRefreshWithCover,
     flatListRef,
     0,
-    // 与「所有歌曲」「每日推荐」同口径：达标松手后列表下移 60pt 生成停留空白，
-    // 刷新收尾收回；未达阈值只走系统自然回弹。
+    // 停留位交给系统 RefreshControl（第 7 参 nativeHold）：停留与收回都由 iOS 完成，
+    // 不再有 transform 与系统回弹叠加造成的「先上后下」；圆圈仍按 60pt 停留位几何显示。
+    false,
+    undefined,
     true,
   )
 
@@ -114,6 +121,15 @@ export default memo(({ componentId, albums, loading, hasMore, onLoadMore, onRefr
         <FlatList
           ref={flatListRef}
           {...pullScrollProps}
+          // 系统刷新控件承载停留位与收回；refreshing 用 hook 处理过最短显示时长的状态，
+          // 避免数据一到就收回、停留画面看不到。系统转圈透明，只显示自绘圆圈。
+          refreshControl={(
+            <RefreshControl
+              refreshing={pullNativeRefreshing}
+              onRefresh={handlePullRefreshWithCover}
+              tintColor="transparent"
+            />
+          )}
           key={String(rowInfo.num) + viewMode}
           numColumns={rowInfo.num}
           data={list}
