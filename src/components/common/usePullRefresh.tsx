@@ -77,6 +77,9 @@ const usePullRefresh = (
   const scrollY = useRef(new Animated.Value(0)).current
   const holdMode = useRef(new Animated.Value(0)).current
   const holdModeRef = useRef(0)
+  // 本次拖动是否到达过停留位（带一点回拖余量）：用于松手判定「用户确实拉到位了」。
+  // 视觉上列表在 60pt 处就停住了，松手时实际偏移可能刚好差零点几 pt，不能只看松手值。
+  const holdIntentRef = useRef(false)
   // 刷新态的列表下移（0~1 系数，乘 HOLD_GAP）。只在手指松开后 / 刷新收尾时做一次性
   // 动画——拖动过程中恒为 0，绝不逐帧改 transform（那会和 pan 打架）。
   // 用 transform 而不是 contentInset / scrollToOffset：后两者会改动滚动状态，
@@ -261,6 +264,7 @@ const usePullRefresh = (
     pullRef.current = 0
     lastPullRef.current = 0
     lastStepRef.current = 0
+    holdIntentRef.current = false
   }, [learnRestTop])
 
   const handleScroll = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
@@ -296,6 +300,10 @@ const usePullRefresh = (
         holdModeRef.current = next
         holdMode.setValue(next)
       }
+      // 到达过停留位就一直算「有刷新意图」，只有明显拖回去（< 45pt）才撤销，
+      // 这样在停留位附近松手（差零点几 pt）不会被误判成轻拉。
+      if (pull >= HOLD_TRIGGER) holdIntentRef.current = true
+      else if (pull < HOLD_TRIGGER - 15) holdIntentRef.current = false
     }
     // 进度按 1/32 量化，慢拉时不必每帧过桥同步（触发距离按页面口径）。
     // 注意：拖动过程中**绝不**改 inset —— 那会让系统可回弹范围变化、松手后停在半路。
@@ -316,7 +324,11 @@ const usePullRefresh = (
     const pull = start == null ? pullRef.current : (start <= 0 ? Math.max(0, start - y) : 0)
     const trigger = holdSpace ? HOLD_TRIGGER : PULL_TRIGGER
     pullRef.current = pull
-    if (start != null && start <= 0 && pull >= trigger) {
+    // syncHoldWithScroll 页面：下拉越过 60pt 后列表视觉上就「停住」了，用户在停留位松手时
+    // 实际偏移可能刚好差零点几 pt 没到阈值 —— 只要本次拖动打开过停留位（holdMode=1），
+    // 松手就按触发处理，否则会被判成轻拉、直接弹回原位（就是「拉到停留位又被拽回去」）。
+    const pinEngaged = syncHoldWithScroll && holdIntentRef.current
+    if (start != null && start <= 0 && (pull >= trigger || pinEngaged)) {
       dragTopRef.current = start
       // 达标时的拖动起点就是「用户看到的静止位」，比任何采样都可靠（无自动 inset 的
       // 列表只能从这里拿到 0）。只写一次，之后永远用它回位，避免一次没回成功就累积偏移。
