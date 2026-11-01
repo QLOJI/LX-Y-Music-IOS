@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Animated,
   Easing,
@@ -56,6 +56,14 @@ type ScrollListRef = { current: any }
 
 const AnimatedCircle = Animated.createAnimatedComponent(Circle)
 
+/**
+ * 「停留位锁」：松手达标后，等系统回弹把列表带回「距初始位置 60pt」的那条线时，
+ * 用 `translateY = (contentOffset.y + 60) × holdMode` 把列表逐帧钉在停留位 ——
+ * 之后系统无论怎么回弹，空白区域都不会小于 60pt（物理上跳不下去）。
+ * 拖动阶段 holdMode 恒为 0（列表跟手），只有松手后的回弹阶段才会在越过 60pt 线时打开。
+ */
+
+
 const usePullRefresh = (
   refreshing: boolean,
   onRefresh: () => void,
@@ -68,9 +76,18 @@ const usePullRefresh = (
    * 的留白高度。提供时圆圈**下对齐**贴在该区域底部（即标题正上方）。
    */
   indicatorArea?: { top: number, height: number, inline?: boolean },
+  /**
+   * 停留位「锁」：松手达标后由滚动偏移原生驱动 transform（见文件内 syncPullOffset 说明），
+   * 保证空白区域不会小于 60pt、不会再被系统回弹拽上去。只对 holdSpace 页面启用。
+   */
+  lockHold: boolean = false,
 ) => {
   const theme = useTheme()
   const progress = useRef(new Animated.Value(0)).current
+  // lockHold 专用：滚动偏移（原生映射）与「锁定」开关。
+  const scrollY = useRef(new Animated.Value(0)).current
+  const holdLock = useRef(new Animated.Value(0)).current
+  const holdLockRef = useRef(0)
   // 刷新态的列表下移（0~1 系数，乘 HOLD_GAP）。只在手指松开后 / 刷新收尾时做一次性
   // 动画——拖动过程中恒为 0，绝不逐帧改 transform（那会和 pan 打架）。
   // 用 transform 而不是 contentInset / scrollToOffset：后两者会改动滚动状态，
@@ -110,6 +127,17 @@ const usePullRefresh = (
     }
   }
 
+  // lockHold 的 transform：y ∈ [-∞, 0] 时 = y + 60，y > 0 时夹在 60；再乘 holdLock。
+  // 全部是 Animated 原生节点，随滚动逐帧更新 —— 越过 60pt 线后把列表钉死在停留位。
+  const syncPullOffset = useMemo(() => Animated.multiply(
+    scrollY.interpolate({
+      inputRange: [-100000, 0],
+      outputRange: [-100000 + HOLD_GAP, HOLD_GAP],
+      extrapolateRight: 'clamp',
+    }),
+    holdLock,
+  ), [scrollY, holdLock])
+
   const hideIndicator = useCallback(() => {
     // 硬性最短停留：从松手触发算起不足 HOLD_MIN_MS 就推迟，保证停留画面一定看得见。
     // 只对停留位页面生效（其它页面保持原有节奏）。
@@ -132,15 +160,28 @@ const usePullRefresh = (
     // 全程不改滚动偏移、不改 contentInset —— 列表一定回到原位，也不会锁住滑动。
     if (holdAppliedRef.current) {
       holdAppliedRef.current = false
-      holdAnim.stopAnimation()
-      // 收回同样走弹簧（与系统回弹同一量级的速度），不再用固定 320ms。
-      Animated.spring(holdAnim, {
-        toValue: 0,
-        stiffness: HOLD_SPRING_STIFFNESS,
-        damping: HOLD_SPRING_DAMPING,
-        mass: 1,
-        useNativeDriver: true,
-      }).start()
+      if (lockHold) {
+        // 锁：解锁（holdLock 1→0），停留位按弹簧收回。
+        holdLockRef.current = 0
+        holdLock.stopAnimation()
+        Animated.spring(holdLock, {
+          toValue: 0,
+          stiffness: HOLD_SPRING_STIFFNESS,
+          damping: HOLD_SPRING_DAMPING,
+          mass: 1,
+          useNativeDriver: true,
+        }).start()
+      } else {
+        holdAnim.stopAnimation()
+        // 收回同样走弹簧（与系统回弹同一量级的速度），不再用固定 320ms。
+        Animated.spring(holdAnim, {
+          toValue: 0,
+          stiffness: HOLD_SPRING_STIFFNESS,
+          damping: HOLD_SPRING_DAMPING,
+          mass: 1,
+          useNativeDriver: true,
+        }).start()
+      }
     }
     progress.stopAnimation()
     Animated.timing(progress, {
@@ -149,7 +190,7 @@ const usePullRefresh = (
       easing: Easing.out(Easing.cubic),
       useNativeDriver: false,
     }).start()
-  }, [progress, holdAnim, holdSpace])
+  }, [progress, holdAnim, holdSpace, lockHold, holdLock])
 
   useEffect(() => {
     if (refreshing) {
@@ -240,6 +281,13 @@ const usePullRefresh = (
     const y = e.nativeEvent.contentOffset.y
     lastOffsetRef.current = y
     if (displayRef.current) {
+      // 锁：松手后的回弹阶段，当偏移回到「距初始位置 60pt」这条线（y ≥ -60）时打开锁定。
+      // 之前（y < -60）列表仍跟着系统回弹走，所以「移动到停留位」用的就是系统回弹本身；
+      // 越过这条线之后由 transform 逐帧抵住，空白不会小于 60pt。
+      if (lockHold && holdLockRef.current === 0 && y >= -HOLD_GAP - 2) {
+        holdLockRef.current = 1
+        holdLock.setValue(1)
+      }
       if (lastPullRef.current !== PULL_TRIGGER) {
         lastPullRef.current = PULL_TRIGGER
         lastStepRef.current = 1
@@ -269,7 +317,7 @@ const usePullRefresh = (
     lastPullRef.current = pull
     progress.stopAnimation()
     progress.setValue(step)
-  }, [progress, holdSpace, learnRestTop])
+  }, [progress, holdSpace, lockHold, holdLock, learnRestTop])
 
   const handleScrollEndDrag = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
     const start = dragStartRef.current
@@ -289,16 +337,20 @@ const usePullRefresh = (
       // 不做任何位移 —— 它们松手后交给系统回弹，否则收尾归零时会「猛地上跳一下」。
       if (holdSpace) {
         holdAppliedRef.current = true
-        holdAnim.stopAnimation()
-        // 停留位（60pt）用弹簧动画到位：接近 UIKit 橡胶回弹的临界阻尼（约 0.4~0.5s、
-        // 由快到慢收住），不再是固定 220ms 的机械位移。
-        Animated.spring(holdAnim, {
-          toValue: 1,
-          stiffness: HOLD_SPRING_STIFFNESS,
-          damping: HOLD_SPRING_DAMPING,
-          mass: 1,
-          useNativeDriver: true,
-        }).start()
+        if (!lockHold) {
+          holdAnim.stopAnimation()
+          // 停留位（60pt）用弹簧动画到位：接近 UIKit 橡胶回弹的临界阻尼（约 0.4~0.5s、
+          // 由快到慢收住），不再是固定 220ms 的机械位移。
+          Animated.spring(holdAnim, {
+            toValue: 1,
+            stiffness: HOLD_SPRING_STIFFNESS,
+            damping: HOLD_SPRING_DAMPING,
+            mass: 1,
+            useNativeDriver: true,
+          }).start()
+        }
+        // lockHold：这里不做任何位移动画 —— 列表继续跟随系统回弹，等偏移回到 60pt 线时
+        // 由 handleScroll 打开锁定（见那里注释）。
       }
       displayRef.current = true
       triggerAtRef.current = Date.now()
@@ -324,7 +376,7 @@ const usePullRefresh = (
       easing: Easing.out(Easing.cubic),
       useNativeDriver: false,
     }).start()
-  }, [progress, holdAnim, holdSpace])
+  }, [progress, holdAnim, holdSpace, lockHold])
 
   const handleMomentumScrollEnd = useCallback(() => {
     if (displayRef.current) return
@@ -396,16 +448,31 @@ const usePullRefresh = (
     </Animated.View>
   )
 
-  // 列表下移量（调用方套在 Animated.View 上）：只由刷新态的 holdAnim 驱动。
+  // 列表下移量（调用方套在 Animated.View 上）：
+  //  · lockHold：由滚动偏移原生驱动（松手回弹越过 60pt 线后锁死在停留位）；
+  //  · 其它停留位页面：由 holdAnim 弹簧驱动。
   const pullOffset = holdSpace
-    ? holdAnim.interpolate({ inputRange: [0, 1], outputRange: [0, HOLD_GAP] })
+    ? (lockHold
+        ? syncPullOffset
+        : holdAnim.interpolate({ inputRange: [0, 1], outputRange: [0, HOLD_GAP] }))
     : holdAnim
+
+  // lockHold 需要把滚动偏移映射进 Animated（原生驱动）；listener 继续跑 JS 侧逻辑
+  // （圆圈进度、锁定判断）。
+  const onScroll = useMemo((): any => (
+    lockHold
+      ? Animated.event(
+        [{ nativeEvent: { contentOffset: { y: scrollY } } }],
+        { useNativeDriver: true, listener: handleScroll },
+      )
+      : handleScroll
+  ), [lockHold, scrollY, handleScroll])
 
   return {
     indicator,
     pullOffset,
     scrollProps: {
-      onScroll: handleScroll,
+      onScroll,
       onScrollBeginDrag: handleScrollBeginDrag,
       onScrollEndDrag: handleScrollEndDrag,
       onMomentumScrollEnd: handleMomentumScrollEnd,

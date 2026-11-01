@@ -17,6 +17,11 @@ import { useBottomOverlayInset } from '@/store/common/hook'
 type FlatListType = FlatListProps<LX.Music.MusicInfoOnline>
 export type { RowInfoType }
 
+// lockHold 把 onScroll 作为原生事件映射（Animated.event + useNativeDriver）；
+// RN 要求 VirtualizedList 系组件外层是 Animated 组件，否则挂载时抛 invariant。
+// 只有启用锁的列表走这个包装，其它列表仍用普通 FlatList。
+const AnimatedFlatList: any = Animated.createAnimatedComponent(FlatList as any)
+
 export interface ListProps {
   onShowMenu: (musicInfo: LX.Music.MusicInfoOnline, index: number, position: Position) => void
   onMuiltSelectMode: () => void
@@ -30,6 +35,11 @@ export interface ListProps {
   indicatorInHeader?: boolean
   /** 刷新时是否让列表下移 32pt 留出下拉停留位（默认 true）。 */
   holdSpace?: boolean
+  /**
+   * 停留位「锁」：松手回弹越过 60pt 线后，由滚动偏移原生驱动 transform 把列表钉在停留位，
+   * 空白区域不会再小于 60pt（不会被系统回弹拽上去）。拖动阶段完全不干预。
+   */
+  lockHold?: boolean
   /**
    * 显式指定列表顶部的安全区处理方式。传 'never' 表示「页面自己负责顶部间距」
    * （页头里已有 PageTopInset），标题位置因此与推荐页同一条基准线。
@@ -77,6 +87,7 @@ const List = forwardRef<ListType, ListProps>(
       ListFooterComponent,
       indicatorInHeader,
       holdSpace = true,
+      lockHold,
       contentInsetAdjustmentBehavior,
       indicatorArea,
       rowType,
@@ -351,6 +362,7 @@ const List = forwardRef<ListType, ListProps>(
       0,
       holdSpace,
       indicatorArea,
+      lockHold,
     )
 
     const footerComponent = useMemo(() => {
@@ -397,11 +409,14 @@ const List = forwardRef<ListType, ListProps>(
       ? (<>{pullIndicator}{ListHeaderComponent}</>)
       : ListHeaderComponent
 
+    // lockHold 的 onScroll 是原生事件映射，必须用 Animated 包装的 FlatList（见文件头）。
+    const ListComponent: any = lockHold ? AnimatedFlatList : FlatList
+
     return (
       <View style={{ flex: 1, overflow: 'hidden' }}>
         {mergeIndicatorIntoHeader ? null : pullIndicator}
         <Animated.View style={{ flex: 1, transform: [{ translateY: pullOffset }] }}>
-        <FlatList
+        <ListComponent
         // key：numColumns 变更（旋转/分屏）时强制重挂载 FlatList——
         // RN 不支持运行中变更 numColumns，直接改值会崩溃；重挂载时数据保存在本组件 state 中不丢失
         key={`cols-${numColumns}`}
