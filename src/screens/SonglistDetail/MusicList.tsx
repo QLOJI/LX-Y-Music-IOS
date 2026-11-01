@@ -292,12 +292,10 @@ export default forwardRef<MusicListType, MusicListProps>(({ componentId, isCreat
                 listId={`${info.source}__${info.id}`}
                 isCreator={finalIsCreator}
                 playingId={playingId}
-                // 停留位交给系统 RefreshControl：停留与收回都由 iOS 完成，
-                // 没有我们自己的下移位移（不会再出现松手瞬间「系统回弹 + transform 下移」
-                // 叠加导致的猛跳）。控件高度钉在 60pt，停留空白与其它页面一致；
-                // refreshing 用 hook 处理过最短显示时长的状态。所有歌单一致。
-                holdSpace={false}
-                nativeRefresh
+                // 自绘停留位（60/60）：停留空白平时不存在，下拉达标松手后才生成，
+                // 刷新收尾收回。pinOnOverscroll：超过 60pt 后视觉停在停留位，
+                // 消除松手时「系统回弹 + 下移」叠加的上下跳。所有歌单一致。
+                pinOnOverscroll
     />
   )
 })

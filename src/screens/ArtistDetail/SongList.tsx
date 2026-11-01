@@ -175,11 +175,9 @@ const SongList = forwardRef<SongListRef, SongListProps>(({
             ref={songListRef}
             listId="artist_detail"
             forcePlayList={true}
-            // 停留位交给系统 RefreshControl：停留与收回都由 iOS 完成，没有我们自己的
-            // transform 位移（消除松手瞬间「系统回弹 + 下移」叠加造成的猛跳）。
-            // 控件高度钉在 60pt；refreshing 走本页的 refreshing→idle/end 状态闭环。
-            holdSpace={false}
-            nativeRefresh
+            // 自绘停留位（60/60）：平时没有空白，下拉达标松手后才生成，刷新收尾收回；
+            // pinOnOverscroll 让超过 60pt 的部分视觉停在停留位，消除松手时的上下跳。
+            pinOnOverscroll
             onPlayList={onPlayList}
             onRefresh={handleListRefresh}
             onLoadMore={onLoadMoreSongs}

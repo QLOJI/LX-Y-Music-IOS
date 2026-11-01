@@ -1,5 +1,5 @@
 import { memo, useMemo, useState, useEffect, useCallback, useRef } from 'react'
-import { Animated, FlatList, RefreshControl, View } from 'react-native'
+import { Animated, FlatList, View } from 'react-native'
 import usePullRefresh from '@/components/common/usePullRefresh'
 import AlbumListItem from './AlbumListItem'
 import { useHorizontalMode, useLayout } from '@/utils/hooks'
@@ -96,20 +96,15 @@ export default memo(({ componentId, albums, loading, hasMore, onLoadMore, onRefr
   const handlePullRefreshWithCover = useCallback(() => {
     handlePullRefresh()
   }, [handlePullRefresh])
-  const {
-    indicator: pullIndicator,
-    scrollProps: pullScrollProps,
-    pullOffset,
-    nativeRefreshing: pullNativeRefreshing,
-  } = usePullRefresh(
+  const { indicator: pullIndicator, scrollProps: pullScrollProps, pullOffset } = usePullRefresh(
     refreshing,
     handlePullRefreshWithCover,
     flatListRef,
     0,
-    // 停留位交给系统 RefreshControl（第 7 参 nativeHold）：停留与收回都由 iOS 完成，
-    // 没有 transform 与系统回弹叠加造成的猛跳；圆圈仍按 60pt 停留位几何显示。
-    false,
+    // 自绘停留位（60/60）：平时没有空白，下拉达标松手后才生成，刷新收尾收回。
+    true,
     undefined,
+    // 第 7 参 pinOnOverscroll：超过 60pt 后视觉停在停留位，消除松手时的上下跳。
     true,
   )
 
@@ -121,16 +116,6 @@ export default memo(({ componentId, albums, loading, hasMore, onLoadMore, onRefr
         <FlatList
           ref={flatListRef}
           {...pullScrollProps}
-          // 系统刷新控件承载停留位与收回，高度钉在 60pt；refreshing 用 hook 处理过
-          // 最短显示时长的状态。系统转圈透明，只显示自绘圆圈。
-          refreshControl={(
-            <RefreshControl
-              refreshing={pullNativeRefreshing}
-              onRefresh={handlePullRefreshWithCover}
-              tintColor="transparent"
-              style={{ height: 60 }}
-            />
-          )}
           key={String(rowInfo.num) + viewMode}
           numColumns={rowInfo.num}
           data={list}
