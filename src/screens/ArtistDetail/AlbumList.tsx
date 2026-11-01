@@ -101,10 +101,8 @@ export default memo(({ componentId, albums, loading, hasMore, onLoadMore, onRefr
     handlePullRefreshWithCover,
     flatListRef,
     0,
-    // 自绘停留位（60/60）：平时没有空白，下拉达标松手后才生成，刷新收尾收回。
-    true,
-    undefined,
-    // 第 7 参 pinOnOverscroll：超过 60pt 后视觉停在停留位，消除松手时的上下跳。
+    // 自绘停留位（60/60）：平时没有空白，下拉达标松手后才生成，刷新收尾收回；
+    // 停留画面有 1.2s 硬性最短显示。
     true,
   )
 

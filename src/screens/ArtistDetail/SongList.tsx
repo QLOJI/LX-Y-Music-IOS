@@ -176,8 +176,7 @@ const SongList = forwardRef<SongListRef, SongListProps>(({
             listId="artist_detail"
             forcePlayList={true}
             // 自绘停留位（60/60）：平时没有空白，下拉达标松手后才生成，刷新收尾收回；
-            // pinOnOverscroll 让超过 60pt 的部分视觉停在停留位，消除松手时的上下跳。
-            pinOnOverscroll
+            // 停留画面有 1.2s 硬性最短显示。
             onPlayList={onPlayList}
             onRefresh={handleListRefresh}
             onLoadMore={onLoadMoreSongs}

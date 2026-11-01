@@ -293,9 +293,7 @@ export default forwardRef<MusicListType, MusicListProps>(({ componentId, isCreat
                 isCreator={finalIsCreator}
                 playingId={playingId}
                 // 自绘停留位（60/60）：停留空白平时不存在，下拉达标松手后才生成，
-                // 刷新收尾收回。pinOnOverscroll：超过 60pt 后视觉停在停留位，
-                // 消除松手时「系统回弹 + 下移」叠加的上下跳。所有歌单一致。
-                pinOnOverscroll
+                // 刷新收尾收回；停留画面有 1.2s 硬性最短显示。所有歌单一致。
     />
   )
 })
