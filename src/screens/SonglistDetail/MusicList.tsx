@@ -1,5 +1,6 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react'
 import OnlineList, { type OnlineListType, type OnlineListProps } from '@/components/OnlineList'
+import { PULL_SETTLE_MS } from '@/components/common/usePullRefresh'
 import { clearListDetail, getListDetail, setListDetail, setListDetailInfo } from '@/core/songlist'
 import songlistState from '@/store/songlist/state'
 import { handlePlay } from './listAction'
@@ -236,15 +237,24 @@ export default forwardRef<MusicListType, MusicListProps>(({ componentId, isCreat
 
   const handleRefresh: OnlineListProps['onRefresh'] = () => {
     const page = 1
+    // 记录松手时刻：新列表要等回弹落定后再替换，否则替换引起的 contentSize 变化会把
+    // 回弹中的负偏移夹回 0，表现为「松手后列表被往上拽一下」。
+    const refreshStartedAt = Date.now()
     listRef.current?.setStatus('refreshing')
     getListDetail(songlistState.listDetailInfo.id, songlistState.listDetailInfo.source, page, true)
       .then((listDetail) => {
         const result = setListDetail(listDetail, songlistState.listDetailInfo.id, page)
         if (isUnmountedRef.current) return
-        fullListRef.current = result.list
-        const filtered = filterList(result.list, searchText)
-        listRef.current?.setList(filtered)
-        listRef.current?.setStatus(songlistState.listDetailInfo.maxPage <= page ? 'end' : 'idle')
+        const apply = () => {
+          if (isUnmountedRef.current) return
+          fullListRef.current = result.list
+          const filtered = filterList(result.list, searchText)
+          listRef.current?.setList(filtered)
+          listRef.current?.setStatus(songlistState.listDetailInfo.maxPage <= page ? 'end' : 'idle')
+        }
+        const remain = PULL_SETTLE_MS - (Date.now() - refreshStartedAt)
+        if (remain > 0) setTimeout(apply, remain)
+        else apply()
       })
       .catch(() => {
         if (songlistState.listDetailInfo.list.length && page == 1) clearListDetail()

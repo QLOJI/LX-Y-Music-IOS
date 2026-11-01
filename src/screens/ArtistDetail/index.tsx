@@ -21,6 +21,7 @@ import {
 import { useSettingValue } from '@/store/setting/hook.ts'
 
 import { usePlayerMusicInfo } from '@/store/player/hook.ts'
+import { PULL_SETTLE_MS } from '@/components/common/usePullRefresh'
 import { log } from '@/utils/log'
 
 const SONG_LIMIT = 100
@@ -212,6 +213,9 @@ export default memo(({ componentId, artistInfo }: { componentId: string, artistI
       timestamp: new Date().toISOString(),
     })
     const cacheKey = `${currentArtistParam}_albums_${page}`
+    // 下拉刷新从松手那一刻计时：新列表要等回弹落定后再替换，否则替换引起的 contentSize
+    // 变化会把回弹中的负偏移夹回 0，表现为「松手后列表被往上拽一下」。
+    const refreshStartedAt = isRefresh ? Date.now() : 0
 
     const cachedData = getArtistCache(cacheKey)
     if (!isRefresh && cachedData) {
@@ -254,13 +258,19 @@ export default memo(({ componentId, artistInfo }: { componentId: string, artistI
         log.info('[ArtistDetail] 歌手专辑加载成功', { artistId: artistInfo.id, albumCount: data.hotAlbums.length, hasMore: data.hasMore })
         setArtistCache(cacheKey, { hotAlbums: data.hotAlbums, hasMore: data.hasMore })
 
-        setAlbums(p => ({
-          ...p,
-          list: page === 1 ? data.hotAlbums : [...p.list, ...data.hotAlbums],
-          hasMore: data.hasMore,
-          page: page + 1,
-          loading: false,
-        }))
+        const apply = () => {
+          setAlbums(p => ({
+            ...p,
+            list: page === 1 ? data.hotAlbums : [...p.list, ...data.hotAlbums],
+            hasMore: data.hasMore,
+            page: page + 1,
+            loading: false,
+          }))
+        }
+        // 下拉刷新：等回弹落定再落地（见 refreshStartedAt 注释）。
+        const remain = isRefresh ? PULL_SETTLE_MS - (Date.now() - refreshStartedAt) : 0
+        if (remain > 0) setTimeout(apply, remain)
+        else apply()
       }).catch((err: any) => {
         log.error('[ArtistDetail] 歌手专辑加载失败', { artistId: artistInfo.id, error: err.message })
         toast('获取专辑失败')
