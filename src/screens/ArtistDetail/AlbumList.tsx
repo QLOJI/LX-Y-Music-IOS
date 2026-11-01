@@ -104,6 +104,10 @@ export default memo(({ componentId, albums, loading, hasMore, onLoadMore, onRefr
     // 自绘停留位（60/60）：平时没有空白，下拉达标松手后才生成，刷新收尾收回；
     // 停留画面有 1.2s 硬性最短显示。
     true,
+    undefined,
+    // 第 8 参 syncHoldWithScroll：停留位由滚动偏移原生驱动，松手回弹逐帧抵消，
+    // 不会出现「惯性拽一下再回来」。
+    true,
   )
 
   return (
