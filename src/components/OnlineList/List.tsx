@@ -31,6 +31,11 @@ export interface ListProps {
   /** 刷新时是否让列表下移 32pt 留出下拉停留位（默认 true）。 */
   holdSpace?: boolean
   /**
+   * 停留位改由滚动偏移原生驱动（见 usePullRefresh 第 8 参）：松手后的系统回弹逐帧被抵消，
+   * 不会出现「惯性拽一下再回来」。只对 holdSpace 页面有意义。
+   */
+  syncHoldWithScroll?: boolean
+  /**
    * 显式指定列表顶部的安全区处理方式。传 'never' 表示「页面自己负责顶部间距」
    * （页头里已有 PageTopInset），标题位置因此与推荐页同一条基准线。
    */
@@ -77,6 +82,7 @@ const List = forwardRef<ListType, ListProps>(
       ListFooterComponent,
       indicatorInHeader,
       holdSpace = true,
+      syncHoldWithScroll,
       contentInsetAdjustmentBehavior,
       indicatorArea,
       rowType,
@@ -351,6 +357,7 @@ const List = forwardRef<ListType, ListProps>(
       0,
       holdSpace,
       indicatorArea,
+      syncHoldWithScroll,
     )
 
     const footerComponent = useMemo(() => {
