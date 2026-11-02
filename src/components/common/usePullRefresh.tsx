@@ -57,10 +57,13 @@ type ScrollListRef = { current: any }
 const AnimatedCircle = Animated.createAnimatedComponent(Circle)
 
 /**
- * 「停留位锁」：松手达标后，等系统回弹把列表带回「距初始位置 60pt」的那条线时，
- * 用 `translateY = (contentOffset.y + 60) × holdMode` 把列表逐帧钉在停留位 ——
- * 之后系统无论怎么回弹，空白区域都不会小于 60pt（物理上跳不下去）。
- * 拖动阶段 holdMode 恒为 0（列表跟手），只有松手后的回弹阶段才会在越过 60pt 线时打开。
+ * 「停留位锁」：松手达到触发位后，列表先跟着系统回弹走；同时用
+ * `translateY = clamp(dy + 60, 0, 60) × holdMode`（dy = 当前偏移 − 静止位）逐帧抵消回弹：
+ *   · dy ≤ -60：补偿为 0，回弹速度完全由系统决定（从超过 60pt 的位置回到停留位，
+ *     用的就是系统自然回弹速度）；
+ *   · dy > -60：补偿把 dy 抵消掉，空白恒为 60pt —— 物理上不可能再掉到 60pt 以下；
+ *   · 回弹落定（dy = 0）后补偿是常量 60，用户主动向上滚动照常，不会被冻住。
+ * 拖动阶段 holdMode 恒为 0（列表跟手），只有松手达到触发位的那次刷新才为 1。
  */
 
 
@@ -88,6 +91,9 @@ const usePullRefresh = (
   const scrollY = useRef(new Animated.Value(0)).current
   const holdLock = useRef(new Animated.Value(0)).current
   const holdLockRef = useRef(0)
+  // 列表的「静止位」偏移：锁的补偿量都以它为基准，停留位才是「距初始位置 60pt」，
+  // 而不是距容器顶 60pt（有安全区自动 inset 的列表两者不相等）。
+  const restTopValue = useRef(new Animated.Value(0)).current
   // 刷新态的列表下移（0~1 系数，乘 HOLD_GAP）。只在手指松开后 / 刷新收尾时做一次性
   // 动画——拖动过程中恒为 0，绝不逐帧改 transform（那会和 pan 打架）。
   // 用 transform 而不是 contentInset / scrollToOffset：后两者会改动滚动状态，
@@ -127,16 +133,21 @@ const usePullRefresh = (
     }
   }
 
-  // lockHold 的 transform：y ∈ [-∞, 0] 时 = y + 60，y > 0 时夹在 60；再乘 holdLock。
-  // 全部是 Animated 原生节点，随滚动逐帧更新 —— 越过 60pt 线后把列表钉死在停留位。
+  // 「距静止位」的偏移：下拉为负，回弹落定为 0，用户向上滚动为正。
+  const holdDelta: any = useMemo(() => Animated.subtract(scrollY, restTopValue), [scrollY, restTopValue])
+  // lockHold 的 transform（纯 Animated 原生节点，随滚动逐帧更新）：
+  //   dy ≤ -60      → 0       还没到停留位，列表完整跟随系统回弹（速度由系统决定）
+  //   -60 < dy ≤ 0  → dy + 60 抵消系统回弹带来的反向位移：空白恒为 60pt，不可能跳小
+  //   dy > 0        → 60      回弹落定后为常量；用户主动上滑时列表照常移动，不被冻住
+  // 再乘 holdLock：拖动阶段恒为 0（列表只跟手），松手达标的那次刷新才为 1。
   const syncPullOffset = useMemo(() => Animated.multiply(
-    scrollY.interpolate({
-      inputRange: [-100000, 0],
-      outputRange: [-100000 + HOLD_GAP, HOLD_GAP],
-      extrapolateRight: 'clamp',
+    holdDelta.interpolate({
+      inputRange: [-100000, -HOLD_GAP, 0, 100000],
+      outputRange: [0, 0, HOLD_GAP, HOLD_GAP],
+      extrapolate: 'clamp',
     }),
     holdLock,
-  ), [scrollY, holdLock])
+  ), [holdDelta, holdLock])
 
   const hideIndicator = useCallback(() => {
     // 硬性最短停留：从松手触发算起不足 HOLD_MIN_MS 就推迟，保证停留画面一定看得见。
@@ -261,7 +272,8 @@ const usePullRefresh = (
     // 没有自动 inset，此时静止位就是 0，由「下拉达标时的拖动起点」兜底确定。
     if (restTopRef.current != null || y >= 0 || dragStartRef.current != null || displayRef.current) return
     restTopRef.current = y
-  }, [])
+    restTopValue.setValue(y)
+  }, [restTopValue])
 
   const handleScrollBeginDrag = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
     // 拖动开始时不改动 contentInset：在手势进行中改滚动范围会打断 UIKit 的 pan，
@@ -281,13 +293,8 @@ const usePullRefresh = (
     const y = e.nativeEvent.contentOffset.y
     lastOffsetRef.current = y
     if (displayRef.current) {
-      // 锁：松手后的回弹阶段，当偏移回到「距初始位置 60pt」这条线（y ≥ -60）时打开锁定。
-      // 之前（y < -60）列表仍跟着系统回弹走，所以「移动到停留位」用的就是系统回弹本身；
-      // 越过这条线之后由 transform 逐帧抵住，空白不会小于 60pt。
-      if (lockHold && holdLockRef.current === 0 && y >= -HOLD_GAP - 2) {
-        holdLockRef.current = 1
-        holdLock.setValue(1)
-      }
+      // 锁在松手那一刻就已经打开（见 handleScrollEndDrag）；这里不再按滚动回调判断，
+      // 否则 JS 回调晚到几帧，空白会先掉到 60pt 以下再被拉回来。
       if (lastPullRef.current !== PULL_TRIGGER) {
         lastPullRef.current = PULL_TRIGGER
         lastStepRef.current = 1
@@ -317,7 +324,7 @@ const usePullRefresh = (
     lastPullRef.current = pull
     progress.stopAnimation()
     progress.setValue(step)
-  }, [progress, holdSpace, lockHold, holdLock, learnRestTop])
+  }, [progress, holdSpace, learnRestTop])
 
   const handleScrollEndDrag = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
     const start = dragStartRef.current
@@ -337,7 +344,20 @@ const usePullRefresh = (
       // 不做任何位移 —— 它们松手后交给系统回弹，否则收尾归零时会「猛地上跳一下」。
       if (holdSpace) {
         holdAppliedRef.current = true
-        if (!lockHold) {
+        if (lockHold) {
+          // 松手的**同一时刻**就开锁：此刻 dy ≤ -60，补偿量为 0，不会产生任何位移；
+          // 从系统回弹越过「距静止位 60pt」那条线的那一帧起，原生映射开始逐帧抵住，
+          // 空白因此不可能先掉到 60pt 以下（等 JS 滚动回调再开锁会晚几帧，就是那个跳动）。
+          restTopValue.setValue(restTopRef.current ?? start)
+          holdLock.stopAnimation()
+          holdLockRef.current = 1
+          // 用原生 timing（1ms ≈ 瞬置）逼一次原生节点，保证整条 transform 链在 UI 线程跑。
+          Animated.timing(holdLock, {
+            toValue: 1,
+            duration: 1,
+            useNativeDriver: true,
+          }).start()
+        } else {
           holdAnim.stopAnimation()
           // 停留位（60pt）用弹簧动画到位：接近 UIKit 橡胶回弹的临界阻尼（约 0.4~0.5s、
           // 由快到慢收住），不再是固定 220ms 的机械位移。
@@ -349,8 +369,6 @@ const usePullRefresh = (
             useNativeDriver: true,
           }).start()
         }
-        // lockHold：这里不做任何位移动画 —— 列表继续跟随系统回弹，等偏移回到 60pt 线时
-        // 由 handleScroll 打开锁定（见那里注释）。
       }
       displayRef.current = true
       triggerAtRef.current = Date.now()
@@ -376,7 +394,7 @@ const usePullRefresh = (
       easing: Easing.out(Easing.cubic),
       useNativeDriver: false,
     }).start()
-  }, [progress, holdAnim, holdSpace, lockHold])
+  }, [progress, holdAnim, holdSpace, lockHold, restTopValue])
 
   const handleMomentumScrollEnd = useCallback(() => {
     if (displayRef.current) return
