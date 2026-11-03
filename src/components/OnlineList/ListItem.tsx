@@ -124,16 +124,20 @@ const ListItem = memo(
     const isLiked = forceLiked || (item.source === 'wy' ? isWyLiked : item.source === 'tx' ? isTxLiked : item.source === 'kg' ? isKgLiked : false)
 
     const handleLike = () => {
-      // forceLiked 的页面里，红心是实心的 —— 点击语义是「取消喜欢」，把状态一并传给
-      // 平台动作（否则平台会按「未喜欢」处理成再喜欢一次）。
-      if (item.source === 'wy') {
-        void handleLikeMusic(item, forceLiked)
-      } else if (item.source === 'tx') {
-        void handleTxLikeMusic(item, forceLiked)
-      } else if (item.source === 'kg') {
-        void handleKgLikeMusic(item, forceLiked)
+      // 自己的歌单（forceLiked）：红心语义是「已在当前平台歌单里」，点击 = 从**当前歌单**
+      // 移除。必须走页面提供的移除链路（与行菜单「移除」同一条平台接口），不能只调
+      // 喜欢/取消喜欢接口 —— 否则自建歌单里取消后平台仍在，下拉刷新又回来。
+      if (forceLiked && onUnlike) {
+        onUnlike(item)
+        return
       }
-      // 自己的歌单：取消红心后立即把这首歌从列表移除（不等下拉刷新）。
+      if (item.source === 'wy') {
+        void handleLikeMusic(item)
+      } else if (item.source === 'tx') {
+        void handleTxLikeMusic(item)
+      } else if (item.source === 'kg') {
+        void handleKgLikeMusic(item)
+      }
       if (isLiked) onUnlike?.(item)
     }
 

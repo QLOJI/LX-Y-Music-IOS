@@ -72,6 +72,8 @@ export interface OnlineListType {
   setStatus: (val: Status) => void
   getList: () => LX.Music.MusicInfoOnline[]
   scrollToInfo: (info: LX.Music.MusicInfoOnline) => void
+  /** 按当前歌单在平台上移除这首歌（与行菜单的「移除」同一条链路）。 */
+  removeFromList: (info: LX.Music.MusicInfoOnline) => void
 }
 
 export default forwardRef<OnlineListType, OnlineListProps>(
@@ -111,6 +113,8 @@ export default forwardRef<OnlineListType, OnlineListProps>(
     const t = useI18n()
     const subscribedPlaylists = useWySubscribedPlaylists()
     const kgCookie = useSettingValue('common.kg_cookie')
+    // 行菜单「移除」的稳定转发：命令式接口里调用时，handleRemoveMusic 已定义。
+    const handleRemoveMusicRef = useRef<(info: SelectInfo) => void>(() => {})
 
     useImperativeHandle(ref, () => ({
       setList(list, isAppend = false, showSource = false) {
@@ -125,6 +129,9 @@ export default forwardRef<OnlineListType, OnlineListProps>(
       },
       scrollToInfo(info) {
         listRef.current?.scrollToInfo(info)
+      },
+      removeFromList(info) {
+        handleRemoveMusicRef.current({ musicInfo: info, selectedList: [] })
       },
     }))
 
@@ -315,6 +322,7 @@ export default forwardRef<OnlineListType, OnlineListProps>(
         toast('不支持的操作')
       }
     }, [listId, hancelExitSelect, t, subscribedPlaylists, kgCookie])
+    handleRemoveMusicRef.current = handleRemoveMusic
 
     return (
       <View style={styles.container}>
