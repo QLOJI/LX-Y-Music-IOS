@@ -18,6 +18,7 @@ import { scaleSizeW, scaleSizeH, setSpText } from '@/utils/pixelRatio'
 import { designTypography } from '@/theme/DesignTokens'
 import { useWindowSize } from '@/utils/hooks'
 import { COMPONENT_IDS } from '@/config/constant'
+import { useRecoverablePager } from '@/screens/Home/Views/useRecoverablePager'
 
 const LyricPage = ({ pagerHeight = 0, isActive = false }: { pagerHeight?: number, isActive?: boolean }) => {
   // 歌词页始终预挂载（pagerHeight 就绪后），isActive 只控制滚动/定位：
@@ -86,15 +87,28 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
   const isSmallWindow = winHeight < 700
   // 正在从左往右滑向歌词页（从封面切到歌词），用于让 LyricPage 提前激活高亮定位
   const pagerViewRef = useRef<PagerView>(null)
-  // 【第 174 轮】PagerView（react-native-pager-view 6.7.1）的私有 isScrolling 在拖动手势
-  // 被取消时可能永久停在 true：之后它在 capture 阶段抢走页面里的每次按压，表现为
-  // 「详情页所有按钮、歌词滑动都没反应」，退出重进（重挂 PagerView）才好。Home 早有针对
-  // 这个缺口的自愈，详情页一直没有。这里在「确定没有手势」的时机把它抹平（纯 JS 字段，
-  // 正常路径下库自己已写成 false，这里是空操作）。
-  const clearPagerLatch = useCallback(() => {
-    const pager = pagerViewRef.current as unknown as { isScrolling?: boolean } | null
-    if (pager?.isScrolling) pager.isScrolling = false
-  }, [])
+  // 【用户第 59 轮】详情页也接入统一的可恢复 PagerView（与首页 tab / 每日推荐同一套）。
+  // 库（react-native-pager-view 6.7.1）在「动画中再切页 / 切页被手势打断」时会把
+  // animating 卡住；goTo: 里的 disableSwipe 还会把 reactPageViewController.view 的
+  // userInteractionEnabled 永久留在 NO —— 表现正是「封面到歌词这一整块区域点什么都不
+  // 响应，而 header / 底部控制条（都在 PagerView 外）正常」。这里用同一套恢复链：
+  // 动画切页 → 30/200ms 探测 → 非动画直达（清闩锁）→ 900ms 再直达 → 700ms 重挂。
+  const detailPageIndexRef = useRef(0)
+  const {
+    pagerKey,
+    requestPage,
+    notifyPageSelected,
+    clearPagerLatch,
+    onPageScroll: trackPagerScroll,
+    onPageScrollStateChanged: trackPagerState,
+  } = useRecoverablePager(pagerViewRef, {
+    navId: 'nav_play_detail',
+    activeIndexRef: detailPageIndexRef,
+    resyncOnEnter: false,
+  })
+  // 最后一道自愈：触摸时若状态停在非 idle 且 1.5s 内没有任何滚动帧，说明过渡已死，
+  // 直接换 key 重挂 PagerView（初始页保持当前页）。
+  const [pagerRebuild, setPagerRebuild] = useState(0)
   // 【第 176 轮】手势取消兜底：库只在 willEndDragging / didEndDecelerating 发状态，
   // 手势被系统取消时两个都不来 —— JS 闩锁（isScrolling）与原生滚动状态会一起卡在
   // 「拖动中」。真实拖动每帧都有 onPageScroll，所以「2s 没有任何滚动帧/状态回调」
@@ -104,9 +118,6 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
   const pagerActivityAtRef = useRef(0)
   const pagerWatchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pageScrollStateRef = useRef<'idle' | 'dragging' | 'settling'>('idle')
-  // 过渡中请求切页的暂存：等 idle 再发 setPage（原因见 handleSwitchToLyricPage）
-  const pendingLyricPageRef = useRef(false)
-  const pendingLyricTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const clearPagerWatchdog = useCallback(() => {
     if (pagerWatchdogRef.current) {
       clearTimeout(pagerWatchdogRef.current)
@@ -127,6 +138,14 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
   }, [clearPagerWatchdog, clearPagerLatch])
   armPagerWatchdogRef.current = armPagerWatchdog
   const showLyricRef = useRef(false)
+  // 触摸时的最后自愈：状态停在非 idle 且 1.5s 没有任何滚动帧 = 过渡已死，重挂原生实例。
+  const healStuckPager = useCallback(() => {
+    if (pageScrollStateRef.current === 'idle') return
+    if (Date.now() - pagerActivityAtRef.current <= 1500) return
+    pageScrollStateRef.current = 'idle'
+    detailPageIndexRef.current = showLyricRef.current ? 1 : 0
+    setPagerRebuild(v => v + 1)
+  }, [])
   const playlistRef = useRef<PlayerPlaylistType>(null)
   const [pagerHeight, setPagerHeight] = useState(0)
   // 封面页容器（picPageContainerNew）的实测高度 R（pt）：顶 = 返回栏底边、底 = 控制条顶边。
@@ -189,15 +208,11 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
   const [isProgressDragging, setIsProgressDragging] = useState(false)
 
   const onPageSelected = ({ nativeEvent }: PagerViewOnPageSelectedEvent) => {
-    // 【第 174 轮】落页即无手势：清掉可能残留的 isScrolling 锁。
-    clearPagerLatch()
-    // 【第 176 轮】落页 = 过渡结束：撤掉静默看门狗与暂存的切页请求。
+    // 落页 = 过渡结束：撤恢复链、清看门狗与库私有 isScrolling 闩锁。
+    notifyPageSelected(nativeEvent.position)
+    detailPageIndexRef.current = nativeEvent.position
+    // 【第 176 轮】落页 = 过渡结束：撤掉静默看门狗。
     clearPagerWatchdog()
-    pendingLyricPageRef.current = false
-    if (pendingLyricTimerRef.current) {
-      clearTimeout(pendingLyricTimerRef.current)
-      pendingLyricTimerRef.current = null
-    }
     setPageIndex(nativeEvent.position)
     showLyricRef.current = nativeEvent.position === 1
     // 页面选择完成后：滑向封面页，取消标记并通知子组件更新
@@ -246,24 +261,11 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
   }, [])
 
   const handleSwitchToLyricPage = useCallback(() => {
-    // 【第 176 轮】过渡中（dragging/settling）不直接 setPage：UIPageViewController
-    // 正在动画时再叠一次 setViewControllers，completion 可能不回调 —— 原生
-    // reactPageViewController.view.userInteractionEnabled 与 animating 会永久停在
-    // 「转场中」，整片页面区连点带滑都无反应（退出重进才好）。等 idle 再切；
-    // idle 事件万一丢了，600ms 兜底强制切一次。
-    if (pageScrollStateRef.current === 'idle') {
-      pagerViewRef.current?.setPage(1)
-      return
-    }
-    pendingLyricPageRef.current = true
-    if (pendingLyricTimerRef.current) clearTimeout(pendingLyricTimerRef.current)
-    pendingLyricTimerRef.current = setTimeout(() => {
-      pendingLyricTimerRef.current = null
-      if (!pendingLyricPageRef.current) return
-      pendingLyricPageRef.current = false
-      pagerViewRef.current?.setPage(1)
-    }, 600)
-  }, [])
+    // 统一走可恢复切页：空闲时动画切页；过渡中直接非动画直达（不叠 setViewControllers，
+    // 避免 completion 丢失把整片页面区锁死）；原生不响应时自动 30/200/900/1600ms 逐级
+    // 兜底，最后重挂 PagerView。
+    requestPage(1)
+  }, [requestPage])
 
   useEffect(() => {
     // 本屏是否在 RNN 组件栈顶（即真正可见）：componentIds 自栈底到栈顶，
@@ -343,11 +345,6 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
       global.app_event.off('showPlaylist', handleShowPlaylist)
       appstateListener.remove()
       clearPagerWatchdog()
-      if (pendingLyricTimerRef.current) {
-        clearTimeout(pendingLyricTimerRef.current)
-        pendingLyricTimerRef.current = null
-      }
-      pendingLyricPageRef.current = false
       screenUnkeepAwake()
     }
   }, [handleSwitchToLyricPage, clearPagerWatchdog])
@@ -489,16 +486,25 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
         style={styles.container}
         onStartShouldSetResponderCapture={() => {
           clearPagerLatch()
+          // 过渡状态卡死（非 idle 且 1.5s 没有滚动帧）：第一次落在死区的触摸直接触发重挂，
+          // 恢复后无需退出重进。
+          healStuckPager()
           return false
         }}
       >
         <PagerView
+          // 恢复链最后一级：重挂原生实例（保留当前页）。
+          key={`${pagerKey}#${pagerRebuild}`}
+          initialPage={showLyricRef.current ? 1 : 0}
           onPageSelected={onPageSelected}
-          onPageScroll={handlePageScroll}
+          onPageScroll={(e) => {
+            handlePageScroll(e)
+            trackPagerScroll()
+          }}
           // 【第 174 轮】idle = 手势确定结束：清锁，防止取消的手势让它永久停在 dragging。
           onPageScrollStateChanged={({ nativeEvent }: { nativeEvent: { pageScrollState: string } }) => {
-            // 【第 176 轮】记录手势状态：dragging/settling 期间禁止程序化 setPage；
-            // idle 时清闩锁、撤销看门狗，并补发过渡期间暂存的「切到歌词页」请求。
+            // 先交给统一恢复链（它内部维护自己的滚动状态与看门狗）。
+            trackPagerState({ nativeEvent })
             const state = nativeEvent.pageScrollState as 'idle' | 'dragging' | 'settling'
             pageScrollStateRef.current = state
             if (state === 'dragging') {
@@ -509,14 +515,6 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
             if (state === 'idle') {
               clearPagerWatchdog()
               clearPagerLatch()
-              if (pendingLyricPageRef.current) {
-                pendingLyricPageRef.current = false
-                if (pendingLyricTimerRef.current) {
-                  clearTimeout(pendingLyricTimerRef.current)
-                  pendingLyricTimerRef.current = null
-                }
-                pagerViewRef.current?.setPage(1)
-              }
             }
           }}
           style={styles.pagerView}
