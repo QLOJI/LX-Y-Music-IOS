@@ -160,7 +160,10 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
     }
     return value
   }, [activeLine, zoom])
-  const prevActiveLineRef = useRef(activeLine)
+  // 初值不能用「当前行」：effect 首次运行会把 prev 行缩回 1、再把当前行放大到 zoom，
+  // 于是每次进入播放详情页当前行都会白闪一次放大动画。用 -1 让首跑只对齐、
+  // 不做「先回 1 再放大」的过渡。
+  const prevActiveLineRef = useRef(-1)
   useEffect(() => {
     const prev = prevActiveLineRef.current
     prevActiveLineRef.current = activeLine
@@ -603,6 +606,20 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
   // 再补一次无动画对齐（rAF 让原生滚动的 contentSize 先落地）。
   const getScrollOffsetRef = useRef(getScrollOffset)
   getScrollOffsetRef.current = getScrollOffset
+  // 首帧定位：按**进度条时间**先算出当前行（引擎万一还没锚上也不影响），挂载时直接给
+  // FlatList 一个居中的初始 contentOffset。iOS 首帧就按它布局，不会先画第 1 行再滚过去。
+  const initialLineRef = useRef<number | null>(null)
+  if (initialLineRef.current == null) {
+    const seconds = playerState.progress.nowPlayTime
+    const fromProgress = lyricLines.length && Number.isFinite(seconds)
+      ? findLineIndexByTime(lyricLines, Math.max(0, seconds) * 1000)
+      : -1
+    initialLineRef.current = fromProgress >= 0 ? fromProgress : Math.max(0, activeLine)
+  }
+  const initialContentOffset = useMemo(() => ({
+    x: 0,
+    y: getScrollOffsetRef.current(initialLineRef.current as number),
+  }), [])
   useEffect(() => {
     if (!lyricLines.length) return
     let raf = requestAnimationFrame(() => {
@@ -765,9 +782,9 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
         renderItem={renderItem}
         keyExtractor={getKey}
         getItemLayout={getItemLayout}
-        // 首帧就落在当前播放行（而不是第 0 行）：进入详情页时不会先露开头再跳。
-        // 仅挂载时生效；切歌/歌词更新由 resetScroll / followActiveLine 负责。
-        initialScrollIndex={lyricLines.length ? Math.min(Math.max(0, activeLine), lyricLines.length - 1) : undefined}
+        // 首帧就停在当前播放行（居中）：进入详情页时不会先露开头再跳。
+        // 用精确 contentOffset（initialScrollIndex 只能把行顶到顶部，不是居中位）。
+        contentOffset={initialContentOffset}
         style={styles.list}
         // 【第 175 轮】量一次列表宽度：缩放锚点补偿按「文本可用宽度」算。
         onLayout={({ nativeEvent }) => {
