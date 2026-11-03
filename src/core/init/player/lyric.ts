@@ -194,4 +194,22 @@ export default async(setting: LX.AppSetting) => {
     realCurrentLyric = undefined
     stop()
   })
+
+  // 【用户第 62 轮】暂停/恢复态：进度条是用户看到的真相。
+  // 启动恢复、歌词早于进度恢复装载等场景下，引擎可能仍停在 0，迷你播放器 / 大小歌词
+  // 就会先显示第 1 行。这里在「非播放」时按进度条位置重锚歌词行（只落行、不推进）。
+  global.state_event.on('playProgressChanged', (progress) => {
+    if (playerState.isPlay || !playerState.musicInfo.id) return
+    const seconds = progress.nowPlayTime
+    if (!Number.isFinite(seconds) || seconds < 0) return
+    // seek(秒) 内部是 handlePlay(ms) + 非播放态 pause：只把行锚到该位置，不启动 ticker。
+    seek(seconds)
+  })
+  // 兜底：某些恢复路径不广播进度事件。启动后一次性按进度条补锚（歌词未装载时
+  // 由随后 lyricUpdated → setLyric 的可信位置锚定覆盖）。
+  setTimeout(() => {
+    if (playerState.isPlay || !playerState.musicInfo.id) return
+    const seconds = Math.max(0, playerState.progress.nowPlayTime)
+    if (seconds > 0) seek(seconds)
+  }, 1500)
 }
