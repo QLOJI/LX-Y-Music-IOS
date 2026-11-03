@@ -112,13 +112,16 @@ export const useRecoverablePager = (
       }
     }, 30)
     // 安静一拍：状态事件可能丢失（pageScrollState 卡在 settling），不能只看状态。
-    // 200ms 后若 120ms 内完全没有滚动事件，说明页面确实没动 → 清闩锁后动画重试；
+    // 200ms 后若 120ms 内完全没有滚动事件，说明页面确实没动 → **直接非动画落到目标页**。
+    // 之前这里再走一次动画重试，若原生仍吞掉就会一直等到 900/1600ms 的兜底，
+    // 观感是「按钮高亮了、画面停一会儿才切，甚至弹回原页」。非动画直达是确定性的，
+    // 与原生的「左右滑动切页」同一个落点，只是没有滑动过程。
     // 还在动（转场进行中）就绝不插手，避免把滑到一半的动画打断成「卡一下」。
     quietTimerRef.current = setTimeout(() => {
       quietTimerRef.current = null
       if (pendingIndexRef.current !== index) return
       if (Date.now() - lastScrollAtRef.current < 120) return
-      retryAnimated()
+      pagerRef.current?.setPageWithoutAnimation?.(index)
     }, 200)
     // 最后兜底：900ms 仍没落页 → 非动画硬落位；再 700ms 仍不落页 → 重挂 PagerView。
     fallbackTimerRef.current = setTimeout(() => {
@@ -203,6 +206,11 @@ export const useRecoverablePager = (
   /** 页面 onPageSelected 的第一行调用：撤恢复链、清看门狗与 JS 闩锁。 */
   const notifyPageSelected = useCallback((position?: number) => {
     if (position != null) nativeIndexRef.current = position
+    // 恢复链执行过程中会先收到「源页」的 onPageSelected（例如 sendPage 里先非动画落回
+    // 当前页清闩锁，或过渡被取消）。它**不是目标页**，此时若撤销恢复链，后面的兜底
+    // 会被拆掉 —— 页面就停在旧页，用户看到「高亮了又弹回去」。只在真正落到目标页
+    // （position === pending）或没有待切请求时才收尾。
+    if (pendingIndexRef.current != null && position != null && position !== pendingIndexRef.current) return
     pendingIndexRef.current = null
     clearSwitchTimers()
     clearWatchdog()
