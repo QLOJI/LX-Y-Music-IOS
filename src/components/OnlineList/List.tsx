@@ -49,6 +49,8 @@ export interface ListProps {
    * 与全局喜欢集合是否拉到无关。页面侧已经确认 cookie 存在才会传 true。
    */
   forceLiked?: boolean
+  /** 自己的歌单里取消红心后回调（页面据此立即移除该行）。 */
+  onUnlike?: (item: LX.Music.MusicInfoOnline) => void
   /**
    * 显式指定列表顶部的安全区处理方式。传 'never' 表示「页面自己负责顶部间距」
    * （页头里已有 PageTopInset），标题位置因此与推荐页同一条基准线。
@@ -99,6 +101,7 @@ const List = forwardRef<ListType, ListProps>(
       lockHold,
       autoHold,
       forceLiked,
+      onUnlike,
       contentInsetAdjustmentBehavior,
       indicatorArea,
       rowType,
@@ -324,6 +327,7 @@ const List = forwardRef<ListType, ListProps>(
       onShowMenu,
       rowInfo,
       forceLiked,
+      onUnlike,
     })
     renderDepsRef.current = {
       showSource,
@@ -337,6 +341,7 @@ const List = forwardRef<ListType, ListProps>(
       onShowMenu,
       rowInfo,
       forceLiked,
+      onUnlike,
     }
     const renderItem = useCallback<NonNullable<FlatListType['renderItem']>>(({ item, index }) => {
       const d = renderDepsRef.current
@@ -355,6 +360,7 @@ const List = forwardRef<ListType, ListProps>(
           isShowAlbumName={d.isShowAlbumName}
           isShowInterval={d.isShowInterval}
           forceLiked={d.forceLiked}
+          onUnlike={d.onUnlike}
         />
       )
     }, [])

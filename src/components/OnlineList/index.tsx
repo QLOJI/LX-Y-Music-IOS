@@ -51,6 +51,8 @@ export interface OnlineListProps {
   autoHold?: boolean
   /** 自己的歌单（我喜欢 / 自建）：整页歌曲按「平台已收藏」显示实心红心（页面已确认 cookie 存在）。 */
   forceLiked?: boolean
+  /** 自己的歌单里取消红心后回调（页面据此立即移除该行）。 */
+  onUnlike?: ListProps['onUnlike']
   /** 列表顶部安全区处理方式；'never' = 由页面自己的页头负责顶部间距。 */
   contentInsetAdjustmentBehavior?: ListProps['contentInsetAdjustmentBehavior']
   /** 圆圈定位区（纯回弹页面用）：圆圈下对齐贴在该区域底部，即标题正上方。 */
@@ -85,6 +87,7 @@ export default forwardRef<OnlineListType, OnlineListProps>(
       lockHold,
       autoHold,
       forceLiked,
+      onUnlike,
       contentInsetAdjustmentBehavior,
       indicatorArea,
       checkHomePagerIdle = false,
@@ -332,6 +335,7 @@ export default forwardRef<OnlineListType, OnlineListProps>(
             lockHold={lockHold}
             autoHold={autoHold}
             forceLiked={forceLiked}
+            onUnlike={onUnlike}
             contentInsetAdjustmentBehavior={contentInsetAdjustmentBehavior}
             indicatorArea={indicatorArea}
             checkHomePagerIdle={checkHomePagerIdle}

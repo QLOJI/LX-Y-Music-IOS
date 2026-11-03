@@ -62,6 +62,8 @@ type ListItemProps = {
   hideMenu?: boolean
   /** 自己的歌单（我喜欢 / 自建）：整页歌曲都按「平台已收藏」显示实心红心。 */
   forceLiked?: boolean
+  /** 自己的歌单里取消红心时回调（页面用来立即把这首歌从列表里移除）。 */
+  onUnlike?: (item: LX.Music.MusicInfoOnline) => void
 }
 
 const ListItem = memo(
@@ -81,6 +83,7 @@ const ListItem = memo(
     showCover = true,
     hideMenu = false,
     forceLiked = false,
+    onUnlike,
     qualityShowHighest,
   }: ListItemProps & { qualityShowHighest: boolean }) => {
     const theme = useTheme()
@@ -121,13 +124,17 @@ const ListItem = memo(
     const isLiked = forceLiked || (item.source === 'wy' ? isWyLiked : item.source === 'tx' ? isTxLiked : item.source === 'kg' ? isKgLiked : false)
 
     const handleLike = () => {
+      // forceLiked 的页面里，红心是实心的 —— 点击语义是「取消喜欢」，把状态一并传给
+      // 平台动作（否则平台会按「未喜欢」处理成再喜欢一次）。
       if (item.source === 'wy') {
-        handleLikeMusic(item)
+        void handleLikeMusic(item, forceLiked)
       } else if (item.source === 'tx') {
-        handleTxLikeMusic(item)
+        void handleTxLikeMusic(item, forceLiked)
       } else if (item.source === 'kg') {
-        handleKgLikeMusic(item)
+        void handleKgLikeMusic(item, forceLiked)
       }
+      // 自己的歌单：取消红心后立即把这首歌从列表移除（不等下拉刷新）。
+      if (isLiked) onUnlike?.(item)
     }
 
     const tagInfo = useQualityTag(item, qualityShowHighest)
@@ -265,6 +272,7 @@ const ListItem = memo(
       prevProps.selectedList.includes(nextProps.item) &&
       prevProps.showCover === nextProps.showCover &&
       prevProps.forceLiked === nextProps.forceLiked &&
+      prevProps.onUnlike === nextProps.onUnlike &&
       prevProps.qualityShowHighest === nextProps.qualityShowHighest
     )
   },

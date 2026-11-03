@@ -190,7 +190,7 @@ export const handleShowArtistDetail = async(componentId: string, musicInfo: LX.M
   }
 }
 
-export const handleLikeMusic = async(musicInfo: LX.Music.MusicInfoOnline) => {
+export const handleLikeMusic = async(musicInfo: LX.Music.MusicInfoOnline, forceLiked = false) => {
   const cookie = settingState.setting['common.wy_cookie']
   if (!cookie) {
     toast('请先设置网易云 Cookie')
@@ -202,7 +202,9 @@ export const handleLikeMusic = async(musicInfo: LX.Music.MusicInfoOnline) => {
   }
 
   const songId = musicInfo.meta.songId
-  const isLiked = userState.wy_liked_song_ids.has(String(songId))
+  // 自己的歌单里整页显示实心红心（forceLiked）：点击语义必须是「取消喜欢」。
+  const wasLiked = userState.wy_liked_song_ids.has(String(songId))
+  const isLiked = forceLiked || wasLiked
   const like = !isLiked
   const apply = (liked: boolean) => {
     if (liked) addWyLikedSong(songId)
@@ -215,12 +217,14 @@ export const handleLikeMusic = async(musicInfo: LX.Music.MusicInfoOnline) => {
     await wyApi.likeSong(songId, like)
     toast(like ? '喜欢成功' : '取消喜欢成功')
   } catch (error: any) {
-    apply(!like)
+    // 回滚到操作前的真实状态：forceLiked 且原本不在集合里时，不能因为取消失败
+    // 反而把歌加进喜欢集合（否则其它界面会变红心）。
+    apply(wasLiked)
     toast(`操作失败: ${error.message}`)
   }
 }
 
-export const handleTxLikeMusic = async(musicInfo: LX.Music.MusicInfoOnline) => {
+export const handleTxLikeMusic = async(musicInfo: LX.Music.MusicInfoOnline, forceLiked = false) => {
   const cookie = settingState.setting['common.tx_cookie']
   if (!cookie) {
     toast('请先设置QQ音乐 Cookie')
@@ -242,7 +246,8 @@ export const handleTxLikeMusic = async(musicInfo: LX.Music.MusicInfoOnline) => {
     return
   }
 
-  const isLiked = likeKeys.some(key => userState.tx_liked_song_ids.has(key))
+  const wasLiked = likeKeys.some(key => userState.tx_liked_song_ids.has(key))
+  const isLiked = forceLiked || wasLiked
   const like = !isLiked
   const apply = (liked: boolean) => {
     if (liked) addTxLikedSongs(likeKeys)
@@ -261,12 +266,12 @@ export const handleTxLikeMusic = async(musicInfo: LX.Music.MusicInfoOnline) => {
     // 一律当成失败：通用错误文案（如「添加歌曲失败，可能是 Cookie 已失效」）会让
     // 服务端已经落库的喜欢也把红心翻回去，正是用户报的「变红后马上恢复原样」。
     const definiteFailure = /(登录|Cookie.*(无效|失效|过期|缺少)|未找到uin|未找到.*我喜欢|无法获取.*songId|没有有效的歌曲|未设置|HTTP|网络|超时|80105|解密失败|加入我喜欢失败|移出我喜欢失败)/i.test(message)
-    if (definiteFailure) apply(!like)
+    if (definiteFailure) apply(wasLiked)
     toast(definiteFailure ? `操作失败: ${message}` : `已提交，若平台未生效请稍后重试（${message}）`)
   }
 }
 
-export const handleKgLikeMusic = async(musicInfo: LX.Music.MusicInfoOnline) => {
+export const handleKgLikeMusic = async(musicInfo: LX.Music.MusicInfoOnline, forceLiked = false) => {
   const cookie = settingState.setting['common.kg_cookie']
   if (!cookie) {
     toast('请先设置酷狗音乐 Cookie')
@@ -285,7 +290,8 @@ export const handleKgLikeMusic = async(musicInfo: LX.Music.MusicInfoOnline) => {
     toast('无法识别该歌曲的酷狗标识')
     return
   }
-  const isLiked = userState.kg_liked_song_ids.has(likeKey)
+  const wasLiked = userState.kg_liked_song_ids.has(likeKey)
+  const isLiked = forceLiked || wasLiked
   const like = !isLiked
   const apply = (liked: boolean) => {
     if (liked) addKgLikedSong(likeKey)
@@ -294,7 +300,8 @@ export const handleKgLikeMusic = async(musicInfo: LX.Music.MusicInfoOnline) => {
   // 【第 193 轮】先翻本地红心，失败再回滚：查询我喜欢歌单 + 增删歌曲要好几跳网络。
   apply(like)
   const fail = (message: string) => {
-    apply(!like)
+    // 回滚到操作前的真实状态（forceLiked 且原本不在集合里时不能反倒加进去）。
+    apply(wasLiked)
     toast(message)
   }
 
