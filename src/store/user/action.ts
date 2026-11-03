@@ -11,6 +11,17 @@ export const setWyLikedSongs = (ids: Array<string | number>) => {
   state.wy_liked_song_ids = new Set(ids.map(String))
   global.state_event.wyLikedListChanged()
 }
+/** 批量并入网易云喜欢集合（自建歌单曲目），只广播一次；不覆盖已有集合。 */
+export const addWyLikedSongs = (ids: Array<string | number>) => {
+  let changed = false
+  for (const raw of ids) {
+    const id = String(raw)
+    if (!id || state.wy_liked_song_ids.has(id)) continue
+    state.wy_liked_song_ids.add(id)
+    changed = true
+  }
+  if (changed) global.state_event.wyLikedListChanged()
+}
 export const addWyLikedSong = (id: string | number) => {
   const strId = String(id)
   if (state.wy_liked_song_ids.has(strId)) return
@@ -201,6 +212,17 @@ export const removeTxSubscribedPlaylist = (id: string | number) => {
 export const setKgLikedSongs = (ids: Array<string | number>) => {
   state.kg_liked_song_ids = new Set(ids.map(String))
   global.state_event.kgLikedListChanged()
+}
+/** 批量并入酷狗喜欢集合（自建歌单曲目），只广播一次；不覆盖已有集合。 */
+export const addKgLikedSongs = (ids: Array<string | number>) => {
+  let changed = false
+  for (const raw of ids) {
+    const id = String(raw)
+    if (!id || state.kg_liked_song_ids.has(id)) continue
+    state.kg_liked_song_ids.add(id)
+    changed = true
+  }
+  if (changed) global.state_event.kgLikedListChanged()
 }
 export const addKgLikedSong = (id: string | number) => {
   const strId = String(id)
