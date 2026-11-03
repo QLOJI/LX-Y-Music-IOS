@@ -408,7 +408,15 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
     if (!visibleRef.current) return
     const info = scrollInfoRef.current
     const offset = getScrollOffset(index)
-    if (info && Math.abs(offset - info.contentOffset.y) > worstRowHeight * FAR_JUMP_ROWS) {
+    // 还没有过任何滚动信息 = 刚挂载 / 刚换歌，第一次定位必须无动画直接落位。
+    // 旧写法在这里走 animateToLine，进入详情页（进度不在 0:00）时会看到小歌词
+    // 从第 1 行往上滑一下——用户报的「短暂上跳、闪一下」。
+    if (!info) {
+      cancelScroll()
+      listRef.current?.scrollToOffset({ offset, animated: false })
+      return
+    }
+    if (Math.abs(offset - info.contentOffset.y) > worstRowHeight * FAR_JUMP_ROWS) {
       cancelScroll()
       listRef.current?.scrollToOffset({ offset, animated: false })
       return
@@ -584,6 +592,21 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
     cancelScroll()
     listRef.current?.scrollToOffset({ offset: getScrollOffset(activeLineRef.current), animated: false })
   }, [containerHeight, getScrollOffset, cancelScroll])
+
+  // 【用户第 60 轮】首帧对齐（与进度条同步）：resetScroll 在挂载那一帧可能早于列表量出
+  // 内容尺寸，scrollToOffset 被钳回 0 —— 小歌词停在第 1 行，进度却早就不是 0:00；
+  // 切到歌词页时才跳到当前行，看起来就是「小歌词上跳一下」。这里在歌词换引用后的下一帧
+  // 再补一次无动画对齐（rAF 让原生滚动的 contentSize 先落地）。
+  const getScrollOffsetRef = useRef(getScrollOffset)
+  getScrollOffsetRef.current = getScrollOffset
+  useEffect(() => {
+    if (!lyricLines.length) return
+    let raf = requestAnimationFrame(() => {
+      if (isPauseScrollRef.current) return
+      listRef.current?.scrollToOffset({ offset: getScrollOffsetRef.current(activeLineRef.current), animated: false })
+    })
+    return () => cancelAnimationFrame(raf)
+  }, [lyricLines])
 
   const handlePlayLine = useCallback((time: number) => {
     if (scrollTimeoutRef.current) {

@@ -1,4 +1,4 @@
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react'
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
 import OnlineList, { type OnlineListType, type OnlineListProps } from '@/components/OnlineList'
 import { PULL_SETTLE_MS } from '@/components/common/usePullRefresh'
 import { clearListDetail, getListDetail, setListDetail, setListDetailInfo } from '@/core/songlist'
@@ -14,6 +14,8 @@ import { getTopSourceInfo } from '@/core/playListToDefault'
 import txUserApi from '@/utils/musicSdk/tx/user'
 import { log } from '@/utils/log'
 import { decodeName } from '@/utils/index'
+import { useSettingValue } from '@/store/setting/hook'
+import { useKgSubscribedPlaylists, useTxSubscribedPlaylists, useWySubscribedPlaylists, useWyUid } from '@/store/user/hook'
 
 export interface MusicListProps {
   componentId: string
@@ -91,6 +93,40 @@ export default forwardRef<MusicListType, MusicListProps>(({ componentId, isCreat
   }, [info.source, info.id])
 
   const finalIsCreator = info.source === 'tx' ? txIsUserCreated : info.source === 'kg' ? kgIsUserCreated : isCreator
+
+  // 自己的歌单（我喜欢 / 自建）里的歌，在平台本来就已经「添加」——整页显示实心红心。
+  // 数据来源：当前歌单是否属于本人（wy 比较 creator.userId 与 uid；tx/kg 查已加载的
+  // 自建歌单集合，收藏的不算），且对应平台 cookie 存在（cookie 失效则不显示红心）。
+  const wyCookie = useSettingValue('common.wy_cookie')
+  const txCookie = useSettingValue('common.tx_cookie')
+  const kgCookie = useSettingValue('common.kg_cookie')
+  const wyUid = useWyUid()
+  const wyPlaylists = useWySubscribedPlaylists()
+  const txPlaylists = useTxSubscribedPlaylists()
+  const kgPlaylists = useKgSubscribedPlaylists()
+  const isOwnPlaylist = useMemo(() => {
+    if (info.isFavorites) return true
+    switch (info.source) {
+      case 'wy': {
+        if (info.userId != null && wyUid != null && String(info.userId) === String(wyUid)) return true
+        return wyPlaylists.some((p: any) =>
+          String(p.id) === String(info.id) &&
+          String(p.creator?.userId ?? p.userId ?? '') === String(wyUid))
+      }
+      case 'tx': {
+        if (txIsUserCreated) return true
+        const target = String(info.id).replace(/^tx__/, '')
+        return txPlaylists.some(p => String(p.id).replace(/^tx__/, '') === target && !p.isCollected)
+      }
+      case 'kg': {
+        return kgPlaylists.some(p =>
+          (String(p.id) === String(info.id) || String(p.listid) === String(info.id)) && !p.isCollected)
+      }
+      default:
+        return false
+    }
+  }, [info.isFavorites, info.source, info.id, info.userId, wyUid, wyPlaylists, txPlaylists, kgPlaylists, txIsUserCreated])
+  const forceLiked = isOwnPlaylist && (info.source === 'wy' ? !!wyCookie : info.source === 'tx' ? !!txCookie : info.source === 'kg' ? !!kgCookie : false)
 
   useImperativeHandle(
     ref,
@@ -306,6 +342,8 @@ export default forwardRef<MusicListType, MusicListProps>(({ componentId, isCreat
                 // 刷新收尾收回；停留画面有 1.2s 硬性最短显示。
                 // lockHold：松手回弹越过 60pt 线后把列表钉住，空白不会小于 60pt。所有歌单一致。
                 lockHold
+                // 自己的歌单：整页歌曲显示实心红心（cookie 存在才生效）。
+                forceLiked={forceLiked}
     />
   )
 })
