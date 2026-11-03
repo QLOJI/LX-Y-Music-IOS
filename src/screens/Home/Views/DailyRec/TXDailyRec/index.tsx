@@ -46,6 +46,16 @@ const Tabs = ({
 }) => {
   const theme = useTheme()
   const buttonRadius = useButtonRadius()
+  // 点击瞬间先切高亮，但不改父组件状态（否则整页重渲染会打断原生转场，
+  // 表现为按钮亮了、画面停一下才滑）。落页后 activeTab 更新，本地覆盖让位。
+  const [pressedTab, setPressedTab] = useState<TabType | null>(null)
+  useEffect(() => { setPressedTab(null) }, [activeTab])
+  const shownTab = pressedTab ?? activeTab
+  const handlePress = (tab: TabType) => {
+    if (tab === shownTab) return
+    setPressedTab(tab)
+    onTabChange(tab)
+  }
   return (
     <ScrollView
       style={styles.tabsScroll}
@@ -63,15 +73,15 @@ const Tabs = ({
             // 顶部分段 tab 圆角随「按钮圆角」设置行内覆盖；可见高度 ≈ 32 = 15 号文字行高 17 + 下划线留白 5 + 上下 padding 5×2
             { borderRadius: buttonRadius(32) },
           ]}
-          onPress={() => { onTabChange(tab.id) }}
+          onPress={() => { handlePress(tab.id) }}
         >
           <Text
             style={[
               styles.tabText,
-              { borderBottomColor: activeTab === tab.id ? theme['c-primary-font-active'] : 'transparent' },
+              { borderBottomColor: shownTab === tab.id ? theme['c-primary-font-active'] : 'transparent' },
             ]}
             // 【第 187 轮】选中 tab 用主题的选中按钮字体色（c-primary-font）。
-            color={activeTab === tab.id ? theme['c-primary-font'] : theme['c-font']}
+            color={shownTab === tab.id ? theme['c-primary-font'] : theme['c-font']}
             // 单行 + 放不下自动缩字号：不换行（换行会撑破行高、破坏「同一高度」）、不裁字
             numberOfLines={1}
             adjustsFontSizeToFit
@@ -111,12 +121,9 @@ export default memo(() => {
     const tabIndex = TABS.findIndex((t) => t.id === newTab)
     // 先把原生切页请求发出去，再更新 React 选中态：页面动画不被整页重渲染挡在前面。
     requestPage(tabIndex)
-    // 【用户第 59 轮】点击后按钮字体高亮**立即**切过去，不等 PagerView 落页事件
-    //（旧写法等 onPageSelected，高亮晚约 0.3s，就是「点了延迟切换」的观感）。
-    // 只改高亮、不改 settledTab：PagerView 子节点的 active 不在这帧翻，原生转场不受
-    // 整页重渲染干扰；落页后由 onPageSelected 放行数据刷新 —— 新 tab 若为空，就是
-    // 「空 → 下拉刷新动画 → 数据回来直接显示」。
-    setActiveTab(newTab)
+    // 【用户第 60 轮】高亮由 Tabs 内部的 pressing 覆盖负责，这里不改 React 状态：
+    // 点击当帧重渲染整页会打断原生转场（画面停一下才滑）。落页后由 onPageSelected
+    // 更新 activeTab / settledTab，数据刷新时机不变。
   }
 
   const onPageSelected = useCallback(

@@ -56,6 +56,12 @@ const Tabs = ({
   // 子模式 chip 的描边随「按钮透明度」淡出，文字色不动。只改颜色 alpha，不能用容器 style.opacity。
   const buttonOpacity = useSettingValue('theme.buttonOpacity')
   const buttonRadius = useButtonRadius()
+  // 【用户第 60 轮】点击瞬间先把「高亮」切过去，但不改父组件状态 —— 父组件一旦重渲染
+  // 就会连同 PagerView 那棵子树一起 reconcile，原生转场会先停一下再滑（用户报的
+  // 「按钮亮了，画面过一会儿才滑」）。落页后 activeTab 更新，本地覆盖自动让位。
+  const [pressedTab, setPressedTab] = useState<'songs' | 'playlists' | null>(null)
+  useEffect(() => { setPressedTab(null) }, [activeTab])
+  const shownTab = pressedTab ?? activeTab
   return (
     // 标题与本行四个按钮/子模式同处一行（页头里的 DetailPageTitle，第 16 轮第 6 条：标题与「推荐」
     // 字样在一条直线上、同一垂直中线）：
@@ -82,11 +88,12 @@ const Tabs = ({
           // 主 tab 圆角随「按钮圆角」设置行内覆盖；可见高度 ≈ 32 = 15 号文字行高 17 + 下划线留白 5 + 上下 padding 5×2
           { borderRadius: buttonRadius(32) },
         ]}
+        onPressIn={() => { if (shownTab !== 'playlists') setPressedTab('playlists') }}
         onPress={() => { onTabChange('playlists') }}
       >
         <Text
-          style={[styles.tabText, { borderBottomColor: activeTab === 'playlists' ? theme['c-primary-font-active'] : 'transparent' }]}
-          color={activeTab === 'playlists' ? theme['c-primary-font'] : theme['c-font']}
+          style={[styles.tabText, { borderBottomColor: shownTab === 'playlists' ? theme['c-primary-font-active'] : 'transparent' }]}
+          color={shownTab === 'playlists' ? theme['c-primary-font'] : theme['c-font']}
           // 单行 + 放不下自动缩字号：不换行（换行会撑破行高、破坏「同一高度」）、不裁字
           numberOfLines={1}
           adjustsFontSizeToFit
@@ -102,11 +109,12 @@ const Tabs = ({
           // 主 tab 圆角随「按钮圆角」设置行内覆盖；可见高度 ≈ 32 = 15 号文字行高 17 + 下划线留白 5 + 上下 padding 5×2
           { borderRadius: buttonRadius(32) },
         ]}
+        onPressIn={() => { if (shownTab !== 'songs') setPressedTab('songs') }}
         onPress={() => { onTabChange('songs') }}
       >
         <Text
-          style={[styles.tabText, { borderBottomColor: activeTab === 'songs' ? theme['c-primary-font-active'] : 'transparent' }]}
-          color={activeTab === 'songs' ? theme['c-primary-font'] : theme['c-font']}
+          style={[styles.tabText, { borderBottomColor: shownTab === 'songs' ? theme['c-primary-font-active'] : 'transparent' }]}
+          color={shownTab === 'songs' ? theme['c-primary-font'] : theme['c-font']}
           numberOfLines={1}
           adjustsFontSizeToFit
           minimumFontScale={0.75}
@@ -250,12 +258,9 @@ export default memo(() => {
     // 先把原生切页请求发出去，再更新 React 选中态：页面动画不被整页重渲染挡在前面。
     pagerViewRef.current?.setPage(newTab === 'songs' ? 1 : 0)
     trackPageSwitch(newTab === 'songs' ? 1 : 0)
-    // 【用户第 59 轮】点击后按钮字体高亮**立即**切过去，不等 PagerView 落页事件
-    //（旧写法等 onPageSelected，高亮晚约 0.3s，就是「点了延迟切换」的观感）。
-    // 只改高亮、不改 settledTab：PagerView 子节点的 active 不在这帧翻，原生转场不受
-    // 整页重渲染干扰；落页后由 onPageSelected 放行数据刷新 —— 新 tab 若为空，就是
-    // 「空 → 下拉刷新动画 → 数据回来直接显示」。
-    setActiveTab(newTab)
+    // 【用户第 60 轮】高亮由 Tabs 内部的 pressing 覆盖负责，这里**不**改 React 状态：
+    // 点击当帧若重渲染整页（连同 PagerView 子树），原生转场会先卡一下再滑。
+    // settledTab / activeTab 仍由 onPageSelected 落页后更新，数据刷新时机不变。
   }
 
   const onPageSelected = useCallback((event: PagerViewOnPageSelectedEvent) => {
