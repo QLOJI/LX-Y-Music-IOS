@@ -2,7 +2,7 @@ import { init as initLyricPlayer, toggleTranslation, toggleRoma, play, pause, st
 import playerState from '@/store/player/state'
 import { updateMetaData } from '@/plugins/player'
 import { setLastLyric } from '@/core/player/playInfo'
-import { getCurrentLyricLines, getLyricLineTextByTime } from '@/plugins/lyric'
+import { getCurrentLyricLines, getLyricLineTextByTime, findLineIndexByTime, getCurrentLyricLine } from '@/plugins/lyric'
 import { setNowPlayingCurrentLine, setNowPlayingLyrics, setNowPlayingLyricMusicId } from '@/utils/nativeModules/nowPlaying'
 // 【第 50 轮】开关切换时同时对齐第三条通路：卡片歌词区的状态文案（见 nowPlayingStatus.ts）
 import { syncNowPlayingStatusText } from './nowPlayingStatus'
@@ -205,8 +205,22 @@ export default async(setting: LX.AppSetting) => {
     // seek(秒) 内部是 handlePlay(ms) + 非播放态 pause：只把行锚到该位置，不启动 ticker。
     seek(seconds)
   })
-  // 兜底：某些恢复路径不广播进度事件。启动后一次性按进度条补锚（歌词未装载时
-  // 由随后 lyricUpdated → setLyric 的可信位置锚定覆盖）。
+  // 暂停态持续校正：进度条是用户看到的真相。每 700ms 比对一次「进度条应有行」与
+  // 「引擎当前行」，不一致才重锚（一致时完全不碰引擎，不会让当前行的缩放动画重播）。
+  // 这样进入详情页 / 切歌词页 / 重开软件时，引擎行早就等于进度条行，首帧不需要再跳。
+  setInterval(() => {
+    if (playerState.isPlay || !playerState.musicInfo.id) return
+    const seconds = Math.max(0, playerState.progress.nowPlayTime)
+    if (seconds <= 0) return
+    const lines = getCurrentLyricLines()
+    if (!lines.length) return
+    const target = findLineIndexByTime(lines, seconds * 1000)
+    const actual = getCurrentLyricLine()
+    // 前奏的 -1 与首行 0 视为一致（与 verifyLyricLineSync 同一判据）。
+    if (target === actual || (target === 0 && actual < 0)) return
+    seek(seconds)
+  }, 700)
+  // 兜底：某个恢复路径既不广播进度事件、歌词也在 700ms 后才装载 —— 启动后再补一次。
   setTimeout(() => {
     if (playerState.isPlay || !playerState.musicInfo.id) return
     const seconds = Math.max(0, playerState.progress.nowPlayTime)
