@@ -108,6 +108,9 @@ export default memo(() => {
   const pagerViewRef = useRef<PagerView>(null)
   const activeIndexRef = useRef(TABS.findIndex((t) => t.id === activeTab))
   activeIndexRef.current = TABS.findIndex((t) => t.id === activeTab)
+  // 最近一次用户请求的页位：恢复链最后一级「重挂 PagerView」时用它做 initialPage，
+  // 避免重挂落到旧页（表现就是「切过去又弹回原界面」）。
+  const requestedTabIndexRef = useRef(TABS.findIndex((t) => t.id === activeTab))
   // 【第 184 轮】与酷狗/网易日推共用恢复链：动画切页 → 非动画兜底 → 重挂 + 手势看门狗。
   const {
     pagerKey,
@@ -125,6 +128,7 @@ export default memo(() => {
   const handleTabChange = (newTab: TabType) => {
     if (activeTab === newTab) return
     const tabIndex = TABS.findIndex((t) => t.id === newTab)
+    requestedTabIndexRef.current = tabIndex
     // 先把原生切页请求发出去，再更新 React 选中态：页面动画不被整页重渲染挡在前面。
     requestPage(tabIndex)
     // 【用户第 60 轮】高亮由 Tabs 内部的 pressing 覆盖负责，这里不改 React 状态：
@@ -135,6 +139,7 @@ export default memo(() => {
   const onPageSelected = useCallback(
     (event: PagerViewOnPageSelectedEvent) => {
       notifyPageSelected(event.nativeEvent.position)
+      requestedTabIndexRef.current = event.nativeEvent.position
       const newTab = TABS[event.nativeEvent.position]?.id || 'home'
       if (newTab !== activeTab) {
         setActiveTab(newTab)
@@ -228,7 +233,7 @@ export default memo(() => {
           key={pagerKey}
           ref={pagerViewRef}
           style={{ flex: 1 }}
-          initialPage={TABS.findIndex((t) => t.id === activeTab)}
+          initialPage={requestedTabIndexRef.current}
           onPageSelected={onPageSelected}
           onPageScroll={onPageScroll}
           onPageScrollStateChanged={onPageScrollStateChanged}
