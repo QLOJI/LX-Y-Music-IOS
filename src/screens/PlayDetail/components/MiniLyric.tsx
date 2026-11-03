@@ -403,9 +403,13 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
 
   // 播放行自动跟随：跨行距离很远（进度条 seek / 恢复播放）时直接落位，不做长距离快速滑动
   const followActiveLine = useCallback((index: number) => {
-    // 【第 173 轮】封面页不可见（歌词页在前台）时不跑换行跟随：每行一次 200ms 的
-    // scrollTo 动画在隐藏页里纯属白烧。可见性走 ref，避免改动契约钉住的 effect 形状。
-    if (!visibleRef.current) return
+    // 【第 173 轮】封面页不可见（歌词页在前台）时不跑换行跟随动画（隐藏页里白烧帧）。
+    // 但仍做一次无动画落位：切回封面页的第一帧就已经在当前行，不会先露顶部再跳。
+    if (!visibleRef.current) {
+      cancelScroll()
+      listRef.current?.scrollToOffset({ offset: getScrollOffset(index), animated: false })
+      return
+    }
     const info = scrollInfoRef.current
     const offset = getScrollOffset(index)
     // 还没有过任何滚动信息 = 刚挂载 / 刚换歌，第一次定位必须无动画直接落位。
