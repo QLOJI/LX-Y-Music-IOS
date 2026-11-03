@@ -15,7 +15,7 @@ import {
 import Text from '@/components/common/Text'
 import KaraokeLyric from './KaraokeLyric'
 import PlayLine, { type PlayLineType } from './PlayLine'
-import { type Line, useLrcPlay, useLrcSet, useLrcWordsMap } from '@/plugins/lyric'
+import { type Line, useLrcPlay, useLrcSet, useLrcWordsMap, anchorLyric as lrcAnchorToTime, findLineIndexByTime } from '@/plugins/lyric'
 import { useSettingValue } from '@/store/setting/hook'
 import { useTheme } from '@/store/theme/hook'
 import { createStyle } from '@/utils/tools'
@@ -607,6 +607,24 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
     })
     return () => cancelAnimationFrame(raf)
   }, [lyricLines])
+
+  // 【用户第 60 轮·实时显示】进入详情页 / 从歌词页切回封面页时，直接按**进度条当前时间**
+  // 重锚歌词引擎，并把小歌词定位到对应行 —— 大小歌词共用同一个引擎，这样两边从第一帧起
+  // 就与进度条显示同一行（此前只有大歌词页在激活时按进度重锚，小歌词用的是引擎旧行，
+  // 切页时才被拉过去，出现「上跳一下」）。
+  useEffect(() => {
+    if (!visible) return
+    const seconds = playerState.progress.nowPlayTime
+    if (!Number.isFinite(seconds) || seconds < 0) return
+    const timeMs = seconds * 1000
+    try { lrcAnchorToTime(timeMs, playerState.isPlay) } catch {}
+    const targetLine = lyricLines.length ? Math.max(0, findLineIndexByTime(lyricLines, timeMs)) : activeLineRef.current
+    const raf = requestAnimationFrame(() => {
+      if (isPauseScrollRef.current) return
+      listRef.current?.scrollToOffset({ offset: getScrollOffsetRef.current(targetLine), animated: false })
+    })
+    return () => cancelAnimationFrame(raf)
+  }, [visible, lyricLines])
 
   const handlePlayLine = useCallback((time: number) => {
     if (scrollTimeoutRef.current) {

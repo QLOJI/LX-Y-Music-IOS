@@ -327,6 +327,15 @@ export default forwardRef<MusicListType, MusicListProps>(({ componentId, isCreat
     songlistState.listDetailInfo.list = newList
   }, [])
 
+  // 自己的歌单里取消红心：立即把该歌曲从当前列表移除（乐观更新），不用再下拉刷新。
+  const handleUnlike = useCallback((song: LX.Music.MusicInfoOnline) => {
+    const next = fullListRef.current.filter(s => s.id !== song.id)
+    if (next.length === fullListRef.current.length) return
+    fullListRef.current = next
+    const filtered = searchText.trim() ? filterList(next, searchText, isFuzzySearch) : next
+    listRef.current?.setList(filtered)
+  }, [filterList, searchText, isFuzzySearch])
+
   return (
     <OnlineList componentId={componentId}
                 ref={listRef}
@@ -344,6 +353,8 @@ export default forwardRef<MusicListType, MusicListProps>(({ componentId, isCreat
                 lockHold
                 // 自己的歌单：整页歌曲显示实心红心（cookie 存在才生效）。
                 forceLiked={forceLiked}
+                // 自己的歌单里取消红心 → 立即移除该行。
+                onUnlike={forceLiked ? handleUnlike : undefined}
     />
   )
 })
