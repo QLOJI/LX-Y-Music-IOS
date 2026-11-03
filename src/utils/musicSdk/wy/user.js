@@ -132,6 +132,44 @@ export default {
     }
   },
 
+  /**
+   * 只取某个歌单的 trackId 列表（自建歌单「在平台已收藏」判定用）。
+   * 不带歌名/封面等详情，比 songList.getListDetail 轻得多；私有歌单也能用用户 cookie 读。
+   */
+  async getPlaylistTrackIds(id, cookie, retryNum = 0) {
+    const maxRetries = 3
+    const retryDelay = 200
+    try {
+      const csrfToken = (cookie.match(/_csrf=([^(;|$)]+)/) || [])[1]
+      const request = httpFetch('https://music.163.com/weapi/v3/playlist/detail', {
+        method: 'post',
+        headers: {
+          'User-Agent':
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 Edg/124.0.0.0',
+          origin: 'https://music.163.com',
+          Referer: 'https://music.163.com',
+          cookie,
+        },
+        form: weapi({
+          id: String(id),
+          n: 100000,
+          s: 8,
+          csrf_token: csrfToken || '',
+        }),
+      })
+      const { body, statusCode } = await request.promise
+      if (statusCode !== 200 || body.code !== 200) throw new Error('获取歌单歌曲ID失败')
+      return (body.playlist?.trackIds || []).map(item => (item && item.id != null ? item.id : item)).filter(Boolean)
+    } catch (error) {
+      if (retryNum < maxRetries) {
+        await new Promise(resolve => setTimeout(resolve, retryDelay))
+        return this.getPlaylistTrackIds(id, cookie, retryNum + 1)
+      }
+      console.error('获取歌单歌曲ID失败 (重试次数已达上限)', error)
+      throw error
+    }
+  },
+
   async getUserPlaylists(uid, cookie, retryNum = 0) {
     const maxRetries = 3
     const retryDelay = 200
