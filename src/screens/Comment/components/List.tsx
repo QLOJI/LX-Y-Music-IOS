@@ -12,6 +12,10 @@ import Text from '@/components/common/Text'
 
 type FlatListType = FlatListProps<Comment>
 
+// lockHold 把 onScroll 作为原生事件映射（Animated.event + useNativeDriver），
+// RN 要求 VirtualizedList 系组件外层是 Animated 组件，否则挂载时抛 invariant。
+const AnimatedFlatList: any = Animated.createAnimatedComponent(FlatList as any)
+
 export interface ListProps {
   onRefresh: () => void
   onLoadMore: () => void
@@ -71,6 +75,9 @@ const List = forwardRef<ListType, ListProps>(({ onRefresh, onLoadMore, actions }
     flatListRef,
     0,
     true,
+    // lockHold：松手回弹越过 60pt 线后把列表钉住，空白不会小于 60pt。
+    undefined,
+    true,
   )
   const footerComponent = useMemo(() => {
     let label: FooterLabel
@@ -97,7 +104,7 @@ const List = forwardRef<ListType, ListProps>(({ onRefresh, onLoadMore, actions }
     <View style={{ flex: 1, overflow: 'hidden' }}>
       {pullIndicator}
       <Animated.View style={{ flex: 1, transform: [{ translateY: pullOffset }] }}>
-      <FlatList
+      <AnimatedFlatList
       ref={flatListRef}
       {...pullScrollProps}
       style={styles.list}
