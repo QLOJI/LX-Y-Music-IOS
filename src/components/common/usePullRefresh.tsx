@@ -254,10 +254,11 @@ const usePullRefresh = (
           mass: 1,
           useNativeDriver: true,
         }).start()
-        // 圆圈与空白同步下拉：同一组弹簧参数，始终落在空白中心。
+        // 圆圈与空白同步下拉：同一组弹簧参数，始终落在可见空白中心
+        //（restInset 是该列表静止位自带的安全区留白）。
         ringPull.stopAnimation()
         Animated.spring(ringPull, {
-          toValue: 1,
+          toValue: 1 + restInset / HOLD_GAP,
           stiffness: HOLD_SPRING_STIFFNESS,
           damping: HOLD_SPRING_DAMPING,
           mass: 1,
@@ -285,7 +286,7 @@ const usePullRefresh = (
       hideIndicator()
     }, remain)
     return () => { clearTimer(minTimerRef) }
-  }, [refreshing, progress, hideIndicator, holdSpace, autoHold, lockHold, holdAnim, holdLock, ringPull])
+  }, [refreshing, progress, hideIndicator, holdSpace, autoHold, lockHold, holdAnim, holdLock, ringPull, restInset])
 
   useEffect(() => {
     if (!displayRefreshing) {
@@ -358,7 +359,9 @@ const usePullRefresh = (
       if (lockHold) {
         const dy = y - (restTopRef.current ?? 0)
         const comp = holdLockRef.current === 1 ? Math.max(0, Math.min(HOLD_GAP, dy + HOLD_GAP)) : 0
-        ringPull.setValue(Math.max(0, -dy + comp) / HOLD_GAP)
+        // 圆圈落在「可见空白」的中心：可见空白 = 静止位自带的安全区留白 + 本次下拉/停留高度。
+        // 只加本次停留高度会让圆圈停在安全区下方（与其它页位置不一致，用户看到的「错位」）。
+        ringPull.setValue((restInset + Math.max(0, -dy + comp)) / HOLD_GAP)
       }
       if (lastPullRef.current !== PULL_TRIGGER) {
         lastPullRef.current = PULL_TRIGGER
@@ -395,7 +398,8 @@ const usePullRefresh = (
     // 也会被锁住），其余情况就是当前下拉距离；超过 60pt 继续居中。
     if (holdSpace) {
       const circleBlank = holdLockRef.current === 1 ? Math.max(pull, HOLD_GAP) : pull
-      ringPull.setValue(circleBlank / HOLD_GAP)
+      // 可见空白 = 静止位自带留白（restInset）+ 下拉/停留高度；圆圈取其中心。
+      ringPull.setValue((restInset + circleBlank) / HOLD_GAP)
     }
     // 进度按 1/32 量化，慢拉时不必每帧过桥同步（触发距离按页面口径）。
     // 注意：拖动过程中**绝不**改 inset —— 那会让系统可回弹范围变化、松手后停在半路。
@@ -405,7 +409,7 @@ const usePullRefresh = (
     lastPullRef.current = pull
     progress.stopAnimation()
     progress.setValue(step)
-  }, [progress, holdSpace, learnRestTop, ringPull, lockHold, holdLock, restTopValue])
+  }, [progress, holdSpace, learnRestTop, ringPull, lockHold, holdLock, restTopValue, restInset])
 
   const handleScrollEndDrag = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
     const start = dragStartRef.current
@@ -450,7 +454,7 @@ const usePullRefresh = (
           }).start()
           ringPull.stopAnimation()
           Animated.spring(ringPull, {
-            toValue: 1,
+            toValue: 1 + restInset / HOLD_GAP,
             stiffness: HOLD_SPRING_STIFFNESS,
             damping: HOLD_SPRING_DAMPING,
             mass: 1,
@@ -506,7 +510,7 @@ const usePullRefresh = (
       easing: Easing.out(Easing.cubic),
       useNativeDriver: false,
     }).start()
-  }, [progress, holdAnim, holdSpace, lockHold, restTopValue, ringPull])
+  }, [progress, holdAnim, holdSpace, lockHold, restTopValue, ringPull, restInset])
 
   const handleMomentumScrollEnd = useCallback(() => {
     if (displayRef.current) return
@@ -545,9 +549,9 @@ const usePullRefresh = (
     ? { height: areaHeight, alignItems: 'center' as const, justifyContent: 'center' as const }
     : {
         ...styles.indicator,
-        // 有停留位的页面：圆圈的定位原点跟着列表静止位下移（安全区自动 inset 的列表，
-        // 静止位不是容器顶，圆圈要在这之下多出来的空白里居中）。
-        top: useArea ? indicatorArea!.top : topOffset + (holdSpace ? restInset : 0),
+        // 有停留位的页面：定位原点保持在容器顶，圆圈位置由 ringPull 统一按「可见空白」
+        // （安全区自带留白 + 下拉/停留高度）的一半计算 —— 各页位置口径一致。
+        top: useArea ? indicatorArea!.top : topOffset,
         height: areaHeight,
         justifyContent: (useArea ? 'flex-end' : 'center') as 'flex-end' | 'center',
       }
