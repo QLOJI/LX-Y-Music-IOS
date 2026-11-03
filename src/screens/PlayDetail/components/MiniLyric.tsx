@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import {
   FlatList,
   Pressable,
@@ -633,23 +633,25 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
   // 重锚歌词引擎，并把小歌词定位到对应行 —— 大小歌词共用同一个引擎，这样两边从第一帧起
   // 就与进度条显示同一行（此前只有大歌词页在激活时按进度重锚，小歌词用的是引擎旧行，
   // 切页时才被拉过去，出现「上跳一下」）。
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!visible) return
     const seconds = playerState.progress.nowPlayTime
-    if (!Number.isFinite(seconds) || seconds < 0) return
-    const timeMs = seconds * 1000
-    const targetLine = lyricLines.length ? findLineIndexByTime(lyricLines, timeMs) : -1
-    // 只有引擎当前行与进度条不一致时才重锚。一致时重复 anchor 会让歌词引擎重新落行，
-    // 当前行的缩放动画被反复触发（用户报的「每次切画面歌词行闪一下」）。
-    if (targetLine >= 0 && targetLine !== activeLineRef.current) {
-      try { lrcAnchorToTime(timeMs, playerState.isPlay) } catch {}
+    const hasSeconds = Number.isFinite(seconds) && seconds >= 0
+    const targetLine = hasSeconds && lyricLines.length
+      ? findLineIndexByTime(lyricLines, Math.max(0, seconds) * 1000)
+      : -1
+    // 只有「暂停 / 恢复」态才以进度条为准重锚。播放中进度条是 1Hz 轮询、可能落后引擎一行，
+    // 拿它重锚会把行往回翻 —— 当前行的缩放动画因此每次切画面都重播一次。
+    if (!playerState.isPlay && targetLine >= 0 && targetLine !== activeLineRef.current) {
+      try { lrcAnchorToTime(Math.max(0, seconds) * 1000, false) } catch {}
     }
-    const scrollLine = targetLine >= 0 ? targetLine : activeLineRef.current
-    const raf = requestAnimationFrame(() => {
-      if (isPauseScrollRef.current) return
+    const scrollLine = playerState.isPlay
+      ? activeLineRef.current
+      : (targetLine >= 0 ? targetLine : activeLineRef.current)
+    if (!isPauseScrollRef.current) {
+      // 布局阶段直接落位（不等下一帧）：配合初始 contentOffset，切换瞬间不会先露第 1 行。
       listRef.current?.scrollToOffset({ offset: getScrollOffsetRef.current(scrollLine), animated: false })
-    })
-    return () => cancelAnimationFrame(raf)
+    }
   }, [visible, lyricLines])
 
   const handlePlayLine = useCallback((time: number) => {

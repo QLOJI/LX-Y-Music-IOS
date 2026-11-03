@@ -1065,16 +1065,14 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
     isPauseScrollRef.current = false
     const cachedPosition = playerState.progress.nowPlayTime
     let immediateLine = lineRef.current.line
-    if (Number.isFinite(cachedPosition) && cachedPosition >= 0) {
+    // 播放中引擎就是实时行：绝不用 1Hz 轮询的进度条重锚（可能落后引擎一行，
+    // 会把行往回翻并重播当前行缩放动画）。只有暂停/恢复态才以进度条为准。
+    if (!playerState.isPlay && Number.isFinite(cachedPosition) && cachedPosition >= 0) {
       immediateLine = getLineIndexForTime(cachedPosition * 1000)
-      if (immediateLine >= 0) {
-        // 只在引擎行与进度条不一致时重锚：一致时重复 anchor 会重新触发当前行的
-        // 缩放动画（用户报的「每次切画面歌词行闪一下」）。
-        if (immediateLine !== lineRef.current.line) {
-          lineRef.current.prevLine = lineRef.current.line
-          lineRef.current.line = immediateLine
-          try { lrcAnchorToTime(cachedPosition * 1000, playerState.isPlay) } catch {}
-        }
+      if (immediateLine >= 0 && immediateLine !== lineRef.current.line) {
+        lineRef.current.prevLine = lineRef.current.line
+        lineRef.current.line = immediateLine
+        try { lrcAnchorToTime(cachedPosition * 1000, false) } catch {}
       }
     }
     setForceScroll(true)
@@ -1086,7 +1084,10 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
     // 再用音频引擎真实位置校正一次，纠正切歌/恢复播放时 store 进度尚未更新的情况。
     void getPosition().then((p) => {
       if (p == null || !playerState.musicInfo.id) return
-      try { lrcAnchorToTime(p * 1000, playerState.isPlay) } catch {}
+      const pLine = getLineIndexForTime(p * 1000)
+      if (pLine >= 0 && pLine !== lineRef.current.line) {
+        try { lrcAnchorToTime(p * 1000, playerState.isPlay) } catch {}
+      }
       requestAnimationFrame(() => {
         setForceScroll(true)
         handleScrollToActive(lineRef.current.line, true)
@@ -1097,12 +1098,19 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
     // 激活后的头几百毫秒内列表可能还没排完，第一次强制定位会被钳住。这里按进度条时间
     // 再补几次强制定位（同一行，无动画），确保大歌词与进度条落在同一行。
     const retryTimers = [80, 200, 450, 800].map(ms => setTimeout(() => {
+      // 播放中只校正布局，不改行（行由歌词引擎实时推进）；进度条轮询可能落后一行，
+      // 用它重锚会触发当前行缩放动画重播。
+      if (playerState.isPlay) {
+        setForceScroll(true)
+        handleScrollToActiveRef.current(Math.max(0, lineRef.current.line), true)
+        return
+      }
       const position = playerState.progress.nowPlayTime
       if (!Number.isFinite(position) || position < 0) return
       const target = getLineIndexForTime(position * 1000)
       if (target < 0) return
       if (target !== lineRef.current.line) {
-        try { lrcAnchorToTime(position * 1000, playerState.isPlay) } catch {}
+        try { lrcAnchorToTime(position * 1000, false) } catch {}
         lineRef.current.prevLine = lineRef.current.line
         lineRef.current.line = target
       }
