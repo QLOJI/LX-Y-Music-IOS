@@ -1068,9 +1068,13 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
     if (Number.isFinite(cachedPosition) && cachedPosition >= 0) {
       immediateLine = getLineIndexForTime(cachedPosition * 1000)
       if (immediateLine >= 0) {
-        lineRef.current.prevLine = lineRef.current.line
-        lineRef.current.line = immediateLine
-        try { lrcAnchorToTime(cachedPosition * 1000, playerState.isPlay) } catch {}
+        // 只在引擎行与进度条不一致时重锚：一致时重复 anchor 会重新触发当前行的
+        // 缩放动画（用户报的「每次切画面歌词行闪一下」）。
+        if (immediateLine !== lineRef.current.line) {
+          lineRef.current.prevLine = lineRef.current.line
+          lineRef.current.line = immediateLine
+          try { lrcAnchorToTime(cachedPosition * 1000, playerState.isPlay) } catch {}
+        }
       }
     }
     setForceScroll(true)
@@ -1097,9 +1101,11 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
       if (!Number.isFinite(position) || position < 0) return
       const target = getLineIndexForTime(position * 1000)
       if (target < 0) return
-      try { lrcAnchorToTime(position * 1000, playerState.isPlay) } catch {}
-      lineRef.current.prevLine = lineRef.current.line
-      lineRef.current.line = target
+      if (target !== lineRef.current.line) {
+        try { lrcAnchorToTime(position * 1000, playerState.isPlay) } catch {}
+        lineRef.current.prevLine = lineRef.current.line
+        lineRef.current.line = target
+      }
       setForceScroll(true)
       handleScrollToActiveRef.current(target, true)
     }, ms))

@@ -621,11 +621,16 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
     const seconds = playerState.progress.nowPlayTime
     if (!Number.isFinite(seconds) || seconds < 0) return
     const timeMs = seconds * 1000
-    try { lrcAnchorToTime(timeMs, playerState.isPlay) } catch {}
-    const targetLine = lyricLines.length ? Math.max(0, findLineIndexByTime(lyricLines, timeMs)) : activeLineRef.current
+    const targetLine = lyricLines.length ? findLineIndexByTime(lyricLines, timeMs) : -1
+    // 只有引擎当前行与进度条不一致时才重锚。一致时重复 anchor 会让歌词引擎重新落行，
+    // 当前行的缩放动画被反复触发（用户报的「每次切画面歌词行闪一下」）。
+    if (targetLine >= 0 && targetLine !== activeLineRef.current) {
+      try { lrcAnchorToTime(timeMs, playerState.isPlay) } catch {}
+    }
+    const scrollLine = targetLine >= 0 ? targetLine : activeLineRef.current
     const raf = requestAnimationFrame(() => {
       if (isPauseScrollRef.current) return
-      listRef.current?.scrollToOffset({ offset: getScrollOffsetRef.current(targetLine), animated: false })
+      listRef.current?.scrollToOffset({ offset: getScrollOffsetRef.current(scrollLine), animated: false })
     })
     return () => cancelAnimationFrame(raf)
   }, [visible, lyricLines])
@@ -760,6 +765,9 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
         renderItem={renderItem}
         keyExtractor={getKey}
         getItemLayout={getItemLayout}
+        // 首帧就落在当前播放行（而不是第 0 行）：进入详情页时不会先露开头再跳。
+        // 仅挂载时生效；切歌/歌词更新由 resetScroll / followActiveLine 负责。
+        initialScrollIndex={lyricLines.length ? Math.min(Math.max(0, activeLine), lyricLines.length - 1) : undefined}
         style={styles.list}
         // 【第 175 轮】量一次列表宽度：缩放锚点补偿按「文本可用宽度」算。
         onLayout={({ nativeEvent }) => {
