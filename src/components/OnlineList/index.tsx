@@ -45,8 +45,10 @@ export interface OnlineListProps {
   indicatorInHeader?: boolean
   /** 刷新时是否让列表下移 32pt 留出下拉停留位（默认 true）。 */
   holdSpace?: boolean
-  /** 停留位锁：松手回弹越过 60pt 线后把列表钉住，空白不会小于 60pt。 */
+  /** 停留位锁：松手回弹越过 60pt 线后把列表钉住，空白不会小于 60pt。缺省跟随 holdSpace。 */
   lockHold?: boolean
+  /** 程序化刷新（切 tab / 首载）也播放「列表下拉 60pt → 停住 → 自然收回」的下拉动画。 */
+  autoHold?: boolean
   /** 列表顶部安全区处理方式；'never' = 由页面自己的页头负责顶部间距。 */
   contentInsetAdjustmentBehavior?: ListProps['contentInsetAdjustmentBehavior']
   /** 圆圈定位区（纯回弹页面用）：圆圈下对齐贴在该区域底部，即标题正上方。 */
@@ -79,6 +81,7 @@ export default forwardRef<OnlineListType, OnlineListProps>(
       indicatorInHeader,
       holdSpace,
       lockHold,
+      autoHold,
       contentInsetAdjustmentBehavior,
       indicatorArea,
       checkHomePagerIdle = false,
@@ -324,6 +327,7 @@ export default forwardRef<OnlineListType, OnlineListProps>(
             indicatorInHeader={indicatorInHeader}
             holdSpace={holdSpace}
             lockHold={lockHold}
+            autoHold={autoHold}
             contentInsetAdjustmentBehavior={contentInsetAdjustmentBehavior}
             indicatorArea={indicatorArea}
             checkHomePagerIdle={checkHomePagerIdle}

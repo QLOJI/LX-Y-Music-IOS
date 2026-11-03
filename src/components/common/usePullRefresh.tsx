@@ -84,6 +84,12 @@ const usePullRefresh = (
    * 保证空白区域不会小于 60pt、不会再被系统回弹拽上去。只对 holdSpace 页面启用。
    */
   lockHold: boolean = false,
+  /**
+   * 程序化停留：刷新由代码发起（切 tab / 首次加载，refreshing 被外部置 true）时，
+   * 也走「列表整体下拉 60pt → 停住 → 自然收回」的同一套动画。
+   * 用户手指下拉触发的刷新已经由 handleScrollEndDrag 拉下过，不会重复。
+   */
+  autoHold: boolean = false,
 ) => {
   const theme = useTheme()
   const progress = useRef(new Animated.Value(0)).current
@@ -218,6 +224,22 @@ const usePullRefresh = (
         easing: Easing.inOut(Easing.quad),
         useNativeDriver: false,
       }).start()
+      // 程序化刷新（切 tab / 首载）：用户没下拉，也要把列表整体下拉 60pt、停住、再自然收回。
+      // 用户手动下拉触发的刷新已由 handleScrollEndDrag 拉下（holdAppliedRef = true），跳过。
+      if (holdSpace && autoHold && !holdAppliedRef.current) {
+        holdAppliedRef.current = true
+        triggerAtRef.current = Date.now()
+        const holdValue = lockHold ? holdLock : holdAnim
+        holdValue.stopAnimation()
+        if (lockHold) holdLockRef.current = 1
+        Animated.spring(holdValue, {
+          toValue: 1,
+          stiffness: HOLD_SPRING_STIFFNESS,
+          damping: HOLD_SPRING_DAMPING,
+          mass: 1,
+          useNativeDriver: true,
+        }).start()
+      }
       clearTimer(watchdogRef)
       watchdogRef.current = setTimeout(() => {
         watchdogRef.current = null
@@ -239,7 +261,7 @@ const usePullRefresh = (
       hideIndicator()
     }, remain)
     return () => { clearTimer(minTimerRef) }
-  }, [refreshing, progress, hideIndicator])
+  }, [refreshing, progress, hideIndicator, holdSpace, autoHold, lockHold, holdAnim, holdLock])
 
   useEffect(() => {
     if (!displayRefreshing) {

@@ -38,8 +38,12 @@ export interface ListProps {
   /**
    * 停留位「锁」：松手回弹越过 60pt 线后，由滚动偏移原生驱动 transform 把列表钉在停留位，
    * 空白区域不会再小于 60pt（不会被系统回弹拽上去）。拖动阶段完全不干预。
+   * 缺省跟随 holdSpace：有停留位的列表都启用 —— 主界面（歌单/我的/播放历史/排行榜/搜索）
+   * 传的是 holdSpace=false，不受影响。
    */
   lockHold?: boolean
+  /** 程序化刷新（切 tab / 首载）也走「列表下拉 60pt → 停住 → 自然收回」的下拉动画。 */
+  autoHold?: boolean
   /**
    * 显式指定列表顶部的安全区处理方式。传 'never' 表示「页面自己负责顶部间距」
    * （页头里已有 PageTopInset），标题位置因此与推荐页同一条基准线。
@@ -88,6 +92,7 @@ const List = forwardRef<ListType, ListProps>(
       indicatorInHeader,
       holdSpace = true,
       lockHold,
+      autoHold,
       contentInsetAdjustmentBehavior,
       indicatorArea,
       rowType,
@@ -355,6 +360,8 @@ const List = forwardRef<ListType, ListProps>(
       // 才会重新下载，避免每次下拉都把整屏封面重载一遍。
       onRefresh()
     }, [onRefresh])
+    // 有停留位的列表默认都带「锁」；显式传 lockHold 时以显式值为准。
+    const effectiveLockHold = lockHold ?? holdSpace
     const { indicator: pullIndicator, scrollProps: pullScrollProps, pullOffset } = usePullRefresh(
       status == 'refreshing',
       handlePullRefresh,
@@ -362,7 +369,8 @@ const List = forwardRef<ListType, ListProps>(
       0,
       holdSpace,
       indicatorArea,
-      lockHold,
+      effectiveLockHold,
+      autoHold,
     )
 
     const footerComponent = useMemo(() => {
@@ -410,7 +418,7 @@ const List = forwardRef<ListType, ListProps>(
       : ListHeaderComponent
 
     // lockHold 的 onScroll 是原生事件映射，必须用 Animated 包装的 FlatList（见文件头）。
-    const ListComponent: any = lockHold ? AnimatedFlatList : FlatList
+    const ListComponent: any = effectiveLockHold ? AnimatedFlatList : FlatList
 
     return (
       <View style={{ flex: 1, overflow: 'hidden' }}>
