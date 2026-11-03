@@ -61,6 +61,13 @@ const Tabs = ({
   // 「按钮亮了，画面过一会儿才滑」）。落页后 activeTab 更新，本地覆盖自动让位。
   const [pressedTab, setPressedTab] = useState<'songs' | 'playlists' | null>(null)
   useEffect(() => { setPressedTab(null) }, [activeTab])
+  // 兜底：切页若没真正落页（原生闩锁等），1s 后把高亮还给实际所在的 tab，
+  // 避免出现「高亮按钮不是下方列表」的错配。
+  useEffect(() => {
+    if (pressedTab == null) return
+    const timer = setTimeout(() => setPressedTab(null), 1000)
+    return () => clearTimeout(timer)
+  }, [pressedTab])
   const shownTab = pressedTab ?? activeTab
   return (
     // 标题与本行四个按钮/子模式同处一行（页头里的 DetailPageTitle，第 16 轮第 6 条：标题与「推荐」
@@ -255,7 +262,11 @@ export default memo(() => {
   const handleTabChange = (newTab: 'songs' | 'playlists') => {
     if (activeTab === newTab) return
     // 按语义 id 映射页位；第 192 轮起歌曲在右（page1）、歌单在左（page0）。
-    // 先把原生切页请求发出去，再更新 React 选中态：页面动画不被整页重渲染挡在前面。
+    // 先无动画落回当前原生页，清掉可能卡住的原生 animating / 交互闩锁 —— 否则紧跟的
+    // 动画 setPage 会被库直接丢弃，画面停在旧页等兜底（用户第 61 轮报的「高亮已切、
+    // 画面过一会儿才滑」）。
+    const pager = pagerViewRef.current as any
+    pager?.setPageWithoutAnimation?.(activeTab === 'songs' ? 1 : 0)
     pagerViewRef.current?.setPage(newTab === 'songs' ? 1 : 0)
     trackPageSwitch(newTab === 'songs' ? 1 : 0)
     // 【用户第 60 轮】高亮由 Tabs 内部的 pressing 覆盖负责，这里**不**改 React 状态：

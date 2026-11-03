@@ -50,6 +50,12 @@ const Tabs = ({
   // 表现为按钮亮了、画面停一下才滑）。落页后 activeTab 更新，本地覆盖让位。
   const [pressedTab, setPressedTab] = useState<TabType | null>(null)
   useEffect(() => { setPressedTab(null) }, [activeTab])
+  // 切页没真正落页时 1s 后把高亮还给实际所在的 tab（避免高亮与列表错配）。
+  useEffect(() => {
+    if (pressedTab == null) return
+    const timer = setTimeout(() => setPressedTab(null), 1000)
+    return () => clearTimeout(timer)
+  }, [pressedTab])
   const shownTab = pressedTab ?? activeTab
   const handlePress = (tab: TabType) => {
     if (tab === shownTab) return

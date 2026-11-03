@@ -149,6 +149,11 @@ export const useRecoverablePager = (
     pendingIndexRef.current = index
     pageRequestAtRef.current = Date.now()
     lastScrollAtRef.current = 0
+    // 【用户第 61 轮】先无动画落回当前原生页：清掉可能卡在 animating /
+    // userInteractionEnabled=NO 的原生闩锁。否则紧跟的动画 setPage 会被库直接丢弃，
+    // 页面停在旧页、等 900ms 兜底才动（用户报的「高亮已切、画面过一会儿才滑」）。
+    // 已在当前页时这次调用是空操作，不产生位移。
+    pagerRef.current?.setPageWithoutAnimation?.(nativeIndexRef.current)
     pagerRef.current?.setPage?.(index)
     armFallback(index)
   }, [armFallback, pagerRef])
