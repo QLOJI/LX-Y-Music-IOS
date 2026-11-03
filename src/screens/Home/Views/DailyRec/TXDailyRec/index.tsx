@@ -46,22 +46,8 @@ const Tabs = ({
 }) => {
   const theme = useTheme()
   const buttonRadius = useButtonRadius()
-  // 点击瞬间先切高亮，但不改父组件状态（否则整页重渲染会打断原生转场，
-  // 表现为按钮亮了、画面停一下才滑）。落页后 activeTab 更新，本地覆盖让位。
-  const [pressedTab, setPressedTab] = useState<TabType | null>(null)
-  useEffect(() => { setPressedTab(null) }, [activeTab])
-  // 切页没真正落页时 1s 后把高亮还给实际所在的 tab（避免高亮与列表错配）。
-  useEffect(() => {
-    if (pressedTab == null) return
-    const timer = setTimeout(() => setPressedTab(null), 1000)
-    return () => clearTimeout(timer)
-  }, [pressedTab])
-  const shownTab = pressedTab ?? activeTab
-  const handlePress = (tab: TabType) => {
-    if (tab === shownTab) return
-    setPressedTab(tab)
-    onTabChange(tab)
-  }
+  // 高亮不抢跑：点击只发切页命令，等页面真正滑进来（onPageSelected → activeTab）
+  // 再变色 —— 与左右滑动切页同一节奏。切页本身的可靠性由恢复链保证。
   return (
     <ScrollView
       style={styles.tabsScroll}
@@ -79,15 +65,15 @@ const Tabs = ({
             // 顶部分段 tab 圆角随「按钮圆角」设置行内覆盖；可见高度 ≈ 32 = 15 号文字行高 17 + 下划线留白 5 + 上下 padding 5×2
             { borderRadius: buttonRadius(32) },
           ]}
-          onPress={() => { handlePress(tab.id) }}
+          onPress={() => { onTabChange(tab.id) }}
         >
           <Text
             style={[
               styles.tabText,
-              { borderBottomColor: shownTab === tab.id ? theme['c-primary-font-active'] : 'transparent' },
+              { borderBottomColor: activeTab === tab.id ? theme['c-primary-font-active'] : 'transparent' },
             ]}
             // 【第 187 轮】选中 tab 用主题的选中按钮字体色（c-primary-font）。
-            color={shownTab === tab.id ? theme['c-primary-font'] : theme['c-font']}
+            color={activeTab === tab.id ? theme['c-primary-font'] : theme['c-font']}
             // 单行 + 放不下自动缩字号：不换行（换行会撑破行高、破坏「同一高度」）、不裁字
             numberOfLines={1}
             adjustsFontSizeToFit

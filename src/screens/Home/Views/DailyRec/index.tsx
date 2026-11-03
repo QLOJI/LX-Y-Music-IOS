@@ -56,19 +56,9 @@ const Tabs = ({
   // 子模式 chip 的描边随「按钮透明度」淡出，文字色不动。只改颜色 alpha，不能用容器 style.opacity。
   const buttonOpacity = useSettingValue('theme.buttonOpacity')
   const buttonRadius = useButtonRadius()
-  // 【用户第 60 轮】点击瞬间先把「高亮」切过去，但不改父组件状态 —— 父组件一旦重渲染
-  // 就会连同 PagerView 那棵子树一起 reconcile，原生转场会先停一下再滑（用户报的
-  // 「按钮亮了，画面过一会儿才滑」）。落页后 activeTab 更新，本地覆盖自动让位。
-  const [pressedTab, setPressedTab] = useState<'songs' | 'playlists' | null>(null)
-  useEffect(() => { setPressedTab(null) }, [activeTab])
-  // 兜底：切页若没真正落页（原生闩锁等），1s 后把高亮还给实际所在的 tab，
-  // 避免出现「高亮按钮不是下方列表」的错配。
-  useEffect(() => {
-    if (pressedTab == null) return
-    const timer = setTimeout(() => setPressedTab(null), 1000)
-    return () => clearTimeout(timer)
-  }, [pressedTab])
-  const shownTab = pressedTab ?? activeTab
+  // 【用户第 63 轮】高亮不再抢跑：点击只发切页命令，等页面真正滑进来（onPageSelected
+  // → activeTab 更新）再变色。与左右滑动切页完全同一节奏；页面内部的恢复链负责
+  // 「点了一定切过去」，不会出现高亮先亮、画面停一会儿才切。
   return (
     // 标题与本行四个按钮/子模式同处一行（页头里的 DetailPageTitle，第 16 轮第 6 条：标题与「推荐」
     // 字样在一条直线上、同一垂直中线）：
@@ -95,12 +85,11 @@ const Tabs = ({
           // 主 tab 圆角随「按钮圆角」设置行内覆盖；可见高度 ≈ 32 = 15 号文字行高 17 + 下划线留白 5 + 上下 padding 5×2
           { borderRadius: buttonRadius(32) },
         ]}
-        onPressIn={() => { if (shownTab !== 'playlists') setPressedTab('playlists') }}
         onPress={() => { onTabChange('playlists') }}
       >
         <Text
-          style={[styles.tabText, { borderBottomColor: shownTab === 'playlists' ? theme['c-primary-font-active'] : 'transparent' }]}
-          color={shownTab === 'playlists' ? theme['c-primary-font'] : theme['c-font']}
+          style={[styles.tabText, { borderBottomColor: activeTab === 'playlists' ? theme['c-primary-font-active'] : 'transparent' }]}
+          color={activeTab === 'playlists' ? theme['c-primary-font'] : theme['c-font']}
           // 单行 + 放不下自动缩字号：不换行（换行会撑破行高、破坏「同一高度」）、不裁字
           numberOfLines={1}
           adjustsFontSizeToFit
@@ -116,12 +105,11 @@ const Tabs = ({
           // 主 tab 圆角随「按钮圆角」设置行内覆盖；可见高度 ≈ 32 = 15 号文字行高 17 + 下划线留白 5 + 上下 padding 5×2
           { borderRadius: buttonRadius(32) },
         ]}
-        onPressIn={() => { if (shownTab !== 'songs') setPressedTab('songs') }}
         onPress={() => { onTabChange('songs') }}
       >
         <Text
-          style={[styles.tabText, { borderBottomColor: shownTab === 'songs' ? theme['c-primary-font-active'] : 'transparent' }]}
-          color={shownTab === 'songs' ? theme['c-primary-font'] : theme['c-font']}
+          style={[styles.tabText, { borderBottomColor: activeTab === 'songs' ? theme['c-primary-font-active'] : 'transparent' }]}
+          color={activeTab === 'songs' ? theme['c-primary-font'] : theme['c-font']}
           numberOfLines={1}
           adjustsFontSizeToFit
           minimumFontScale={0.75}
