@@ -109,6 +109,12 @@ const usePullRefresh = (
   const triggerAtRef = useRef(0)
   const holdMinTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const spin = useRef(new Animated.Value(0)).current
+  // 圆圈在空白里的位置系数：0 = 没有空白，1 = 60pt 停留位；>1 = 下拉超过 60pt。
+  // 圆圈始终落在「空白高度」的中心（0.5 × blank），不再固定停在 60pt 区的中心。
+  const ringPull = useRef(new Animated.Value(0)).current
+  // 列表静止位相对容器顶的视觉偏移（= −静止位 contentOffset，通常 0；有安全区自动 inset 时 >0）。
+  // 圆圈的定位盒整体下移这么多，才能和「距静止位 60pt」的停留空白对齐。
+  const [restInset, setRestInset] = useState(0)
   const pullRef = useRef(0)
   const lastPullRef = useRef(-1)
   const lastStepRef = useRef(-1)
@@ -199,6 +205,15 @@ const usePullRefresh = (
           useNativeDriver: true,
         }).start()
       }
+      // 圆圈随空白一起收回（同一组弹簧参数，始终落在空白中心）。
+      ringPull.stopAnimation()
+      Animated.spring(ringPull, {
+        toValue: 0,
+        stiffness: HOLD_SPRING_STIFFNESS,
+        damping: HOLD_SPRING_DAMPING,
+        mass: 1,
+        useNativeDriver: false,
+      }).start()
     }
     progress.stopAnimation()
     Animated.timing(progress, {
@@ -207,7 +222,7 @@ const usePullRefresh = (
       easing: Easing.out(Easing.cubic),
       useNativeDriver: false,
     }).start()
-  }, [progress, holdAnim, holdSpace, lockHold, holdLock])
+  }, [progress, holdAnim, holdSpace, lockHold, holdLock, ringPull])
 
   useEffect(() => {
     if (refreshing) {
@@ -239,6 +254,15 @@ const usePullRefresh = (
           mass: 1,
           useNativeDriver: true,
         }).start()
+        // 圆圈与空白同步下拉：同一组弹簧参数，始终落在空白中心。
+        ringPull.stopAnimation()
+        Animated.spring(ringPull, {
+          toValue: 1,
+          stiffness: HOLD_SPRING_STIFFNESS,
+          damping: HOLD_SPRING_DAMPING,
+          mass: 1,
+          useNativeDriver: false,
+        }).start()
       }
       clearTimer(watchdogRef)
       watchdogRef.current = setTimeout(() => {
@@ -261,7 +285,7 @@ const usePullRefresh = (
       hideIndicator()
     }, remain)
     return () => { clearTimer(minTimerRef) }
-  }, [refreshing, progress, hideIndicator, holdSpace, autoHold, lockHold, holdAnim, holdLock])
+  }, [refreshing, progress, hideIndicator, holdSpace, autoHold, lockHold, holdAnim, holdLock, ringPull])
 
   useEffect(() => {
     if (!displayRefreshing) {
@@ -280,6 +304,16 @@ const usePullRefresh = (
     return () => { anim.stop() }
   }, [displayRefreshing, spin])
 
+  // 预热锁值：1ms 原生动画把 holdLock 挂到原生驱动。之后松手开锁用 setValue 即时生效
+  // （不再等一次 timing 的启动帧）—— 回弹越过 60pt 线的那一帧不会再出现先掉下去、
+  // 下一帧才被补偿拉回的小跳动。
+  useEffect(() => {
+    // 已经进入刷新（锁可能刚被 autoHold 的弹簧驱动）就不要重置它。
+    if (!lockHold || displayRef.current) return
+    holdLock.stopAnimation()
+    Animated.timing(holdLock, { toValue: 0, duration: 1, useNativeDriver: true }).start()
+  }, [lockHold, holdLock])
+
   useEffect(() => () => {
     clearTimer(minTimerRef)
     clearTimer(fallbackTimerRef)
@@ -295,6 +329,8 @@ const usePullRefresh = (
     if (restTopRef.current != null || y >= 0 || dragStartRef.current != null || displayRef.current) return
     restTopRef.current = y
     restTopValue.setValue(y)
+    // 有安全区自动 inset 的列表：圆圈定位盒整体下移 -y，和停留空白对齐。
+    setRestInset(-y)
   }, [restTopValue])
 
   const handleScrollBeginDrag = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
@@ -317,6 +353,13 @@ const usePullRefresh = (
     if (displayRef.current) {
       // 锁在松手那一刻就已经打开（见 handleScrollEndDrag）；这里不再按滚动回调判断，
       // 否则 JS 回调晚到几帧，空白会先掉到 60pt 以下再被拉回来。
+      // 圆圈随「当前空白高度」走：回弹过程中空白从松手时的高度收向 60pt，
+      // 圆圈跟着它的中心移动，停下时正好在 60pt 空白中心。
+      if (lockHold) {
+        const dy = y - (restTopRef.current ?? 0)
+        const comp = holdLockRef.current === 1 ? Math.max(0, Math.min(HOLD_GAP, dy + HOLD_GAP)) : 0
+        ringPull.setValue(Math.max(0, -dy + comp) / HOLD_GAP)
+      }
       if (lastPullRef.current !== PULL_TRIGGER) {
         lastPullRef.current = PULL_TRIGGER
         lastStepRef.current = 1
@@ -338,6 +381,22 @@ const usePullRefresh = (
     }
     const pull = start <= 0 ? Math.max(0, start - y) : 0
     pullRef.current = pull
+    // 提前开锁（关键）：下拉**越过触发位**的那一刻就在原生侧把锁值挂上。此刻
+    // dy ≤ −60，补偿量为 0，视觉上没有任何变化；等松手后系统回弹越过 60pt 线时，
+    // 锁早已生效 —— 不会因为「松手事件到 JS 有 1~2 帧延迟」而先掉到 60pt 以下、
+    // 下一帧再被补偿拉回（那一下就是回弹过程中的「轻微跳动」）。
+    if (lockHold && holdLockRef.current === 0 && pull >= HOLD_TRIGGER) {
+      restTopValue.setValue(restTopRef.current ?? start)
+      holdLock.stopAnimation()
+      holdLockRef.current = 1
+      holdLock.setValue(1)
+    }
+    // 圆圈位置：跟「当前空白高度」走。锁已开时空白至少是 60pt（下拉回撤到 60 以下
+    // 也会被锁住），其余情况就是当前下拉距离；超过 60pt 继续居中。
+    if (holdSpace) {
+      const circleBlank = holdLockRef.current === 1 ? Math.max(pull, HOLD_GAP) : pull
+      ringPull.setValue(circleBlank / HOLD_GAP)
+    }
     // 进度按 1/32 量化，慢拉时不必每帧过桥同步（触发距离按页面口径）。
     // 注意：拖动过程中**绝不**改 inset —— 那会让系统可回弹范围变化、松手后停在半路。
     const step = Math.min(1, Math.round((pull / (holdSpace ? HOLD_TRIGGER : PULL_TRIGGER)) * 32) / 32)
@@ -346,7 +405,7 @@ const usePullRefresh = (
     lastPullRef.current = pull
     progress.stopAnimation()
     progress.setValue(step)
-  }, [progress, holdSpace, learnRestTop])
+  }, [progress, holdSpace, learnRestTop, ringPull, lockHold, holdLock, restTopValue])
 
   const handleScrollEndDrag = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
     const start = dragStartRef.current
@@ -370,15 +429,14 @@ const usePullRefresh = (
           // 松手的**同一时刻**就开锁：此刻 dy ≤ -60，补偿量为 0，不会产生任何位移；
           // 从系统回弹越过「距静止位 60pt」那条线的那一帧起，原生映射开始逐帧抵住，
           // 空白因此不可能先掉到 60pt 以下（等 JS 滚动回调再开锁会晚几帧，就是那个跳动）。
-          restTopValue.setValue(restTopRef.current ?? start)
+          const restTop = restTopRef.current ?? start
+          restTopValue.setValue(restTop)
+          if (restTop < 0) setRestInset(-restTop)
           holdLock.stopAnimation()
           holdLockRef.current = 1
-          // 用原生 timing（1ms ≈ 瞬置）逼一次原生节点，保证整条 transform 链在 UI 线程跑。
-          Animated.timing(holdLock, {
-            toValue: 1,
-            duration: 1,
-            useNativeDriver: true,
-          }).start()
+          // 直接置 1（值已在挂载时预热成原生节点）：不再用 1ms timing —— 那会晚一帧
+          // 才生效，回弹恰好在这一帧越过 60pt 线时就会掉一下再被拉回，即「小跳动」。
+          holdLock.setValue(1)
         } else {
           holdAnim.stopAnimation()
           // 停留位（60pt）用弹簧动画到位：接近 UIKit 橡胶回弹的临界阻尼（约 0.4~0.5s、
@@ -389,6 +447,14 @@ const usePullRefresh = (
             damping: HOLD_SPRING_DAMPING,
             mass: 1,
             useNativeDriver: true,
+          }).start()
+          ringPull.stopAnimation()
+          Animated.spring(ringPull, {
+            toValue: 1,
+            stiffness: HOLD_SPRING_STIFFNESS,
+            damping: HOLD_SPRING_DAMPING,
+            mass: 1,
+            useNativeDriver: false,
           }).start()
         }
       }
@@ -409,6 +475,30 @@ const usePullRefresh = (
     }
     // 轻拉松手（未达触发位）：列表交给系统自然回弹，圆圈淡出即可。
     if (start != null && start <= 0) dragTopRef.current = start
+    // 拖过 60pt 后又回撤到触发位以下才松手（不触发刷新）：把提前挂上的锁平滑放掉，
+    // 不能瞬间归 0，否则 60pt 的空白会「啪」地掉下去。
+    if (lockHold && holdLockRef.current === 1) {
+      holdLockRef.current = 0
+      holdLock.stopAnimation()
+      Animated.spring(holdLock, {
+        toValue: 0,
+        stiffness: HOLD_SPRING_STIFFNESS,
+        damping: HOLD_SPRING_DAMPING,
+        mass: 1,
+        useNativeDriver: true,
+      }).start()
+    }
+    if (holdSpace) {
+      // 圆圈回到顶部（系统回弹把空白收回 0）。
+      ringPull.stopAnimation()
+      Animated.spring(ringPull, {
+        toValue: 0,
+        stiffness: HOLD_SPRING_STIFFNESS,
+        damping: HOLD_SPRING_DAMPING,
+        mass: 1,
+        useNativeDriver: false,
+      }).start()
+    }
     progress.stopAnimation()
     Animated.timing(progress, {
       toValue: 0,
@@ -416,7 +506,7 @@ const usePullRefresh = (
       easing: Easing.out(Easing.cubic),
       useNativeDriver: false,
     }).start()
-  }, [progress, holdAnim, holdSpace, lockHold, restTopValue])
+  }, [progress, holdAnim, holdSpace, lockHold, restTopValue, ringPull])
 
   const handleMomentumScrollEnd = useCallback(() => {
     if (displayRef.current) return
@@ -437,11 +527,13 @@ const usePullRefresh = (
     ? `${ICON_CIRCUMFERENCE * 0.78} ${ICON_CIRCUMFERENCE}`
     : `${ICON_CIRCUMFERENCE} ${ICON_CIRCUMFERENCE}`
   const rotate = spin.interpolate({ inputRange: [0, 1], outputRange: ['0deg', '360deg'] })
-  // 纯回弹页面保持原来的 32pt 圆圈几何、位置固定；有停留位的页面用更大的空白高度，
-  // 圆圈随下拉距离移动，始终停在下拉出来的空白区中心，达到触发高度后固定不再移动。
+  // 纯回弹页面保持原来的 32pt 圆圈几何、位置固定；有停留位的页面里，圆圈**始终落在
+  // 当前空白的正中**：下拉多远，圆圈就在那片空白的中心（ringPull = 空白高度 / 60，
+  // 允许 >1；回弹/收回时用同一组弹簧参数跟进）。不再像以前那样超过 60pt 后就停在
+  // 60pt 区中心、看着偏上。
   const ringGap = holdSpace ? HOLD_GAP : PULL_TRIGGER
   const ringTranslate = holdSpace
-    ? progress.interpolate({ inputRange: [0, 1], outputRange: [-ringGap / 2, 0] })
+    ? ringPull.interpolate({ inputRange: [0, 1], outputRange: [-ringGap / 2, 0], extrapolate: 'extend' })
     : 0
   // 纯回弹页面若给了定位区：圆圈下对齐贴在标题上方；否则维持原几何。
   const useArea = !holdSpace && indicatorArea != null
@@ -453,7 +545,9 @@ const usePullRefresh = (
     ? { height: areaHeight, alignItems: 'center' as const, justifyContent: 'center' as const }
     : {
         ...styles.indicator,
-        top: useArea ? indicatorArea!.top : topOffset,
+        // 有停留位的页面：圆圈的定位原点跟着列表静止位下移（安全区自动 inset 的列表，
+        // 静止位不是容器顶，圆圈要在这之下多出来的空白里居中）。
+        top: useArea ? indicatorArea!.top : topOffset + (holdSpace ? restInset : 0),
         height: areaHeight,
         justifyContent: (useArea ? 'flex-end' : 'center') as 'flex-end' | 'center',
       }
