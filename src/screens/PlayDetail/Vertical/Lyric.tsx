@@ -272,6 +272,9 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
   // 不再用 winHeight - HEADER_HEIGHT 估算：后者未扣除状态栏高和底部 Player
   // 控制区高，导致 FlatList 被撑得比歌词页还大，下方被 PagerView 裁剪或顶上去。
   const [pageHeight, setPageHeight] = useState(winHeight > 0 ? Math.max(0, winHeight - 180) : 0)
+  // 【用户第 61 轮】切到歌词页时先隐藏列表，等首跳定位落位后再显示：
+  // 否则第一帧列表还停在顶部（第 0 行 / 0:00 位置），会闪一下再跳到当前行。
+  const [lyricReady, setLyricReady] = useState(false)
   // 【第 175 轮】歌词文本框宽度（列表宽 - 左右 contentContainer 内边距）：
   // 缩放锚点补偿要用它（见 LrcLine 的 lineShift）。
   const [lyricBoxWidth, setLyricBoxWidth] = useState(0)
@@ -1085,7 +1088,34 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
         handleScrollToActive(lineRef.current.line, true)
       })
     })
+
+    // 【用户第 61 轮】大歌词首帧未对齐的兜底：行高是动态测量、页面高度也来自 onLayout，
+    // 激活后的头几百毫秒内列表可能还没排完，第一次强制定位会被钳住。这里按进度条时间
+    // 再补几次强制定位（同一行，无动画），确保大歌词与进度条落在同一行。
+    const retryTimers = [80, 200, 450, 800].map(ms => setTimeout(() => {
+      const position = playerState.progress.nowPlayTime
+      if (!Number.isFinite(position) || position < 0) return
+      const target = getLineIndexForTime(position * 1000)
+      if (target < 0) return
+      try { lrcAnchorToTime(position * 1000, playerState.isPlay) } catch {}
+      lineRef.current.prevLine = lineRef.current.line
+      lineRef.current.line = target
+      setForceScroll(true)
+      handleScrollToActiveRef.current(target, true)
+    }, ms))
+    // 首跳（含 80/200ms 的两次校正）落位后再显示列表：隐藏期间不会看到第 0 行闪一下，
+    // 显示后也不会再被校正拉动。页面切换本身约 300ms，这段时间被隐藏遮住刚好。
+    const readyTimer = setTimeout(() => setLyricReady(true), 250)
+    return () => {
+      retryTimers.forEach(timer => clearTimeout(timer))
+      clearTimeout(readyTimer)
+    }
   }, [active, getLineIndexForTime, handleScrollToActive, setForceScroll])
+
+  // 离开歌词页时重新隐藏：下次切回来从「已对齐」开始，避免上一轮的状态让首帧直接可见。
+  useEffect(() => {
+    if (!active) setLyricReady(false)
+  }, [active])
 
   // 页面真实高度（onLayout）到来后用精确高度把高亮行重新定位到中央，
   // 修正首次用估算高度（winHeight-180）计算偏移、导致切到歌词页时高亮行偶发不居中的问题。
@@ -1234,7 +1264,14 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
         renderItem={renderItem}
         keyExtractor={getkey}
         onContentSizeChange={handleContentSizeChange}
-        style={{ height: pageHeight > 0 ? pageHeight : pagerHeight, width: '100%' }}
+        style={{
+          height: pageHeight > 0 ? pageHeight : pagerHeight,
+          width: '100%',
+          // 首跳落位前隐藏（见上方 activation effect）：避免看到第 0 行 / 0:00 闪一下。
+          // 不区分 active：横滑过程中页面已经可见、但 active 可能要到落页才为 true，
+          // 只按 active 判断会在滑动途中把未对齐的列表（停在顶部）露出来。
+          opacity: lyricReady ? 1 : 0,
+        }}
         // 【第 175 轮】量一次列表宽度：缩放锚点补偿按「文本可用宽度」算。
         onLayout={({ nativeEvent }) => {
           const w = Math.round(nativeEvent.layout.width)

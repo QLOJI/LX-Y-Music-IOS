@@ -1,7 +1,9 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
 import OnlineList, { type OnlineListType, type OnlineListProps } from '@/components/OnlineList'
 import { PULL_SETTLE_MS } from '@/components/common/usePullRefresh'
-import { clearListDetail, getListDetail, setListDetail, setListDetailInfo } from '@/core/songlist'
+import { clearListDetail, clearListDetailCache, getListDetail, setListDetail, setListDetailInfo } from '@/core/songlist'
+import { removeKgLikedSong, removeTxLikedSongs, removeWyLikedSong } from '@/store/user/action'
+import { getTxLikeKeys } from '@/utils/txLikeKey'
 import songlistState from '@/store/songlist/state'
 import { handlePlay } from './listAction'
 import { useListInfo } from './state'
@@ -327,14 +329,23 @@ export default forwardRef<MusicListType, MusicListProps>(({ componentId, isCreat
     songlistState.listDetailInfo.list = newList
   }, [])
 
-  // 自己的歌单里取消红心：立即把该歌曲从当前列表移除（乐观更新），不用再下拉刷新。
+  // 自己的歌单里取消红心：① 立即从当前列表移除（乐观更新）；② **真正同步平台** ——
+  // 走行菜单「移除」同一条接口把这首歌从当前平台歌单里删掉，并清掉歌单缓存，
+  // 这样下拉刷新不会再把它带回来。
   const handleUnlike = useCallback((song: LX.Music.MusicInfoOnline) => {
     const next = fullListRef.current.filter(s => s.id !== song.id)
     if (next.length === fullListRef.current.length) return
+    listRef.current?.removeFromList(song)
+    clearListDetailCache(info.source, info.id)
+    // 全局喜欢集合同步为「未喜欢」，其它界面的红心立即变空心。
+    const meta = (song.meta ?? {}) as any
+    if (info.source === 'wy') removeWyLikedSong(String(meta.songId ?? ''))
+    else if (info.source === 'tx') removeTxLikedSongs(getTxLikeKeys(song))
+    else if (info.source === 'kg') removeKgLikedSong(String(meta.hash || meta.songId || ''))
     fullListRef.current = next
     const filtered = searchText.trim() ? filterList(next, searchText, isFuzzySearch) : next
     listRef.current?.setList(filtered)
-  }, [filterList, searchText, isFuzzySearch])
+  }, [filterList, searchText, isFuzzySearch, info.source, info.id])
 
   return (
     <OnlineList componentId={componentId}
