@@ -251,6 +251,9 @@ export const getCurrentLyricLines = (): Array<{ time: number, text: string }> =>
  * 用于歌词就绪重锚（setLyric）、歌词页可见性恢复等「以引擎时间为准重新出发」的场景；
  * seek 落点的重锚走 app_event.play（core/lyric.play），不经过这里。
  */
+/** 当前歌词行号（-1 = 第一行之前）。供「暂停态按进度条校正行」的探针比较用。 */
+export const getCurrentLyricLine = () => lrcTools.currentLineData.line
+
 export const anchorLyric = (timeMs: number, isPlaying: boolean) => {
   lrcTools.lrc!.play(timeMs)
   if (!isPlaying) lrcTools.lrc!.pause()
