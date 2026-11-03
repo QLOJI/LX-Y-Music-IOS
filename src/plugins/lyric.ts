@@ -133,7 +133,7 @@ export const getWordState = (
   return { index: words.length - 1, progress: 1 }
 }
 
-export const setLyric = (lyric: string, translation?: string, romalrc?: string, lxLyric?: string | null) => {
+export const setLyric = (lyric: string, translation?: string, romalrc?: string, lxLyric?: string | null, positionHint?: number) => {
   // 歌词就绪后立即用【引擎实时位置】重锚时钟，避免“进度条已跳到记忆位置、
   // 歌词却停在顶部/第 0 行”的错位（尤其“杀死后台再点击播放”的记忆恢复场景：
   // 歌词异步加载后才就绪）。
@@ -149,6 +149,13 @@ export const setLyric = (lyric: string, translation?: string, romalrc?: string, 
   // 最后触发逐字钩子刷新组件侧快照。
   lrcTools.setLyric()
   buildWordsMap(lxLyric)
+  // positionHint：core 层用「进度条时间 / 引擎时间」仲裁后的可信位置（`getReliableLyricPosition`）。
+  // 启动恢复 / 暂停态下引擎原始 getPosition 可能是 0，而进度条停在记忆位置 —— 直接用它会把
+  // 歌词锚到第 1 行（迷你播放器、大小歌词都从头显示）。有 hint 时必须以 hint 为准。
+  if (positionHint != null && Number.isFinite(positionHint)) {
+    try { anchorLyric(Math.max(0, positionHint) * 1000, wasPlaying) } catch { lrcTools.isPlay = wasPlaying }
+    return
+  }
   void getPosition()
     .then((position) => {
       // 切歌/恢复瞬间用【引擎实时位置】重锚（≈上游 setLyric → syncLyricPosition(true, true)）：
