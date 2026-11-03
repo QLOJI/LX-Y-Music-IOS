@@ -65,11 +65,15 @@ export const init = async() => {
  * @param lyric lyric str
  * @param translation lyric translation
  */
-const handleSetLyric = async(lyric: string, translation = '', romalrc = '', lxLyric = '') => {
+const handleSetLyric = async(lyric: string, translation = '', romalrc = '', lxLyric = ''): Promise<number | undefined> => {
   // 本项目逐字歌词走独立参数：主歌词始终是标准 LRC，lxlrc 由歌词插件单独解析为
   // 逐字时间轴。参考分支把 lxlrc当作主歌词（它用 LxLyricPlayer 直接播），
   // 若照搬会让 lrc-file-parser 解析出带 <...> 标记的行，逐字与行文本都会错乱。
-  lrcSetLyric(lyric, translation, romalrc, lxLyric)
+  // 位置随歌词一起交给插件：可信位置 = 进度条 / 引擎仲裁后的值。启动恢复、暂停态下
+  // 引擎原生位置可能是 0，而进度条有记忆位置 —— 插件必须按这个值锚定，否则歌词回第 1 行。
+  const position = await getReliableLyricPosition().catch(() => undefined)
+  lrcSetLyric(lyric, translation, romalrc, lxLyric, position)
+  return position
 }
 
 /**
@@ -166,6 +170,7 @@ export const setLyric = async() => {
   if (!playerState.musicInfo.id) return undefined
   const musicInfo = playerState.musicInfo
   const source = (musicInfo as { source?: string }).source ?? ''
+  let anchorPosition: number | undefined
   if (musicInfo.lrc) {
     let tlrc = ''
     let rlrc = ''
@@ -176,11 +181,12 @@ export const setLyric = async() => {
     if (musicInfo.lxlrc && source != 'mg' && source != 'qs') {
       lxlrc = musicInfo.lxlrc
     }
-    await handleSetLyric(musicInfo.lrc, tlrc, rlrc, lxlrc)
+    anchorPosition = await handleSetLyric(musicInfo.lrc, tlrc, rlrc, lxlrc)
   }
 
   // 播放中：推进引擎时钟并返回它使用的位置；暂停中：只取位置、不动引擎
   // （推进解析器会让暂停期间歌词行自行前进）。
   if (playerState.isPlay) return play()
+  if (anchorPosition != null) return anchorPosition
   return getReliableLyricPosition().catch(() => undefined)
 }
