@@ -342,6 +342,9 @@ export default memo(({ isStylized, stylizedSelection, active = true }: RecSongsP
         onRefresh={handleRefresh}
         onLoadMore={() => {}}
         checkHomePagerIdle
+        // 切 tab / 首载的程序化刷新也走「列表下拉 60pt → 停住 → 自然收回」的下拉动画；
+        // lockHold 由 holdSpace 缺省继承（停留位 60pt 锁死，不会被回弹拽上去）。
+        autoHold
         ListFooterComponent={ListFooter}
       />
     </View>

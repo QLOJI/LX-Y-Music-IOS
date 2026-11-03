@@ -15,6 +15,10 @@ import SwipeBackArea from '@/components/common/SwipeBackArea'
 import { setNavActiveId } from '@/core/common'
 import { useBottomOverlayInset } from '@/store/common/hook'
 
+// lockHold 把 onScroll 作为原生事件映射（Animated.event + useNativeDriver），
+// RN 要求 VirtualizedList 系组件外层是 Animated 组件，否则挂载时抛 invariant。
+const AnimatedFlatList: any = Animated.createAnimatedComponent(FlatList as any)
+
 export default memo(() => {
   const followedArtists = useWyFollowedArtists()
   const [loading, setLoading] = useState(false)
@@ -59,6 +63,9 @@ export default memo(() => {
     flatListRef,
     0,
     true,
+    // lockHold：松手回弹越过 60pt 线后把列表钉住，空白不会小于 60pt。
+    undefined,
+    true,
   )
 
   return (
@@ -76,7 +83,7 @@ export default memo(() => {
       <View style={{ flex: 1, overflow: 'hidden' }}>
       {pullIndicator}
       <Animated.View style={{ flex: 1, transform: [{ translateY: pullOffset }] }}>
-      <FlatList
+      <AnimatedFlatList
         ref={flatListRef}
         {...pullScrollProps}
         onScrollBeginDrag={(e) => {

@@ -14,6 +14,10 @@ import ListItem from '../MyPlaylist/ListItem'
 import { useBottomOverlayInset } from '@/store/common/hook'
 import { useHomePageVisible } from '@/store/common/pageVisibility'
 
+// lockHold 把 onScroll 作为原生事件映射（Animated.event + useNativeDriver），
+// RN 要求 VirtualizedList 系组件外层是 Animated 组件，否则挂载时抛 invariant。
+const AnimatedFlatList: any = Animated.createAnimatedComponent(FlatList as any)
+
 export default memo(({ onOpenDetail, active = true }: { onOpenDetail: (info: any) => void, active?: boolean }) => {
   const [playlists, setPlaylists] = useState<any[]>([])
   const flatListRef = useRef<FlatList>(null)
@@ -116,7 +120,17 @@ export default memo(({ onOpenDetail, active = true }: { onOpenDetail: (info: any
   }
 
   // 自绘下拉刷新：不改变列表 inset，触发/结束都不会上下跳，刷新后顶部距离不变。
-  const { indicator: pullIndicator, scrollProps: pullScrollProps, pullOffset } = usePullRefresh(refreshing, handleRefresh, flatListRef, 0, true)
+  // lockHold：停留位 60pt 锁死；autoHold：切 tab / 首载的程序化刷新也走下拉动画。
+  const { indicator: pullIndicator, scrollProps: pullScrollProps, pullOffset } = usePullRefresh(
+    refreshing,
+    handleRefresh,
+    flatListRef,
+    0,
+    true,
+    undefined,
+    true,
+    true,
+  )
 
   // 空列表渲染：区分「未登录 / 加载失败 / 真的没有歌单」，并为失败/空数据提供重试入口。
   const renderEmpty = () => {
@@ -153,7 +167,7 @@ export default memo(({ onOpenDetail, active = true }: { onOpenDetail: (info: any
     <View style={{ flex: 1, overflow: 'hidden' }}>
       {pullIndicator}
       <Animated.View style={{ flex: 1, transform: [{ translateY: pullOffset }] }}>
-      <FlatList
+      <AnimatedFlatList
         ref={flatListRef}
         {...pullScrollProps}
         onScrollBeginDrag={(e) => {

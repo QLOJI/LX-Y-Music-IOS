@@ -95,6 +95,9 @@ export default memo(({ type, active = true }: Props) => {
         onRefresh={handleRefresh}
         onLoadMore={() => {}}
         checkHomePagerIdle
+        // 切 tab / 首载的程序化刷新也走「列表下拉 60pt → 停住 → 自然收回」的下拉动画；
+        // lockHold 由 holdSpace 缺省继承。
+        autoHold
       />
     </View>
   )

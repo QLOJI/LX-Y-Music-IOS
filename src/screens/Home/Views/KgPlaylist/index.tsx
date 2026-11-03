@@ -3,7 +3,7 @@
  */
 
 import { memo, useEffect, useState, useCallback, useRef } from 'react'
-import { View, FlatList, BackHandler, StyleSheet, Keyboard, ActivityIndicator, Animated } from 'react-native'
+import { View, FlatList as RNFlatList, BackHandler, StyleSheet, Keyboard, ActivityIndicator, Animated } from 'react-native'
 import usePullRefresh from '@/components/common/usePullRefresh'
 import ListItem from './ListItem'
 import { getUserPlaylists, subscribePlaylist, unsubscribePlaylist } from '@/utils/musicSdk/kg/utils/api'
@@ -37,6 +37,11 @@ interface PlaylistInfo {
 }
 
 type TabType = 'created' | 'collected'
+
+// lockHold 把 onScroll 作为原生事件映射（Animated.event + useNativeDriver），
+// RN 要求 VirtualizedList 系组件外层是 Animated 组件，否则挂载时抛 invariant。
+// 仍以 FlatList 这个名字渲染（首绘闸门契约按标签名核对，全页只允许一处列表标签）。
+const FlatList: any = Animated.createAnimatedComponent(RNFlatList as any)
 
 export default memo(() => {
   const t = useI18n()
@@ -296,6 +301,9 @@ export default memo(() => {
     handlePullRefresh,
     flatListRef,
     0,
+    true,
+    // lockHold：松手回弹越过 60pt 线后把列表钉住，空白不会小于 60pt。
+    undefined,
     true,
   )
 

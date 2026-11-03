@@ -19,6 +19,10 @@ import { useHomePageVisible } from '@/store/common/pageVisibility'
 
 type RecType = 'home' | 'radar' | 'newsong'
 
+// lockHold 把 onScroll 作为原生事件映射（Animated.event + useNativeDriver），
+// RN 要求 VirtualizedList 系组件外层是 Animated 组件，否则挂载时抛 invariant。
+const AnimatedFlatList: any = Animated.createAnimatedComponent(FlatList as any)
+
 interface Props {
   type: RecType
   onOpenDetail?: (playlistInfo: ListInfoItem) => void
@@ -191,6 +195,11 @@ export default memo(({ type, onOpenDetail, active = true }: Props) => {
     playlistListRef,
     0,
     true,
+    undefined,
+    // lockHold：停留位 60pt 锁死，回弹越过 60pt 线后不再变小。
+    true,
+    // autoHold：切 tab / 首载的程序化刷新也走「列表下拉 60pt → 停住 → 自然收回」。
+    true,
   )
 
   const handlePlayList = useCallback((index: number) => {
@@ -245,7 +254,7 @@ export default memo(({ type, onOpenDetail, active = true }: Props) => {
       <View style={{ flex: 1, overflow: 'hidden' }}>
         {pullIndicator}
         <Animated.View style={{ flex: 1, transform: [{ translateY: pullOffset }] }}>
-        <FlatList
+        <AnimatedFlatList
           ref={playlistListRef}
           {...pullScrollProps}
           data={playlists}
@@ -278,6 +287,9 @@ export default memo(({ type, onOpenDetail, active = true }: Props) => {
         onRefresh={handleRefresh}
         onLoadMore={() => {}}
         checkHomePagerIdle
+        // 切 tab / 首载的程序化刷新也走「列表下拉 60pt → 停住 → 自然收回」的下拉动画；
+        // lockHold 由 holdSpace 缺省继承。
+        autoHold
       />
     </View>
   )

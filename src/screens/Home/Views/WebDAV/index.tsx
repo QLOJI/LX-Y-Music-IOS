@@ -80,6 +80,10 @@ import { batchDownload, downloadMusicAsync } from '@/core/download'
 import { readMetadata, readPic } from '@/utils/localMediaMetadata'
 import { existsFile } from '@/utils/fs'
 
+// lockHold 把 onScroll 作为原生事件映射（Animated.event + useNativeDriver），
+// RN 要求 VirtualizedList 系组件外层是 Animated 组件，否则挂载时抛 invariant。
+const AnimatedFlatList: any = Animated.createAnimatedComponent(FlatList as any)
+
 type ActiveTab = 'config' | 'list' | 'folders'
 const ITEM_HEIGHT = scaleSizeH(LIST_ITEM_HEIGHT)
 
@@ -763,6 +767,9 @@ export default memo(() => {
     listRef,
     0,
     true,
+    // lockHold：松手回弹越过 60pt 线后把列表钉住，空白不会小于 60pt。
+    undefined,
+    true,
   )
 
   const handlePlay = useCallback(
@@ -1435,7 +1442,7 @@ export default memo(() => {
     <View style={[styles.listPage, { overflow: 'hidden' }]}>
       {pullIndicator}
       <Animated.View style={{ flex: 1, transform: [{ translateY: pullOffset }] }}>
-      <FlatList
+      <AnimatedFlatList
         {...pullScrollProps}
         key={`cols-${numColumns}`}
         ref={listRef}

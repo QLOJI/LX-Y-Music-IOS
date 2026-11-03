@@ -93,9 +93,12 @@ export default memo(() => {
     const tabIndex = TABS.findIndex((t) => t.id === newTab)
     // 先把原生切页请求发出去，再更新 React 选中态：页面动画不被整页重渲染挡在前面。
     requestPage(tabIndex)
-    // 选中态不在这里改：等 onPageSelected（页面真正落定）再改。
-    // 点击当帧重渲染 PagerView 子节点会干扰原生转场，表现为「点了先停一会儿才滑」。
-    // 高亮晚转场结束约 0.3s，换切页指令第一时间过桥。
+    // 【用户第 59 轮】点击后按钮字体高亮**立即**切过去，不等 PagerView 落页事件
+    //（旧写法等 onPageSelected，高亮晚约 0.3s，就是「点了延迟切换」的观感）。
+    // 只改高亮、不改 settledTab：PagerView 子节点的 active 不在这帧翻，原生转场不受
+    // 整页重渲染干扰；落页后由 onPageSelected 放行数据刷新 —— 新 tab 若为空，就是
+    // 「空 → 下拉刷新动画 → 数据回来直接显示」。
+    setActiveTab(newTab)
   }
 
   const onPageSelected = useCallback(
