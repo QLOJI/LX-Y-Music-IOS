@@ -4,9 +4,6 @@ import { getTopSourceInfo } from '@/core/playListToDefault'
 import { LIST_IDS } from '@/config/constant'
 import listState from '@/store/list/state'
 
-const MIN_PLAY_TIME = 2 * 60
-const MIN_PLAY_RATIO = 0.5
-
 export default () => {
   let currentMusicInfo: LX.Music.MusicInfo | null = null
   let currentListId: string | null = null
@@ -39,7 +36,10 @@ export default () => {
 
   const handlePlayProgressChanged: typeof global.state_event.playProgressChanged = (progress) => {
     if (isRecorded || !currentMusicInfo) return
-    if (progress.nowPlayTime < MIN_PLAY_TIME && (!progress.maxPlayTime || progress.nowPlayTime / progress.maxPlayTime < MIN_PLAY_RATIO)) return
+    // 【用户第 59 轮】正在播放就写入历史，不再等「播满 2 分钟或 50%」（原门槛会让
+    // 正在播的歌在历史里缺席到播完/快播完）。第一帧有效进度（nowPlayTime > 0）即落盘；
+    // 同一首歌本次播放只写一次，切歌时由 musicToggled 重置。
+    if (progress.nowPlayTime <= 0) return
 
     isRecorded = true
     void addPlayHistory({

@@ -11,6 +11,9 @@ import wyUserApi from '@/utils/musicSdk/wy/user'
 import txUserApi from '@/utils/musicSdk/tx/user'
 import { getUserPlaylists as getKgUserPlaylists } from '@/utils/musicSdk/kg/utils/api'
 import {
+  addKgLikedSongs,
+  addTxLikedSongs,
+  addWyLikedSongs,
   setWyFollowedArtists,
   setWyLikedSongs,
   setWySubscribedAlbums,
@@ -21,6 +24,7 @@ import {
   setKgSubscribedPlaylists,
   setKgLikedSongs,
 } from '@/store/user/action.ts'
+import { getKgOwnPlaylistSongKeys, getTxOwnPlaylistSongKeys, getWyOwnPlaylistSongIds } from './ownPlaylistLikedIds'
 import { getDownloadTasks } from '@/utils/data/download.ts'
 import downloadActions from '@/store/download/action'
 import { withTimeout } from '@/utils/withTimeout'
@@ -92,6 +96,11 @@ export default async(appSetting: LX.AppSetting) => {
         wyUserApi.getLikedSongList(uid, wy_cookie).then((ids: any) => {
           setWyLikedSongs(ids)
           bootLog('Wy like list inited.')
+          // 自建歌单里的歌也算「已在平台收藏」（红心填充）；失败不影响喜欢集合。
+          void getWyOwnPlaylistSongIds(String(uid), wy_cookie).then(ownIds => {
+            if (ownIds.length) addWyLikedSongs(ownIds)
+            bootLog(`Wy own playlists merged. (${ownIds.length} ids)`)
+          }).catch(() => {})
         })
         wyUserApi.getAllSublist().then(artists => {
           setWyFollowedArtists(artists)
@@ -150,6 +159,11 @@ export default async(appSetting: LX.AppSetting) => {
 
         setTxLikedSongs(allLikedMids)
         bootLog(`Tx like list inited. (${allLikedMids.length} songs)`)
+        // 自建歌单（含「我喜欢」）里的歌算作已在平台收藏。
+        void getTxOwnPlaylistSongKeys().then(keys => {
+          if (keys.length) addTxLikedSongs(keys)
+          bootLog(`Tx own playlists merged. (${keys.length} keys)`)
+        }).catch(() => {})
       } catch (err: any) {
         bootLog(`Tx like list init failed: ${err.message}`)
       }
@@ -232,6 +246,11 @@ export default async(appSetting: LX.AppSetting) => {
             bootLog(`Kg like list init failed: ${err.message}`)
           }
         }
+        // 全部自建歌单（含「我喜欢」）里的歌都算已在平台收藏。
+        void getKgOwnPlaylistSongKeys(kg_cookie).then(ids => {
+          if (ids.length) addKgLikedSongs(ids)
+          bootLog(`Kg own playlists merged. (${ids.length} keys)`)
+        }).catch(() => {})
       }
     }).catch(err => {
       bootLog(`Kg playlists init failed: ${err.message}`)

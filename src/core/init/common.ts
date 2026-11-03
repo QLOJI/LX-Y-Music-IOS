@@ -3,7 +3,8 @@ import { prefetch } from '@/components/common/ImageBackground'
 import { setBgPic, updateSetting } from '@/core/common'
 import wyUserApi from '@/utils/musicSdk/wy/user'
 import txUserApi from '@/utils/musicSdk/tx/user'
-import { setWyFollowedArtists, setWyLikedSongs, setWySubscribedAlbums, setWyUid, setTxLikedSongs, clearTxLikedSongs, setKgLikedSongs } from '@/store/user/action'
+import { addKgLikedSongs, addTxLikedSongs, addWyLikedSongs, setWyFollowedArtists, setWyLikedSongs, setWySubscribedAlbums, setWyUid, setTxLikedSongs, clearTxLikedSongs, setKgLikedSongs } from '@/store/user/action'
+import { getKgOwnPlaylistSongKeys, getTxOwnPlaylistSongKeys, getWyOwnPlaylistSongIds } from './ownPlaylistLikedIds'
 import { getUserPlaylists, getPlaylistSongs } from '@/utils/musicSdk/kg/utils/api'
 import { toast } from '@/utils/tools'
 import { searchLog } from '@/utils/searchLog'
@@ -60,6 +61,10 @@ export default async(setting: LX.AppSetting) => {
           // 必须同步设置 UID，否则依赖 useWyUid 的「我的歌单」页面在 cookie 更新后
           // 因 uid 为空而不会触发歌单加载（iPad 常驻/预挂载场景尤其明显）。
           setWyUid(uid)
+          // 自建歌单里的歌也算「已在平台收藏」：后台补齐，失败不影响喜欢集合。
+          void getWyOwnPlaylistSongIds(String(uid), cookie).then(ids => {
+            if (ids.length) addWyLikedSongs(ids)
+          }).catch(() => {})
           return Promise.all([
             wyUserApi.getLikedSongList(uid, cookie),
             wyUserApi.getAllSublist(),
@@ -107,6 +112,10 @@ export default async(setting: LX.AppSetting) => {
 
         setTxLikedSongs(allLikedMids)
         console.log(`QQ音乐喜欢歌曲加载成功，共 ${allLikedMids.length} 首`)
+        // 自建歌单（含「我喜欢」）里的歌算作已在平台收藏。
+        void getTxOwnPlaylistSongKeys().then(keys => {
+          if (keys.length) addTxLikedSongs(keys)
+        }).catch(() => {})
       } catch (err: any) {
         toast(`QQ音乐数据获取失败: ${err.message}`)
       }
@@ -126,6 +135,11 @@ export default async(setting: LX.AppSetting) => {
           console.log('酷狗歌单获取失败')
           return
         }
+
+        // 全部自建歌单（含「我喜欢」）里的歌都算已在平台收藏；后台补齐，失败不影响喜欢集合。
+        void getKgOwnPlaylistSongKeys(cookie).then(ids => {
+          if (ids.length) addKgLikedSongs(ids)
+        }).catch(() => {})
 
         const favoritesPlaylist = playlistsResult.data.createdList.find((p: any) => p.isFavorites)
         if (!favoritesPlaylist) {
