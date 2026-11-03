@@ -26,6 +26,7 @@ import ListImportExport, { type ListImportExportType } from './MyList/ListImport
 import { handleRemove, handleSync } from './MyList/listAction'
 import { LIST_IDS, COMPONENT_IDS } from '@/config/constant'
 import { scaleSizeH } from '@/utils/pixelRatio'
+import { bumpImageEpoch } from '@/utils/imageEpoch'
 import { designRadius, designSpacing, pageTitleGap, pageTitleLineHeight } from '@/theme/DesignTokens'
 import { useButtonRadius } from '@/utils/buttonRadius'
 import { useNavActiveId, useStatusbarHeight } from '@/store/common/hook'
@@ -454,6 +455,8 @@ export default memo(() => {
     setActiveList(LIST_IDS.DEFAULT)
     // 【第 30 轮·图九】从歌单详情返回也算「回到我的」：详情里可能刚增删过歌曲，列表行的
     // 封面 / 歌曲数得跟上 —— 静默刷一次（不转圈，见 refreshListInfo 注释）。
+    // 同时推进图片纪元：封面 URL 没变但内容变了（例如换了歌单封面）时也能重新加载图标。
+    bumpImageEpoch()
     refreshListInfoRef.current?.()
   }, [])
 
@@ -620,6 +623,7 @@ export default memo(() => {
 
   const handlePullRefresh = useCallback(() => {
     setRefreshing(true)
+    bumpImageEpoch()
     void refreshListInfo(true)
   }, [refreshListInfo])
   // 圆圈下对齐：贴在「状态栏下方留白」区域的底部、标题正上方（再上移 5pt）。
@@ -642,6 +646,7 @@ export default memo(() => {
     const subscription = Navigation.events().registerComponentDidAppearListener(({ componentId: appearedId }) => {
       const homeId = commonState.componentIds.find(c => c.name === 'home')?.id
       if (appearedId === homeId && !isFirstLoadRef.current) {
+        bumpImageEpoch()
         void refreshListInfo()
       }
     })
@@ -656,6 +661,8 @@ export default memo(() => {
   useEffect(() => {
     const handleNavChange = (id: string) => {
       if (id !== 'nav_love') return
+      // 右滑返回 / 底部「我的」tab / 从各子页返回都会走到这里：刷新列表信息与封面图标。
+      bumpImageEpoch()
       void refreshListInfo()
     }
     global.state_event.on('navActiveIdUpdated', handleNavChange)

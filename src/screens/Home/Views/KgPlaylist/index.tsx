@@ -24,6 +24,7 @@ import PillTabs from '@/components/common/PillTabs'
 import SwipeBackArea from '@/components/common/SwipeBackArea'
 import { setNavActiveId } from '@/core/common'
 import { useBottomOverlayInset } from '@/store/common/hook'
+import { bumpImageEpoch } from '@/utils/imageEpoch'
 
 interface PlaylistInfo {
   id: string
@@ -150,6 +151,13 @@ export default memo(() => {
     void fetchPlaylists('pull')
   }, [fetchPlaylists])
 
+  // 从歌单详情返回 / 重新进入本页（右滑、返回键、底部「我的」tab 等任意路径）：
+  // 静默重取歌单信息 + 推进图片纪元刷新封面图标。
+  const refreshOnReturn = useCallback(() => {
+    bumpImageEpoch()
+    void fetchPlaylists('silent')
+  }, [fetchPlaylists])
+
   useEffect(() => {
     const onBackPress = () => {
       if (selectedPlaylistRef.current) {
@@ -157,6 +165,7 @@ export default memo(() => {
           return false
         }
         setSelectedPlaylist(null)
+        refreshOnReturn()
         return true
       }
       return false
@@ -164,11 +173,24 @@ export default memo(() => {
 
     const subscription = BackHandler.addEventListener('hardwareBackPress', onBackPress)
     return () => { subscription.remove() }
-  }, [])
+  }, [refreshOnReturn])
+
+  useEffect(() => {
+    let prevId: string = commonState.navActiveId
+    const handleNavActiveIdUpdate = (id: string) => {
+      const prev = prevId
+      prevId = id
+      if (id !== 'nav_kg_playlist' || prev === id) return
+      refreshOnReturn()
+    }
+    global.state_event.on('navActiveIdUpdated', handleNavActiveIdUpdate)
+    return () => { global.state_event.off('navActiveIdUpdated', handleNavActiveIdUpdate) }
+  }, [refreshOnReturn])
 
   const handleBack = useCallback(() => {
     setSelectedPlaylist(null)
-  }, [])
+    refreshOnReturn()
+  }, [refreshOnReturn])
 
   const handleMenuPress = useCallback((item: PlaylistInfo, position: Position) => {
     selectedItemRef.current = item

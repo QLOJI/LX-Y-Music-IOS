@@ -25,6 +25,7 @@ import { setWySubscribedPlaylists, removeWySubscribedPlaylist } from '@/store/us
 import Menu, { type MenuType, type Position } from '@/components/common/Menu'
 import PlaylistEditModal, { type PlaylistEditModalType } from './PlaylistEditModal'
 import SwipeBackArea from '@/components/common/SwipeBackArea'
+import { bumpImageEpoch } from '@/utils/imageEpoch'
 import MusicInfoOnline = LX.Music.MusicInfoOnline
 
 // lockHold 把 onScroll 作为原生事件映射（Animated.event + useNativeDriver），
@@ -119,6 +120,12 @@ export default memo(() => {
       })
   }, [cookie, uid])
 
+  // 从歌单详情返回 / 重新进入本页：静默重取歌单信息，并推进图片纪元让封面图标重新加载。
+  const refreshOnReturn = useCallback(() => {
+    bumpImageEpoch()
+    onRefresh()
+  }, [onRefresh])
+
   useEffect(() => {
     const onBackPress = () => {
       if (selectedPlaylistRef.current) {
@@ -127,6 +134,7 @@ export default memo(() => {
         }
 
         setSelectedPlaylist(null)
+        refreshOnReturn()
         return true
       }
 
@@ -135,7 +143,20 @@ export default memo(() => {
 
     const subscription = BackHandler.addEventListener('hardwareBackPress', onBackPress)
     return () => { subscription.remove() }
-  }, [])
+  }, [refreshOnReturn])
+
+  // 重新进入本页（从其它页面返回）：同样重取列表信息 + 刷新图标。
+  useEffect(() => {
+    let prevId: string = commonState.navActiveId
+    const handleNavActiveIdUpdate = (id: string) => {
+      const prev = prevId
+      prevId = id
+      if (id !== 'nav_my_playlist' || prev === id) return
+      refreshOnReturn()
+    }
+    global.state_event.on('navActiveIdUpdated', handleNavActiveIdUpdate)
+    return () => { global.state_event.off('navActiveIdUpdated', handleNavActiveIdUpdate) }
+  }, [refreshOnReturn])
 
   const handleItemPress = useCallback((playlistInfo: ListInfoItem) => {
     setSelectedPlaylist(playlistInfo)
@@ -219,7 +240,9 @@ export default memo(() => {
   const handleBack = useCallback(() => {
     setSelectedPlaylist(null)
     setScrollToMusicInfo(null)
-  }, [])
+    // 从歌单详情返回：静默刷新歌单信息与封面图标。
+    refreshOnReturn()
+  }, [refreshOnReturn])
   // 【第 21 轮·图二】右滑返回「我的」主界面：与排行榜页（Leaderboard/Vertical）同一条
   // 右缘手势带，onBack 只做一件事 —— 把首页切回「我的」（setNavActiveId('nav_love')）。
   const handleBackToLove = useCallback(() => {
