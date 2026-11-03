@@ -60,6 +60,8 @@ type ListItemProps = {
   listId?: string
   showCover?: boolean
   hideMenu?: boolean
+  /** 自己的歌单（我喜欢 / 自建）：整页歌曲都按「平台已收藏」显示实心红心。 */
+  forceLiked?: boolean
 }
 
 const ListItem = memo(
@@ -78,6 +80,7 @@ const ListItem = memo(
     listId: _listId,
     showCover = true,
     hideMenu = false,
+    forceLiked = false,
     qualityShowHighest,
   }: ListItemProps & { qualityShowHighest: boolean }) => {
     const theme = useTheme()
@@ -114,7 +117,8 @@ const ListItem = memo(
     }
 
     const showLikeButton = item.source === 'wy' || item.source === 'tx' || item.source === 'kg'
-    const isLiked = item.source === 'wy' ? isWyLiked : item.source === 'tx' ? isTxLiked : item.source === 'kg' ? isKgLiked : false
+    // 自己的歌单（我喜欢 / 自建）：歌曲在平台就已「添加」，与全局喜欢集合是否拉到无关。
+    const isLiked = forceLiked || (item.source === 'wy' ? isWyLiked : item.source === 'tx' ? isTxLiked : item.source === 'kg' ? isKgLiked : false)
 
     const handleLike = () => {
       if (item.source === 'wy') {
@@ -260,6 +264,7 @@ const ListItem = memo(
       nextProps.selectedList.includes(nextProps.item) ==
       prevProps.selectedList.includes(nextProps.item) &&
       prevProps.showCover === nextProps.showCover &&
+      prevProps.forceLiked === nextProps.forceLiked &&
       prevProps.qualityShowHighest === nextProps.qualityShowHighest
     )
   },

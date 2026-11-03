@@ -45,6 +45,11 @@ export interface ListProps {
   /** 程序化刷新（切 tab / 首载）也走「列表下拉 60pt → 停住 → 自然收回」的下拉动画。 */
   autoHold?: boolean
   /**
+   * 强制红心（自己的歌单：我喜欢 / 自建歌单）：这些歌单里的歌在平台就算「已添加」，
+   * 与全局喜欢集合是否拉到无关。页面侧已经确认 cookie 存在才会传 true。
+   */
+  forceLiked?: boolean
+  /**
    * 显式指定列表顶部的安全区处理方式。传 'never' 表示「页面自己负责顶部间距」
    * （页头里已有 PageTopInset），标题位置因此与推荐页同一条基准线。
    */
@@ -93,6 +98,7 @@ const List = forwardRef<ListType, ListProps>(
       holdSpace = true,
       lockHold,
       autoHold,
+      forceLiked,
       contentInsetAdjustmentBehavior,
       indicatorArea,
       rowType,
@@ -317,6 +323,7 @@ const List = forwardRef<ListType, ListProps>(
       handleLongPress,
       onShowMenu,
       rowInfo,
+      forceLiked,
     })
     renderDepsRef.current = {
       showSource,
@@ -329,6 +336,7 @@ const List = forwardRef<ListType, ListProps>(
       handleLongPress,
       onShowMenu,
       rowInfo,
+      forceLiked,
     }
     const renderItem = useCallback<NonNullable<FlatListType['renderItem']>>(({ item, index }) => {
       const d = renderDepsRef.current
@@ -346,6 +354,7 @@ const List = forwardRef<ListType, ListProps>(
           rowInfo={d.rowInfo}
           isShowAlbumName={d.isShowAlbumName}
           isShowInterval={d.isShowInterval}
+          forceLiked={d.forceLiked}
         />
       )
     }, [])

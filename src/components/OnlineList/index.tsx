@@ -49,6 +49,8 @@ export interface OnlineListProps {
   lockHold?: boolean
   /** 程序化刷新（切 tab / 首载）也播放「列表下拉 60pt → 停住 → 自然收回」的下拉动画。 */
   autoHold?: boolean
+  /** 自己的歌单（我喜欢 / 自建）：整页歌曲按「平台已收藏」显示实心红心（页面已确认 cookie 存在）。 */
+  forceLiked?: boolean
   /** 列表顶部安全区处理方式；'never' = 由页面自己的页头负责顶部间距。 */
   contentInsetAdjustmentBehavior?: ListProps['contentInsetAdjustmentBehavior']
   /** 圆圈定位区（纯回弹页面用）：圆圈下对齐贴在该区域底部，即标题正上方。 */
@@ -82,6 +84,7 @@ export default forwardRef<OnlineListType, OnlineListProps>(
       holdSpace,
       lockHold,
       autoHold,
+      forceLiked,
       contentInsetAdjustmentBehavior,
       indicatorArea,
       checkHomePagerIdle = false,
@@ -328,6 +331,7 @@ export default forwardRef<OnlineListType, OnlineListProps>(
             holdSpace={holdSpace}
             lockHold={lockHold}
             autoHold={autoHold}
+            forceLiked={forceLiked}
             contentInsetAdjustmentBehavior={contentInsetAdjustmentBehavior}
             indicatorArea={indicatorArea}
             checkHomePagerIdle={checkHomePagerIdle}
