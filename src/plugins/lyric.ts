@@ -185,12 +185,13 @@ export const play = (time?: number) => {
   // 音频位置变化（seek 落点出声 / 暂停恢复 / 缓冲恢复）时由引擎 playing 事件
   // （controller：state playing → app_event.play）重新以引擎绝对时间重锚，
   // 与上游 onPlaying → lrc.play(currentTime) 完全同构。
-  // 此前这里 play 后立即 pause 杀掉 ticker，行级只能靠 playProgress 的 rAF
-  // 每帧前向推进 + 轮询行同步驱动——那些是对「无事件驱动」架构打的补丁，
-  // 且重锚永远滞后轮询周期（seek 后歌词不同步的根源之一）。
   // 调用方统一传入【毫秒】（lrc-file-parser 的语义）。
   lrcTools.isPlay = true
   lrcTools.lrc!.play(time ?? 0)
+  // 【第 196 轮】暂停态的 seek/恢复锚定也同步派发行：`core.lyric.seek()` 是
+  // play + 下一拍 pause，内部 tick 常常来不及发 onPlay；冷启动恢复进度走的正是
+  // 这条路径，不补这一发，引擎行会一直停在 0。
+  if (time != null) emitLineForTime(time)
 }
 export const pause = () => {
   // console.log('pause')
