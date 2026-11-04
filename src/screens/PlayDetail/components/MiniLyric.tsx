@@ -24,6 +24,7 @@ import { useWindowSize } from '@/utils/hooks'
 import { useComponentIds, useNavReturning } from '@/store/common/hook'
 import { COMPONENT_IDS } from '@/config/constant'
 import playerState from '@/store/player/state'
+import { useIsPlay } from '@/store/player/hook'
 import { IDLE_RETURN_MS, LINE_CHANGE_GLIDE_MS, LINE_ZOOM_MS, RETURN_TO_ACTIVE_MS, easeInOutSine } from '@/screens/PlayDetail/lyricAnimation'
 
 // 迷你歌词 = 封面页上的「上一行 / 当前行 / 下一行」**定窗**歌词窗（窗口高度固定，行高逐行算）。
@@ -134,8 +135,30 @@ export interface MiniLyricProps {
 
 const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: MiniLyricProps) => {
   const theme = useTheme()
-  const { line: activeLine } = useLrcPlay()
+  const { line: engineLine } = useLrcPlay()
   const lyricLines = useLrcSet()
+  const isPlay = useIsPlay()
+  // 【第 197 轮】与大歌词同口径：暂停态（尤其冷启动恢复）优先按进度条换算当前行。
+  // 引擎行可能还停在 0，小歌词会先按第 0 行排好、随后才跳回当前行 —— 用户看到的
+  // 「闪小歌词开头」。这里让 activeLine 在挂载首帧就取进度条对应的行。
+  const [pausedPosition, setPausedPosition] = useState(() => playerState.progress.nowPlayTime)
+  useEffect(() => {
+    if (isPlay) return
+    setPausedPosition(playerState.progress.nowPlayTime)
+    const handleProgress = (progress: { nowPlayTime: number }) => {
+      setPausedPosition(progress.nowPlayTime)
+    }
+    global.state_event.on('playProgressChanged', handleProgress)
+    return () => {
+      global.state_event.off('playProgressChanged', handleProgress)
+    }
+  }, [isPlay])
+  const activeLine = useMemo(() => {
+    if (isPlay || engineLine > 0) return engineLine
+    if (!(pausedPosition > 0) || !lyricLines.length) return engineLine
+    const fromProgress = findLineIndexByTime(lyricLines, pausedPosition * 1000)
+    return Math.max(engineLine, fromProgress)
+  }, [engineLine, isPlay, pausedPosition, lyricLines])
   const wordsByIndex = useLrcWordsMap()
   const textAlign = useSettingValue('playDetail.style.miniLyricAlign')
   // 小歌词逐字高亮（设置项）：关闭时整行高亮（当前行一种颜色、其余一种颜色）
@@ -681,7 +704,13 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
     global.app_event.setProgress(time)
   }, [])
 
-  // 容器级点击判定：短按 + 位移 < 8pt 才算点击；拖动、长按、浮层定位期间都不切页。
+  // 行内 Pressable 的 onPress 仍保留作为第二条通道：容器触摸判定与 Pressable 是两套
+  // 独立的事件路径，任一条能到达就能切页（重复请求 requestPage 是幂等的）。
+  const handlePress = useCallback(() => {
+    onPress?.()
+  }, [onPress])
+
+  // 容器级点击判定：短按 + 位移 < 8pt 才算点击；拖动、长按由标记排除。
   const handleTapStart = useCallback((e: any) => {
     const { pageX, pageY } = e.nativeEvent
     tapStartRef.current = { x: pageX, y: pageY, at: Date.now() }
@@ -700,7 +729,9 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
     tapStartRef.current = null
     if (!s || tapMovedRef.current || longPressFiredRef.current) return
     if (Date.now() - s.at > 350) return
-    if (isPauseScrollRef.current || isOverlayShownRef.current) return
+    // 不再用 isPauseScrollRef / isOverlayShownRef 做总闸：这两个状态一旦卡住就会让
+    // 「连续点击都没反应」永久化。浮层三角自己的触摸会 stopPropagation（见 PlayLine），
+    // 拖动/长按由上面的位移与 longPress 标记排除。
     onPress?.()
   }, [onPress])
   const handleTapCancel = useCallback(() => {
@@ -728,7 +759,8 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
       <Pressable
         // 行高逐行化（第 16 轮第 8 条）：当前行带翻译时这一行更高，其余行只占行盒 + 净间距
         style={[styles.line, { height: rowHeights[index] ?? baseRowHeight }]}
-        // 点击由外层容器统一识别（见 handleTapEnd）；行内只保留长按进入定位态。
+        // 双通道：行内 onPress 与容器 handleTapEnd 任一生效都能切页；长按进入定位态。
+        onPress={handlePress}
         onLongPress={handleLongPress}
         // 【第 194 轮】「点小歌词偶尔没反应」的兜底：
         // ① 长按阈值 500 → 650ms：慢一点点按仍算点击，不会先被判成长按（长按不会触发 onPress）；
@@ -798,7 +830,7 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
         </Animated.View>
       </Pressable>
     )
-  }, [activeLine, wordsByIndex, lyricLines, isKaraoke, baseRowHeight, rowHeights, textStyle, translationStyle, activeColor, inactiveColor, handleLongPress, getLineScale, getLineShift, visible, karaokeVisible, zoom, lyricContentWidth, metrics])
+  }, [activeLine, wordsByIndex, lyricLines, isKaraoke, baseRowHeight, rowHeights, textStyle, translationStyle, activeColor, inactiveColor, handlePress, handleLongPress, getLineScale, getLineShift, visible, karaokeVisible, zoom, lyricContentWidth, metrics])
 
   const getKey = useCallback((_item: Line, index: number) => `${index}`, [])
   // 定高行：getItemLayout 精确（不需要像大歌词那样动态测量），虚拟化窗口与滚动目标都以它为准

@@ -261,7 +261,13 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
   }, [])
 
   const switchRetryRef = useRef<NodeJS.Timeout | null>(null)
+  const lastSwitchAtRef = useRef(0)
   const handleSwitchToLyricPage = useCallback(() => {
+    // 小歌词有两条点击通道（行内 Pressable + 容器触摸判定），一次点击可能进来两次：
+    // 250ms 内只认第一次，避免两次 setPage 把刚起手的切页动画又拽回封面。
+    const now = Date.now()
+    if (now - lastSwitchAtRef.current < 250) return
+    lastSwitchAtRef.current = now
     // 【第 195 轮】点小歌词前先抹平库私有 isScrolling 闩锁：该闩锁卡在「滚动中」时，
     // setPage 会被原生直接吞掉，表现就是「点了有概率没反应」。清完再走恢复链。
     clearPagerLatch()
@@ -269,15 +275,21 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
     // 避免 completion 丢失把整片页面区锁死）；原生不响应时自动 30/200/900/1600ms 逐级
     // 兜底，最后重挂 PagerView。
     requestPage(1)
-    // 再补一记：若 180ms 后 JS 侧还没落页（原生 completion/回调丢失），重清闩锁再请求一次。
-    // 恢复链在原生侧有兜底，但事件丢失时 detailPageIndexRef 不会更新，这一拍直接补发。
+    // 再补一记：400ms 后还没落页（原生 completion/回调丢失或实例卡死），直接重挂 PagerView，
+    // 并按 initialPage=1 挂到歌词页。用户实测「连续点都没反应，必须左右滑一次再回来」——
+    // setPage/恢复链都被原生闩锁吞掉时，只有重挂能确定性恢复；重挂时直接落在目标页，
+    // 不需要再滑一次。
     if (switchRetryRef.current) clearTimeout(switchRetryRef.current)
     switchRetryRef.current = setTimeout(() => {
       switchRetryRef.current = null
       if (detailPageIndexRef.current === 1) return
       clearPagerLatch()
-      requestPage(1)
-    }, 180)
+      showLyricRef.current = true
+      detailPageIndexRef.current = 1
+      setPageIndex(1)
+      screenkeepAwake()
+      setPagerRebuild(v => v + 1)
+    }, 400)
   }, [requestPage, clearPagerLatch])
 
   useEffect(() => {

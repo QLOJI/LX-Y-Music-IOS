@@ -224,6 +224,9 @@ export default forwardRef<PlayLineType, PlayLineProps>(({ onPlayLine, topPercent
           style={[styles.button, { borderRadius: buttonRadius(18) /* 「按钮圆角」：播放三角图标按钮，无固定高，可见高度 ≈ 图标 18（Icon size=18） */ }]}
           onLayout={handleButtonLayout}
           onPress={handlePlayLine}
+          // 阻止冒泡到小歌词容器的「短按切歌词页」判定：点三角只 seek，不切页。
+          onTouchStart={(e) => e.stopPropagation()}
+          onTouchEnd={(e) => e.stopPropagation()}
         >
           <Icon name="play" color={theme['c-button-font']} size={18} />
         </TouchableOpacity>
