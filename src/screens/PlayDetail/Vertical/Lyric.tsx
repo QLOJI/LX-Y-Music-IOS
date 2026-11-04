@@ -465,6 +465,18 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
     return findLineIndexByTime(lyricLines, time)
   }, [lyricLines])
 
+  /**
+   * 【第 196 轮】暂停态下由进度条换算的行号（-1 = 播放中/进度未知，不采用）。
+   * 冷启动恢复时歌词引擎可能还停在 0 行，而进度条已经是 2:30；首次定位若盲信引擎，
+   * 列表会先滚到开头。这里优先用进度条（用户看到的真相），并把引擎一并锚过去。
+   */
+  const getPausedLineHint = useCallback(() => {
+    if (playerState.isPlay) return -1
+    const seconds = playerState.progress.nowPlayTime
+    if (!Number.isFinite(seconds) || seconds <= 0) return -1
+    return getLineIndexForTime(seconds * 1000)
+  }, [getLineIndexForTime])
+
   // 歌词高亮行定位：让当前行落在歌词界面【正中央】（等效 viewPosition≈0.5），满足第 5 条同步要求。
   // 第 7 条“高亮行上移一行”已按用户要求取消，故不再额外偏移一个 itemHeight，仅居中。
   // 跨行切换时无条件滚动到该位置，确保播放中高亮行与音频同步且位置一致。
@@ -969,7 +981,15 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
       if (!pendingInitialScrollRef.current) return
       pendingInitialScrollRef.current = false
       isPauseScrollRef.current = false
-      handleScrollToActiveRef.current(Math.max(0, latestLineRef.current), true)
+      let target = Math.max(0, latestLineRef.current)
+      const hint = getPausedLineHint()
+      if (hint >= 0 && hint !== target) {
+        target = hint
+        lineRef.current.prevLine = lineRef.current.line
+        lineRef.current.line = hint
+        try { lrcAnchorToTime(playerState.progress.nowPlayTime * 1000, false) } catch {}
+      }
+      handleScrollToActiveRef.current(target, true)
       markInitialPositioned()
     }, 800)
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -990,7 +1010,10 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
     // 不会先露顶部（0:00 附近）再跳 —— 也就不需要遮罩/隐藏列表。
     if (!active) {
       activeRef.current = active
-      handleScrollToActive(lineRef.current.line, true)
+      // 引擎行可能滞后（冷启动停在 0）：暂停态按进度条的行先滚过去，封面页的小歌词切页时
+      // 歌词页已经在正确位置，不会再从开头滑一下。
+      const hint = getPausedLineHint()
+      handleScrollToActive(Math.max(lineRef.current.line, hint), true)
       return
     }
 
@@ -1004,7 +1027,7 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
     if (force) {
       handleScrollToActive(lineRef.current.line, true)
     }
-  }, [line, active, handleScrollToActive])
+  }, [line, active, handleScrollToActive, getPausedLineHint])
 
   // 每帧连续平滑滚动循环：歌词页激活【且正在播放】且非用户手动滚动时，基于外推时钟精确时间驱动歌词连续上移。
   // iOS 后台 / 锁屏时 rAF 暂停（歌词停滚无妨）；前台播放每帧（~16ms）定位，消除原来的行级跳变。
@@ -1283,10 +1306,19 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
     if (!pendingInitialScrollRef.current) return
     pendingInitialScrollRef.current = false
     isPauseScrollRef.current = false
-    handleScrollToActiveRef.current(Math.max(0, latestLineRef.current), true)
+    let target = Math.max(0, latestLineRef.current)
+    // 暂停态优先按进度条换算：引擎行可能还停在 0，直接用进度条的行，首帧就不会是开头。
+    const hint = getPausedLineHint()
+    if (hint >= 0 && hint !== target) {
+      target = hint
+      lineRef.current.prevLine = lineRef.current.line
+      lineRef.current.line = hint
+      try { lrcAnchorToTime(playerState.progress.nowPlayTime * 1000, false) } catch {}
+    }
+    handleScrollToActiveRef.current(target, true)
     // 首跳已落地：放行首帧（见 initialPositioned 注释）。
     markInitialPositioned()
-  }, [markInitialPositioned])
+  }, [markInitialPositioned, getPausedLineHint])
 
   return (
     <View style={{ flex: 1, width: '100%' }} onLayout={handlePageLayout} collapsable={false}>
