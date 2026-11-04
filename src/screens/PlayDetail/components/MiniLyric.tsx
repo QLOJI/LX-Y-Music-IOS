@@ -202,6 +202,12 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
   const dragStartOffsetRef = useRef<number | null>(null)
   // 浮层当前是否已经显示（显示与否不在 state 里：拖动的每帧都不该让本组件重渲染）
   const isOverlayShownRef = useRef(false)
+  // 【第 196 轮】小歌词点击改由容器统一识别：行内 Pressable 的 onPress 在原生手势
+  // 竞争（PagerView / FlatList）下会被取消，导致「点了有概率没反应」。这里用触摸
+  // 起点/终点自己判「短按且几乎没移动」，命中就切歌词页；拖动、长按、浮层操作都不算。
+  const tapStartRef = useRef<{ x: number, y: number, at: number } | null>(null)
+  const tapMovedRef = useRef(false)
+  const longPressFiredRef = useRef(false)
   const activeLineRef = useRef(activeLine)
   activeLineRef.current = activeLine
   const visibleRef = useRef(visible)
@@ -543,6 +549,8 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
   const handleLongPress = useCallback(() => {
     const list = listRef.current
     if (!list) return
+    // 长按已经进入定位态：松手时容器点击判定必须放行，不能把这次长按当成点击切页。
+    longPressFiredRef.current = true
     isPauseScrollRef.current = true
     dragStartOffsetRef.current = null
     isOverlayShownRef.current = true
@@ -673,9 +681,31 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
     global.app_event.setProgress(time)
   }, [])
 
-  const handlePress = useCallback(() => {
+  // 容器级点击判定：短按 + 位移 < 8pt 才算点击；拖动、长按、浮层定位期间都不切页。
+  const handleTapStart = useCallback((e: any) => {
+    const { pageX, pageY } = e.nativeEvent
+    tapStartRef.current = { x: pageX, y: pageY, at: Date.now() }
+    tapMovedRef.current = false
+    longPressFiredRef.current = false
+  }, [])
+  const handleTapMove = useCallback((e: any) => {
+    const s = tapStartRef.current
+    if (!s) return
+    if (Math.abs(e.nativeEvent.pageX - s.x) > 8 || Math.abs(e.nativeEvent.pageY - s.y) > 8) {
+      tapMovedRef.current = true
+    }
+  }, [])
+  const handleTapEnd = useCallback(() => {
+    const s = tapStartRef.current
+    tapStartRef.current = null
+    if (!s || tapMovedRef.current || longPressFiredRef.current) return
+    if (Date.now() - s.at > 350) return
+    if (isPauseScrollRef.current || isOverlayShownRef.current) return
     onPress?.()
   }, [onPress])
+  const handleTapCancel = useCallback(() => {
+    tapStartRef.current = null
+  }, [])
 
   const renderItem = useCallback(({ item, index }: { item: Line, index: number }) => {
     const isActive = index === activeLine
@@ -698,7 +728,7 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
       <Pressable
         // 行高逐行化（第 16 轮第 8 条）：当前行带翻译时这一行更高，其余行只占行盒 + 净间距
         style={[styles.line, { height: rowHeights[index] ?? baseRowHeight }]}
-        onPress={handlePress}
+        // 点击由外层容器统一识别（见 handleTapEnd）；行内只保留长按进入定位态。
         onLongPress={handleLongPress}
         // 【第 194 轮】「点小歌词偶尔没反应」的兜底：
         // ① 长按阈值 500 → 650ms：慢一点点按仍算点击，不会先被判成长按（长按不会触发 onPress）；
@@ -768,7 +798,7 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
         </Animated.View>
       </Pressable>
     )
-  }, [activeLine, wordsByIndex, lyricLines, isKaraoke, baseRowHeight, rowHeights, textStyle, translationStyle, activeColor, inactiveColor, handlePress, handleLongPress, getLineScale, getLineShift, visible, karaokeVisible, zoom, lyricContentWidth, metrics])
+  }, [activeLine, wordsByIndex, lyricLines, isKaraoke, baseRowHeight, rowHeights, textStyle, translationStyle, activeColor, inactiveColor, handleLongPress, getLineScale, getLineShift, visible, karaokeVisible, zoom, lyricContentWidth, metrics])
 
   const getKey = useCallback((_item: Line, index: number) => `${index}`, [])
   // 定高行：getItemLayout 精确（不需要像大歌词那样动态测量），虚拟化窗口与滚动目标都以它为准
@@ -783,7 +813,14 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
     // 根节点自己不再带左右内边距，于是绝对定位的定位浮层（left/right 0）与大歌词一样贴到屏幕边：
     // 虚线右端、播放三角离右缘的距离与大歌词完全一致（用户点名的问题）。
     // 文本内缩改由列表的 contentContainerStyle 承担（见 lineInsetH），文字位置不变。
-    <View style={[styles.container, { height: containerHeight, marginHorizontal: -bleedH }, style]}>
+    <View
+      style={[styles.container, { height: containerHeight, marginHorizontal: -bleedH }, style]}
+      // 容器级触摸判定：短按切歌词页（行内 Pressable 在原生手势竞争下会丢 onPress）。
+      onTouchStart={handleTapStart}
+      onTouchMove={handleTapMove}
+      onTouchEnd={handleTapEnd}
+      onTouchCancel={handleTapCancel}
+    >
       <FlatList
         ref={listRef}
         data={lyricLines}

@@ -97,11 +97,15 @@ export default forwardRef<PlayLineType, PlayLineProps>(({ onPlayLine, topPercent
   const [isMounted, setIsMounted] = useState(false)
   const [dashWidth, setDashWidth] = useState(0)
   const [buttonWidth, setButtonWidth] = useState(0)
+  // 【第 196 轮】浮层隐藏时三角不能还吃触摸：opacity 0 的 TouchableOpacity 在 iOS 上
+  // 仍然可点，会和小歌词的「点击切歌词页」抢同一块区域（点到就 seek）。
+  const [interactive, setInteractive] = useState(false)
   const opsAnim = useRef<Animated.Value>(
     new Animated.Value(0),
   ).current
 
   const setShow = (visible: boolean) => {
+    setInteractive(visible)
     Animated.timing(opsAnim, {
       toValue: visible ? 1 : 0,
       duration: OVERLAY_FADE_MS,
@@ -215,7 +219,12 @@ export default forwardRef<PlayLineType, PlayLineProps>(({ onPlayLine, topPercent
         <View pointerEvents="none" style={{ ...styles.label, right: labelRight }}>
           <Text color={theme['c-primary-font']} size={13}>{timeLabel}</Text>
         </View>
-        <TouchableOpacity style={[styles.button, { borderRadius: buttonRadius(18) /* 「按钮圆角」：播放三角图标按钮，无固定高，可见高度 ≈ 图标 18（Icon size=18） */ }]} onLayout={handleButtonLayout} onPress={handlePlayLine}>
+        <TouchableOpacity
+          pointerEvents={interactive ? 'auto' : 'none'}
+          style={[styles.button, { borderRadius: buttonRadius(18) /* 「按钮圆角」：播放三角图标按钮，无固定高，可见高度 ≈ 图标 18（Icon size=18） */ }]}
+          onLayout={handleButtonLayout}
+          onPress={handlePlayLine}
+        >
           <Icon name="play" color={theme['c-button-font']} size={18} />
         </TouchableOpacity>
       </View>
