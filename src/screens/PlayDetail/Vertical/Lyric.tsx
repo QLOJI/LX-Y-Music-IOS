@@ -1,4 +1,4 @@
-import { memo, useMemo, useEffect, useRef, useCallback, useState } from 'react'
+import { memo, useMemo, useEffect, useLayoutEffect, useRef, useCallback, useState } from 'react'
 import {
   View,
   FlatList,
@@ -290,6 +290,21 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
   const delayScrollTimeout = useRef<NodeJS.Timeout | null>(null)
   // 歌词页是从封面页切换时才挂载；初始值直接取引擎当前行，避免新页面先回到第 0 行。
   const lineRef = useRef({ line: line >= 0 ? line : 0, prevLine: line >= 0 ? line : 0 })
+  // 【第 195 轮】首帧定位遮罩：歌词列表挂载时默认在 offset 0（开头），若此时用户刚好
+  // 点小歌词/左滑切到歌词页，就会先看到开头一帧再被 scrollToOffset 拉回当前行。
+  // 在「首次定位真正落地」之前把列表藏起来（页面本来在屏幕外，不影响封面页），
+  // 定位落地后立即显形 —— 宁可空一帧，也不闪开头。换歌词/切歌时重新进入遮罩。
+  const [initialPositioned, setInitialPositioned] = useState(false)
+  const initialPositionedRef = useRef(false)
+  const markInitialPositioned = useCallback(() => {
+    if (initialPositionedRef.current) return
+    initialPositionedRef.current = true
+    setInitialPositioned(true)
+  }, [])
+  const resetInitialPositioned = useCallback(() => {
+    initialPositionedRef.current = false
+    setInitialPositioned(false)
+  }, [])
   // 记录上一帧的 active，用于检测“从封面页切回歌词页”的上升沿，
   // 上升沿这一次强制走 force 路径，避免被 [line, active] effect 的“舒适区动画滚动”抢先。
   const activeRef = useRef(active)
@@ -905,6 +920,8 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
       scrollCancelRef.current()
       scrollCancelRef.current = null
     }
+    // 新歌词 = 新列表：重新收起首帧，等这一份歌词定位落地后再显形。
+    resetInitialPositioned()
     lyricScrollLayoutRef.current.reset()
     lastScrolledLineRef.current = -1
     lineRef.current.prevLine = 0
@@ -935,6 +952,8 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
     if (!lyricLines.length) {
       pendingInitialScrollRef.current = false
       isPauseScrollRef.current = false
+      // 没有歌词就没有「开头」可闪，直接放行（避免整页永久隐藏）。
+      markInitialPositioned()
       return
     }
 
@@ -951,6 +970,7 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
       pendingInitialScrollRef.current = false
       isPauseScrollRef.current = false
       handleScrollToActiveRef.current(Math.max(0, latestLineRef.current), true)
+      markInitialPositioned()
     }, 800)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [lyricLines])
@@ -1059,7 +1079,9 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
   // 从封面页切回歌词页时，立即把歌词时钟重锚到真实音频位置，并强制把当前行定位到【正中】
   // （viewPosition 0.5，不再是历史上的 42%——42% 与「高亮行居中」的要求冲突），
   // 避免“长暂停后再播放 / 重开后”高亮行姗姗来迟、与音频不同步。
-  useEffect(() => {
+  // 【第 195 轮】改 useLayoutEffect：切页这一拍先把列表滚到当前行，再让这一帧上屏，
+  // 配合首帧遮罩，彻底消掉「先露开头再被拉回」的可见帧。
+  useLayoutEffect(() => {
     if (!active) return
 
     // 先用同步的播放进度做一次立即重锚（播放中重启 ticker 从该位置推进），
@@ -1082,6 +1104,7 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
     handleScrollToActive(immediateLine, true)
     requestAnimationFrame(() => {
       handleScrollToActive(lineRef.current.line, true)
+      markInitialPositioned()
     })
 
     // 再用音频引擎真实位置校正一次，纠正切歌/恢复播放时 store 进度尚未更新的情况。
@@ -1094,6 +1117,7 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
       requestAnimationFrame(() => {
         setForceScroll(true)
         handleScrollToActive(lineRef.current.line, true)
+        markInitialPositioned()
       })
     })
 
@@ -1123,7 +1147,7 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
     return () => {
       retryTimers.forEach(timer => clearTimeout(timer))
     }
-  }, [active, getLineIndexForTime, handleScrollToActive, setForceScroll])
+  }, [active, getLineIndexForTime, handleScrollToActive, setForceScroll, markInitialPositioned])
 
   // 页面真实高度（onLayout）到来后用精确高度把高亮行重新定位到中央，
   // 修正首次用估算高度（winHeight-180）计算偏移、导致切到歌词页时高亮行偶发不居中的问题。
@@ -1260,7 +1284,9 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
     pendingInitialScrollRef.current = false
     isPauseScrollRef.current = false
     handleScrollToActiveRef.current(Math.max(0, latestLineRef.current), true)
-  }, [])
+    // 首跳已落地：放行首帧（见 initialPositioned 注释）。
+    markInitialPositioned()
+  }, [markInitialPositioned])
 
   return (
     <View style={{ flex: 1, width: '100%' }} onLayout={handlePageLayout} collapsable={false}>
@@ -1272,7 +1298,8 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
         renderItem={renderItem}
         keyExtractor={getkey}
         onContentSizeChange={handleContentSizeChange}
-        style={{ height: pageHeight > 0 ? pageHeight : pagerHeight, width: '100%' }}
+        // 首帧定位落地前隐藏（页面此时在屏幕外）；定位落地后立即显形，避免切页看到开头一帧。
+        style={{ height: pageHeight > 0 ? pageHeight : pagerHeight, width: '100%', opacity: initialPositioned ? 1 : 0 }}
         // 【第 175 轮】量一次列表宽度：缩放锚点补偿按「文本可用宽度」算。
         onLayout={({ nativeEvent }) => {
           const w = Math.round(nativeEvent.layout.width)

@@ -260,12 +260,25 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
     }
   }, [])
 
+  const switchRetryRef = useRef<NodeJS.Timeout | null>(null)
   const handleSwitchToLyricPage = useCallback(() => {
+    // 【第 195 轮】点小歌词前先抹平库私有 isScrolling 闩锁：该闩锁卡在「滚动中」时，
+    // setPage 会被原生直接吞掉，表现就是「点了有概率没反应」。清完再走恢复链。
+    clearPagerLatch()
     // 统一走可恢复切页：空闲时动画切页；过渡中直接非动画直达（不叠 setViewControllers，
     // 避免 completion 丢失把整片页面区锁死）；原生不响应时自动 30/200/900/1600ms 逐级
     // 兜底，最后重挂 PagerView。
     requestPage(1)
-  }, [requestPage])
+    // 再补一记：若 180ms 后 JS 侧还没落页（原生 completion/回调丢失），重清闩锁再请求一次。
+    // 恢复链在原生侧有兜底，但事件丢失时 detailPageIndexRef 不会更新，这一拍直接补发。
+    if (switchRetryRef.current) clearTimeout(switchRetryRef.current)
+    switchRetryRef.current = setTimeout(() => {
+      switchRetryRef.current = null
+      if (detailPageIndexRef.current === 1) return
+      clearPagerLatch()
+      requestPage(1)
+    }, 180)
+  }, [requestPage, clearPagerLatch])
 
   useEffect(() => {
     // 本屏是否在 RNN 组件栈顶（即真正可见）：componentIds 自栈底到栈顶，
@@ -345,6 +358,10 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
       global.app_event.off('showPlaylist', handleShowPlaylist)
       appstateListener.remove()
       clearPagerWatchdog()
+      if (switchRetryRef.current) {
+        clearTimeout(switchRetryRef.current)
+        switchRetryRef.current = null
+      }
       screenUnkeepAwake()
     }
   }, [handleSwitchToLyricPage, clearPagerWatchdog])
