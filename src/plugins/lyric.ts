@@ -254,10 +254,29 @@ export const getCurrentLyricLines = (): Array<{ time: number, text: string }> =>
 /** 当前歌词行号（-1 = 第一行之前）。供「暂停态按进度条校正行」的探针比较用。 */
 export const getCurrentLyricLine = () => lrcTools.currentLineData.line
 
+/**
+ * 【第 195 轮】按给定时间把当前行同步通知给所有行级订阅者。
+ *
+ * 只靠 lrc-file-parser 的 play(time) + pause() 时，暂停态锚定可能停在旧行：
+ * play 后立刻 pause，内部 tick 还没走到新时间，onPlay 不会发出来 —— 冷启动恢复
+ * 到 2:30 的歌，歌词却先显示第 0 行，等下一次探针/切页才跳回。这里直接在锚定
+ * 同一次调用里二分出行号并派发，保证「锚定完成 = 行状态已更新」，无需等 tick。
+ */
+const emitLineForTime = (timeMs: number) => {
+  const lines = lrcTools.currentLines
+  if (!lines.length) return
+  const index = findLineIndexByTime(lines, timeMs)
+  if (index < 0) return
+  const text = lines[index]?.text ?? ''
+  if (index === lrcTools.currentLineData.line && text === lrcTools.currentLineData.text) return
+  lrcTools.onPlay(index, text)
+}
+
 export const anchorLyric = (timeMs: number, isPlaying: boolean) => {
   lrcTools.lrc!.play(timeMs)
   if (!isPlaying) lrcTools.lrc!.pause()
   lrcTools.isPlay = isPlaying
+  emitLineForTime(timeMs)
 }
 
 /**
