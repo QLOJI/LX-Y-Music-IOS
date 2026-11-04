@@ -24,7 +24,7 @@ import { useWindowSize } from '@/utils/hooks'
 import { useComponentIds, useNavReturning } from '@/store/common/hook'
 import { COMPONENT_IDS } from '@/config/constant'
 import playerState from '@/store/player/state'
-import { IDLE_RETURN_MS, LINE_CHANGE_GLIDE_MS, RETURN_TO_ACTIVE_MS } from '@/screens/PlayDetail/lyricAnimation'
+import { IDLE_RETURN_MS, LINE_CHANGE_GLIDE_MS, LINE_ZOOM_MS, RETURN_TO_ACTIVE_MS, easeInOutSine } from '@/screens/PlayDetail/lyricAnimation'
 
 // 迷你歌词 = 封面页上的「上一行 / 当前行 / 下一行」**定窗**歌词窗（窗口高度固定，行高逐行算）。
 //
@@ -171,8 +171,9 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
       if (index < 0) return
       Animated.timing(getLineScale(index), {
         toValue,
-        duration: LINE_CHANGE_GLIDE_MS,
-        easing: Easing.out(Easing.cubic),
+        // 【第 194 轮】与大小歌词统一：260ms + easeInOut(cubic)，起步不再冲一下。
+        duration: LINE_ZOOM_MS,
+        easing: Easing.inOut(Easing.cubic),
         useNativeDriver: true,
       }).start()
     }
@@ -383,8 +384,8 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
     const step = (now: number) => {
       if (!startTime) startTime = now
       const t = Math.min(1, (now - startTime) / total)
-      // easeInOutQuad（与大歌词同一条曲线）
-      const eased = t < 0.5 ? 2 * t * t : 1 - ((-2 * t + 2) * (-2 * t + 2)) / 2
+      // 【第 194 轮】easeInOutSine（与大歌词同一条曲线）：起停更柔，时长不变。
+      const eased = easeInOutSine(t)
       list.scrollToOffset({ offset: from + distance * eased, animated: false })
       if (t < 1) {
         rafId = requestAnimationFrame(step)
@@ -699,6 +700,11 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
         style={[styles.line, { height: rowHeights[index] ?? baseRowHeight }]}
         onPress={handlePress}
         onLongPress={handleLongPress}
+        // 【第 194 轮】「点小歌词偶尔没反应」的兜底：
+        // ① 长按阈值 500 → 650ms：慢一点点按仍算点击，不会先被判成长按（长按不会触发 onPress）；
+        // ② 放宽手指允许的偏移，轻微抖动不会被 FlatList 的滚动手势吃掉。
+        delayLongPress={650}
+        pressRetentionOffset={{ top: 14, bottom: 14, left: 18, right: 18 }}
         accessibilityRole="button"
         accessibilityLabel={item.text || undefined}
       >
