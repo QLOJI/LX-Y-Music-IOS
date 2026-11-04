@@ -252,6 +252,20 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
   // 暂停时音频时钟不再推进，循环体只会逐帧算不出变化而早退，但 rAF 仍每帧被
   // CADisplayLink 唤醒（120Hz 解锁后成本翻倍）——只冻结时间不停帧，省不掉这份开销。
   const isPlay = useIsPlay()
+  // 【第 198 轮】暂停态订阅进度：冷启动恢复时引擎行可能还是 0，只在进度事件到达后
+  // 才能知道当前行；歌词页即使在屏幕外也要跟着进度把列表滚到正确位置。
+  const [pausedPosition, setPausedPosition] = useState(() => playerState.progress.nowPlayTime)
+  useEffect(() => {
+    if (isPlay) return
+    setPausedPosition(playerState.progress.nowPlayTime)
+    const handlePausedProgress = (progress: { nowPlayTime: number }) => {
+      setPausedPosition(progress.nowPlayTime)
+    }
+    global.state_event.on('playProgressChanged', handlePausedProgress)
+    return () => {
+      global.state_event.off('playProgressChanged', handlePausedProgress)
+    }
+  }, [isPlay])
   // 前台门：退后台 / 锁屏 / 控制中心时界面不可见，每帧滚动循环没有意义。
   // 本 App 有后台音频、进程常驻，不加这道门 120Hz 的 scrollToOffset 会在后台一直跑。
   const appActive = useAppActive()
@@ -296,6 +310,8 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
   // 定位落地后立即显形 —— 宁可空一帧，也不闪开头。换歌词/切歌时重新进入遮罩。
   const [initialPositioned, setInitialPositioned] = useState(false)
   const initialPositionedRef = useRef(false)
+  // 最近一次「把列表滚到哪一行」的记录：暂停进度事件到达时据此去重，避免同一行反复强滚。
+  const positionedLineRef = useRef(-1)
   const markInitialPositioned = useCallback(() => {
     if (initialPositionedRef.current) return
     initialPositionedRef.current = true
@@ -1029,6 +1045,19 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
     }
   }, [line, active, handleScrollToActive, getPausedLineHint])
 
+  // 【第 198 轮】暂停态进度事件（常见于冷启动恢复）：歌词页在屏幕外也要把列表滚到
+  // 进度对应的行。否则引擎行还停在 0 时列表一直留在开头，切页首帧就会闪一下再拉回来。
+  useEffect(() => {
+    if (active || isPlay || isPauseScrollRef.current) return
+    if (!(pausedPosition > 0) || !lyricLines.length) return
+    const target = getPausedLineHint()
+    if (target < 0 || target === positionedLineRef.current) return
+    positionedLineRef.current = target
+    lineRef.current.prevLine = lineRef.current.line
+    lineRef.current.line = target
+    handleScrollToActive(target, true)
+  }, [active, isPlay, pausedPosition, lyricLines, getPausedLineHint, handleScrollToActive])
+
   // 每帧连续平滑滚动循环：歌词页激活【且正在播放】且非用户手动滚动时，基于外推时钟精确时间驱动歌词连续上移。
   // iOS 后台 / 锁屏时 rAF 暂停（歌词停滚无妨）；前台播放每帧（~16ms）定位，消除原来的行级跳变。
   // 暂停即取消 rAF（cancel，而不是把滚动速度改 0 / 让循环空转）：暂停时时钟冻结，
@@ -1123,10 +1152,15 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
         try { lrcAnchorToTime(cachedPosition * 1000, false) } catch {}
       }
     }
+    // 列表当前停的行和这次激活要显示的行不一致（冷启动引擎行滞后）：先把首帧收起来，
+    // 等本次强制定位落地后再显形 —— 彻底消掉「先露开头一帧」。
+    if (immediateLine >= 0 && positionedLineRef.current !== immediateLine) resetInitialPositioned()
     setForceScroll(true)
     handleScrollToActive(immediateLine, true)
+    positionedLineRef.current = immediateLine
     requestAnimationFrame(() => {
       handleScrollToActive(lineRef.current.line, true)
+      positionedLineRef.current = lineRef.current.line
       markInitialPositioned()
     })
 
@@ -1170,7 +1204,7 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
     return () => {
       retryTimers.forEach(timer => clearTimeout(timer))
     }
-  }, [active, getLineIndexForTime, handleScrollToActive, setForceScroll, markInitialPositioned])
+  }, [active, getLineIndexForTime, handleScrollToActive, setForceScroll, markInitialPositioned, resetInitialPositioned])
 
   // 页面真实高度（onLayout）到来后用精确高度把高亮行重新定位到中央，
   // 修正首次用估算高度（winHeight-180）计算偏移、导致切到歌词页时高亮行偶发不居中的问题。
@@ -1316,6 +1350,7 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
       try { lrcAnchorToTime(playerState.progress.nowPlayTime * 1000, false) } catch {}
     }
     handleScrollToActiveRef.current(target, true)
+    positionedLineRef.current = target
     // 首跳已落地：放行首帧（见 initialPositioned 注释）。
     markInitialPositioned()
   }, [markInitialPositioned, getPausedLineHint])

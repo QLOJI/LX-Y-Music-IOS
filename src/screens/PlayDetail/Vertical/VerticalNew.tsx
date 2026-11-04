@@ -207,6 +207,19 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
 
   const [isProgressDragging, setIsProgressDragging] = useState(false)
 
+  // 【第 198 轮】PagerView 重挂后清掉所有 JS 侧分页残留：否则新的原生实例是好的，
+  // JS 仍记着「正在拖动 / 正在过渡 / 正从歌词页滑回」，右滑回来会被误判并卡住。
+  useEffect(() => {
+    if (!pagerRebuild) return
+    pageScrollStateRef.current = 'idle'
+    pagerActivityAtRef.current = Date.now()
+    clearPagerWatchdog()
+    clearPagerLatch()
+    isComingLyricRef.current = false
+    isComingCoverRef.current = false
+    setIsProgressDragging(false)
+  }, [pagerRebuild, clearPagerWatchdog, clearPagerLatch])
+
   const onPageSelected = ({ nativeEvent }: PagerViewOnPageSelectedEvent) => {
     // 落页 = 过渡结束：撤恢复链、清看门狗与库私有 isScrolling 闩锁。
     notifyPageSelected(nativeEvent.position)
@@ -275,10 +288,10 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
     // 避免 completion 丢失把整片页面区锁死）；原生不响应时自动 30/200/900/1600ms 逐级
     // 兜底，最后重挂 PagerView。
     requestPage(1)
-    // 再补一记：400ms 后还没落页（原生 completion/回调丢失或实例卡死），直接重挂 PagerView，
-    // 并按 initialPage=1 挂到歌词页。用户实测「连续点都没反应，必须左右滑一次再回来」——
-    // setPage/恢复链都被原生闩锁吞掉时，只有重挂能确定性恢复；重挂时直接落在目标页，
-    // 不需要再滑一次。
+    // 【第 198 轮】重挂是最后兜底，不是常规路径：250ms 的 stale 检测 + 恢复链的
+    // 30/200/900ms 动画重试都走完仍没落页，才在 1200ms 重挂。400ms 太早，会把
+    // 慢一点但仍在正常进行的切页动画打断成「闪一下直接进歌词」，重挂本身还会
+    // 让后续右滑回来短暂失效。
     if (switchRetryRef.current) clearTimeout(switchRetryRef.current)
     switchRetryRef.current = setTimeout(() => {
       switchRetryRef.current = null
@@ -289,7 +302,7 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
       setPageIndex(1)
       screenkeepAwake()
       setPagerRebuild(v => v + 1)
-    }, 400)
+    }, 1200)
   }, [requestPage, clearPagerLatch])
 
   useEffect(() => {
@@ -347,8 +360,23 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
       }
     }
 
-    // 进度条拖动期间禁用 PagerView 横滑，避免与“切到歌词页”的原生手势冲突
-    const handleProgressDragState = (dragging: boolean) => { setIsProgressDragging(dragging) }
+    // 进度条拖动期间禁用 PagerView 横滑，避免与“切到歌词页”的原生手势冲突。
+    // 【第 198 轮】补 10s 看门狗：drag 结束事件一旦丢失，scrollEnabled 会永久为 false，
+    // 表现就是「进歌词页后右滑回不去」。超时强制解锁，真实拖动远短于 10s。
+    let progressDragSafety: ReturnType<typeof setTimeout> | null = null
+    const handleProgressDragState = (dragging: boolean) => {
+      if (progressDragSafety) {
+        clearTimeout(progressDragSafety)
+        progressDragSafety = null
+      }
+      setIsProgressDragging(dragging)
+      if (dragging) {
+        progressDragSafety = setTimeout(() => {
+          progressDragSafety = null
+          setIsProgressDragging(false)
+        }, 10000)
+      }
+    }
     global.app_event.on('progressDragState', handleProgressDragState)
 
     // 将 PagerView ref 注册给同步手势锁，供进度条拖动时立即禁用原生横滑
@@ -373,6 +401,10 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
       if (switchRetryRef.current) {
         clearTimeout(switchRetryRef.current)
         switchRetryRef.current = null
+      }
+      if (progressDragSafety) {
+        clearTimeout(progressDragSafety)
+        progressDragSafety = null
       }
       screenUnkeepAwake()
     }
