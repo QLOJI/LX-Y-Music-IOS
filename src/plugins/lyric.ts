@@ -27,6 +27,9 @@ const lrcTools = {
   lyricText: '',
   translationText: '' as string | null | undefined,
   romaText: '' as string | null | undefined,
+  // 【第 199 轮】最近一次已解析的歌词内容签名：相同内容再次装载时只重锚、不重新解析，
+  // 避免同一位置被「解析 → 行归零 → 重锚」两遍，造成列表重挂/闪烁。
+  lyricSignature: '',
   // 与 currentLines 同序：第 i 项为第 i 行歌词的逐字时间轴；无逐字（纯 LRC）为 null。
   // 用「索引对齐」而非「时间相等」匹配，以容忍 lrc-file-parser 与 lxlyric 在 offset 处理上的微小差异。
   currentWordsByIndex: [] as Array<LxLyricWord[] | null>,
@@ -140,6 +143,23 @@ export const setLyric = (lyric: string, translation?: string, romalrc?: string, 
   // 必须用 getPosition() 实时值，绝不能改用 store 的 nowPlayTime——后者在切歌/恢复瞬间
   // 常残留上一首或旧进度，会把歌词锚到错误位置（高亮行整体错位，回归 bug）。
   // 无论暂停还是播放都重锚：暂停态下用户也可能刚切歌/seek，歌词仍需立即对齐。
+  // 【第 199 轮】先比对内容签名：同一份歌词被重复装载（恢复播放后又走一次普通播放、
+  // 元数据刷新等）时，不再重新解析 + 触发 setLyricHooks —— 那会让「同一位置」被
+  // 装载两次：行归零 → 列表重挂 → 再重锚，肉眼就是闪烁/回退。相同内容只重锚当前行。
+  const signature = JSON.stringify([lyric, translation ?? '', romalrc ?? '', lxLyric ?? ''])
+  const sameContent = signature === lrcTools.lyricSignature && lrcTools.currentLines.length > 0
+  lrcTools.lyricSignature = signature
+  if (sameContent) {
+    const pos = positionHint != null && Number.isFinite(positionHint) ? Math.max(0, positionHint) : undefined
+    if (pos != null) {
+      try { anchorLyric(pos * 1000, lrcTools.isPlay) } catch {}
+    } else {
+      void getPosition()
+        .then((p) => { try { anchorLyric((p || 0) * 1000, lrcTools.isPlay) } catch {} })
+        .catch(() => {})
+    }
+    return
+  }
   const wasPlaying = lrcTools.isPlay
   lrcTools.isPlay = false
   lrcTools.lyricText = lyric
@@ -268,8 +288,13 @@ const emitLineForTime = (timeMs: number) => {
   if (!lines.length) return
   const index = findLineIndexByTime(lines, timeMs)
   if (index < 0) return
+  // 【第 199 轮】播放中的小幅回退一律不上屏：引擎位置快照常有 100~300ms 滞后，
+  // 快到换行点时按它重锚会把行从 20 拨回 19，下一次 tick 又拨回 20 —— 就是用户看到的
+  // 「回退/回弹」。真正的后退 seek 差值大（>2 行）或发生在暂停态，仍然放行。
+  const current = lrcTools.currentLineData.line
+  if (lrcTools.isPlay && current > index && current - index <= 2) return
   const text = lines[index]?.text ?? ''
-  if (index === lrcTools.currentLineData.line && text === lrcTools.currentLineData.text) return
+  if (index === current && text === lrcTools.currentLineData.text) return
   lrcTools.onPlay(index, text)
 }
 
@@ -302,6 +327,10 @@ export const verifyLyricLineSync = (engineTimeMs: number): boolean => {
   const actual = lrcTools.currentLineData.line
   if (expected === actual) return false
   if (expected === 0 && actual < 0) return false
+  // 【第 199 轮】引擎位置快照有桥往返延迟，快到换行点时 expected 会落后 1~2 行。
+  // 此时重锚会把高亮拨回去、下一次 tick 再拨回来 = 用户看到的「回退/回弹」。
+  // 小差值回退一律不纠正；真正的后退 seek 由 app_event.play/seekLyric 主动重锚。
+  if (expected < actual && actual - expected <= 2) return false
   // 引擎在出声（调用方守卫），重锚并让 ticker 从引擎真实位置继续推进
   anchorLyric(engineTimeMs, true)
   return true
