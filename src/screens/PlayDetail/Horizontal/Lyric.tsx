@@ -29,7 +29,7 @@ import PlayLine, { type PlayLineType } from '@/screens/PlayDetail/components/Pla
 // 播放页动效时长的统一来源（数值与背景见 lyricAnimation.ts）；大歌词的「换行停留 /
 // 换行滑动」两个时长也在那里（LINE_CHANGE_HOLD_MS / RETURN_TO_ACTIVE_MS），
 // 横竖屏与小歌词回位同源，本文件不再保留本地魔数。
-import { IDLE_RETURN_MS, LINE_CHANGE_HOLD_MS, LYRIC_DOUBLE_TAP_MS, OVERLAY_FADE_MS, RETURN_TO_ACTIVE_MS, getReturnDuration } from '@/screens/PlayDetail/lyricAnimation'
+import { IDLE_RETURN_MS, LINE_CHANGE_HOLD_MS, LYRIC_DOUBLE_TAP_MS, LINE_ZOOM_MS, OVERLAY_FADE_MS, RETURN_TO_ACTIVE_MS, easeInOutSine } from '@/screens/PlayDetail/lyricAnimation'
 
 type FlatListType = FlatListProps<Line>
 
@@ -79,8 +79,10 @@ const LrcLine = memo(
       appliedScaleRef.current = target
       Animated.timing(lineScale, {
         toValue: target,
-        duration: getReturnDuration(lineHeight),
-        easing: Easing.out(Easing.cubic),
+        // 【第 194 轮】与竖屏/小歌词统一为 260ms + easeInOut(cubic)：
+        // 旧值随行高取 120~300ms 且 easeOut 起步太猛，是「缩放生硬」的主因。
+        duration: LINE_ZOOM_MS,
+        easing: Easing.inOut(Easing.cubic),
         useNativeDriver: true,
       }).start()
     }, [isActive, zoom, lineHeight, lineScale])
@@ -549,7 +551,8 @@ export default () => {
         // 滑动中：easeInOutQuad。终点取起滑/重新锚定当帧记录的新行偏移；若这期间行高测量修正了
         // 目标，滑动结束后由下面的指数平滑继续收敛（小幅位移，无感），不会硬跳。
         const p = glideElapsed / LINE_CHANGE_GLIDE_REF_MS
-        const eased = p < 0.5 ? 2 * p * p : 1 - (((-2 * p) + 2) * ((-2 * p) + 2)) / 2
+        // 【第 194 轮】easeInOutSine：起停更柔，时长不变。
+        const eased = easeInOutSine(p)
         smoothOffsetRef.current = glideFromRef.current + (glideToRef.current - glideFromRef.current) * eased
       } else {
         // 无停留、无滑动（或本串滑动已结束）：指数平滑跟随。同一串内后续换行走这里，
