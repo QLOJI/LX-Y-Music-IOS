@@ -281,29 +281,37 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
     const now = Date.now()
     if (now - lastSwitchAtRef.current < 250) return
     lastSwitchAtRef.current = now
-    // 【第 195 轮】点小歌词前先抹平库私有 isScrolling 闩锁：该闩锁卡在「滚动中」时，
-    // setPage 会被原生直接吞掉，表现就是「点了有概率没反应」。清完再走恢复链。
+    // 【第 200 轮】点击完全照抄左滑的落点：只发一次带动画的 setPage。
+    // 不再走恢复链的 30ms 探测 / 450ms 非动画直达 —— 那些会在动画刚起手时把它
+    // 打断成「卡顿、没有左滑动作、闪一下直接进去」。左滑本身没有任何兜底，
+    // 原生过渡是可靠的；点击也保持同一条路径。
     clearPagerLatch()
-    // 统一走可恢复切页：空闲时动画切页；过渡中直接非动画直达（不叠 setViewControllers，
-    // 避免 completion 丢失把整片页面区锁死）；原生不响应时自动 30/200/900/1600ms 逐级
-    // 兜底，最后重挂 PagerView。
-    requestPage(1)
-    // 【第 198 轮】重挂是最后兜底，不是常规路径：250ms 的 stale 检测 + 恢复链的
-    // 30/200/900ms 动画重试都走完仍没落页，才在 1200ms 重挂。400ms 太早，会把
-    // 慢一点但仍在正常进行的切页动画打断成「闪一下直接进歌词」，重挂本身还会
-    // 让后续右滑回来短暂失效。
+    const pager = pagerViewRef.current
+    if (!pager) return
+    pager.setPage?.(1)
+    // 兜底只留两级，且都保持「带动画」：800ms 后仍没落页再发一次动画切页；
+    // 再 800ms 仍失败才重挂并落在歌词页。绝不把正在进行的动画截断成非动画。
     if (switchRetryRef.current) clearTimeout(switchRetryRef.current)
-    switchRetryRef.current = setTimeout(() => {
+    let attempted = 0
+    const retry = () => {
       switchRetryRef.current = null
       if (detailPageIndexRef.current === 1) return
+      if (attempted < 1) {
+        attempted++
+        clearPagerLatch()
+        pager.setPage?.(1)
+        switchRetryRef.current = setTimeout(retry, 800)
+        return
+      }
       clearPagerLatch()
       showLyricRef.current = true
       detailPageIndexRef.current = 1
       setPageIndex(1)
       screenkeepAwake()
       setPagerRebuild(v => v + 1)
-    }, 1200)
-  }, [requestPage, clearPagerLatch])
+    }
+    switchRetryRef.current = setTimeout(retry, 800)
+  }, [clearPagerLatch])
 
   useEffect(() => {
     // 本屏是否在 RNN 组件栈顶（即真正可见）：componentIds 自栈底到栈顶，
