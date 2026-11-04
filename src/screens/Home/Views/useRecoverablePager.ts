@@ -107,22 +107,25 @@ export const useRecoverablePager = (
     probeTimerRef.current = setTimeout(() => {
       probeTimerRef.current = null
       if (pendingIndexRef.current !== index) return
-      if (scrollStateRef.current === 'idle' && lastScrollAtRef.current <= pageRequestAtRef.current) {
+      // 状态卡在 settling/dragging 但 250ms 无滚动 = 事件丢失，按 idle 处理并动画重试，
+      // 不要等 450ms 的非动画直达。
+      const staleMotion = scrollStateRef.current !== 'idle' && Date.now() - lastScrollAtRef.current > 250
+      if ((scrollStateRef.current === 'idle' || staleMotion) && lastScrollAtRef.current <= pageRequestAtRef.current) {
+        if (staleMotion) scrollStateRef.current = 'idle'
         retryAnimated()
       }
     }, 30)
     // 安静一拍：状态事件可能丢失（pageScrollState 卡在 settling），不能只看状态。
-    // 200ms 后若 120ms 内完全没有滚动事件，说明页面确实没动 → **直接非动画落到目标页**。
-    // 之前这里再走一次动画重试，若原生仍吞掉就会一直等到 900/1600ms 的兜底，
-    // 观感是「按钮高亮了、画面停一会儿才切，甚至弹回原页」。非动画直达是确定性的，
-    // 与原生的「左右滑动切页」同一个落点，只是没有滑动过程。
-    // 还在动（转场进行中）就绝不插手，避免把滑到一半的动画打断成「卡一下」。
+    // 【第 198 轮】只有「本次请求之后一帧都没动过」才允许非动画直达，而且窗口放宽到
+    // 450ms：200ms 太早，慢一点起手的动画会被这里截断成「闪一下直接过去」。
+    // 已经滚动过（lastScrollAt > 请求时刻）就绝不插手，把滑动完整留给原生。
     quietTimerRef.current = setTimeout(() => {
       quietTimerRef.current = null
       if (pendingIndexRef.current !== index) return
-      if (Date.now() - lastScrollAtRef.current < 120) return
+      if (lastScrollAtRef.current > pageRequestAtRef.current) return
+      if (Date.now() - lastScrollAtRef.current < 450) return
       pagerRef.current?.setPageWithoutAnimation?.(index)
-    }, 200)
+    }, 450)
     // 最后兜底：900ms 仍没落页 → 非动画硬落位；再 700ms 仍不落页 → 重挂 PagerView。
     fallbackTimerRef.current = setTimeout(() => {
       fallbackTimerRef.current = null
@@ -162,7 +165,12 @@ export const useRecoverablePager = (
   }, [armFallback, pagerRef])
 
   const requestPage = useCallback((index: number) => {
-    if (scrollStateRef.current === 'idle') {
+    // 【第 198 轮】状态可能卡在 settling/dragging 但根本没有滚动帧（事件丢失）：
+    // 超过 250ms 没有任何滚动活动就按 idle 处理，走**带动画**的 sendPage。
+    // 旧逻辑会直接走下面的非动画直达，用户看到的就是「没有左滑动作，直接闪过去」。
+    const staleMotion = scrollStateRef.current !== 'idle' && Date.now() - lastScrollAtRef.current > 250
+    if (scrollStateRef.current === 'idle' || staleMotion) {
+      if (staleMotion) scrollStateRef.current = 'idle'
       sendPage(index)
       return
     }
