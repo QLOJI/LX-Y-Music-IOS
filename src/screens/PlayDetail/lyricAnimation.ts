@@ -52,6 +52,20 @@ export const OVERLAY_FADE_MS = designMotion.quick
 export const RETURN_TO_ACTIVE_MS = 400
 
 /**
+ * 【第 194 轮】当前行缩放（1.0~1.5）的时长：大歌词横/竖屏与小歌词统一。
+ * 旧值分别为 400 / 120~300 / 200：横屏 120ms + easeOut 起步太猛，观感生硬。
+ * 改为 260ms + easeInOut(cubic)：两端速度连续，不拖沓。
+ */
+export const LINE_ZOOM_MS = 260
+
+/**
+ * 换行滑动 / 回位共用的缓动：easeInOutSine。
+ * 比原先的 easeInOutQuad 起步和收尾更柔（中段最大速度 1.57 对 2.0），
+ * 时长不变，所以不会整体变慢，只是「起/停」不再有一下顿挫。
+ */
+export const easeInOutSine = (p: number) => 0.5 - 0.5 * Math.cos(Math.PI * p)
+
+/**
  * 自动回位动画的时长：随距离线性增长并夹在 [120, 300] 内，远距离不会拖沓。
  *
  * 注意：**竖屏大歌词与小歌词的回位不用它**（两者必须同速，见 RETURN_TO_ACTIVE_MS）；
