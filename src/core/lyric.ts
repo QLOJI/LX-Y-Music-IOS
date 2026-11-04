@@ -33,6 +33,15 @@ export const getReliableLyricPosition = async() => {
     if (playerPosition > 5) return progressPosition
     return Math.max(progressPosition, 0)
   }
+  // 【第 194 轮】暂停态（含冷启动恢复）：进度条是用户看到的真相。
+  // 启动瞬间引擎可能还没应用记忆位置（返回 0/很小的旧值），旧逻辑会无条件信引擎，
+  // 于是歌词先锚到第 0 行，等 700ms 校正探针才跳回当前行 —— 就是「进详情页/切歌词页
+  // 先闪回开头」。播放中仍以引擎为准；暂停时只有两者接近才采信引擎。
+  if (!playerState.isPlay) {
+    if (!(playerPosition > 1) || Math.abs(playerPosition - progressPosition) > 2) {
+      return progressPosition
+    }
+  }
   // 对齐上游 core/lyric.play()：lrc.play(getCurrentTime()) 无条件信任引擎当前时间。
   // 此前的「|引擎-进度|>2s 时偏好进度」分支会拿 seek 窗口期的 store 目标值覆盖引擎
   // 真实位置，属于旧轮询架构的补丁；重锚由引擎 playing 事件驱动时引擎位置即真相。
