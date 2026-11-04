@@ -684,11 +684,12 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
           glideStartedRef.current = false
           glideStartTsRef.current = -1
         } else if (glideStartTsRef.current >= 0) {
-          // 同一串内、且已经起滑：把滑动重新锚定到「当前位置 → 新目标」。起点就是当前值，
-          // 位移连续不跳变（等价于 REF 每次换行都从当前位置起一段新动画）。
-          glideFromRef.current = smoothOffsetRef.current
-          glideToRef.current = continuousOffset
-          glideStartTsRef.current = ts
+          // 【第 199 轮】同一串连续换行里又来了新行：不再重新起一段 ease —— 每段 ease
+          // 都从零速起步，快歌（行间隔很短）看起来就是一顿一顿。这里取消固定滑动，
+          // 交给下面的指数平滑连续追新目标：目标变化时速度是连续的，不会回弹。
+          glideFromRef.current = 0
+          glideToRef.current = 0
+          glideStartTsRef.current = -1
         }
         // 同一串内、仍在停留窗口：什么都不做——只更新目标（起滑那一帧会用上当帧的
         // continuousOffset），停留锚点绝不重置。这是快歌（行间隔 <600ms）不被冻住的关键。
