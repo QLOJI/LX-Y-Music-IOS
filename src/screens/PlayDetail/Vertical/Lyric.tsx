@@ -36,7 +36,7 @@ import PlayLine, { type PlayLineType } from '@/screens/PlayDetail/components/Pla
 // 例外：大歌词「换行停留」时长按需求 #1 直接对齐 REF 参考工程，以本文件下方的
 // LINE_CHANGE_HOLD_MS 定义（原因见其注释）；「换行滑动」时长已收口回 lyricAnimation
 // 的 RETURN_TO_ACTIVE_MS —— 小歌词的停手回位复用的就是它，必须同源。
-import { IDLE_RETURN_MS, LINE_CHANGE_HOLD_MS, LYRIC_DOUBLE_TAP_MS, OVERLAY_FADE_MS, RETURN_TO_ACTIVE_MS } from '@/screens/PlayDetail/lyricAnimation'
+import { IDLE_RETURN_MS, LINE_CHANGE_HOLD_MS, LYRIC_DOUBLE_TAP_MS, LINE_ZOOM_MS, OVERLAY_FADE_MS, RETURN_TO_ACTIVE_MS, easeInOutSine } from '@/screens/PlayDetail/lyricAnimation'
 // import { screenkeepAwake } from '@/utils/nativeModules/utils'
 // import { log } from '@/utils/log'
 // import { toast } from '@/utils/tools'
@@ -92,8 +92,10 @@ const LrcLine = memo(
       appliedScaleRef.current = target
       Animated.timing(lineScale, {
         toValue: target,
-        duration: RETURN_TO_ACTIVE_MS,
-        easing: Easing.out(Easing.cubic),
+        duration: LINE_ZOOM_MS,
+        // 【第 194 轮】easeOut(cubic) 起步速度最大、第一帧就冲出去，观感生硬；
+        // 换 easeInOut(cubic) 后起步/收尾连续，260ms 也不会拖沓。
+        easing: Easing.inOut(Easing.cubic),
         useNativeDriver: true,
       }).start()
     }, [isActive, zoom, lineScale])
@@ -668,7 +670,8 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
         // 滑动中：easeInOutQuad。终点取起滑/重新锚定当帧记录的新行偏移；若这期间行高测量修正了
         // 目标，滑动结束后由下面的指数平滑继续收敛（小幅位移，无感），不会硬跳。
         const p = glideElapsed / LINE_CHANGE_GLIDE_REF_MS
-        const eased = p < 0.5 ? 2 * p * p : 1 - (((-2 * p) + 2) * ((-2 * p) + 2)) / 2
+        // 【第 194 轮】easeInOutSine：起停更柔，时长不变（不会整体变慢）。
+        const eased = easeInOutSine(p)
         smoothOffsetRef.current = glideFromRef.current + (glideToRef.current - glideFromRef.current) * eased
       } else {
         // 无停留、无滑动（或本串滑动已结束）：指数平滑跟随。同一串内后续换行走这里，
