@@ -33,7 +33,7 @@ export default memo(() => {
   const t = useI18n()
 
   return (
-    <SubTitle title="菜单设置">
+    <SubTitle title={t('menu_settings')}>
       {/* 外框已去掉（用户第 11 轮第 11 条「设置里的勾选框要都在同一直线上」）：
           此前是一个「带边框 + padding:12」的盒子，里面再放卡片式的 CheckBox 行，等于
           卡中卡——内层卡片左缘 = 页面内容左缘 + 13（12 padding + 1 border），勾选框

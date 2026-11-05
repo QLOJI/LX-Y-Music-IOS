@@ -32,14 +32,6 @@ const HistoryListItem = ({
   const buttonRadius = useButtonRadius()
   const handleSetHost = () => {
     onSelect(index)
-    // setHost({
-    //   host: item.host,
-    //   port: item.port,
-    // })
-    // setSyncHost({
-    //   host: item.host,
-    //   port: item.port,
-    // })
   }
   const handleRemove = () => {
     onRemove(index)

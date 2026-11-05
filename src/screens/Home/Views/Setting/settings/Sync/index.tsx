@@ -266,30 +266,30 @@ export default memo(() => {
 
   return (
     <Section sectionId="setting_sync">
-      <SubTitle title="WebDAV 同步">
+      <SubTitle title={t('webdav_sync_title')}>
         <CheckBoxItem
           check={isEnableWebdav}
-          label="启用 WebDAV 同步"
+          label={t('webdav_enable')}
           onChange={handleEnableWebDAV}
         />
         <View style={{ opacity: isEnableWebdav ? 1 : 0.5 }}>
           <CheckBoxItem
             check={isSyncLists}
-            label="自动同步歌单"
-            helpDesc="自动同步歌单会同步歌单、播放历史及下载任务，如果有不需要的可以自行关闭"
+            label={t('webdav_auto_sync_lists')}
+            helpDesc={t('webdav_auto_sync_lists_desc')}
             onChange={handleEnableListSync}
             disabled={!isEnableWebdav}
           />
           <View style={styles.btnRow}>
             <CheckBoxItem
               check={isSyncPlayHistory}
-              label="播放历史"
+              label={t('nav_play_history')}
               onChange={handleEnablePlayHistorySync}
               disabled={!isEnableWebdav}
             />
             <CheckBoxItem
               check={isSyncDownloadTasks}
-              label="下载任务"
+              label={t('download_tasks')}
               onChange={handleEnableDownloadTasksSync}
               disabled={!isEnableWebdav}
             />
@@ -301,30 +301,30 @@ export default memo(() => {
             iOS 的 TextInput 会直接忽略点击，键盘根本唤不起来，表现为“填写栏点不动、无法使用”。
             该区块同时不再套 opacity:0.5——半透明会被误读成“已禁用”，进一步让人以为不能填。 */}
         <InputItem
-          label="服务器地址"
+          label={t('server_address')}
           value={webdavUrl}
           onChanged={handleWebdavUrlChanged}
           inputMode="url"
           placeholder="https://example.com/webdav"
         />
         <InputItem
-          label="用户名"
+          label={t('username')}
           value={webdavUsername}
           onChanged={handleWebdavSettingChanged('sync.webdav.username')}
-          placeholder="请输入用户名"
+          placeholder={t('username_placeholder')}
         />
         <InputItem
-          label="密码"
+          label={t('password')}
           value={webdavPassword}
           onChanged={handleWebdavSettingChanged('sync.webdav.password')}
-          placeholder="请输入密码"
+          placeholder={t('password_placeholder')}
         />
         {/* 同步路径仅在同步进行中锁定，避免写入与同步任务并发；空闲时始终可改 */}
         <InputItem
-          label="同步路径"
+          label={t('sync_path')}
           value={webdavPath}
           onChanged={handleWebdavSettingChanged('sync.webdav.path')}
-          placeholder="例如: /LX_Music/"
+          placeholder={t('sync_path_placeholder')}
           editable={!isSyncing}
         />
 
