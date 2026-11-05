@@ -3,6 +3,7 @@ import { TouchableOpacity, ScrollView } from 'react-native'
 import Dialog, { type DialogType } from '@/components/common/Dialog'
 import Text from '@/components/common/Text'
 import { createStyle } from '@/utils/tools'
+import { useI18n } from '@/lang'
 
 export interface Artist {
   id: string | number
@@ -15,6 +16,7 @@ export interface ArtistSelectorModalType {
 
 export default forwardRef<ArtistSelectorModalType, {}>((props, ref) => {
   const dialogRef = useRef<DialogType>(null)
+  const t = useI18n()
   const [visible, setVisible] = useState(false)
   const [artists, setArtists] = useState<Artist[]>([])
   const onSelectRef = useRef<(artist: Artist) => void>(() => {})
@@ -37,7 +39,7 @@ export default forwardRef<ArtistSelectorModalType, {}>((props, ref) => {
   }
 
   return visible ? (
-    <Dialog ref={dialogRef} title="选择艺人">
+    <Dialog ref={dialogRef} title={t('select_artist')}>
       <ScrollView>
         {artists.map(artist => (
           <TouchableOpacity key={artist.id} style={styles.item} onPress={() => { handleSelect(artist) }}>

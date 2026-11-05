@@ -3,6 +3,7 @@ import { View } from 'react-native'
 import Input, { type InputType } from '@/components/common/Input'
 import { confirmDialog, createStyle, toast } from '@/utils/tools'
 import { useI18n } from '@/lang'
+import { useButtonRadius } from '@/utils/buttonRadius'
 import { createUserList } from '@/core/list'
 import listState from '@/store/list/state'
 import wyApi from '@/utils/musicSdk/wy/user'
@@ -14,6 +15,8 @@ export default ({ isEdit, onHide, playlistType }: { isEdit: boolean, onHide: () 
   const inputRef = useRef<InputType>(null)
   const t = useI18n()
   const uid = useWyUid()
+  // 「按钮圆角」：新建歌单输入框（覆盖在「新建歌单」按钮位上）的行内覆盖
+  const buttonRadius = useButtonRadius()
 
   useEffect(() => {
     if (isEdit) {
@@ -67,7 +70,12 @@ export default ({ isEdit, onHide, playlistType }: { isEdit: boolean, onHide: () 
         ref={inputRef}
         onBlur={handleSubmitEditing}
         onSubmitEditing={handleSubmitEditing}
-        style={styles.input}
+        style={[
+          styles.input,
+          // 行内覆盖「按钮圆角」：输入框无静态数字高度（height: '100%'），但覆盖在 36pt 高的
+          // 「新建歌单」按钮位上（绝对定位容器高 100%、paddingBottom 10 → 净高 36），按可见高度传 36
+          { borderRadius: buttonRadius(36) },
+        ]}
       />
     </View>
   ) : null

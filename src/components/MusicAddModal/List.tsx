@@ -9,6 +9,7 @@ import { useWindowSize, useHorizontalMode } from '@/utils/hooks'
 import { useTheme } from '@/store/theme/hook'
 import { useSettingValue } from '@/store/setting/hook'
 import { applyOpacity } from '@/utils/colorOpacity'
+import { useButtonRadius } from '@/utils/buttonRadius'
 import { useI18n } from '@/lang'
 import { createStyle } from '@/utils/tools'
 import { scaleSizeW, scaleSizeH } from '@/utils/pixelRatio'
@@ -38,18 +39,20 @@ const EditListItem = ({ itemWidth, playlistType }: { itemWidth: number, playlist
   const [isEdit, setEdit] = useState(false)
   const theme = useTheme()
   const buttonOpacity = useSettingValue('theme.buttonOpacity')
+  // 「按钮圆角」：「新建歌单」虚线按钮的行内覆盖（高度取静态 listStyles.button.height = 36）
+  const buttonRadius = useButtonRadius()
   const t = useI18n()
 
   return (
     <View style={{ ...listStyles.listItem, width: itemWidth }}>
       <TouchableOpacity
-        style={{
+        style={[{
           ...listStyles.button,
           // 「新建歌单」虚线边框是该按钮唯一可见表面：随「按钮透明度」淡出，
           // 0 时只剩文字（与 SoundEffectControl 的虚线「+」按钮口径一致）。
           borderColor: applyOpacity(theme['c-primary-light-200-alpha-700'], buttonOpacity),
           borderStyle: 'dashed',
-        }}
+        }, { borderRadius: buttonRadius(36) /* 36 = 设计原值（＝ listStyles.button.height）；不要传 listStyles.button.height，它已被 createStyle 预缩放 */ }]}
         onPress={() => {
           setEdit(true)
         }}

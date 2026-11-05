@@ -8,6 +8,7 @@ import { saveImageToPictures } from '@/utils/image'
 import Text from './Text'
 import { useTheme } from '@/store/theme/hook'
 import { useButtonRadius } from '@/utils/buttonRadius'
+import { useI18n } from '@/lang'
 
 interface Props {
   visible: boolean
@@ -19,6 +20,7 @@ interface Props {
 export default memo(({ visible, url, name = 'image', onClose }: Props) => {
   const windowSize = useWindowSize()
   const theme = useTheme()
+  const t = useI18n()
   // 「按钮圆角」：保存按钮行内覆盖（高度取静态 styles.saveButton.height，设计值 44）
   const buttonRadius = useButtonRadius()
   const [isActionVisible, setActionVisible] = useState(false)
@@ -115,7 +117,7 @@ export default memo(({ visible, url, name = 'image', onClose }: Props) => {
                       activeOpacity={0.75}
                       onPress={handleSave}
                     >
-                      <Text size={15}>保存图片</Text>
+                      <Text size={15}>{t('save_image')}</Text>
                     </TouchableOpacity>
                   </View>
                 </TouchableWithoutFeedback>
