@@ -145,6 +145,8 @@ const playMusic = ((fn: (musicInfo: LX.Player.PlayMusic, url: string, time: numb
 
 export const setResource = (musicInfo: LX.Player.PlayMusic, url: string, duration?: number, quality?: LX.Quality | null) => {
   playerState.quality = quality ?? null
+  // 【第 203 轮】实际音质（含降级后的达成档）变化：详情页音质标与弹层需要即时刷新。
+  global.state_event.playQualityChanged()
   playMusic(musicInfo, url, duration ?? 0, quality)
 }
 
