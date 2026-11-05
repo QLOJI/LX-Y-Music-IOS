@@ -298,9 +298,9 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
   let rowCount: number
   if (prevRowCount == null) {
     rowCount = fitRows
-  } else if (isPauseScrollRef.current || navReturning) {
-    // 【第 201 轮】返回转场期间同样冻结档位：pop 回来时页面布局会短暂重排，
-    // 行数（三行/四行）若跟着变，整块小歌词会下跳一下再还原。
+  } else if (isPauseScrollRef.current) {
+    // 手势进行中冻结档位；返回转场不在冻结档位之列（只跳过回中动画），
+    // 否则窗口行数停在旧值会让内容错位、看起来像「歌词消失」。
     // 手势进行中（拖动 / 停手等待回位）冻结档位：此刻切档会连留白一起变，
     // 手指下正在定位的那一行会突然跳走。松手后的下一次渲染自然回到 fitRows。
     rowCount = prevRowCount
@@ -503,9 +503,12 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
   // 手动定位期间不抢滚动（用户拖动/回位动画优先）。
   useEffect(() => {
     if (activeWrap.line !== activeLine || activeWrap.extra <= 0) return
+    // 【第 202 轮】返回转场期间允许测高，但不在转场里做回中动画：否则转场一开始
+    // 列表先动画一下、随后又被正常布局覆盖，观感是「闪一下再消失」。
+    if (navReturning) return
     if (isPauseScrollRef.current || !visibleRef.current) return
     animateToLine(activeLine)
-  }, [activeWrap, activeLine, animateToLine])
+  }, [activeWrap, activeLine, animateToLine, navReturning])
 
   // 复位只在「歌词数组真的换了一份」时跑（useLrcSet 只在换歌 / 歌词就绪 / 歌词源刷新时换引用，
   // 换行不换引用）。【第 22 轮】依赖刻意走 ref、只写 [lyricLines]：resetScroll 的依赖链里有
@@ -754,9 +757,8 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
       : 0
     const handleWrapLayout = isActive
       ? ({ nativeEvent }: LayoutChangeEvent) => {
-        // 【第 201 轮】返回转场期间不接收换行高度的重新测量：歌名/专辑页 pop 回来时
-        // 行会被重排一次，哪怕只差 1px，行高/偏移变化也会让整块小歌词下跳一下再回来。
-        if (navReturning) return
+        // 【第 202 轮】返回转场期间仍然接收测量（否则行高/内容会停在旧值，出现
+        // 「样式闪一下再消失」），但转场期间不触发回中动画（见下方 activeWrap effect）。
         const expected = metrics.lineHeight + (hasRealTranslation(item) ? metrics.translationHeight + metrics.gap : 0)
         // 只有「多出至少一行」才改变行高；亚行级的测量抖动一律忽略。
         const extra = Math.max(0, Math.round((nativeEvent.layout.height - expected) / metrics.lineHeight)) * metrics.lineHeight

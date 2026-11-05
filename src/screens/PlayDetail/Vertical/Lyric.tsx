@@ -247,7 +247,7 @@ const LrcLine = memo(
 
 export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHeight?: number }) => {
   const lyricLines = useLrcSet()
-  const { line } = useLrcPlay()
+  const { line: engineLine } = useLrcPlay()
   // 播放态（暂停/停止即 false）：给下面的「每帧连续滚动循环」加门控用。
   // 暂停时音频时钟不再推进，循环体只会逐帧算不出变化而早退，但 rAF 仍每帧被
   // CADisplayLink 唤醒（120Hz 解锁后成本翻倍）——只冻结时间不停帧，省不掉这份开销。
@@ -266,6 +266,16 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
       global.state_event.off('playProgressChanged', handlePausedProgress)
     }
   }, [isPlay])
+  // 【第 202 轮】与大/小歌词同口径：暂停态（尤其冷启动）优先用进度条推导当前行。
+  // 此前大歌词的初始 active 仍然直接用引擎行：引擎还停在 0 时，切页首帧先高亮第 0 行，
+  // 激活后 activity effect 又把它改成当前行 —— 用户看到「闪一下开头 + 字体缩放动画」。
+  // 这里让 line 在首次渲染时就是进度条对应的行，激活前后同值，不再重放缩放。
+  const line = useMemo(() => {
+    if (isPlay || engineLine > 0) return engineLine
+    if (!(pausedPosition > 0) || !lyricLines.length) return engineLine
+    const fromProgress = findLineIndexByTime(lyricLines, pausedPosition * 1000)
+    return Math.max(engineLine, fromProgress)
+  }, [engineLine, isPlay, pausedPosition, lyricLines])
   // 前台门：退后台 / 锁屏 / 控制中心时界面不可见，每帧滚动循环没有意义。
   // 本 App 有后台音频、进程常驻，不加这道门 120Hz 的 scrollToOffset 会在后台一直跑。
   const appActive = useAppActive()
