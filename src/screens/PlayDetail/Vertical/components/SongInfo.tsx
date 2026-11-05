@@ -167,13 +167,10 @@ export default memo(({ componentId, onLayout }: {
         )}
       </View>
 
-      {/* 徽标行是一个定高空槽：本地文件时 SourceQualityBadge 只渲染一个 marginTop:4 的
-          空 View（高度 4），在线曲目才到 4 + row(9)。不定高的话它下面的歌手行 / 专辑行
-          会跟着上下跳一整个行高 —— 正是用户报的「位置会发生变化」。
-          空槽的内容高度恒为 BADGE_ROW，里面有没有徽标都不改布局。 */}
-      <View style={badgeSlotFixedSize}>
-        <SourceQualityBadge />
-      </View>
+      {/* 【第 203 轮】音质/平台标移到歌手行右侧后，这里保留原徽标行的定高空槽：
+          歌名行、歌手行、专辑行的纵向位置与改版前逐像素一致（用户要求歌名/专辑不动）。
+          空槽高度恒为 BADGE_ROW。 */}
+      <View style={badgeSlotFixedSize} />
 
       <View style={styles.artistWrapper}>
         {artists.length > 0 ? (
@@ -186,13 +183,17 @@ export default memo(({ componentId, onLayout }: {
                 </Text>
               </TouchableOpacity>
             ))}
+            <SourceQualityBadge size={11} />
           </View>
         ) : (
-          <TouchableOpacity style={styles.artistItem} onPress={() => { void handleShowArtistDetail(componentId, musicInfo as LX.Music.MusicInfoOnline) }}>
-            <Text numberOfLines={1} size={16} color={(theme as unknown as Record<string, string>)['c-font-secondary']}>
-              {artistText}
-            </Text>
-          </TouchableOpacity>
+          <View style={styles.artistRow}>
+            <TouchableOpacity style={styles.artistItem} onPress={() => { void handleShowArtistDetail(componentId, musicInfo as LX.Music.MusicInfoOnline) }}>
+              <Text numberOfLines={1} size={16} color={(theme as unknown as Record<string, string>)['c-font-secondary']}>
+                {artistText}
+              </Text>
+            </TouchableOpacity>
+            <SourceQualityBadge size={11} />
+          </View>
         )}
       </View>
 
