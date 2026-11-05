@@ -21,7 +21,7 @@ import {
   removeTempPlayList,
 } from '@/core/player/tempPlayList'
 import { getMusicUrlInfo, getPicPath, getLyricInfo } from '@/core/music'
-import { removeMusicUrlAll } from '@/core/music/utils'
+import { removeMusicUrlAll, getTryQualityList } from '@/core/music/utils'
 import { requestMsg } from '@/utils/message'
 import { getRandom } from '@/utils/common'
 import { filterList } from './utils'
@@ -185,6 +185,42 @@ const invalidateUrlCacheOnRefresh = async(musicInfo: LX.Music.MusicInfo | LX.Dow
  * 取链并装载资源。`allowRestoreSeek` 是本函数唯一的「允许从非 0 位置起播」开关：
  * 只有 `play()`（恢复上次播放）那条调用传 true，切歌 / 重播 / 失败重取一律 false。
  */
+/**
+ * 【第 203 轮】用户主动切换当前歌曲音质：按目标档重新取流并从当前位置继续播放。
+ * 目标档不可用 / 超时由 getMusicUrlInfo 既有的固定天梯自动降级，result.quality 就是
+ * 实际达成档 —— playerState.quality 与详情页音质标随之更新；全部失败时保留原资源并返回 false。
+ */
+export const switchMusicQuality = async(quality: LX.Quality): Promise<boolean> => {
+  const raw = playerState.playMusicInfo.musicInfo
+  if (!raw) return false
+  const musicInfo = 'progress' in raw ? raw.metadata.musicInfo : raw
+  if (musicInfo.source === 'local') return false
+  // 目标档请求失败/超时时按系统固定天梯逐级降级（master→…→128k），
+  // 一旦某档拿到链接就落盘并播放；result.quality 是实际达成档。
+  const ladder = getTryQualityList(quality, musicInfo)
+  let lastError: any = null
+  for (const tryQuality of ladder) {
+    try {
+      const result = await getMusicPlayUrl(musicInfo, true, false, tryQuality)
+      if (!result) {
+        lastError = new Error('no url')
+        continue
+      }
+      const position = await getPosition().catch(() => playerState.progress.nowPlayTime)
+      currentStreamInfo.musicId = musicInfo.id
+      currentStreamInfo.url = result.url
+      currentStreamInfo.quality = result.quality
+      setResource(raw, result.url, position, result.quality)
+      return true
+    } catch (err) {
+      lastError = err
+    }
+  }
+  // 不把「用户切档失败」升级成全局播放错误（那会触发自动切歌/停止）；保留原资源。
+  setStatusText(lastError?.message || String(lastError ?? ''))
+  return false
+}
+
 export const setMusicUrl = (musicInfo: LX.Music.MusicInfo | LX.Download.ListItem, isRefresh?: boolean, quality?: LX.Quality, allowRestoreSeek = false) => {
   // addLoadTimeout()
   if (!diffCurrentMusicInfo(musicInfo)) return
