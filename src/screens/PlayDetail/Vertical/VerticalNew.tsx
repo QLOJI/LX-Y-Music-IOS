@@ -290,13 +290,11 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
     if (!pager) return
     // 与左滑一致前先清原生 animating：非动画落回当前页在「本来就在当前页」时是视觉空操作，
     // 但会清掉可能残留的 animating 闩锁；紧接着的 setPage 才能稳定走动画。
-    // 回前台 / 重新进入详情 / 压栈页返回后，JS 的滚动状态可能被复位成 idle，而原生事件
-    // 可能整段丢失。除了 idle，还要把「非 idle 但 250ms 没有任何滚动帧」的假过渡视为空闲，
-    // 否则这次清闩锁会被跳过，紧接着的动画 setPage 又会被原生 animating 丢掉。
-    const staleMotion = pageScrollStateRef.current !== 'idle' &&
-      Date.now() - pagerActivityAtRef.current > 250
-    if (!showLyricRef.current && (pageScrollStateRef.current === 'idle' || staleMotion)) {
-      if (staleMotion) pageScrollStateRef.current = 'idle'
+    // 不能用 JS 滚动状态当闸门：回前台 / 重新进入详情 / 压栈返回 / 上一次过渡的事件丢失，
+    // 都可能让 JS 停在非 idle，从而把这次清闩锁整段跳过，后面的动画 setPage 继续被原生丢弃。
+    // 小歌词只在封面页可见，因此这里无条件把原生页落回 0 再动画切页。
+    if (!showLyricRef.current) {
+      pageScrollStateRef.current = 'idle'
       pager.setPageWithoutAnimation?.(0)
     }
     pager.setPage?.(1)

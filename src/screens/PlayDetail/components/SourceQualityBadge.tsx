@@ -10,7 +10,7 @@ import { Icon } from '@/components/common/Icon'
 import { useTheme } from '@/store/theme/hook'
 import { createStyle, toast } from '@/utils/tools'
 import { applyFixedOpacity } from '@/utils/colorOpacity'
-import { getQualityBadge, getQualityBadgeByQuality } from '@/utils/musicQualityBadge'
+import { getQualityBadgeByQuality } from '@/utils/musicQualityBadge'
 import { switchMusicQuality } from '@/core/player/player'
 
 // 平台英文缩写映射（用户指定：酷狗=KG，网易=WY，企鹅=QQ，酷我=KW，咪咕=MG）
@@ -66,7 +66,7 @@ export default memo(({ size = 11 }: { size?: number }) => {
   const t = useI18n()
   const theme = useTheme()
   const playMusicInfo = usePlayMusicInfo()
-  const qualityShowHighest = useSettingValue('common.quality_show_highest')
+  const preferredQuality = useSettingValue('player.playQuality')
   const actualQuality = usePlayerQuality()
   const modalRef = useRef<ModalType>(null)
   const switchingRef = useRef(false)
@@ -81,10 +81,10 @@ export default memo(({ size = 11 }: { size?: number }) => {
 
   const badge = useMemo(() => {
     if (!musicInfo || musicInfo.source === 'local') return null
-    // 实际音质还没回来（首帧/取流中）时退回曲目标注的最高档，避免闪一下 128K。
-    if (actualQuality) return getQualityBadgeByQuality(actualQuality)
-    return getQualityBadge((musicInfo.meta as LX.Music.MusicInfoMeta_online)?._qualitys, qualityShowHighest)
-  }, [musicInfo, actualQuality, qualityShowHighest])
+    // 播放链路始终以「优先播放的音质」为取流起点，详情页首帧也用同一档兜底；
+    // 实际达成档回来后立刻替换（降级时显示降级后的档）。
+    return getQualityBadgeByQuality(actualQuality || preferredQuality)
+  }, [musicInfo, actualQuality, preferredQuality])
 
   if (!musicInfo) return null
 
