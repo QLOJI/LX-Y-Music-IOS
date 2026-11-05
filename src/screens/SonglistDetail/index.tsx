@@ -31,6 +31,7 @@ import PageContent from '@/components/PageContent'
 import SwipeBackArea from '@/components/common/SwipeBackArea'
 import { usePlayerMusicInfo } from '@/store/player/hook.ts'
 import { useStatusbarHeight } from '@/store/common/hook'
+import { useI18n } from '@/lang'
 import MusicInfoOnline = LX.Music.MusicInfoOnline
 
 const IMAGE_WIDTH = scaleSizeW(104)
@@ -43,6 +44,7 @@ const SONG_LIST_DESC_MAX_HEIGHT = Math.round(designTypography.caption * designTy
 
 const ListHeader = ({ detailInfo, info, onBack, showSearchBar, searchText, isFuzzySearch, onToggleSearch, onSearchTextChanged, onToggleSearchMode }: { detailInfo: DetailInfo, info: ListInfoItem, onBack?: () => void, showSearchBar: boolean, searchText: string, isFuzzySearch: boolean, onToggleSearch: () => void, onSearchTextChanged: (text: string) => void, onToggleSearchMode: () => void }) => {
   const theme = useTheme()
+  const t = useI18n()
   const buttonOpacity = useSettingValue('theme.buttonOpacity')
   const buttonRadius = useButtonRadius()
   const statusBarHeight = useStatusbarHeight()
@@ -169,7 +171,7 @@ const ListHeader = ({ detailInfo, info, onBack, showSearchBar, searchText, isFuz
         {showSearchBar && (
           <View style={styles.searchBarContainer}>
             <Input
-              placeholder="搜索歌曲名称、歌手..."
+              placeholder={t('search_song_singer_placeholder')}
               value={searchText}
               onChangeText={onSearchTextChanged}
               autoFocus
