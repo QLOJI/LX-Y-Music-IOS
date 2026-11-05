@@ -21,7 +21,9 @@ import {
   removeTempPlayList,
 } from '@/core/player/tempPlayList'
 import { getMusicUrlInfo, getPicPath, getLyricInfo } from '@/core/music'
-import { removeMusicUrlAll, getTryQualityList } from '@/core/music/utils'
+import { removeMusicUrlAll, removeMusicUrl, getTryQualityList, setLastTryQuality } from '@/core/music/utils'
+import { getMusicUrl as getStoreMusicUrl } from '@/utils/data'
+import { checkUrl } from '@/utils/request'
 import { requestMsg } from '@/utils/message'
 import { getRandom } from '@/utils/common'
 import { filterList } from './utils'
@@ -186,10 +188,13 @@ const invalidateUrlCacheOnRefresh = async(musicInfo: LX.Music.MusicInfo | LX.Dow
  * 只有 `play()`（恢复上次播放）那条调用传 true，切歌 / 重播 / 失败重取一律 false。
  */
 /**
- * 【第 203 轮】用户主动切换当前歌曲音质：按目标档重新取流并从当前位置继续播放。
- * 目标档不可用 / 超时由 getMusicUrlInfo 既有的固定天梯自动降级，result.quality 就是
- * 实际达成档 —— playerState.quality 与详情页音质标随之更新；全部失败时保留原资源并返回 false。
+ * 用户主动切换当前歌曲音质：同歌同源同档优先复用缓存链接，链接失效才重新取流；
+ * 每档最多请求两次，两次都失败/超时才按固定天梯降下一档。全部失败保留原资源。
  */
+const QUALITY_SWITCH_ATTEMPTS = 2
+// HEAD 不支持时不能把缓存判死（405/501），只有明确失效/超时才重取。
+const CACHE_CHECK_TRUSTED_FAILURES = new Set(['405', '501'])
+
 export const switchMusicQuality = async(quality: LX.Quality): Promise<boolean> => {
   const raw = playerState.playMusicInfo.musicInfo
   if (!raw) return false
@@ -200,36 +205,59 @@ export const switchMusicQuality = async(quality: LX.Quality): Promise<boolean> =
     const current = playerState.playMusicInfo.musicInfo
     return !!current && ('progress' in current ? current.metadata.musicInfo : current).id === musicInfo.id
   }
-  // 目标档请求失败/超时时按系统固定天梯逐级降级（master→…→128k），
-  // 一旦某档拿到链接就落盘并播放；result.quality 是实际达成档。
+  const applyUrl = async(url: string, achievedQuality: LX.Quality | null) => {
+    if (!isCurrent()) return false
+    const position = await getPosition().catch(() => playerState.progress.nowPlayTime)
+    if (!isCurrent()) return false
+    if (achievedQuality) {
+      setLastTryQuality(urlSourceInfo.id, achievedQuality)
+      if (urlSourceInfo.id !== musicInfo.id) setLastTryQuality(musicInfo.id, achievedQuality)
+    }
+    currentStreamInfo.musicId = raw.id
+    currentStreamInfo.url = url
+    currentStreamInfo.quality = achievedQuality
+    setStatusText('')
+    setResource(raw, url, position, achievedQuality)
+    return true
+  }
+  // 目标档请求失败/超时时按系统固定天梯逐级降级（master→…→128k）。
   const ladder = getTryQualityList(quality, urlSourceInfo)
   let lastError: any = null
   setStatusText(global.i18n.t('player__getting_url'))
   for (const tryQuality of ladder) {
-    try {
-      // 直接走完整取流链路（自定义源 → 缓存/换源 → 达成档），不要经过
-      // getMusicPlayUrl：它把「正在播放」视为曲目已切换，会把成功结果丢成 null。
-      const result = await getMusicUrlInfo({
-        musicInfo: urlSourceInfo,
-        isRefresh: true,
-        quality: tryQuality,
-        allowToggleSource: false,
-      })
-      if (!result?.url) {
-        lastError = new Error('no url')
-        continue
+    // 同歌同源同档已有链接：先验活，能用就直接复用，不再打音源接口。
+    const cachedUrl = await getStoreMusicUrl(urlSourceInfo, tryQuality).catch(() => '')
+    if (cachedUrl) {
+      const usable = await checkUrl(cachedUrl, { timeout: 4000 })
+        .then(() => true)
+        .catch((err: any) => CACHE_CHECK_TRUSTED_FAILURES.has(String(err?.message ?? '')))
+      if (usable) return applyUrl(cachedUrl, tryQuality)
+      // 链接确实失效：只作废这一档，再按目标档重新取链。
+      await Promise.all([
+        removeMusicUrl(urlSourceInfo, tryQuality).catch(() => {}),
+        urlSourceInfo.id === musicInfo.id
+          ? Promise.resolve()
+          : removeMusicUrl(musicInfo, tryQuality).catch(() => {}),
+      ])
+    }
+    for (let attempt = 0; attempt < QUALITY_SWITCH_ATTEMPTS; attempt++) {
+      try {
+        // 直接走完整取流链路（自定义源 → 换源 → 达成档），不要经过
+        // getMusicPlayUrl：它把「正在播放」视为曲目已切换，会把成功结果丢成 null。
+        const result = await getMusicUrlInfo({
+          musicInfo: urlSourceInfo,
+          isRefresh: true,
+          quality: tryQuality,
+          allowToggleSource: false,
+        })
+        if (!result?.url) {
+          lastError = new Error('no url')
+          continue
+        }
+        return applyUrl(result.url, result.quality)
+      } catch (err) {
+        lastError = err
       }
-      if (!isCurrent()) return false
-      const position = await getPosition().catch(() => playerState.progress.nowPlayTime)
-      if (!isCurrent()) return false
-      currentStreamInfo.musicId = raw.id
-      currentStreamInfo.url = result.url
-      currentStreamInfo.quality = result.quality
-      setStatusText('')
-      setResource(raw, result.url, position, result.quality)
-      return true
-    } catch (err) {
-      lastError = err
     }
   }
   // 不把「用户切档失败」升级成全局播放错误（那会触发自动切歌/停止）；保留原资源。
