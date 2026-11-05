@@ -253,7 +253,7 @@ const SourceDetail = ({ info, onConfirm, toggleSource }: { info: LX.Music.MusicI
         }}
         disabled={!toggleSource}
       >
-        <Text color="#333333" size={14}>确认</Text>
+        <Text color="#333333" size={14}>{t('confirm')}</Text>
       </Button>
     </View>
   ) : (
@@ -318,7 +318,7 @@ const SourceDetail = ({ info, onConfirm, toggleSource }: { info: LX.Music.MusicI
         }}
         disabled={!toggleSource || toggleSource.id == info.id}
       >
-        <Text color="#333333" size={14}>确认</Text>
+        <Text color="#333333" size={14}>{t('confirm')}</Text>
       </Button>
     </View>
   )

@@ -381,7 +381,7 @@ export default memo(() => {
 
       <SwipeBackArea onBack={handleBackToSource} />
 
-      <Popup ref={popupRef} title="播放历史">
+      <Popup ref={popupRef} title={t('nav_play_history')}>
         <View style={styles.popupContent}>
           <View style={styles.modeRow}>
             <TouchableOpacity
@@ -403,7 +403,7 @@ export default memo(() => {
                   size={designTypography.caption}
                   color={pickerMode === 'single' ? theme['c-primary'] : theme['c-font-label']}
                 >
-                  单日
+                  {t('play_history_single_day')}
                 </Text>
             </TouchableOpacity>
             <TouchableOpacity
@@ -422,7 +422,7 @@ export default memo(() => {
                   size={designTypography.caption}
                   color={pickerMode === 'range' ? theme['c-primary'] : theme['c-font-label']}
                 >
-                  范围
+                  {t('play_history_range')}
                 </Text>
             </TouchableOpacity>
           </View>
@@ -505,7 +505,7 @@ export default memo(() => {
               }}
               onPress={() => { applyDate(getTodayText()) }}
             >
-              <Text size={designTypography.caption} color={theme['c-primary-font']}>今天</Text>
+              <Text size={designTypography.caption} color={theme['c-primary-font']}>{t('today')}</Text>
             </TouchableOpacity>
             <TouchableOpacity
               style={{
@@ -519,7 +519,7 @@ export default memo(() => {
               onPress={handleApplyPicker}
             >
               {/* 「确定」文字色与「今天」同一个键：此前用 c-primary-light-1000，在部分主题下与按钮底色几乎同色，字看不见 */}
-              <Text size={designTypography.caption} color={theme['c-primary-font']}>确定</Text>
+              <Text size={designTypography.caption} color={theme['c-primary-font']}>{t('confirm_action')}</Text>
             </TouchableOpacity>
           </View>
         </View>

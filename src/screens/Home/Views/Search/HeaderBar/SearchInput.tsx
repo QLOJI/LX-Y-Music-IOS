@@ -6,6 +6,7 @@ import { useButtonRadius } from '@/utils/buttonRadius'
 import { getTextSize } from '@/utils/pixelRatio'
 import { useFontSize } from '@/store/common/hook'
 import searchState from '@/store/search/state'
+import { useI18n } from '@/lang'
 
 // 输入框文字的「跨实例暂存」（用户第 11 轮第 7 条：点下面的按钮后，输入框里的字看不见了）。
 // 成因：Search/List.tsx 把同一个 header 元素分别放进「空白页(BlankView)」和「结果列表」两棵
@@ -32,6 +33,7 @@ export interface SearchInputType {
 
 export default forwardRef<SearchInputType, SearchInputProps>(
   ({ onChangeText, onSubmit, onBlur, onFocus, onTouchStart }, ref) => {
+    const t = useI18n()
     // const theme = useTheme()
     const [text, setText] = useState(() => lastInputText ?? searchState.searchText ?? '')
     const inputRef = useRef<InputType>(null)
@@ -83,7 +85,7 @@ export default forwardRef<SearchInputType, SearchInputProps>(
     return (
       <Input
         ref={inputRef}
-        placeholder="搜索歌曲、歌手、专辑或歌单"
+        placeholder={t('search_empty_title')}
         value={text}
         onChangeText={handleChangeText}
         style={[

@@ -321,7 +321,7 @@ export default memo(({ isStylized, stylizedSelection, active = true }: RecSongsP
             borderRadius: buttonRadius(16),
           }}
         >
-          <Text color={theme['c-font']} size={14}>更多相似歌曲</Text>
+          <Text color={theme['c-font']} size={14}>{t('more_similar_songs')}</Text>
         </TouchableOpacity>
       </View>
     )

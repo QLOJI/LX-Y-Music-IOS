@@ -400,12 +400,12 @@ export default memo(() => {
           ref={createModalRef}
           onConfirm={handleCreatePlaylist}
           onHide={() => { setCreateModalVisible(false) }}
-          title="新建歌单"
+          title={t('new_playlist')}
         >
           <Input
             value={newPlaylistName}
             onChangeText={setNewPlaylistName}
-            placeholder="请输入歌单名称"
+            placeholder={t('playlist_name_placeholder')}
             style={{ backgroundColor: theme['c-primary-input-background'] }}
           />
         </ConfirmAlert>

@@ -1320,21 +1320,21 @@ export default memo(() => {
       contentContainerStyle={styles.content}
     >
       <View style={{ ...styles.panel, borderColor: theme['c-border-background'] }}>
-        <Text style={styles.label}>连接状态</Text>
+        <Text style={styles.label}>{t('connection_status')}</Text>
         <Text color={hasConfig ? theme['c-primary-font'] : theme['c-font-label']}>
-          {hasConfig ? '已配置' : '未配置，请在设置中配置 WebDAV'}
+          {hasConfig ? t('webdav_configured') : t('webdav_not_configured')}
         </Text>
       </View>
 
       <WebDAVDownloadPath />
 
       <View style={{ ...styles.panel, borderColor: theme['c-border-background'] }}>
-        <Text style={styles.label}>目录</Text>
+        <Text style={styles.label}>{t('directory')}</Text>
         <Text color={theme['c-font-label']} style={styles.meta}>
-          当前：{getFolderName(currentFolder)}
+          {t('webdav_current')}{getFolderName(currentFolder)}
         </Text>
         <Text color={theme['c-font-label']} style={styles.meta}>
-          已选择：{getFolderName(selectedFolder)}
+          {t('webdav_selected')}{getFolderName(selectedFolder)}
         </Text>
         <View style={styles.buttonRow}>
           <Button
@@ -1347,7 +1347,7 @@ export default memo(() => {
             disabled={!hasConfig || folderLoading || !folderStack.length}
             onPress={() => { setFolderStack(prev => prev.slice(0, -1)) }}
           >
-            <Text color={theme['c-button-font']}>返回上级</Text>
+            <Text color={theme['c-button-font']}>{t('go_up')}</Text>
           </Button>
           <Button
             style={[
@@ -1358,7 +1358,7 @@ export default memo(() => {
             disabled={!hasConfig || loading}
             onPress={handleSelectCurrentFolder}
           >
-            <Text color={theme['c-button-font']}>选择当前目录</Text>
+            <Text color={theme['c-button-font']}>{t('select_current_directory')}</Text>
           </Button>
         </View>
 
@@ -1403,9 +1403,9 @@ export default memo(() => {
         <View style={styles.folderItemInfo}>
           <SvgIcon name="music-list" size={18} color={theme['c-primary-font']} style={{ marginRight: 10 }} />
           <View style={{ flex: 1 }}>
-            <Text>全部歌曲</Text>
+            <Text>{t('all_songs')}</Text>
           </View>
-          <Text size={12} color={theme['c-font-label']}>{songs.length} 首</Text>
+          <Text size={12} color={theme['c-font-label']}>{songs.length}{t('song_count_suffix')}</Text>
         </View>
       </TouchableOpacity>
       {songFolders.length ? (
@@ -1426,13 +1426,13 @@ export default memo(() => {
                   {folder.path}
                 </Text>
               </View>
-              <Text size={12} color={theme['c-font-label']}>{folder.count} 首</Text>
+              <Text size={12} color={theme['c-font-label']}>{folder.count}{t('song_count_suffix')}</Text>
             </View>
           </TouchableOpacity>
         ))
       ) : (
         <View style={styles.empty}>
-          <Text color={theme['c-font-label']}>还没有扫描到包含音乐的文件夹</Text>
+          <Text color={theme['c-font-label']}>{t('no_music_folder')}</Text>
         </View>
       )}
     </ScrollView>
@@ -1455,7 +1455,7 @@ export default memo(() => {
             <TextInput
               ref={searchInputRef}
               value={searchText}
-              placeholder="搜索歌曲或歌手"
+              placeholder={t('search_song_or_artist')}
               autoCapitalize="none"
               autoCorrect={false}
               returnKeyType="search"
@@ -1532,7 +1532,7 @@ export default memo(() => {
                 disabled={loading}
                 onPress={handleScan}
               >
-                <Text color={theme['c-button-font']}>扫描</Text>
+                <Text color={theme['c-button-font']}>{t('scan')}</Text>
               </Button>
               <Button
                 style={[
@@ -1545,7 +1545,7 @@ export default memo(() => {
                 disabled={loading}
                 onPress={handleBatchDownload}
               >
-                <Text color={theme['c-primary-font']}>扫描并下载</Text>
+                <Text color={theme['c-primary-font']}>{t('scan_and_download')}</Text>
               </Button>
             </View>
           </>

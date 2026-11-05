@@ -143,11 +143,11 @@ export default forwardRef<HeaderBarType, HeaderBarProps>(
             />
           </View>
           <Text style={styles.cancelButton} color={theme['c-primary']} onPress={onCancelSearch}>
-            取消
+            {t('cancel')}
           </Text>
         </View>
         <View style={styles.platformHeader}>
-          <Text size={17} color={theme['c-font']}>搜索平台</Text>
+          <Text size={17} color={theme['c-font']}>{t('search_platforms')}</Text>
           <Text size={13} color={theme['c-primary']}>{t(`source_${source}`)}</Text>
         </View>
         <ScrollView

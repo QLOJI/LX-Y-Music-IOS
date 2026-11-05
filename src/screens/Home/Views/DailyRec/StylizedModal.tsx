@@ -8,6 +8,7 @@ import { createStyle, toast } from '@/utils/tools'
 import { useButtonRadius } from '@/utils/buttonRadius'
 import { shadow } from '@/utils/shadow'
 import { getData, saveData } from '@/plugins/storage'
+import { useI18n } from '@/lang'
 
 export const CATEGORIES = {
   曲风: {
@@ -103,6 +104,7 @@ interface StylizedModalProps {
 
 export default memo(({ visible, onClose, onConfirm }: StylizedModalProps) => {
   const theme = useTheme()
+  const t = useI18n()
   // 弹层按钮的底面/边框随「按钮透明度」只改颜色 alpha（applyOpacity），不用容器 style.opacity——后者会把按钮文字一起淡掉
   const buttonOpacity = useSettingValue('theme.buttonOpacity')
   const buttonRadius = useButtonRadius()
@@ -160,7 +162,7 @@ export default memo(({ visible, onClose, onConfirm }: StylizedModalProps) => {
         setSelectedTags([tagId])
       } else {
         if (selectedTags.length >= 5) {
-          toast('最多只能选择5个标签')
+          toast(t('max_style_tags'))
           return
         }
         setSelectedTags(prev => [...prev, tagId])
@@ -170,7 +172,7 @@ export default memo(({ visible, onClose, onConfirm }: StylizedModalProps) => {
 
   const handleConfirm = () => {
     if (selectedTags.length === 0) {
-      toast('请至少选择一个标签')
+      toast(t('select_at_least_one_tag'))
       return
     }
     const cat = CATEGORIES[selectedCategoryName]
@@ -195,7 +197,7 @@ export default memo(({ visible, onClose, onConfirm }: StylizedModalProps) => {
       <TouchableOpacity activeOpacity={1} onPress={onClose} style={[styles.overlay, { backgroundColor: 'rgba(0,0,0,0.6)' }]}>
         <TouchableOpacity activeOpacity={1} style={[styles.container, { backgroundColor: theme['c-content-background'] }]}>
           <View style={[styles.header, { borderBottomColor: theme['c-border-background'] }]}>
-            <Text size={18} style={{ fontWeight: 'bold', color: theme['c-font'] }}>选择风格标签</Text>
+            <Text size={18} style={{ fontWeight: 'bold', color: theme['c-font'] }}>{t('select_style_tags')}</Text>
             <TouchableOpacity
               onPress={onClose}
               style={[
@@ -286,7 +288,7 @@ export default memo(({ visible, onClose, onConfirm }: StylizedModalProps) => {
               ]}
               onPress={onClose}
             >
-              <Text color={theme['c-font-label']}>取消</Text>
+              <Text color={theme['c-font-label']}>{t('cancel')}</Text>
             </TouchableOpacity>
             <TouchableOpacity
               style={[
@@ -297,7 +299,7 @@ export default memo(({ visible, onClose, onConfirm }: StylizedModalProps) => {
               ]}
               onPress={handleConfirm}
             >
-              <Text color={theme['c-button-font']}>确定</Text>
+              <Text color={theme['c-button-font']}>{t('confirm_action')}</Text>
             </TouchableOpacity>
           </View>
         </TouchableOpacity>

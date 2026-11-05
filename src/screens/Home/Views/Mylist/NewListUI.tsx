@@ -949,12 +949,12 @@ export default memo(() => {
     <View style={[styles.content, { overflow: 'hidden' }]}>
       {hasError ? (
         <View style={styles.errorContainer}>
-          <Text size={16} color={theme['c-font']} style={styles.errorText}>加载失败</Text>
+          <Text size={16} color={theme['c-font']} style={styles.errorText}>{t('load_failed_title')}</Text>
           <TouchableOpacity
             onPress={() => { void refreshListInfo() }}
             style={[retryButtonStyle, { borderRadius: buttonRadius(40) }]}
           >
-            <Text size={14} color={theme['c-primary-font']}>点击尝试重新加载</Text>
+            <Text size={14} color={theme['c-primary-font']}>{t('load_failed_retry')}</Text>
           </TouchableOpacity>
         </View>
       ) : (
@@ -1065,7 +1065,7 @@ export default memo(() => {
               <MusicList listId={openListIdRef.current ?? undefined} />
             ) : (
               <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
-                <Text size={13} color={theme['c-500']}>点击左侧列表查看歌曲</Text>
+                <Text size={13} color={theme['c-500']}>{t('click_left_list_for_songs')}</Text>
               </View>
             )}
           </View>

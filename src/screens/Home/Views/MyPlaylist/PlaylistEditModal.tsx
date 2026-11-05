@@ -10,6 +10,7 @@ import { updateWySubscribedPlaylist } from '@/store/user/action'
 import { type SubscribedPlaylistInfo } from '@/store/user/state.ts'
 import { designRadius, designSpacing } from '@/theme/DesignTokens'
 import { useButtonRadius } from '@/utils/buttonRadius'
+import { useI18n } from '@/lang'
 
 interface PlaylistInfo {
   id: string
@@ -28,6 +29,7 @@ export default forwardRef<PlaylistEditModalType, {}>((props, ref) => {
   const [name, setName] = useState('')
   const [desc, setDesc] = useState('')
   const theme = useTheme()
+  const t = useI18n()
   // 名称输入框无高度覆写，按 common/Input 的默认高度 32 折算半高；描述框按自身静态高度 100 折算
   const buttonRadius = useButtonRadius()
 
@@ -92,22 +94,22 @@ export default forwardRef<PlaylistEditModalType, {}>((props, ref) => {
       onHide={() => { setVisible(false) }}
     >
       <View style={styles.content}>
-        <Text style={styles.label}>歌单名</Text>
+        <Text style={styles.label}>{t('playlist_name')}</Text>
         <Input
           value={name}
           onChangeText={setName}
-          placeholder="请输入歌单名"
+          placeholder={t('playlist_name_placeholder')}
           style={{
             // 输入框按 common/Input 的默认高度 32（本处未覆写高度）折算半高
             borderRadius: buttonRadius(32),
             backgroundColor: theme['c-primary-input-background'],
           }}
         />
-        <Text style={[styles.label, { marginTop: 15 }]}>描述</Text>
+        <Text style={[styles.label, { marginTop: 15 }]}>{t('description')}</Text>
         <Input
           value={desc}
           onChangeText={setDesc}
-          placeholder="请输入描述"
+          placeholder={t('description_placeholder')}
           multiline
           style={[
             { height: 100, borderRadius: designRadius.sm, backgroundColor: theme['c-primary-input-background'] },
