@@ -80,6 +80,20 @@ export const useTempPlayList = () => {
   return value
 }
 
+/** 【第 203 轮】当前**实际播放**音质（降级后是达成档），供详情页音质标与弹层订阅。 */
+export const usePlayerQuality = () => {
+  const [quality, setQuality] = useState<InitState['quality']>(state.quality)
+  useEffect(() => {
+    const handleUpdate = () => { setQuality(state.quality) }
+    global.state_event.on('playQualityChanged', handleUpdate)
+    handleUpdate()
+    return () => {
+      global.state_event.off('playQualityChanged', handleUpdate)
+    }
+  }, [])
+  return quality
+}
+
 export const useProgress = (autoUpdate = true) => {
   const [value, update] = useState(state.progress)
 

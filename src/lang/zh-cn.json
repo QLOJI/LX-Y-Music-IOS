@@ -868,5 +868,7 @@
   "no_similar_songs": "没有找到相似歌曲",
   "max_style_tags": "最多只能选择5个标签",
   "select_at_least_one_tag": "请至少选择一个标签",
-  "search_platforms": "搜索平台"
+  "search_platforms": "搜索平台",
+  "quality_title": "音质",
+  "quality_switch_failed": "切换音质失败，已保留当前播放"
 }

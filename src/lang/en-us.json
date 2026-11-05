@@ -868,5 +868,7 @@
   "no_similar_songs": "No similar songs found",
   "max_style_tags": "You can select up to 5 tags",
   "select_at_least_one_tag": "Select at least one tag",
-  "search_platforms": "Search platforms"
+  "search_platforms": "Search platforms",
+  "quality_title": "Quality",
+  "quality_switch_failed": "Failed to switch quality; current playback kept"
 }

@@ -135,6 +135,11 @@ export class StateEvent extends Event {
     this.emit('playProgressChanged', progress)
   }
 
+  // 【第 203 轮】实际播放音质变化（含自动降级后的达成档）：播放详情页音质小标据此刷新。
+  playQualityChanged() {
+    this.emit('playQualityChanged')
+  }
+
   playPlayedListChanged(playedList: PlayerState['playedList']) {
     this.emit('playPlayedListChanged', playedList)
   }
