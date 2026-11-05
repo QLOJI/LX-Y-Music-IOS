@@ -55,6 +55,25 @@ const hasKey = (map: Record<string, unknown> | null, key: string): boolean => !!
  * @param qualitys 曲目 meta._qualitys（可能为空对象 / undefined —— 表示源未返回标注）
  * @param showHighest 设置项 common.quality_show_highest
  */
+/**
+ * 【第 203 轮】由**实际播放音质**取小标（playerState.quality，降级后是降级档）。
+ * 与 getQualityBadge 的区别：那个看曲目标注「支持什么」，这个看「这次真的拿到了什么」。
+ */
+export const getQualityBadgeByQuality = (quality?: string | null): QualityBadgeInfo => {
+  switch (quality) {
+    case 'master': return BADGE_MASTER
+    case 'atmos':
+    case 'atmos_plus': return BADGE_ATMOS
+    case 'hires':
+    case 'flac24bit':
+    case 'flac32bit': return BADGE_24BIT
+    case 'flac': return BADGE_SQ
+    case '320k':
+    case '192k': return BADGE_HQ
+    default: return QUALITY_BADGE_FALLBACK
+  }
+}
+
 export const getQualityBadge = (qualitys: unknown, showHighest: boolean): QualityBadgeInfo => {
   const map = (qualitys ?? null) as Record<string, unknown> | null
   if (showHighest && hasKey(map, 'master')) return BADGE_MASTER

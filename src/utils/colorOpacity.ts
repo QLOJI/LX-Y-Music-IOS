@@ -3,7 +3,7 @@
  * 主题色多为 rgb()/rgba() 字符串（如 'rgb(255,255,255)'），直接拼接十六进制
  * alpha 会得到无效颜色，因此这里做格式解析后再合成。
  */
-export const applyOpacity = (color: string, opacity: number): string => {
+const applyOpacityValue = (color: string, opacity: number): string => {
   // 【第 69 轮第 1 条】两个入口守卫。旧写法把参数直接喂进 Math.max/min：
   //   · opacity 是 undefined / NaN 时，`Math.min(Math.max(NaN, 0), 100)` 还是 NaN
   //     （NaN 与任何数比较都为 false，钳制等于没做），下面的 `(baseAlpha * ratio).toFixed(2)`
@@ -34,3 +34,12 @@ export const applyOpacity = (color: string, opacity: number): string => {
 
   return color
 }
+
+/** 按钮/高亮等**用户可调**表面：透明度来自设置项。 */
+export const applyOpacity = (color: string, opacity: number): string => applyOpacityValue(color, opacity)
+
+/**
+ * 【第 203 轮】固定透明度的装饰表面（音质弹层卡片、磨砂面板等），与「按钮透明度」设置无关。
+ * 单独的入口名是为了和用户可调的按钮底色区分开。
+ */
+export const applyFixedOpacity = (color: string, opacity: number): string => applyOpacityValue(color, opacity)
