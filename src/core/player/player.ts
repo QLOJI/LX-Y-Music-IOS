@@ -195,21 +195,37 @@ export const switchMusicQuality = async(quality: LX.Quality): Promise<boolean> =
   if (!raw) return false
   const musicInfo = 'progress' in raw ? raw.metadata.musicInfo : raw
   if (musicInfo.source === 'local') return false
+  const urlSourceInfo = musicInfo.meta.toggleMusicInfo ?? musicInfo
+  const isCurrent = () => {
+    const current = playerState.playMusicInfo.musicInfo
+    return !!current && ('progress' in current ? current.metadata.musicInfo : current).id === musicInfo.id
+  }
   // 目标档请求失败/超时时按系统固定天梯逐级降级（master→…→128k），
   // 一旦某档拿到链接就落盘并播放；result.quality 是实际达成档。
-  const ladder = getTryQualityList(quality, musicInfo)
+  const ladder = getTryQualityList(quality, urlSourceInfo)
   let lastError: any = null
+  setStatusText(global.i18n.t('player__getting_url'))
   for (const tryQuality of ladder) {
     try {
-      const result = await getMusicPlayUrl(musicInfo, true, false, tryQuality)
-      if (!result) {
+      // 直接走完整取流链路（自定义源 → 缓存/换源 → 达成档），不要经过
+      // getMusicPlayUrl：它把「正在播放」视为曲目已切换，会把成功结果丢成 null。
+      const result = await getMusicUrlInfo({
+        musicInfo: urlSourceInfo,
+        isRefresh: true,
+        quality: tryQuality,
+        allowToggleSource: false,
+      })
+      if (!result?.url) {
         lastError = new Error('no url')
         continue
       }
+      if (!isCurrent()) return false
       const position = await getPosition().catch(() => playerState.progress.nowPlayTime)
-      currentStreamInfo.musicId = musicInfo.id
+      if (!isCurrent()) return false
+      currentStreamInfo.musicId = raw.id
       currentStreamInfo.url = result.url
       currentStreamInfo.quality = result.quality
+      setStatusText('')
       setResource(raw, result.url, position, result.quality)
       return true
     } catch (err) {
@@ -217,7 +233,9 @@ export const switchMusicQuality = async(quality: LX.Quality): Promise<boolean> =
     }
   }
   // 不把「用户切档失败」升级成全局播放错误（那会触发自动切歌/停止）；保留原资源。
-  setStatusText(lastError?.message || String(lastError ?? ''))
+  setStatusText(lastError?.message && lastError.message !== 'no url'
+    ? lastError.message
+    : global.i18n.t('quality_switch_failed'))
   return false
 }
 

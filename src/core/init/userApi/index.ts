@@ -13,47 +13,21 @@ import { fetchData } from './request'
 import { getUserApiList } from '@/utils/data'
 import { confirmDialog, openUrl, tipDialog } from '@/utils/tools'
 
-const parseFileSize = (sizeStr: string): number => {
-  const match = sizeStr.match(/^([\d.]+)\s*(MB|KB)$/i)
-  if (!match) return 0
-  const num = parseFloat(match[1])
-  const unit = match[2].toUpperCase()
-  return unit === 'KB' ? num / 1024 : num
-}
+const LOSSLESS_QUALITYS = new Set(['master', 'atmos', 'atmos_plus', 'hires', 'flac24bit', 'flac'])
 
-const getActualQualityBySize = (actualSizeMB: number, claimedQuality: string, musicInfo: LX.Music.MusicInfo): string => {
-  const qualitySizes: Record<string, number> = {}
+// 只看容器格式判断是否发生了「明显降级」。无损档之间的大小差异受源侧切片影响，
+// 不能拿曲目元数据里的 size 反推（会把 Master 误判成 24bit）。
+const getActualQualityByFormat = (url: string, contentType: string, requested: LX.Quality): LX.Quality => {
+  const type = contentType.toLowerCase()
+  const path = url.toLowerCase().split('?')[0]
+  const isFlac = type.includes('audio/flac') || type.includes('audio/x-flac') || /\.flac$/.test(path)
+  const isM4a = type.includes('audio/mp4') || type.includes('audio/m4a') || type.includes('audio/aac') || /\.(m4a|aac)$/.test(path)
+  const isMp3 = type.includes('audio/mpeg') || type.includes('audio/mp3') || /\.mp3$/.test(path)
 
-  if (musicInfo._types) {
-    for (const [quality, info] of Object.entries(musicInfo._types)) {
-      if (typeof info === 'object' && info.size) {
-        qualitySizes[quality] = parseFileSize(info.size)
-      }
-    }
-  }
-
-  if (Object.keys(qualitySizes).length === 0 && musicInfo.meta?._qualitys) {
-    for (const [quality, info] of Object.entries(musicInfo.meta._qualitys)) {
-      if (typeof info === 'object' && info.size) {
-        qualitySizes[quality] = parseFileSize(info.size)
-      }
-    }
-  }
-
-  if (Object.keys(qualitySizes).length === 0) return claimedQuality
-
-  let closestQuality = claimedQuality
-  let minDiff = Infinity
-
-  for (const [quality, expectedSize] of Object.entries(qualitySizes)) {
-    const diff = Math.abs(actualSizeMB - expectedSize)
-    if (diff < minDiff) {
-      minDiff = diff
-      closestQuality = quality
-    }
-  }
-
-  return closestQuality
+  if (isFlac) return requested
+  if (isM4a && (LOSSLESS_QUALITYS.has(requested) || requested === '320k')) return '128k'
+  if (isMp3 && LOSSLESS_QUALITYS.has(requested)) return '320k'
+  return requested
 }
 
 export default async(_setting: LX.AppSetting) => {
@@ -169,51 +143,23 @@ export default async(_setting: LX.AppSetting) => {
                     })
                       .then(async(res) => {
                         const extraQuality = res.data.extra?.quality
-                        let actualQuality = typeof extraQuality === 'object'
-                          ? extraQuality.type || type
-                          : (extraQuality || type)
-
+                        const explicitQuality = typeof extraQuality === 'object'
+                          ? extraQuality?.type
+                          : extraQuality
                         const url = res.data.url
-                        if (url) {
-                          const urlLower = url.toLowerCase()
-                          const urlExtension = urlLower.split('.').pop() || ''
+                        let actualQuality: LX.Quality = explicitQuality || type
 
+                        // 源显式回传的音质优先；只有源没回传时才用容器格式兜底检测降级。
+                        if (url && !explicitQuality) {
                           try {
                             const headResponse = await fetch(url, { method: 'HEAD' })
-                            const contentLength = headResponse.headers.get('content-length')
-                            const contentType = headResponse.headers.get('content-type') || ''
-
-                            let inferredType = urlExtension
-                            if (contentType.includes('audio/flac') || contentType.includes('application/octet-stream')) {
-                              inferredType = 'flac'
-                            } else if (contentType.includes('audio/mpeg') || contentType.includes('audio/mp3')) {
-                              inferredType = 'mp3'
-                            } else if (contentType.includes('audio/mp4') || contentType.includes('audio/m4a') || contentType.includes('audio/aac')) {
-                              inferredType = 'm4a'
-                            }
-
-                            if (contentLength) {
-                              const actualSizeMB = parseInt(contentLength) / (1024 * 1024)
-                              actualQuality = getActualQualityBySize(actualSizeMB, actualQuality, songInfo)
-                            } else if (inferredType === 'm4a' || inferredType === 'aac') {
-                              actualQuality = '128k'
-                            } else if (inferredType === 'mp3') {
-                              actualQuality = '320k'
-                            } else {
-                              actualQuality = 'flac'
-                            }
+                            actualQuality = getActualQualityByFormat(url, headResponse.headers.get('content-type') || '', actualQuality)
                           } catch {
-                            if (urlExtension === 'm4a' || urlExtension === 'aac') {
-                              actualQuality = '128k'
-                            } else if (urlExtension === 'mp3') {
-                              actualQuality = '320k'
-                            } else {
-                              actualQuality = 'flac'
-                            }
+                            actualQuality = getActualQualityByFormat(url, '', actualQuality)
                           }
                         }
 
-                        return { type: actualQuality, url: res.data.url }
+                        return { type: actualQuality, url }
                       })
                       .catch((err) => {
                         console.log(err.message)
