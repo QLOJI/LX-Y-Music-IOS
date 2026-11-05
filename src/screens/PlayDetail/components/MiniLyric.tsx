@@ -25,7 +25,7 @@ import { useComponentIds, useNavReturning } from '@/store/common/hook'
 import { COMPONENT_IDS } from '@/config/constant'
 import playerState from '@/store/player/state'
 import { useIsPlay } from '@/store/player/hook'
-import { IDLE_RETURN_MS, LINE_CHANGE_GLIDE_MS, LINE_ZOOM_MS, RETURN_TO_ACTIVE_MS, easeInOutSine } from '@/screens/PlayDetail/lyricAnimation'
+import { IDLE_RETURN_MS, LINE_ZOOM_MS, RETURN_TO_ACTIVE_MS, easeInOutSine } from '@/screens/PlayDetail/lyricAnimation'
 
 // 迷你歌词 = 封面页上的「上一行 / 当前行 / 下一行」**定窗**歌词窗（窗口高度固定，行高逐行算）。
 //
@@ -298,7 +298,9 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
   let rowCount: number
   if (prevRowCount == null) {
     rowCount = fitRows
-  } else if (isPauseScrollRef.current) {
+  } else if (isPauseScrollRef.current || navReturning) {
+    // 【第 201 轮】返回转场期间同样冻结档位：pop 回来时页面布局会短暂重排，
+    // 行数（三行/四行）若跟着变，整块小歌词会下跳一下再还原。
     // 手势进行中（拖动 / 停手等待回位）冻结档位：此刻切档会连留白一起变，
     // 手指下正在定位的那一行会突然跳走。松手后的下一次渲染自然回到 fitRows。
     rowCount = prevRowCount
@@ -458,7 +460,9 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
       listRef.current?.scrollToOffset({ offset, animated: false })
       return
     }
-    animateToLine(index, LINE_CHANGE_GLIDE_MS)
+    // 【第 201 轮】换行跟随与大歌词同速：原来用小歌词自己的 200ms，比大歌词的
+    // 400ms 快一截，同屏对比就是「小歌词窜、大歌词稳」。统一走默认 RETURN_TO_ACTIVE_MS。
+    animateToLine(index)
   }, [animateToLine, getScrollOffset, worstRowHeight, cancelScroll])
 
   // 复位：歌词换了新的一份（切歌 / 歌词就绪 / 歌词源刷新）时立即（无动画）回到当前行，
@@ -500,7 +504,7 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
   useEffect(() => {
     if (activeWrap.line !== activeLine || activeWrap.extra <= 0) return
     if (isPauseScrollRef.current || !visibleRef.current) return
-    animateToLine(activeLine, LINE_CHANGE_GLIDE_MS)
+    animateToLine(activeLine)
   }, [activeWrap, activeLine, animateToLine])
 
   // 复位只在「歌词数组真的换了一份」时跑（useLrcSet 只在换歌 / 歌词就绪 / 歌词源刷新时换引用，
@@ -750,8 +754,12 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
       : 0
     const handleWrapLayout = isActive
       ? ({ nativeEvent }: LayoutChangeEvent) => {
+        // 【第 201 轮】返回转场期间不接收换行高度的重新测量：歌名/专辑页 pop 回来时
+        // 行会被重排一次，哪怕只差 1px，行高/偏移变化也会让整块小歌词下跳一下再回来。
+        if (navReturning) return
         const expected = metrics.lineHeight + (hasRealTranslation(item) ? metrics.translationHeight + metrics.gap : 0)
-        const extra = Math.max(0, Math.round(nativeEvent.layout.height - expected))
+        // 只有「多出至少一行」才改变行高；亚行级的测量抖动一律忽略。
+        const extra = Math.max(0, Math.round((nativeEvent.layout.height - expected) / metrics.lineHeight)) * metrics.lineHeight
         setActiveWrap(prev => prev.line === index && prev.extra === extra ? prev : { line: index, extra })
       }
       : undefined
@@ -830,7 +838,7 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
         </Animated.View>
       </Pressable>
     )
-  }, [activeLine, wordsByIndex, lyricLines, isKaraoke, baseRowHeight, rowHeights, textStyle, translationStyle, activeColor, inactiveColor, handlePress, handleLongPress, getLineScale, getLineShift, visible, karaokeVisible, zoom, lyricContentWidth, metrics])
+  }, [activeLine, wordsByIndex, lyricLines, isKaraoke, baseRowHeight, rowHeights, textStyle, translationStyle, activeColor, inactiveColor, handlePress, handleLongPress, getLineScale, getLineShift, visible, karaokeVisible, zoom, lyricContentWidth, metrics, navReturning])
 
   const getKey = useCallback((_item: Line, index: number) => `${index}`, [])
   // 定高行：getItemLayout 精确（不需要像大歌词那样动态测量），虚拟化窗口与滚动目标都以它为准

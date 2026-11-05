@@ -288,6 +288,12 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
     clearPagerLatch()
     const pager = pagerViewRef.current
     if (!pager) return
+    // 与左滑一致前先清原生 animating：非动画落回当前页在「本来就在当前页」时是视觉空操作，
+    // 但会立刻清掉可能残留的 animating 闩锁；紧接着的 setPage 才能稳定走动画。
+    // 仅在确认空闲且仍在封面页时做，避免把正在进行的过渡/已落歌词页的状态拽回去。
+    if (!showLyricRef.current && pageScrollStateRef.current === 'idle') {
+      pager.setPageWithoutAnimation?.(0)
+    }
     pager.setPage?.(1)
     // 兜底只留两级，且都保持「带动画」：800ms 后仍没落页再发一次动画切页；
     // 再 800ms 仍失败才重挂并落在歌词页。绝不把正在进行的动画截断成非动画。

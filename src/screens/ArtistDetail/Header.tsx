@@ -18,6 +18,7 @@ import { type FollowedArtistInfo } from '@/store/user/state'
 import SimilarArtistsModal, { type SimilarArtistsModalType } from './SimilarArtistsModal'
 import { designRadius, designSpacing, designTypography } from '@/theme/DesignTokens'
 import { useBlurredPic } from '@/utils/hooks/useBlurredPic'
+import { useI18n } from '@/lang'
 
 // 顶部封面背景的模糊半径（固定值，非主题里的 theme.blur）
 const HEADER_BLUR_RADIUS = 10
@@ -30,6 +31,7 @@ interface Props {
 
 export default memo(({ artist, onFollow: _onFollow, componentId }: Props) => {
   const theme = useTheme()
+  const t = useI18n()
   const buttonOpacity = useSettingValue('theme.buttonOpacity')
   const buttonRadius = useButtonRadius()
   const statusBarHeight = useStatusbarHeight()
@@ -142,7 +144,7 @@ export default memo(({ artist, onFollow: _onFollow, componentId }: Props) => {
               style={[styles.similarButton, { backgroundColor: applyOpacity('rgba(255,255,255,0.24)', buttonOpacity), borderRadius: buttonRadius(34) /* 相似歌手胶囊高 34：按自身高度 34 折算半高，行内覆盖「按钮圆角」 */ }]}
               onPress={() => similarArtistsModalRef.current?.show({ id: artist?.mid || artist?.id, name: artistName, source: artist?.source })}
             >
-              <Text size={designTypography.caption} color="#FFFFFF" numberOfLines={1}>相似歌手</Text>
+              <Text size={designTypography.caption} color="#FFFFFF" numberOfLines={1}>{t('similar_artists')}</Text>
               <Icon name="chevron-right" color="#FFFFFF" size={13} />
             </TouchableOpacity>
           )}

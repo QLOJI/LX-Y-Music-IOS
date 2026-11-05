@@ -9,9 +9,11 @@ import PlayerBar from '@/components/player/PlayerBar'
 import LandscapeCentered from '@/components/LandscapeCentered'
 import { playOnlineList } from '@/core/list'
 import { usePlayerMusicInfo } from '@/store/player/hook'
+import { useI18n } from '@/lang'
 
 export default memo(({ componentId, similarSongs: initialSimilarSongs }: { componentId: string, similarSongs: LX.Music.MusicInfoOnline[] }) => {
   const listRef = useRef<OnlineListType>(null)
+  const t = useI18n()
   const playerMusicInfo = usePlayerMusicInfo()
   const [similarSongs, setSimilarSongs] = useState(initialSimilarSongs)
 
@@ -23,7 +25,7 @@ export default memo(({ componentId, similarSongs: initialSimilarSongs }: { compo
     } else {
       listRef.current?.setList([])
       listRef.current?.setStatus('end')
-      toast('没有找到相似歌曲')
+      toast(t('no_similar_songs'))
     }
   }, [componentId, similarSongs])
 
@@ -41,7 +43,7 @@ export default memo(({ componentId, similarSongs: initialSimilarSongs }: { compo
     <PageContent>
       <LandscapeCentered>
         <View style={styles.container}>
-          <Header componentId={componentId} title="相似歌曲推荐" />
+          <Header componentId={componentId} title={t('similar_songs_title')} />
           {/* 底部内边距：给绝对定位悬浮的迷你播放器留出空间 */}
           <View style={styles.listWrap}>
             <OnlineList componentId={componentId}

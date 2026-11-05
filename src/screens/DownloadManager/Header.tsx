@@ -8,12 +8,14 @@ import { createStyle } from '@/utils/tools'
 import { scaleSizeH } from '@/utils/pixelRatio'
 import { useButtonRadius } from '@/utils/buttonRadius'
 import { HEADER_HEIGHT as _HEADER_HEIGHT } from '@/config/constant'
+import { useI18n } from '@/lang'
 
 const HEADER_HEIGHT = scaleSizeH(_HEADER_HEIGHT)
 
 export default memo(({ componentId }: { componentId: string }) => {
   const statusBarHeight = useStatusbarHeight()
   const buttonRadius = useButtonRadius()
+  const t = useI18n()
   const back = () => { void pop(componentId) }
 
   return (
@@ -30,7 +32,7 @@ export default memo(({ componentId }: { componentId: string }) => {
         >
           <Icon name="chevron-left" size={18} />
         </TouchableOpacity>
-        <Text numberOfLines={1} size={16} style={styles.title}>下载管理</Text>
+        <Text numberOfLines={1} size={16} style={styles.title}>{t('download_manager')}</Text>
         <View style={{ width: HEADER_HEIGHT }} />
       </View>
     </View>

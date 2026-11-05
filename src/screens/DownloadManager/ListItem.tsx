@@ -9,10 +9,12 @@ import { createStyle } from '@/utils/tools'
 import { useButtonRadius } from '@/utils/buttonRadius'
 import { dateFormat, sizeFormate } from '@/utils/common'
 import { resumeTask, retryTask } from '@/core/download'
+import { useI18n } from '@/lang'
 
 export default memo(({ task: initialTask, rowWidth = '100%', onRemove }: { task: LX.Download.DownloadTask, rowWidth?: `${number}%`, onRemove: (id: string) => void }) => {
   const theme = useTheme()
   const buttonRadius = useButtonRadius()
+  const t = useI18n()
   const [task, setTask] = useState(initialTask)
   const errorColor = theme['c-600']
 
@@ -59,7 +61,7 @@ export default memo(({ task: initialTask, rowWidth = '100%', onRemove }: { task:
 
   const renderStatus = () => {
     if (task.isRemoteSynced) {
-      return <Text size={12} color={theme['c-font-label']}>由其他设备同步或导入的下载记录</Text>
+      return <Text size={12} color={theme['c-font-label']}>{t('status_synced_record')}</Text>
     }
 
     switch (task.status) {
@@ -83,13 +85,13 @@ export default memo(({ task: initialTask, rowWidth = '100%', onRemove }: { task:
           </View>
         )
       case 'completed':
-        return <Text size={12} color={theme['c-primary']}>已完成</Text>
+        return <Text size={12} color={theme['c-primary']}>{t('status_completed')}</Text>
       case 'error':
-        return <Text size={12} color={errorColor} numberOfLines={1}>{task.errorMsg || '下载失败'}</Text>
+        return <Text size={12} color={errorColor} numberOfLines={1}>{task.errorMsg || t('download_failed')}</Text>
       case 'paused':
-        return <Text size={12} color={theme['c-font-label']}>已中断，可继续下载</Text>
+        return <Text size={12} color={theme['c-font-label']}>{t('status_interrupted')}</Text>
       case 'waiting':
-        return <Text size={12} color={theme['c-font-label']}>等待中...</Text>
+        return <Text size={12} color={theme['c-font-label']}>{t('status_waiting')}</Text>
       default:
         return null
     }
@@ -99,15 +101,15 @@ export default memo(({ task: initialTask, rowWidth = '100%', onRemove }: { task:
     <View style={styles.metadataContainer}>
       <View style={styles.metaItem}>
         <Icon name={task.metadataStatus.tags === 'success' ? 'checkbox-marked' : (task.metadataStatus.tags === 'fail' ? 'close' : 'checkbox-blank-outline')} color={task.metadataStatus.tags === 'success' ? theme['c-primary'] : (task.metadataStatus.tags === 'fail' ? errorColor : theme['c-font-label'])} size={12} />
-        <Text size={10} color={theme['c-font-label']}>标签</Text>
+        <Text size={10} color={theme['c-font-label']}>{t('tag_label')}</Text>
       </View>
       <View style={styles.metaItem}>
         <Icon name={task.metadataStatus.cover === 'success' ? 'checkbox-marked' : (task.metadataStatus.cover === 'fail' ? 'close' : 'checkbox-blank-outline')} color={task.metadataStatus.cover === 'success' ? theme['c-primary'] : (task.metadataStatus.cover === 'fail' ? errorColor : theme['c-font-label'])} size={12} />
-        <Text size={10} color={theme['c-font-label']}>封面</Text>
+        <Text size={10} color={theme['c-font-label']}>{t('cover_label')}</Text>
       </View>
       <View style={styles.metaItem}>
         <Icon name={task.metadataStatus.lyric === 'success' ? 'checkbox-marked' : (task.metadataStatus.lyric === 'fail' ? 'close' : 'checkbox-blank-outline')} color={task.metadataStatus.lyric === 'success' ? theme['c-primary'] : (task.metadataStatus.lyric === 'fail' ? errorColor : theme['c-font-label'])} size={12} />
-        <Text size={10} color={theme['c-font-label']}>歌词</Text>
+        <Text size={10} color={theme['c-font-label']}>{t('lyric_label')}</Text>
       </View>
       {hasMetaError && task.status === 'completed' && (
         <TouchableOpacity style={[styles.retryButton, { borderRadius: buttonRadius(22) /* 小图标按钮可见高 ≈ 图标 14 + 上下 padding 4×2 = 22 */ }]} onPress={handleRetry}>
