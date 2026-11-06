@@ -271,10 +271,12 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
   // 激活后 activity effect 又把它改成当前行 —— 用户看到「闪一下开头 + 字体缩放动画」。
   // 这里让 line 在首次渲染时就是进度条对应的行，激活前后同值，不再重放缩放。
   const line = useMemo(() => {
-    if (isPlay || engineLine > 0) return engineLine
+    // 暂停态完全以进度条为准：引擎行会随进入/返回详情页的重锚而变化，
+    // 拿它当暂停行会让大歌词跟着上下跳；进度条在暂停时是稳定值。
+    if (isPlay) return engineLine
     if (!(pausedPosition > 0) || !lyricLines.length) return engineLine
     const fromProgress = findLineIndexByTime(lyricLines, pausedPosition * 1000)
-    return Math.max(engineLine, fromProgress)
+    return fromProgress >= 0 ? fromProgress : engineLine
   }, [engineLine, isPlay, pausedPosition, lyricLines])
   // 前台门：退后台 / 锁屏 / 控制中心时界面不可见，每帧滚动循环没有意义。
   // 本 App 有后台音频、进程常驻，不加这道门 120Hz 的 scrollToOffset 会在后台一直跑。
@@ -312,6 +314,9 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
   const isPauseScrollRef = useRef(false)
   const scrollTimoutRef = useRef<NodeJS.Timeout | null>(null)
   const delayScrollTimeout = useRef<NodeJS.Timeout | null>(null)
+  // 手势结束事件丢失时，停手回位/浮层收起不能永久卡住。
+  const isTouchingRef = useRef(false)
+  const pauseWatchdogRef = useRef<NodeJS.Timeout | null>(null)
   // 歌词页是从封面页切换时才挂载；初始值直接取引擎当前行，避免新页面先回到第 0 行。
   const lineRef = useRef({ line: line >= 0 ? line : 0, prevLine: line >= 0 ? line : 0 })
   // 【第 195 轮】首帧定位遮罩：歌词列表挂载时默认在 offset 0（开头），若此时用户刚好
@@ -588,6 +593,37 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
     } catch { }
   }, [lyricLines, pagerHeight])
 
+  const clearPauseWatchdog = useCallback(() => {
+    if (!pauseWatchdogRef.current) return
+    clearTimeout(pauseWatchdogRef.current)
+    pauseWatchdogRef.current = null
+  }, [])
+  // 拖动结束事件丢失时，手动定位态会永久不解除：表现为歌词再也不跟回当前进度。
+  // 手指已抬起且超过 IDLE_RETURN_MS+1s 仍无收尾，就强制走一次正常停手回位。
+  const armPauseWatchdogRef = useRef<() => void>(() => {})
+  const armPauseWatchdog = useCallback(() => {
+    clearPauseWatchdog()
+    pauseWatchdogRef.current = setTimeout(() => {
+      pauseWatchdogRef.current = null
+      if (!isPauseScrollRef.current) return
+      if (isTouchingRef.current) {
+        armPauseWatchdogRef.current()
+        return
+      }
+      if (scrollTimoutRef.current) {
+        clearTimeout(scrollTimoutRef.current)
+        scrollTimoutRef.current = null
+      }
+      isPauseScrollRef.current = false
+      dragStartOffsetRef.current = null
+      isOverlayShownRef.current = false
+      playLineRef.current?.setVisible(false)
+      handleScrollToActive()
+    }, IDLE_RETURN_MS + 1000)
+  }, [clearPauseWatchdog, handleScrollToActive])
+  armPauseWatchdogRef.current = armPauseWatchdog
+  useEffect(() => clearPauseWatchdog, [clearPauseWatchdog])
+
   // 连续平滑滚动：每帧把「当前高亮行」精确居中。
   // 目标行一律取高亮行本身（lineRef.current.line，与行着色同一个来源）：
   // 原先这里用 audioClock 另算一个行号，两处时间基准不同，换行边界附近会出现
@@ -778,6 +814,7 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
       scrollCancelRef.current()
       scrollCancelRef.current = null
     }
+    armPauseWatchdog()
   }
 
   // 停手回位的统一入口（松手 + 惯性结束都走这里），每次都重新计时。
@@ -1150,7 +1187,15 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
     // 先用同步的播放进度做一次立即重锚（播放中重启 ticker 从该位置推进），
     // 再按歌词引擎当前行定位；不等待原生 getPosition Promise，保证切页首个
     // 布局帧就显示接近真实位置的高亮行。
+    // 切回本页时，上一屏残留的手动定位态/浮层/倒计时一律作废。
     isPauseScrollRef.current = false
+    dragStartOffsetRef.current = null
+    isOverlayShownRef.current = false
+    playLineRef.current?.setVisible(false)
+    if (scrollTimoutRef.current) {
+      clearTimeout(scrollTimoutRef.current)
+      scrollTimoutRef.current = null
+    }
     const cachedPosition = playerState.progress.nowPlayTime
     let immediateLine = lineRef.current.line
     // 播放中引擎就是实时行：绝不用 1Hz 轮询的进度条重锚（可能落后引擎一行，
@@ -1367,7 +1412,14 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
   }, [markInitialPositioned, getPausedLineHint])
 
   return (
-    <View style={{ flex: 1, width: '100%' }} onLayout={handlePageLayout} collapsable={false}>
+    <View
+      style={{ flex: 1, width: '100%' }}
+      onLayout={handlePageLayout}
+      onTouchStart={() => { isTouchingRef.current = true }}
+      onTouchEnd={() => { isTouchingRef.current = false }}
+      onTouchCancel={() => { isTouchingRef.current = false }}
+      collapsable={false}
+    >
       <FlatList
         // key 随歌词内容变化：强制重新挂载，使 initialNumToRender（整首行数）生效，
         // 首屏把每一行都渲染一次并完成实测（详见上方 lyricKey 注释）。

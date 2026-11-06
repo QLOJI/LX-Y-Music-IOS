@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Animated, type LayoutChangeEvent, type StyleProp, type TextStyle, View } from 'react-native'
 
 import Text from '@/components/common/Text'
@@ -47,6 +47,10 @@ export interface KaraokeLyricProps {
   isActive: boolean
   /** 单行省略：小歌词每行定高，超长行必须省略号截断而不是换行（换行会破坏定高与居中）。 */
   numberOfLines?: number
+  /** 行内播放进度（0~1），供小歌词横向跟随滚动使用。 */
+  scrollProgress?: Animated.Value
+  /** 按文字自然宽度测量（不要拉伸到父容器），供横向滚动计算内容宽度。 */
+  intrinsicWidth?: boolean
 }
 
 // 跨行钳制的容差（ms）：行级 ticker 的换行由歌词引擎内部定时器驱动，正常换行可能比
@@ -65,6 +69,8 @@ const KaraokeWords = memo(({
   style,
   isActive,
   numberOfLines,
+  scrollProgress,
+  intrinsicWidth,
 }: {
   words: LxLyricWord[]
   lineTime: number
@@ -74,6 +80,8 @@ const KaraokeWords = memo(({
   style?: StyleProp<TextStyle>
   isActive: boolean
   numberOfLines?: number
+  scrollProgress?: Animated.Value
+  intrinsicWidth?: boolean
 }) => {
   const [state, setState] = useState({ index: -1, progress: 0 })
   const stateRef = useRef(state)
@@ -89,7 +97,7 @@ const KaraokeWords = memo(({
   // 就是 N 次回调）。跨行钳制只用得到「当前这一份」，rAF 内部现读即可，不需要推送。
   const lines = getCurrentLyricLines()
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     // 非激活行静态渲染：停掉 rAF。
     // 激活/非激活共用同一渲染器是为了让行的换行布局恒定——若激活时才切换渲染器，
     // 嵌套 Text 与纯文本的换行断点不同，行高会在切行瞬间突变（抖动 + 居中偏移）。
@@ -97,14 +105,28 @@ const KaraokeWords = memo(({
     // 相同（见调用方），归零不可见；而归零会让「被压栈页盖住 → 返回」的第一帧
     // 从「全未唱」闪一下再跳回当前进度。
     if (!isActive) return
+    const writeScrollProgress = (s: { index: number, progress: number }) => {
+      if (!scrollProgress) return
+      const ratio = words.length
+        ? Math.min(Math.max((s.index + (s.index >= 0 ? s.progress : 0)) / words.length, 0), 1)
+        : 0
+      scrollProgress.setValue(ratio)
+    }
     // 暂停即停帧（cancel，不是让循环空转）：audioClock 暂停期间不再推进，tick 只会逐帧
     // 算出同一状态，但帧请求照样逐帧唤醒 JS 线程——这个循环的唤醒成本固定在整屏歌词行数上，
     // 暂停时不省就是白烧。这里【不清零逐字状态】：已唱的字要保持亮着（归零会让整行瞬间褪色、
     // 恢复播放时再跳回来）。恢复播放后 effect 重跑，第一帧按冻结的时钟算出的仍是当前状态，
-    // 天然无缝。
-    if (!isPlay) return
-    // 退后台同理：界面不可见，停帧；回前台 clock 状态不变，第一帧直接续上。
-    if (!appActive) return
+    // 天然无缝。暂停时补写一次横向进度，避免切页回到行首。
+    if (!isPlay || !appActive) {
+      const s = getWordState(words, audioClock.getTime() * 1000 - lineTime)
+      writeScrollProgress(s)
+      const prev = stateRef.current
+      if (prev.index !== s.index || Math.abs(prev.progress - s.progress) >= 0.02) {
+        stateRef.current = s
+        setState(s)
+      }
+      return
+    }
     // 本行在行表中的位置（按起点时间精确匹配：调用方传入的 lineTime 就是本行 time）。
     // 匹配不到（行表未就绪/非当前歌词表）时不启用钳制，保守跳过。
     const myLineIndex = lines.findIndex((l) => l.time === lineTime)
@@ -128,6 +150,7 @@ const KaraokeWords = memo(({
       ) {
         s = { index: -1, progress: 0 }
       }
+      writeScrollProgress(s)
       const prev = stateRef.current
       // 量化到 2% 步长 + 跨字才更新，过滤掉无视觉差异的逐帧重渲染，降低 Bridge 开销。
       if (prev.index !== s.index || Math.abs(prev.progress - s.progress) >= 0.02) {
@@ -140,10 +163,10 @@ const KaraokeWords = memo(({
     // 不会先画一帧旧状态。
     tick()
     return () => { cancelAnimationFrame(raf) }
-  }, [words, lineTime, isActive, isPlay, appActive])
+  }, [words, lineTime, isActive, isPlay, appActive, scrollProgress])
 
   return (
-    <Text style={style} numberOfLines={numberOfLines}>
+    <Text style={[style, intrinsicWidth ? { alignSelf: 'flex-start' } : null]} numberOfLines={numberOfLines}>
       <KaraokeLine
         words={words}
         activeWordIndex={state.index}
@@ -173,6 +196,8 @@ const KaraokeText = memo(({
   style,
   isActive,
   numberOfLines,
+  scrollProgress,
+  intrinsicWidth,
 }: {
   text: string
   startTime: number
@@ -183,6 +208,8 @@ const KaraokeText = memo(({
   style?: StyleProp<TextStyle>
   isActive: boolean
   numberOfLines?: number
+  scrollProgress?: Animated.Value
+  intrinsicWidth?: boolean
 }) => {
   const progress = useRef<Animated.Value>(new Animated.Value(0)).current
   // 整行实测宽度：遮罩内层用同一个宽度渲染，保证上下两层文字逐像素对齐
@@ -193,22 +220,33 @@ const KaraokeText = memo(({
   // 前台门：退后台不可见，停帧（后台音频常驻，不加这道门会一直逐帧唤醒）。
   const appActive = useAppActive()
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     // 【第 177 轮】非激活只停 rAF、不归零：调用方在非激活行上 played/inactive 两色相同，
     // 归零不可见；归零反而会让「被盖住 → 返回」的第一帧从 0 跳回当前进度。
     if (!isActive) return
-    // 暂停即停帧（原因同 KaraokeWords）；同样【保留当前高亮进度】，不清零——
-    // 归零会让暂停瞬间已唱部分整段褪色、恢复后再一次性跳回来。
-    if (!isPlay) return
-    if (!appActive) return
-    let raf = 0
     // 行时长兜底 1ms：相邻两行时间戳相同（或末行无下一行时间）时不能除零
     const duration = Math.max(endTime - startTime, 1)
+    const readProgress = () => {
+      const elapsed = audioClock.getTime() * 1000 - startTime
+      return Math.min(Math.max(elapsed / duration, 0), 1)
+    }
+    // 暂停即停帧（原因同 KaraokeWords）；同样【保留当前高亮进度】，不清零——
+    // 归零会让暂停瞬间已唱部分整段褪色、恢复后再一次性跳回来。
+    // 横向滚动进度补写一次：暂停/切页回来时不要退回行首。
+    if (!isPlay || !appActive) {
+      const next = readProgress()
+      scrollProgress?.setValue(next)
+      // 暂停/被盖住后重新挂载时也要落到真实进度，不能从 0 重播一次高亮。
+      lastProgressRef.current = next
+      progress.setValue(next)
+      return
+    }
+    let raf = 0
     const tick = () => {
       // 【第 177 轮】同 KaraokeWords：可见性已由调用方的 isActive 承载。
       // audioClock 返回秒，歌词时间为毫秒
-      const elapsed = audioClock.getTime() * 1000 - startTime
-      const next = Math.min(Math.max(elapsed / duration, 0), 1)
+      const next = readProgress()
+      scrollProgress?.setValue(next)
       if (Math.abs(next - lastProgressRef.current) >= PROGRESS_STEP || next === 0 || next === 1) {
         lastProgressRef.current = next
         progress.setValue(next)
@@ -218,7 +256,7 @@ const KaraokeText = memo(({
     // 同 KaraokeWords：先同步算一帧，恢复可见时第一帧就是当前进度。
     tick()
     return () => { cancelAnimationFrame(raf) }
-  }, [startTime, endTime, isActive, isPlay, appActive, progress, text])
+  }, [startTime, endTime, isActive, isPlay, appActive, progress, text, scrollProgress])
 
   const handleLayout = useCallback(({ nativeEvent }: LayoutChangeEvent) => {
     const width = Math.round(nativeEvent.layout.width)
@@ -230,7 +268,7 @@ const KaraokeText = memo(({
   }), [progress, lineWidth])
 
   return (
-    <View style={styles.karaokeContainer} onLayout={handleLayout}>
+    <View style={[styles.karaokeContainer, intrinsicWidth ? styles.intrinsicContainer : null]} onLayout={handleLayout}>
       <Text size={size} color={inactiveColor} style={style} numberOfLines={numberOfLines}>{text}</Text>
       {/* 已唱部分：同一行文字再渲染一层（播放色），用 overflow:hidden 的遮罩从左往右露出。
           遮罩内层必须撑满整行宽度——只裁宽度不改排版，字与底层逐像素重合。 */}
@@ -264,6 +302,8 @@ const KaraokeLyric = ({
         style={props.style}
         isActive={props.isActive}
         numberOfLines={props.numberOfLines}
+        scrollProgress={props.scrollProgress}
+        intrinsicWidth={props.intrinsicWidth}
         playedColor={playedColor}
         inactiveColor={inactiveColor}
       />
@@ -279,6 +319,8 @@ const KaraokeLyric = ({
         style={props.style}
         isActive={props.isActive}
         numberOfLines={props.numberOfLines}
+        scrollProgress={props.scrollProgress}
+        intrinsicWidth={props.intrinsicWidth}
         playedColor={playedColor}
         inactiveColor={inactiveColor}
       />
@@ -292,6 +334,9 @@ const styles = createStyle({
     position: 'relative',
     // 撑满行宽：遮罩宽度按实测行宽计算，行宽必须与容器宽度一致
     alignSelf: 'stretch',
+  },
+  intrinsicContainer: {
+    alignSelf: 'flex-start',
   },
   karaokeMask: {
     position: 'absolute',

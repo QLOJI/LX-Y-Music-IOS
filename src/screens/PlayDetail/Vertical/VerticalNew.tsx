@@ -274,6 +274,7 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
   }, [])
 
   const switchRetryRef = useRef<NodeJS.Timeout | null>(null)
+  const switchRafRef = useRef<number | null>(null)
   const lastSwitchAtRef = useRef(0)
   const handleSwitchToLyricPage = useCallback(() => {
     // 小歌词有两条点击通道（行内 Pressable + 容器触摸判定），一次点击可能进来两次：
@@ -297,7 +298,15 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
       pageScrollStateRef.current = 'idle'
       pager.setPageWithoutAnimation?.(0)
     }
-    pager.setPage?.(1)
+    // 清闩锁与动画切页分两帧发：非动画命令要等本次 UIManager 批次落地后，
+    // 下一帧再发 animated setPage，避免两条命令同批执行时后者仍看到旧的 animating。
+    if (switchRafRef.current) cancelAnimationFrame(switchRafRef.current)
+    switchRafRef.current = requestAnimationFrame(() => {
+      switchRafRef.current = null
+      if (detailPageIndexRef.current === 1) return
+      clearPagerLatch()
+      pager.setPage?.(1)
+    })
     // 兜底只留两级，且都保持「带动画」：800ms 后仍没落页再发一次动画切页；
     // 再 800ms 仍失败才重挂并落在歌词页。绝不把正在进行的动画截断成非动画。
     if (switchRetryRef.current) clearTimeout(switchRetryRef.current)
@@ -418,6 +427,10 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
       if (switchRetryRef.current) {
         clearTimeout(switchRetryRef.current)
         switchRetryRef.current = null
+      }
+      if (switchRafRef.current) {
+        cancelAnimationFrame(switchRafRef.current)
+        switchRafRef.current = null
       }
       if (progressDragSafety) {
         clearTimeout(progressDragSafety)
