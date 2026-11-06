@@ -117,16 +117,7 @@ const KaraokeWords = memo(({
     // 暂停时不省就是白烧。这里【不清零逐字状态】：已唱的字要保持亮着（归零会让整行瞬间褪色、
     // 恢复播放时再跳回来）。恢复播放后 effect 重跑，第一帧按冻结的时钟算出的仍是当前状态，
     // 天然无缝。暂停时补写一次横向进度，避免切页回到行首。
-    if (!isPlay || !appActive) {
-      const s = getWordState(words, audioClock.getTime() * 1000 - lineTime)
-      writeScrollProgress(s)
-      const prev = stateRef.current
-      if (prev.index !== s.index || Math.abs(prev.progress - s.progress) >= 0.02) {
-        stateRef.current = s
-        setState(s)
-      }
-      return
-    }
+    if (!isPlay || !appActive) return
     // 本行在行表中的位置（按起点时间精确匹配：调用方传入的 lineTime 就是本行 time）。
     // 匹配不到（行表未就绪/非当前歌词表）时不启用钳制，保守跳过。
     const myLineIndex = lines.findIndex((l) => l.time === lineTime)
@@ -233,14 +224,7 @@ const KaraokeText = memo(({
     // 暂停即停帧（原因同 KaraokeWords）；同样【保留当前高亮进度】，不清零——
     // 归零会让暂停瞬间已唱部分整段褪色、恢复后再一次性跳回来。
     // 横向滚动进度补写一次：暂停/切页回来时不要退回行首。
-    if (!isPlay || !appActive) {
-      const next = readProgress()
-      scrollProgress?.setValue(next)
-      // 暂停/被盖住后重新挂载时也要落到真实进度，不能从 0 重播一次高亮。
-      lastProgressRef.current = next
-      progress.setValue(next)
-      return
-    }
+    if (!isPlay || !appActive) return
     let raf = 0
     const tick = () => {
       // 【第 177 轮】同 KaraokeWords：可见性已由调用方的 isActive 承载。

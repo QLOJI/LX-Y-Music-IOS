@@ -247,18 +247,10 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
   // 行内播放进度（0~1）：由 KaraokeLyric 内部同一帧的 rAF 写入，不额外起循环。
   const activeScrollProgress = useRef(new Animated.Value(0)).current
   useLayoutEffect(() => {
-    // 切行/暂停时先把横向进度对齐到该行的真实进度；播放中随后由逐字循环接管。
-    const current = lyricLines[activeLine]
-    if (!current) {
-      activeScrollProgress.setValue(0)
-      return
-    }
-    const start = current.time
-    const end = lyricLines[activeLine + 1]?.time ?? start + 4000
-    const seconds = (playerState.isPlay ? playerState.progress.nowPlayTime : pausedPosition) * 1000
-    const ratio = end > start ? Math.min(Math.max((seconds - start) / (end - start), 0), 1) : 0
-    activeScrollProgress.setValue(playerState.isPlay ? 0 : ratio)
-  }, [activeLine, lyricLines, pausedPosition, activeScrollProgress])
+    // 换行先回到行首；播放中由 KaraokeLyric 内的逐字循环写真实进度。
+    // 暂停时不主动改成「按时间算的中点」——那会让未播放时也出现一段加载/滚动闪动。
+    activeScrollProgress.setValue(0)
+  }, [activeLine, lyricLines, activeScrollProgress])
 
   // 三个尺寸常量（模块级 calcMetrics，与 getMiniLyricRowHeight 共享同一份算式）
   const metrics = useMemo(() => calcMetrics(), [])
@@ -851,38 +843,23 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
         {
           isActive ? (
             <View style={styles.activeLineClip}>
-              {
-                visible && karaokeVisible
-                  ? (
-                    <Animated.View style={{ width: contentWidth, transform: scrollX ? [{ translateX: scrollX }] : undefined }}>
-                      <KaraokeLyric
-                        words={words}
-                        lineTime={item.time}
-                        text={item.text}
-                        startTime={item.time}
-                        endTime={endTime}
-                        size={BASE_FONT_SIZE}
-                        style={textStyle}
-                        isActive
-                        numberOfLines={1}
-                        scrollProgress={activeScrollProgress}
-                        intrinsicWidth={canScroll}
-                        playedColor={activeColor}
-                        inactiveColor={isKaraoke ? inactiveColor : activeColor}
-                      />
-                    </Animated.View>
-                  )
-                  : (
-                    <Text
-                      size={BASE_FONT_SIZE}
-                      color={activeColor}
-                      style={textStyle}
-                      numberOfLines={1}
-                    >
-                      {item.text || BLANK}
-                    </Text>
-                  )
-              }
+              <Animated.View style={{ width: contentWidth, transform: scrollX ? [{ translateX: scrollX }] : undefined }}>
+                <KaraokeLyric
+                  words={words}
+                  lineTime={item.time}
+                  text={item.text}
+                  startTime={item.time}
+                  endTime={endTime}
+                  size={BASE_FONT_SIZE}
+                  style={textStyle}
+                  isActive={visible && karaokeVisible}
+                  numberOfLines={1}
+                  scrollProgress={activeScrollProgress}
+                  intrinsicWidth={canScroll}
+                  playedColor={activeColor}
+                  inactiveColor={isKaraoke ? inactiveColor : activeColor}
+                />
+              </Animated.View>
               <View pointerEvents="none" style={styles.measureWrap}>
                 <Text
                   size={BASE_FONT_SIZE}
@@ -1014,10 +991,12 @@ const styles = createStyle({
     position: 'absolute',
     left: 0,
     top: 0,
+    width: 10000,
+    flexDirection: 'row',
     opacity: 0,
   },
   measureText: {
-    alignSelf: 'flex-start',
+    flexShrink: 0,
     textAlign: 'left',
   },
 })
