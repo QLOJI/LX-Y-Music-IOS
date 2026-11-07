@@ -115,6 +115,7 @@ export default memo(({ componentId, active = true, coverRegionHeight = 0 }: { co
   const customBgPicPath = useSettingValue('theme.customBgPicPath')
   const bgPic = customBgPicPath || dynamicBgPic
   const bgBlur = useSettingValue('theme.blur')
+  const picOpacity = useSettingValue('theme.picOpacity')
   const [blurredBgUri, handleBlurredBgError, blurredBgColor] = useBlurredPic(bgPic, bgBlur)
   const isCoverSpin = useSettingValue('playDetail.isCoverSpin')
   const coverShape = useSettingValue('playDetail.style.coverShape')
@@ -459,7 +460,8 @@ export default memo(({ componentId, active = true, coverRegionHeight = 0 }: { co
   // 外盘、封面、中心孔/环都在同一个旋转节点里 —— 碟片与封面共同旋转；孔与环是正圆，
   // 转不转看不出。装饰层 pointerEvents=none，长按仍由外层 Touchable 接收。
   const cdStyle = useMemo(() => {
-    const coverSize = size * 0.96
+    // 封面铺满整盘（不留黑边）：cover 模式按圆裁切。
+    const coverSize = size
     const innerSize = size * 0.4
     const holeSize = size * 0.232
     const holeRingSize = size * 0.22
@@ -472,6 +474,8 @@ export default memo(({ componentId, active = true, coverRegionHeight = 0 }: { co
       cover: { width: coverSize, height: coverSize, borderRadius: coverSize / 2 },
       tint: {
         position: 'absolute' as const,
+        top: (size - innerSize) / 2,
+        left: (size - innerSize) / 2,
         width: innerSize,
         height: innerSize,
         borderRadius: innerSize / 2,
@@ -492,6 +496,8 @@ export default memo(({ componentId, active = true, coverRegionHeight = 0 }: { co
       hole: { width: holeSize, height: holeSize },
       holeRing: {
         position: 'absolute' as const,
+        top: (size - holeRingSize) / 2,
+        left: (size - holeRingSize) / 2,
         width: holeRingSize,
         height: holeRingSize,
         borderRadius: holeRingSize / 2,
@@ -539,15 +545,20 @@ export default memo(({ componentId, active = true, coverRegionHeight = 0 }: { co
                   <View pointerEvents="none" style={cdStyle.outerRing} />
                 </Animated.View>
                 <View pointerEvents="none" style={cdStyle.holeWrap}>
-                  <ImageBackground
-                    style={cdStyle.hole}
-                    source={bgPic
-                      ? (blurredBgUri ? { uri: blurredBgUri } : { uri: bgPic, headers: defaultHeaders })
-                      : theme['bg-image']}
-                    resizeMode="cover"
-                    blurRadius={bgPic && !blurredBgUri ? bgBlur : undefined}
-                    onError={blurredBgUri ? handleBlurredBgError : undefined}
-                  />
+                  {/* 只在拿到「已模糊的背景图」时才画孔内背景：未就绪时先用平均色
+                      （holeWrap 的底色），绝不拿原图顶上来 —— 原图缩进小孔会是一块
+                      清晰图片，正是用户看到的「中心不是背景」。
+                      遮罩与 PageContent 同款，孔内与四周色调一致。 */}
+                  {blurredBgUri ? (
+                    <ImageBackground
+                      style={cdStyle.hole}
+                      source={{ uri: blurredBgUri }}
+                      resizeMode="cover"
+                      onError={handleBlurredBgError}
+                    >
+                      <View style={{ flex: 1, backgroundColor: theme['c-content-background'], opacity: picOpacity / 100 }} />
+                    </ImageBackground>
+                  ) : null}
                 </View>
                 <View pointerEvents="none" style={cdStyle.holeRing} />
               </View>
