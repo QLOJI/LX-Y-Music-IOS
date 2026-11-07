@@ -4108,16 +4108,16 @@ static NSString *LXStreamingFlacDecoderErrorStatusName(FLAC__StreamDecoderErrorS
 static BOOL LXPlayWithOthersEnabled = NO;
 
 // 抗卡顿 I/O 缓冲：以前正常运行交还系统默认（0 = 不设偏好，可能是很小的缓冲），
-// 打开其它软件 / 首屏 JS 编译等 CPU 抖动时，实时渲染回调很容易错过截止时间——
-// 听感就是连续的电流声、咔哒与断断续续。这里始终请求更宽的缓冲：
-//   正常 0.0232s ≈ 1024 帧 @44.1k；低电量模式 0.0464s ≈ 2048 帧。
+// 打开其它软件 / 首屏 JS 编译 / 蓝牙链路重协商等 CPU 抖动时，实时渲染回调很容易错过
+// 截止时间——听感就是连续的电流声、咔哒与断断续续。这里始终请求更宽的缓冲：
+//   正常 0.0464s ≈ 2048 帧 @44.1k；低电量模式 0.0928s ≈ 4096 帧。
 // 只改「偏好」，不动数据通路与采样率；音乐播放听不出这点延迟，换来的抗抖动余量更重要。
 static NSTimeInterval LXLastAppliedIOBufferDuration = -1;
 static void LXInvalidateIOBufferPolicyCache(void) {
   LXLastAppliedIOBufferDuration = -1;
 }
 static void LXApplyPowerAwareIOBufferPolicy(void) {
-  NSTimeInterval preferred = NSProcessInfo.processInfo.isLowPowerModeEnabled ? 0.0464 : 0.0232;
+  NSTimeInterval preferred = NSProcessInfo.processInfo.isLowPowerModeEnabled ? 0.0928 : 0.0464;
   // 同一个偏好反复写会在活动会话上触发无谓的 I/O 重配；恢复输出链路每秒都可能走到这里。
   if (fabs(LXLastAppliedIOBufferDuration - preferred) < 0.0001) return;
   NSError *bufferError = nil;
@@ -4185,10 +4185,10 @@ RCT_EXPORT_MODULE();
     _pitchPlaybackRate.store(1.0f, std::memory_order_release);
     _lastRealtimeEqualizerEnabled = NO;
     _streamCondition = [[NSCondition alloc] init];
-    // 解码与渲染状态更新必须高于普通 UI/后台任务：打开其它软件、首屏编译 JS 时，
-    // 默认 QoS 的解码队列可能被延后，环形缓冲被抽空就是断断续续/咔哒。
+    // 解码与渲染状态更新必须是最高优先级：打开其它软件、首屏编译 JS、蓝牙重协商时，
+    // 普通/默认 QoS 的解码队列可能被延后，环形缓冲被抽空就是断断续续/咔哒。
     dispatch_queue_attr_t decoderAttr = dispatch_queue_attr_make_with_qos_class(
-      DISPATCH_QUEUE_SERIAL, QOS_CLASS_USER_INITIATED, 0);
+      DISPATCH_QUEUE_SERIAL, QOS_CLASS_USER_INTERACTIVE, 0);
     dispatch_queue_attr_t renderAttr = dispatch_queue_attr_make_with_qos_class(
       DISPATCH_QUEUE_SERIAL, QOS_CLASS_USER_INTERACTIVE, 0);
     _decoderQueue = dispatch_queue_create("cn.toside.music.mobile.streamingflac.decoder", decoderAttr);
