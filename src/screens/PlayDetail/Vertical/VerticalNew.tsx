@@ -145,20 +145,6 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
     detailPageIndexRef.current = showLyricRef.current ? 1 : 0
     setPagerRebuild(v => v + 1)
   }, [])
-  // 【第 219 轮】原生交互被禁用（userInteractionEnabled=NO）时，触摸到不了 PagerView 子树，
-  // 但父容器仍收得到。用「页面区触摸后 250ms 内子页没收到」作判据，重挂原生实例恢复。
-  const pagerTouchAtRef = useRef(0)
-  const pagerProbeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const markPagerTouch = useCallback(() => {
-    pagerTouchAtRef.current = Date.now()
-    return false
-  }, [])
-  useEffect(() => () => {
-    if (pagerProbeTimerRef.current) {
-      clearTimeout(pagerProbeTimerRef.current)
-      pagerProbeTimerRef.current = null
-    }
-  }, [])
   const playlistRef = useRef<PlayerPlaylistType>(null)
   const [pagerHeight, setPagerHeight] = useState(0)
   // 【第 219 轮】歌词页首次挂载晚 150ms：把「整首歌词渲染 + 测量」从 push 转场里挪开，
@@ -306,16 +292,15 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
     const now = Date.now()
     if (now - lastSwitchAtRef.current < 250) return
     lastSwitchAtRef.current = now
-    // 同页非动画先清 animating / userInteractionEnabled（画面不变），再发与左滑同一条
-    // 动画 setPage；仍不加重试 / 重挂（落点只有这一次动画）。
-    pagerViewRef.current?.setPageWithoutAnimation?.(showLyricRef.current ? 1 : 0)
+    // 只发一次动画 setPage，不再先发同页非动画 —— 库的 goTo: 会先 disableSwipe，
+    // 未打补丁时同页直接 return 不会恢复交互，反而把整块页面锁死。
     pagerViewRef.current?.setPage?.(1)
   }, [])
 
-  // 【第 218 轮】回前台 / 回到栈顶 / 触摸起点只清闩锁，绝不再调 setPageWithoutAnimation：
-  // goTo: 的 disableSwipe + completion 丢失正是「从其他界面/后台切入后整块连点带滑全死」
-  // 的来源，也是返回后重设子控制器导致闪一下的来源。切入时用户还没操作，没有落位需求；
-  // 真正切页时由 handleSwitchToLyricPage 先发同页清理，再发动画 setPage。
+  // 【第 218 轮】回前台 / 回到栈顶 / 触摸起点 / 持续激活心跳只清闩锁，绝不再调
+  // setPageWithoutAnimation：库的 goTo: 会先 disableSwipe，未打补丁时同页直接 return
+  // 不恢复交互，反而把整块页面锁死，也是返回后重设子控制器闪一下的来源。
+  // 真正的原生交互闩锁由 AppDelegate 的 300ms 扫描兜底（从启动就跑，不重挂、不闪）。
   const resyncPagerNativePage = useCallback(() => {
     requestAnimationFrame(() => {
       const pager = pagerViewRef.current
@@ -409,6 +394,14 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
     // 将 PagerView ref 注册给同步手势锁，供进度条拖动时立即禁用原生横滑
     registerPager(pagerViewRef)
 
+    // 【第 220 轮】持续激活：前台可见时每秒重发横滑开关 + 清 JS 闩锁，不碰 viewControllers；
+    // 原生 userInteractionEnabled 闩锁另由 AppDelegate 的 300ms 扫描兜底（从 App 启动就跑）。
+    const pagerKeepAlive = setInterval(() => {
+      if (AppState.currentState !== 'active') return
+      if (!isScreenOnTop(commonState.componentIds)) return
+      resyncPagerNativePage()
+    }, 1000)
+
     // 必须用具名函数注册/移除，否则 off 传入新箭头函数无法匹配已注册的监听器，
     // 会导致监听器泄漏（组件多次挂载后点击 ☰ 弹出多个队列面板）。
     const handleShowPlaylist = () => { playlistRef.current?.show() }
@@ -424,6 +417,7 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
       global.app_event.off('switchToLyricPage', handleSwitchToLyricPage)
       global.app_event.off('showPlaylist', handleShowPlaylist)
       appstateListener.remove()
+      clearInterval(pagerKeepAlive)
       clearPagerWatchdog()
       if (progressDragSafety) {
         clearTimeout(progressDragSafety)
@@ -577,19 +571,6 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
           // 触摸仍会先到本容器（在 PagerView 之外）：借这一拍立即做一次同页清理，
           // 不必等 2.5s 心跳。
           resyncPagerNativePage()
-          // 【第 219 轮】页面区触摸若无响应（子页 capture 没收到）⇒ 原生交互被禁用，
-          // 重挂 PagerView 恢复；不比让用户退出重进差。
-          const y = e.nativeEvent.locationY
-          if (pagerHeight > 0 && y >= 0 && y <= pagerHeight && pagerProbeTimerRef.current == null) {
-            const at = Date.now()
-            pagerProbeTimerRef.current = setTimeout(() => {
-              pagerProbeTimerRef.current = null
-              if (!pagerViewRef.current || pagerTouchAtRef.current >= at) return
-              pageScrollStateRef.current = 'idle'
-              detailPageIndexRef.current = showLyricRef.current ? 1 : 0
-              setPagerRebuild(v => v + 1)
-            }, 250)
-          }
           return false
         }}
       >
@@ -627,11 +608,7 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
             if (h > 0 && h !== pagerHeight) setPagerHeight(h)
           }}
         >
-          <View
-            collapsable={false}
-            style={styles.pageContainer}
-            onStartShouldSetResponderCapture={markPagerTouch}
-          >
+          <View collapsable={false} style={styles.pageContainer}>
             {/* 封面页容器：高度 R 在这里实测（与容器内的小孩完全无关，见上方 pageHeight
                 注释），下传给 Pic 做尺寸上限，也是小歌词可用高度的基准。 */}
             <View
@@ -679,11 +656,7 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
               </View>
             </View>
           </View>
-          <View
-            collapsable={false}
-            style={{ flex: 1, width: '100%', height: '100%' }}
-            onStartShouldSetResponderCapture={markPagerTouch}
-          >
+          <View collapsable={false} style={{ flex: 1, width: '100%', height: '100%' }}>
             <LyricPage pagerHeight={lyricPageReady ? pagerHeight : 0} isActive={pageIndex === 1 || isComingLyricRef.current} />
           </View>
         </PagerView>

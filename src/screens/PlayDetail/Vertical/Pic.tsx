@@ -6,9 +6,11 @@ import playerState from '@/store/player/state'
 import { useWindowSize } from '@/utils/hooks'
 import { useSettingValue } from '@/store/setting/hook'
 import Image, { defaultHeaders } from '@/components/common/Image'
+import ImageBackground from '@/components/common/ImageBackground'
 import { useStatusbarHeight, useScreenCovered, useAppActive, useNavTransitioning } from '@/store/common/hook'
-import { useAppInactive } from '@/store/common/hook'
+import { useAppInactive, useBgPic } from '@/store/common/hook'
 import { useTheme } from '@/store/theme/hook'
+import { useBlurredPic } from '@/utils/hooks/useBlurredPic'
 import { HEADER_HEIGHT } from './components/Header'
 import { createStyle } from '@/utils/tools'
 import CoverLongPressMenu, { type CoverLongPressMenuType } from '@/screens/PlayDetail/components/CoverLongPressMenu'
@@ -108,6 +110,12 @@ export default memo(({ componentId, active = true, coverRegionHeight = 0 }: { co
   const statusBarHeight = useStatusbarHeight()
   const theme = useTheme()
   const isPlay = useIsPlay()
+  // 页面背景（与 PageContent 同一份来源）：CD 中心孔要透出它，不能画成纯色。
+  const dynamicBgPic = useBgPic()
+  const customBgPicPath = useSettingValue('theme.customBgPicPath')
+  const bgPic = customBgPicPath || dynamicBgPic
+  const bgBlur = useSettingValue('theme.blur')
+  const [blurredBgUri, handleBlurredBgError, blurredBgColor] = useBlurredPic(bgPic, bgBlur)
   const isCoverSpin = useSettingValue('playDetail.isCoverSpin')
   const coverShape = useSettingValue('playDetail.style.coverShape')
   // 封面显示大小（设置弹层滑块 50~150%）：与横屏 Pic.tsx 同一个设置键（'playDetail.style.coverSize'）。
@@ -469,13 +477,19 @@ export default memo(({ componentId, active = true, coverRegionHeight = 0 }: { co
         borderRadius: innerSize / 2,
         backgroundColor: theme['c-primary-light-300-alpha-600'],
       },
-      hole: {
+      frame: { width: size, height: size },
+      // 中心孔：透出页面背景（与 PageContent 同源的模糊图），不随碟片旋转。
+      holeWrap: {
         position: 'absolute' as const,
+        top: (size - holeSize) / 2,
+        left: (size - holeSize) / 2,
         width: holeSize,
         height: holeSize,
         borderRadius: holeSize / 2,
-        backgroundColor: theme['c-content-background'],
+        overflow: 'hidden' as const,
+        backgroundColor: blurredBgColor ?? theme['c-content-background'],
       },
+      hole: { width: holeSize, height: holeSize },
       holeRing: {
         position: 'absolute' as const,
         width: holeRingSize,
@@ -494,7 +508,7 @@ export default memo(({ componentId, active = true, coverRegionHeight = 0 }: { co
       },
     }
     // radius 与 isSquare 同源（形状真值）；CD 只在圆形分支用，仍按契约口径带上。
-  }, [size, theme, radius])
+  }, [size, theme, radius, blurredBgColor])
 
   return (
     <View style={styles.container}>
@@ -506,24 +520,37 @@ export default memo(({ componentId, active = true, coverRegionHeight = 0 }: { co
         >
           {coverUrl && !isLoadError ? (
             allowSpin ? (
-              // 【第 219 轮】CD 碟片：外盘与封面在同一个旋转节点里共同旋转。
-              <Animated.View style={[animatedCoverStyle, cdStyle.disc]}>
-                <AnimatedCover
-                  source={{
-                    uri: coverUrl,
-                    headers: defaultHeaders,
-                    priority: 'normal',
-                    cache: 'immutable',
-                  }}
-                  style={cdStyle.cover}
-                  resizeMode={FastImage.resizeMode.cover}
-                  onError={handleCoverError}
-                />
-                <View pointerEvents="none" style={cdStyle.tint} />
-                <View pointerEvents="none" style={cdStyle.hole} />
+              // 【第 220 轮】CD 碟片：外盘/封面/内圈随碟片转；中心孔是「透出页面背景」的视窗，
+              // 不随碟片转，孔环固定 —— 观感就是 CD 压在背景图上。
+              <View style={cdStyle.frame}>
+                <Animated.View style={[animatedCoverStyle, cdStyle.disc]}>
+                  <AnimatedCover
+                    source={{
+                      uri: coverUrl,
+                      headers: defaultHeaders,
+                      priority: 'normal',
+                      cache: 'immutable',
+                    }}
+                    style={cdStyle.cover}
+                    resizeMode={FastImage.resizeMode.cover}
+                    onError={handleCoverError}
+                  />
+                  <View pointerEvents="none" style={cdStyle.tint} />
+                  <View pointerEvents="none" style={cdStyle.outerRing} />
+                </Animated.View>
+                <View pointerEvents="none" style={cdStyle.holeWrap}>
+                  <ImageBackground
+                    style={cdStyle.hole}
+                    source={bgPic
+                      ? (blurredBgUri ? { uri: blurredBgUri } : { uri: bgPic, headers: defaultHeaders })
+                      : theme['bg-image']}
+                    resizeMode="cover"
+                    blurRadius={bgPic && !blurredBgUri ? bgBlur : undefined}
+                    onError={blurredBgUri ? handleBlurredBgError : undefined}
+                  />
+                </View>
                 <View pointerEvents="none" style={cdStyle.holeRing} />
-                <View pointerEvents="none" style={cdStyle.outerRing} />
-              </Animated.View>
+              </View>
             ) : (
               <AnimatedCover
                 source={{
