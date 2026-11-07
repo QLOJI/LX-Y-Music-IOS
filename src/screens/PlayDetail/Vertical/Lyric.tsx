@@ -316,6 +316,7 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
   const delayScrollTimeout = useRef<NodeJS.Timeout | null>(null)
   // 手势结束事件丢失时，停手回位/浮层收起不能永久卡住。
   const isTouchingRef = useRef(false)
+  const isMomentumRef = useRef(false)
   const pauseWatchdogRef = useRef<NodeJS.Timeout | null>(null)
   // 歌词页是从封面页切换时才挂载；初始值直接取引擎当前行，避免新页面先回到第 0 行。
   const lineRef = useRef({ line: line >= 0 ? line : 0, prevLine: line >= 0 ? line : 0 })
@@ -583,6 +584,8 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
       if (force) {
         smoothOffsetRef.current = targetOffset
         smoothVelocityRef.current = 0
+        // 首帧/切页的强制定位可能不触发 onScroll；这里同步拖动起点用的偏移。
+        scrollYRef.current = targetOffset
         lastWrittenOffsetRef.current = targetOffset
         // 硬跳定位后取消进行中的切行滑动与未走完的停留窗口，否则下一帧会被滑动轨迹
         // 拉回旧位置、或被停留窗口冻住；同时把“上一次滚动到的行”对齐，避免下一帧把
@@ -611,7 +614,7 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
     pauseWatchdogRef.current = setTimeout(() => {
       pauseWatchdogRef.current = null
       if (!isPauseScrollRef.current) return
-      if (isTouchingRef.current) {
+      if (isTouchingRef.current || isMomentumRef.current) {
         armPauseWatchdogRef.current()
         return
       }
@@ -824,6 +827,7 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
   }, [active, handleScrollToActive])
   const handleScrollBeginDrag = () => {
     isPauseScrollRef.current = true
+    isMomentumRef.current = false
     // 先记账、先不显示：等列表真的动了再显示浮层（见 OVERLAY_SHOW_MOVE）。
     // 用 scrollYRef（handleScroll 持续记录的真实偏移）而不是另存一份滚动信息快照：
     // 大歌词的自动跟随每帧都在写偏移，ref 里的值就是用户手指按下那一刻的位置。
@@ -873,38 +877,43 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
     }, IDLE_RETURN_MS)
   }
 
+  const hasDragMoved = () => {
+    const start = dragStartOffsetRef.current
+    return start != null && Math.abs(scrollYRef.current - start) > 0.5
+  }
+  const releasePauseWithoutMotion = () => {
+    isPauseScrollRef.current = false
+    dragStartOffsetRef.current = null
+    isOverlayShownRef.current = false
+    playLineRef.current?.setVisible(false)
+  }
   const onScrollEndDrag = () => {
     if (!isPauseScrollRef.current) return
-    if (!isOverlayShownRef.current) {
-      // 全程没动过（横向翻页被外层 PagerView 抢走手势、或只是轻点了一下）：
-      // 直接解除定位态，既不显示浮层也不启动回位倒计时，避免列表白冻 3 秒。
-      isPauseScrollRef.current = false
-      // 必须一并清空：handleScroll 用「dragStartOffsetRef 非空」判断是否处于手动定位态，
-      // 留着一个过期的起点，后续自动跟随的滚动事件就会被当成用户在拖、把浮层弹出来。
-      dragStartOffsetRef.current = null
-      // 浮层的**视觉状态**也要一起收（2026-10-13 第 73 轮）。
-      // isOverlayShownRef 只是本组件内部的记账，真正挂在屏幕上的是浮层自己：用户在
-      // 「上一次拖动的收起倒计时还没到点」（IDLE_RETURN_MS 之内）就回手再按一下、且这次
-      // 位移不足 OVERLAY_SHOW_MOVE 时走的正是本条支路 —— 倒计时已在 handleScrollBeginDrag
-      // 里被清掉、这里此前又不收浮层，那块虚线+时间就会一直停在屏幕上；而它此刻又已被
-      // 上面这行清空挡在 handleScroll 门外不再更新，于是整块浮层冻在最后一次的位置上，
-      // 就是用户第 73 轮报的「滑动大歌词时旁边的跳转辅助线卡着」，再真的拖一下才恢复
-      //（新的拖动会把 isOverlayShownRef 置真、重新喂它）——「再滑一下就好了」。
-      // 收起是幂等的（本来就隐藏时只是再起一段 0 → 0 的淡出），不会与倒计时那条路冲突。
-      playLineRef.current?.setVisible(false)
+    // 即使位移不足浮层阈值（短距离拖动），只要列表确实动过也必须回位。
+    if (!hasDragMoved()) {
+      releasePauseWithoutMotion()
       return
     }
     armIdleReturn()
   }
 
+  const onMomentumScrollBegin = () => {
+    isMomentumRef.current = true
+    // 惯性还在跑时不能开始回位倒计时，否则回位和惯性会抢同一个偏移（上下抖动）。
+    if (scrollTimoutRef.current) {
+      clearTimeout(scrollTimoutRef.current)
+      scrollTimoutRef.current = null
+    }
+  }
+
   // 惯性滚动结束才算真正「停手」：重新计时，避免惯性还没停就触发回位。
-  // 此前本组件没有这个回调（同屏小歌词 MiniLyric 的 handleMomentumScrollEnd 一直有）：
-  // 手指抬起后列表还在惯性滑动（可达 1s+），而 IDLE_RETURN_MS 从抬手那一刻就开始走，
-  // 计时到点时列表仍在减速 —— 回位滚动和惯性滚动同时在推同一个偏移，观感就是
-  // 「抖一下、再被拽回去」（回跳）。现在惯性结束会把计时重新起算，回位必定发生在列表
-  // 真正静止之后。与 MiniLyric 同口径的两个前置条件（在定位态 + 浮层已显示）也一并保留。
   const onMomentumScrollEnd = () => {
-    if (!isPauseScrollRef.current || !isOverlayShownRef.current) return
+    isMomentumRef.current = false
+    if (!isPauseScrollRef.current) return
+    if (!hasDragMoved()) {
+      releasePauseWithoutMotion()
+      return
+    }
     armIdleReturn()
   }
 
@@ -1484,8 +1493,13 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
         onScroll={handleScroll}
         // 仅记录偏移，不触发重渲染；16ms 让手动滚动轨迹更平滑，同时记录精度更高。
         scrollEventThrottle={16}
+        // 上下限不做弹性回弹：越界惯性会把「停手 1.5s 后回位」拖长，也容易和回位动画抢偏移。
+        bounces={false}
+        alwaysBounceVertical={false}
+        overScrollMode="never"
         onScrollBeginDrag={handleScrollBeginDrag}
         onScrollEndDrag={onScrollEndDrag}
+        onMomentumScrollBegin={onMomentumScrollBegin}
         // 惯性结束才算真正停手：把回位倒计时重新起算（见 onMomentumScrollEnd 注释）
         onMomentumScrollEnd={onMomentumScrollEnd}
         // 首屏把整首歌的歌词行全部渲染一次（而不是只渲染前 60 行）：

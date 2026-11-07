@@ -331,6 +331,18 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
     switchRetryRef.current = setTimeout(retry, 800)
   }, [clearPagerLatch])
 
+  // 回前台 / 从压栈页回到本屏：下一帧用非动画落回逻辑页，清掉原生可能卡住的
+  // animating / userInteractionEnabled 闩锁。画面不变，但能保证紧接着的点击动画
+  // 不会因旧闩锁被 Manager 丢弃。
+  const resyncPagerNativePage = useCallback(() => {
+    requestAnimationFrame(() => {
+      const pager = pagerViewRef.current
+      if (!pager) return
+      clearPagerLatch()
+      pager.setPageWithoutAnimation?.(showLyricRef.current ? 1 : 0)
+    })
+  }, [clearPagerLatch])
+
   useEffect(() => {
     // 本屏是否在 RNN 组件栈顶（即真正可见）：componentIds 自栈底到栈顶，
     // 判据与 useScreenCovered / useHomeCovered 同源。被压栈页（评论/设置/歌单详情…）
@@ -349,6 +361,7 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
           clearPagerWatchdog()
           pageScrollStateRef.current = 'idle'
           setIsProgressDragging(false)
+          resyncPagerNativePage()
           // 回前台补齐常亮：只有「歌词页在显示 + 本屏可见（未被评论页盖住）」才点亮。
           if (
             showLyricRef.current &&
@@ -374,6 +387,7 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
         clearPagerWatchdog()
         pageScrollStateRef.current = 'idle'
         setIsProgressDragging(false)
+        resyncPagerNativePage()
       }
       // 本屏被压栈页盖住或评论页全屏覆盖：没有可见的歌词页，先熄掉常亮。
       if (!isScreenOnTop(ids) || commentCovered) {
@@ -438,7 +452,7 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
       }
       screenUnkeepAwake()
     }
-  }, [handleSwitchToLyricPage, clearPagerWatchdog])
+  }, [handleSwitchToLyricPage, clearPagerWatchdog, resyncPagerNativePage])
 
   const containerPaddingH = useMemo(() => scaleSizeW(10), [])
   // 封面页纵向布局（2026-10-01 改为「封面居中」，需求：旋转封面在返回栏与信息栏之间居中）：

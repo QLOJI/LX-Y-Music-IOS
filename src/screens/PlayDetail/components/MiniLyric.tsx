@@ -223,6 +223,7 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
   const scrollVelocityRef = useRef(0)
   // 原生手势结束事件偶发丢失时，停手回位/浮层收起不能永久卡住。
   const isTouchingRef = useRef(false)
+  const isMomentumRef = useRef(false)
   const pauseWatchdogRef = useRef<NodeJS.Timeout | null>(null)
   // 本组件正在以动画方式驱动列表滚动（回位 / 跟随滑行）：这段时间列表归动画所有 ——
   // 既不在 onScroll 里重新显示定位浮层（否则回位的路上浮层会重新冒出来），
@@ -427,6 +428,7 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
     // 起点未知（还没滚动过 / 首帧）或位移小到看不见：直接落位，不播动画
     if (from == null || Math.abs(distance) < 1) {
       list.scrollToOffset({ offset, animated: false })
+      lastScrollYRef.current = offset
       animatedPositionRef.current = offset
       scrollVelocityRef.current = 0
       onDone?.()
@@ -464,6 +466,7 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
         value = from + distance * eased
       }
       list.scrollToOffset({ offset: value, animated: false })
+      lastScrollYRef.current = value
       animatedPositionRef.current = value
       const dt = Math.max((now - lastTime) / 1000, 0.001)
       scrollVelocityRef.current = (value - lastValue) / dt
@@ -476,6 +479,7 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
       rafId = 0
       scrollCancelRef.current = null
       isAutoScrollRef.current = false
+      lastScrollYRef.current = offset
       animatedPositionRef.current = offset
       scrollVelocityRef.current = 0
       onDone?.()
@@ -627,7 +631,7 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
     pauseWatchdogRef.current = setTimeout(() => {
       pauseWatchdogRef.current = null
       if (!isPauseScrollRef.current) return
-      if (isTouchingRef.current) {
+      if (isTouchingRef.current || isMomentumRef.current) {
         armPauseWatchdogRef.current()
         return
       }
@@ -651,8 +655,9 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
 
   const handleScrollBeginDrag = useCallback(() => {
     isPauseScrollRef.current = true
+    isMomentumRef.current = false
     // 先记账、先不显示：等真的动了再显示浮层（横向翻页时列表位移为 0，不该闪浮层）
-    dragStartOffsetRef.current = scrollInfoRef.current?.contentOffset.y ?? null
+    dragStartOffsetRef.current = scrollInfoRef.current?.contentOffset.y ?? lastScrollYRef.current
     isOverlayShownRef.current = false
     // 按下这一刻同步一次浮层的数据源：从压栈页/歌词页切回来时，行高与歌词表可能
     // 还没来得及通过 effect 推给浮层，避免「第一次滑动没有虚线」。
@@ -687,6 +692,7 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
 
   const handleScroll = useCallback(({ nativeEvent }: NativeSyntheticEvent<NativeScrollEvent>) => {
     scrollInfoRef.current = nativeEvent
+    lastScrollYRef.current = nativeEvent.contentOffset.y
     // 动画驱动滚动期间不重开定位态：否则回位的路上浮层会重新冒出来、且每帧都在更新它
     if (isAutoScrollRef.current) return
     if (!isPauseScrollRef.current) return
@@ -701,21 +707,46 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
     playLineRef.current?.updateScrollInfo(nativeEvent)
   }, [])
 
+  const hasDragMoved = useCallback(() => {
+    const start = dragStartOffsetRef.current
+    const y = scrollInfoRef.current?.contentOffset.y ?? lastScrollYRef.current
+    return start != null && Math.abs(y - start) > 0.5
+  }, [])
+  const releasePauseWithoutMotion = useCallback(() => {
+    isPauseScrollRef.current = false
+    dragStartOffsetRef.current = null
+    isOverlayShownRef.current = false
+    playLineRef.current?.setVisible(false)
+  }, [])
   const handleScrollEndDrag = useCallback(() => {
     if (!isPauseScrollRef.current) return
-    if (!isOverlayShownRef.current) {
-      // 全程没动过（例如横向翻页）：直接解除定位态，不启动 3 秒倒计时，也不显示浮层
-      isPauseScrollRef.current = false
+    // 即使位移不到浮层阈值（短距离拖动），只要列表确实动过也必须回位。
+    if (!hasDragMoved()) {
+      releasePauseWithoutMotion()
       return
     }
     startIdleTimer()
-  }, [startIdleTimer])
+  }, [hasDragMoved, releasePauseWithoutMotion, startIdleTimer])
+
+  const handleMomentumScrollBegin = useCallback(() => {
+    isMomentumRef.current = true
+    // 惯性还在跑时不能开始回位倒计时，否则回位和惯性会抢同一个偏移（上下抖动）。
+    if (scrollTimeoutRef.current) {
+      clearTimeout(scrollTimeoutRef.current)
+      scrollTimeoutRef.current = null
+    }
+  }, [])
 
   const handleMomentumScrollEnd = useCallback(() => {
-    if (!isPauseScrollRef.current || !isOverlayShownRef.current) return
-    // 惯性滚动结束才算真正「停手」：重新计时，避免惯性还没停就触发回位
+    isMomentumRef.current = false
+    if (!isPauseScrollRef.current) return
+    if (!hasDragMoved()) {
+      releasePauseWithoutMotion()
+      return
+    }
+    // 惯性滚动结束才算真正「停手」：重新计时，避免惯性还没停就触发回位。
     startIdleTimer()
-  }, [startIdleTimer])
+  }, [hasDragMoved, releasePauseWithoutMotion, startIdleTimer])
 
   // 内容尺寸变化：以前直接挂 resetScroll —— 当前行带上 / 摘下翻译槽时内容总高**每次换行都会变**，
   // 于是每次换行都白跑一次「瞬跳 + 取消刚起步的换行滑行」，这正是用户报的「换行过程中速度快」的
@@ -751,6 +782,8 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
     x: 0,
     y: getScrollOffsetRef.current(initialLineRef.current as number),
   }), [])
+  // 最后一次已知偏移：首帧 onScroll 之前也用它给手动拖动的起点，短距离拖动才量得准。
+  const lastScrollYRef = useRef(initialContentOffset.y)
   useEffect(() => {
     if (!lyricLines.length) return
     let raf = requestAnimationFrame(() => {
@@ -987,10 +1020,15 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
         // 绝对定位的浮层一起缩进去，而列表内容的左右留白与滚动偏移（纵向）无关。
         contentContainerStyle={{ paddingTop: topPadding, paddingBottom: bottomPadding, paddingHorizontal: lineInsetH }}
         showsVerticalScrollIndicator={false}
+        // 上下限不做弹性回弹：越界惯性会把「停手 1.5s 后回位」拖长，也容易和回位动画抢偏移。
+        bounces={false}
+        alwaysBounceVertical={false}
+        overScrollMode="never"
         scrollEventThrottle={16}
         onScroll={handleScroll}
         onScrollBeginDrag={handleScrollBeginDrag}
         onScrollEndDrag={handleScrollEndDrag}
+        onMomentumScrollBegin={handleMomentumScrollBegin}
         onMomentumScrollEnd={handleMomentumScrollEnd}
         onContentSizeChange={handleContentSizeChange}
         // 行高固定，不需要为动态测量保留屏幕外的行；但 iOS 上开启回收会出现整行空白，故关闭
