@@ -7,7 +7,7 @@ import Lyric from './Lyric'
 import SongInfo from './components/SongInfo'
 import Header, { HEADER_HEIGHT } from './components/Header'
 import Player from './Player'
-import { screenkeepAwake, screenUnkeepAwake } from '@/utils/nativeModules/utils'
+import { screenkeepAwake, screenUnkeepAwake, healPagerViews } from '@/utils/nativeModules/utils'
 import commonState, { type InitState as CommonState } from '@/store/common/state'
 import { useStatusbarHeight, useNavTransitioning } from '@/store/common/hook'
 import { createStyle } from '@/utils/tools'
@@ -151,11 +151,12 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
   }, [])
   // 【第 224 轮】点击小歌词的阶梯兜底：动画 setPage → 重发 → 非动画直达目标页 →
   // 重挂并初始页 = 歌词页。落页（onPageSelected）后全部撤销。
+  const switchFirstRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const switchRetryRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const switchFallbackRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const switchRemountRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const clearSwitchTimers = useCallback(() => {
-    for (const ref of [switchRetryRef, switchFallbackRef, switchRemountRef]) {
+    for (const ref of [switchFirstRef, switchRetryRef, switchFallbackRef, switchRemountRef]) {
       if (ref.current) {
         clearTimeout(ref.current)
         ref.current = null
@@ -311,8 +312,16 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
     if (now - lastSwitchAtRef.current < 250) return
     lastSwitchAtRef.current = now
     clearSwitchTimers()
-    pagerViewRef.current?.setPage?.(1)
-    // 350ms：再发一次动画指令（原生 animating 闩锁可能已由 300ms 扫描清掉）。
+    // 【第 225 轮】先让原生立即清 animating / 交互闩锁（不等 300ms 周期），60ms 后再发
+    // 第一次动画 setPage。否则第一发被 Manager 丢弃、只能等 350ms 重发 —— 用户感知
+    // 就是「点下去卡一下才跳」。
+    healPagerViews()
+    switchFirstRef.current = setTimeout(() => {
+      switchFirstRef.current = null
+      if (showLyricRef.current) return
+      pagerViewRef.current?.setPage?.(1)
+    }, 60)
+    // 350ms：再发一次动画指令（首发的桥调用若慢于 60ms，这一拍补上）。
     switchRetryRef.current = setTimeout(() => {
       switchRetryRef.current = null
       if (showLyricRef.current || !pagerViewRef.current) return

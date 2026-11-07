@@ -268,6 +268,9 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
   // 【第 224 轮】Pressable 的 onPress 在 FlatList/PagerView 手势竞争下可能被取消；
   // onPressIn/onPressOut 仍会成对到达。用它们自己判一次短按，作为第三条切页通道。
   const pressStartRef = useRef<{ x: number, y: number, at: number } | null>(null)
+  // 【第 225 轮】本次触摸期间小歌词列表是否真的开始拖动（上下滑动）：
+  // 滑动开始时 FlatList 会发 onScrollBeginDrag，用它彻底取消本次点击判定。
+  const scrollMovedRef = useRef(false)
   const tapMovedRef = useRef(false)
   const longPressFiredRef = useRef(false)
   const activeLineRef = useRef(activeLine)
@@ -721,6 +724,9 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
   useEffect(() => clearPauseWatchdog, [clearPauseWatchdog])
 
   const handleScrollBeginDrag = useCallback(() => {
+    // 【第 225 轮】上下滑动 ≠ 点击：本次触摸已进入列表拖动，后续任何 onPress/onPressOut/
+    // onTouchEnd 都不再触发切页。
+    scrollMovedRef.current = true
     isPauseScrollRef.current = true
     isMomentumRef.current = false
     // 先记账、先不显示：等真的动了再显示浮层（横向翻页时列表位移为 0，不该闪浮层）
@@ -924,6 +930,7 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
   // 行内 Pressable 的 onPress 仍保留作为第二条通道：容器触摸判定与 Pressable 是两套
   // 独立的事件路径，任一条能到达就能切页（重复请求 requestPage 是幂等的）。
   const handlePress = useCallback(() => {
+    if (scrollMovedRef.current) return
     onPress?.()
   }, [onPress])
 
@@ -934,6 +941,7 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
     tapStartRef.current = { x: pageX, y: pageY, at: Date.now() }
     tapMovedRef.current = false
     longPressFiredRef.current = false
+    scrollMovedRef.current = false
   }, [])
   const handleTapMove = useCallback((e: any) => {
     const s = tapStartRef.current
@@ -942,12 +950,15 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
       tapMovedRef.current = true
     }
   }, [])
-  const handleTapEnd = useCallback(() => {
+  const handleTapEnd = useCallback((e: any) => {
     isTouchingRef.current = false
     const s = tapStartRef.current
     tapStartRef.current = null
-    if (!s || tapMovedRef.current || longPressFiredRef.current) return
+    if (!s || scrollMovedRef.current || tapMovedRef.current || longPressFiredRef.current) return
     if (Date.now() - s.at > 350) return
+    // 松手位置再判一次：move 事件被 FlatList 抢走时 tapMovedRef 不会更新。
+    const { pageX, pageY } = e.nativeEvent
+    if (Math.abs(pageX - s.x) > 10 || Math.abs(pageY - s.y) > 10) return
     // 不再用 isPauseScrollRef / isOverlayShownRef 做总闸：这两个状态一旦卡住就会让
     // 「连续点击都没反应」永久化。浮层三角自己的触摸会 stopPropagation（见 PlayLine），
     // 拖动/长按由上面的位移与 longPress 标记排除。
@@ -983,14 +994,15 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
         // 长按进入定位态（长按后 onPressOut 不再触发切页）。
         onPress={handlePress}
         onPressIn={(e) => {
+          scrollMovedRef.current = false
           pressStartRef.current = { x: e.nativeEvent.pageX, y: e.nativeEvent.pageY, at: Date.now() }
         }}
         onPressOut={(e) => {
           const s = pressStartRef.current
           pressStartRef.current = null
-          if (!s || longPressFiredRef.current) return
+          if (!s || scrollMovedRef.current || longPressFiredRef.current) return
           if (Date.now() - s.at > 350) return
-          if (Math.abs(e.nativeEvent.pageX - s.x) > 8 || Math.abs(e.nativeEvent.pageY - s.y) > 8) return
+          if (Math.abs(e.nativeEvent.pageX - s.x) > 10 || Math.abs(e.nativeEvent.pageY - s.y) > 10) return
           handlePress()
         }}
         onLongPress={handleLongPress}
