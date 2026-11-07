@@ -51,6 +51,8 @@ export interface KaraokeLyricProps {
   scrollProgress?: Animated.Value
   /** 按文字自然宽度测量（不要拉伸到父容器），供横向滚动计算内容宽度。 */
   intrinsicWidth?: boolean
+  /** 是否驱动逐字 rAF。关闭时只静态渲染，调用方须保证两色相同（关闭逐字高亮）。 */
+  animated?: boolean
 }
 
 // 跨行钳制的容差（ms）：行级 ticker 的换行由歌词引擎内部定时器驱动，正常换行可能比
@@ -71,6 +73,7 @@ const KaraokeWords = memo(({
   numberOfLines,
   scrollProgress,
   intrinsicWidth,
+  animated,
 }: {
   words: LxLyricWord[]
   lineTime: number
@@ -82,6 +85,7 @@ const KaraokeWords = memo(({
   numberOfLines?: number
   scrollProgress?: Animated.Value
   intrinsicWidth?: boolean
+  animated: boolean
 }) => {
   const [state, setState] = useState({ index: -1, progress: 0 })
   const stateRef = useRef(state)
@@ -104,7 +108,8 @@ const KaraokeWords = memo(({
     // 【第 177 轮】这里不再把 state 归零：非激活行的 playedColor 与 inactiveColor 本就
     // 相同（见调用方），归零不可见；而归零会让「被压栈页盖住 → 返回」的第一帧
     // 从「全未唱」闪一下再跳回当前进度。
-    if (!isActive) return
+    // 关闭逐字高亮时两色同样相同，rAF 输出不可见：停帧，不留常驻唤醒。
+    if (!isActive || !animated) return
     const writeScrollProgress = (s: { index: number, progress: number }) => {
       if (!scrollProgress) return
       const ratio = words.length
@@ -154,7 +159,7 @@ const KaraokeWords = memo(({
     // 不会先画一帧旧状态。
     tick()
     return () => { cancelAnimationFrame(raf) }
-  }, [words, lineTime, isActive, isPlay, appActive, scrollProgress])
+  }, [words, lineTime, isActive, isPlay, appActive, scrollProgress, animated])
 
   return (
     <Text style={[style, intrinsicWidth ? { alignSelf: 'flex-start' } : null]} numberOfLines={numberOfLines}>
@@ -189,6 +194,7 @@ const KaraokeText = memo(({
   numberOfLines,
   scrollProgress,
   intrinsicWidth,
+  animated,
 }: {
   text: string
   startTime: number
@@ -201,6 +207,7 @@ const KaraokeText = memo(({
   numberOfLines?: number
   scrollProgress?: Animated.Value
   intrinsicWidth?: boolean
+  animated: boolean
 }) => {
   const progress = useRef<Animated.Value>(new Animated.Value(0)).current
   // 整行实测宽度：遮罩内层用同一个宽度渲染，保证上下两层文字逐像素对齐
@@ -214,7 +221,8 @@ const KaraokeText = memo(({
   useLayoutEffect(() => {
     // 【第 177 轮】非激活只停 rAF、不归零：调用方在非激活行上 played/inactive 两色相同，
     // 归零不可见；归零反而会让「被盖住 → 返回」的第一帧从 0 跳回当前进度。
-    if (!isActive) return
+    // 关闭逐字高亮时两色同样相同：停帧，不留常驻唤醒。
+    if (!isActive || !animated) return
     // 行时长兜底 1ms：相邻两行时间戳相同（或末行无下一行时间）时不能除零
     const duration = Math.max(endTime - startTime, 1)
     const readProgress = () => {
@@ -240,7 +248,7 @@ const KaraokeText = memo(({
     // 同 KaraokeWords：先同步算一帧，恢复可见时第一帧就是当前进度。
     tick()
     return () => { cancelAnimationFrame(raf) }
-  }, [startTime, endTime, isActive, isPlay, appActive, progress, text, scrollProgress])
+  }, [startTime, endTime, isActive, isPlay, appActive, progress, text, scrollProgress, animated])
 
   const handleLayout = useCallback(({ nativeEvent }: LayoutChangeEvent) => {
     const width = Math.round(nativeEvent.layout.width)
@@ -288,6 +296,7 @@ const KaraokeLyric = ({
         numberOfLines={props.numberOfLines}
         scrollProgress={props.scrollProgress}
         intrinsicWidth={props.intrinsicWidth}
+        animated={props.animated ?? true}
         playedColor={playedColor}
         inactiveColor={inactiveColor}
       />
@@ -305,6 +314,7 @@ const KaraokeLyric = ({
         numberOfLines={props.numberOfLines}
         scrollProgress={props.scrollProgress}
         intrinsicWidth={props.intrinsicWidth}
+        animated={props.animated ?? true}
         playedColor={playedColor}
         inactiveColor={inactiveColor}
       />

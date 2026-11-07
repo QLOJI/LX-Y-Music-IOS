@@ -1012,8 +1012,11 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
                   style={textStyle}
                   isActive={visible && karaokeVisible}
                   numberOfLines={1}
-                  scrollProgress={activeScrollProgress}
+                  // 不溢出的一行不做横向滚动：不传进度值，省掉每帧一次 Animated 写入。
+                  scrollProgress={canScroll ? activeScrollProgress : undefined}
                   intrinsicWidth={canScroll}
+                  // 关闭逐字高亮时两色相同，逐字 rAF 输出不可见：停帧省电。
+                  animated={isKaraoke}
                   playedColor={activeColor}
                   inactiveColor={isKaraoke ? inactiveColor : activeColor}
                 />
