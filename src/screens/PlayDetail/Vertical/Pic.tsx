@@ -414,6 +414,19 @@ export default memo(({ componentId, active = true, coverRegionHeight = 0 }: { co
   // 本组件只负责：量出封面位置 → 让菜单弹出来。
   const menuRef = useRef<CoverLongPressMenuType>(null)
   const coverRef = useRef<View>(null)
+  // 【第 223 轮】中心孔要「透出封面位置的背景」：量出封面中心在屏幕上的坐标，
+  // 孔内放一张与页面背景同尺寸、同 cover 规则的图并按该坐标偏移 —— 不缩放、不另加模糊。
+  const [coverCenter, setCoverCenter] = useState<{ x: number, y: number } | null>(null)
+  useEffect(() => {
+    const raf = requestAnimationFrame(() => {
+      coverRef.current?.measureInWindow((x, y, w, h) => {
+        const cx = x + w / 2
+        const cy = y + h / 2
+        setCoverCenter(prev => prev != null && Math.abs(prev.x - cx) < 0.5 && Math.abs(prev.y - cy) < 0.5 ? prev : { x: cx, y: cy })
+      })
+    })
+    return () => { cancelAnimationFrame(raf) }
+  }, [size, winWidth, winHeight])
 
   const handleLongPress = () => {
     menuRef.current?.show()
@@ -459,11 +472,12 @@ export default memo(({ componentId, active = true, coverRegionHeight = 0 }: { co
   // 【第 219 轮】CD 碟片样式：仅「自转开 + 圆形」时生效（方形封面保持原样）。
   // 外盘、封面、中心孔/环都在同一个旋转节点里 —— 碟片与封面共同旋转；孔与环是正圆，
   // 转不转看不出。装饰层 pointerEvents=none，长按仍由外层 Touchable 接收。
+  const cdHoleSize = size * 0.232
   const cdStyle = useMemo(() => {
     // 封面铺满整盘（不留黑边）：cover 模式按圆裁切。
     const coverSize = size
     const innerSize = size * 0.4
-    const holeSize = size * 0.232
+    const holeSize = cdHoleSize
     const holeRingSize = size * 0.22
     return {
       disc: {
@@ -504,6 +518,15 @@ export default memo(({ componentId, active = true, coverRegionHeight = 0 }: { co
         borderWidth: 1.2,
         borderColor: theme['c-primary-light-300'],
       },
+      // 图二那种浅色盘边：粗环压在封面外缘上（封面本身仍铺满，不留缝隙 / 黑边）。
+      outerBand: {
+        position: 'absolute' as const,
+        width: size,
+        height: size,
+        borderRadius: size / 2,
+        borderWidth: Math.max(size * 0.018, 3),
+        borderColor: theme['c-primary-light-400'],
+      },
       outerRing: {
         position: 'absolute' as const,
         width: size,
@@ -514,7 +537,7 @@ export default memo(({ componentId, active = true, coverRegionHeight = 0 }: { co
       },
     }
     // radius 与 isSquare 同源（形状真值）；CD 只在圆形分支用，仍按契约口径带上。
-  }, [size, theme, radius, blurredBgColor])
+  }, [size, theme, radius, blurredBgColor, cdHoleSize])
 
   return (
     <View style={styles.container}>
@@ -542,19 +565,27 @@ export default memo(({ componentId, active = true, coverRegionHeight = 0 }: { co
                     onError={handleCoverError}
                   />
                   <View pointerEvents="none" style={cdStyle.tint} />
+                  <View pointerEvents="none" style={cdStyle.outerBand} />
                   <View pointerEvents="none" style={cdStyle.outerRing} />
                 </Animated.View>
                 <View pointerEvents="none" style={cdStyle.holeWrap}>
-                  {/* 只在拿到「已模糊的背景图」时才画孔内背景：未就绪时先用平均色
-                      （holeWrap 的底色），绝不拿原图顶上来 —— 原图缩进小孔会是一块
-                      清晰图片，正是用户看到的「中心不是背景」。
-                      遮罩与 PageContent 同款，孔内与四周色调一致。 */}
-                  {blurredBgUri ? (
+                  {/* 孔内不是另加载一张缩小图：铺一张与页面背景同尺寸、同 cover 规则的图，
+                      按封面中心偏移，孔只负责裁剪 —— 看到的就是背景在封面位置的画面。 */}
+                  {coverCenter ? (
                     <ImageBackground
-                      style={cdStyle.hole}
-                      source={{ uri: blurredBgUri }}
+                      style={{
+                        position: 'absolute',
+                        left: -(coverCenter.x - cdHoleSize / 2),
+                        top: -(coverCenter.y - cdHoleSize / 2),
+                        width: winWidth,
+                        height: winHeight,
+                      }}
+                      source={bgPic
+                        ? (blurredBgUri ? { uri: blurredBgUri } : { uri: bgPic, headers: defaultHeaders })
+                        : theme['bg-image']}
                       resizeMode="cover"
-                      onError={handleBlurredBgError}
+                      blurRadius={bgPic && !blurredBgUri ? bgBlur : undefined}
+                      onError={blurredBgUri ? handleBlurredBgError : undefined}
                     >
                       <View style={{ flex: 1, backgroundColor: theme['c-content-background'], opacity: picOpacity / 100 }} />
                     </ImageBackground>
