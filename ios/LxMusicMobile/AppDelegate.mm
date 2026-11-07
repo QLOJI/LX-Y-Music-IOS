@@ -8963,14 +8963,24 @@ static void LXPagerHealWalk(UIView *view, NSInteger depth) {
     // 【第 222 轮】清卡住的 animating：库的 Manager 在 animated && animating 时直接丢弃
     // 程序化 setPage（手动左滑不走这条，所以「滑得动、点不动」）。起始页 / 被打断的
     // 转场 completion 丢失后它会永久停在 YES。只在没有拖动 / 惯性时清，避免打断真实手势。
+    BOOL busy = NO;
     @try {
       UIScrollView *scrollView = [view valueForKey:@"scrollView"];
-      BOOL busy = scrollView != nil && (scrollView.isDragging || scrollView.isDecelerating);
-      if (!busy && [[view valueForKey:@"animating"] boolValue]) {
-        [view setValue:@NO forKey:@"animating"];
-      }
+      busy = scrollView != nil && (scrollView.isDragging || scrollView.isDecelerating);
     } @catch (NSException *exception) {
       (void)exception;
+    }
+    if (!busy) {
+      @try {
+        if ([[view valueForKey:@"animating"] boolValue]) [view setValue:@NO forKey:@"animating"];
+      } @catch (NSException *exception) {
+        // KVC 不可见时直接写私有 ivar（第 224 轮补的兜底）。
+        Ivar ivar = class_getInstanceVariable([view class], "_animating");
+        if (ivar != NULL) {
+          BOOL *flag = (BOOL *)((uint8_t *)(__bridge void *)view + ivar_getOffset(ivar));
+          if (flag != NULL && *flag) *flag = NO;
+        }
+      }
     }
   }
   for (UIView *sub in view.subviews) LXPagerHealWalk(sub, depth + 1);
