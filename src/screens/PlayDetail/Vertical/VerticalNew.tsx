@@ -96,7 +96,6 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
   const detailPageIndexRef = useRef(0)
   const {
     pagerKey,
-    requestPage,
     notifyPageSelected,
     clearPagerLatch,
     onPageScroll: trackPagerScroll,
@@ -273,65 +272,16 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
     }
   }, [])
 
-  const switchRetryRef = useRef<NodeJS.Timeout | null>(null)
-  const switchRafRef = useRef<number | null>(null)
   const lastSwitchAtRef = useRef(0)
   const handleSwitchToLyricPage = useCallback(() => {
     // 小歌词有两条点击通道（行内 Pressable + 容器触摸判定），一次点击可能进来两次：
-    // 250ms 内只认第一次，避免两次 setPage 把刚起手的切页动画又拽回封面。
+    // 250ms 内只认第一次，避免第二次 setPage 把刚起手的切页动画拽回封面。
     const now = Date.now()
     if (now - lastSwitchAtRef.current < 250) return
     lastSwitchAtRef.current = now
-    // 【第 200 轮】点击完全照抄左滑的落点：只发一次带动画的 setPage。
-    // 不再走恢复链的 30ms 探测 / 450ms 非动画直达 —— 那些会在动画刚起手时把它
-    // 打断成「卡顿、没有左滑动作、闪一下直接进去」。左滑本身没有任何兜底，
-    // 原生过渡是可靠的；点击也保持同一条路径。
-    clearPagerLatch()
-    const pager = pagerViewRef.current
-    if (!pager) return
-    // 与左滑一致前先清原生 animating：非动画落回当前页在「本来就在当前页」时是视觉空操作，
-    // 但会清掉可能残留的 animating 闩锁；紧接着的 setPage 才能稳定走动画。
-    // 不能用 JS 滚动状态当闸门：回前台 / 重新进入详情 / 压栈返回 / 上一次过渡的事件丢失，
-    // 都可能让 JS 停在非 idle，从而把这次清闩锁整段跳过，后面的动画 setPage 继续被原生丢弃。
-    // 小歌词在封面页可见；从歌词页回滑到一半时 showLyricRef 可能还是 true，
-    // 但此刻的落点就是封面，必须同样先清原生闩锁。
-    const onCover = !showLyricRef.current || isComingCoverRef.current
-    if (onCover) {
-      pageScrollStateRef.current = 'idle'
-      pager.setPageWithoutAnimation?.(0)
-    }
-    // 清闩锁与动画切页分两帧发：非动画命令要等本次 UIManager 批次落地后，
-    // 下一帧再发 animated setPage，避免两条命令同批执行时后者仍看到旧的 animating。
-    if (switchRafRef.current) cancelAnimationFrame(switchRafRef.current)
-    switchRafRef.current = requestAnimationFrame(() => {
-      switchRafRef.current = null
-      if (detailPageIndexRef.current === 1) return
-      clearPagerLatch()
-      pager.setPage?.(1)
-    })
-    // 兜底只留两级，且都保持「带动画」：800ms 后仍没落页再发一次动画切页；
-    // 再 800ms 仍失败才重挂并落在歌词页。绝不把正在进行的动画截断成非动画。
-    if (switchRetryRef.current) clearTimeout(switchRetryRef.current)
-    let attempted = 0
-    const retry = () => {
-      switchRetryRef.current = null
-      if (detailPageIndexRef.current === 1) return
-      if (attempted < 1) {
-        attempted++
-        clearPagerLatch()
-        pager.setPage?.(1)
-        switchRetryRef.current = setTimeout(retry, 800)
-        return
-      }
-      clearPagerLatch()
-      showLyricRef.current = true
-      detailPageIndexRef.current = 1
-      setPageIndex(1)
-      screenkeepAwake()
-      setPagerRebuild(v => v + 1)
-    }
-    switchRetryRef.current = setTimeout(retry, 800)
-  }, [clearPagerLatch])
+    // 与左滑同一条路径：只发一次带动画的 setPage，不再有任何探测 / 非动画兜底 / 重挂。
+    pagerViewRef.current?.setPage?.(1)
+  }, [])
 
   // 回前台 / 从压栈页回到本屏：下一帧用非动画落回逻辑页，清掉原生可能卡住的
   // animating / userInteractionEnabled 闩锁。画面不变，但能保证紧接着的点击动画
@@ -340,8 +290,8 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
     requestAnimationFrame(() => {
       const pager = pagerViewRef.current
       if (!pager) return
-      // 用户刚发起点击切页（或仍在重试）时绝不回拨：回拨会把刚开始的动画截成闪跳。
-      if (switchRafRef.current != null || switchRetryRef.current != null) return
+      // 用户刚点击切页时绝不回拨：回拨会把刚开始的动画截成闪跳。
+      if (Date.now() - lastSwitchAtRef.current < 500) return
       // 真实滑动/过渡正在进行（最近 300ms 有滚动帧）时也不抢：等它自己落页。
       if (pageScrollStateRef.current !== 'idle' && Date.now() - pagerActivityAtRef.current < 300) return
       clearPagerLatch()
@@ -444,14 +394,6 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
       global.app_event.off('showPlaylist', handleShowPlaylist)
       appstateListener.remove()
       clearPagerWatchdog()
-      if (switchRetryRef.current) {
-        clearTimeout(switchRetryRef.current)
-        switchRetryRef.current = null
-      }
-      if (switchRafRef.current) {
-        cancelAnimationFrame(switchRafRef.current)
-        switchRafRef.current = null
-      }
       if (progressDragSafety) {
         clearTimeout(progressDragSafety)
         progressDragSafety = null
