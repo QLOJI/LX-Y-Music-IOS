@@ -2076,9 +2076,10 @@ static void LXNowPlayingLyricStep(void) {
     }
 
     // 【第 101 轮】原生落盘「最后播放进度」：与喂锁屏的 `ElapsedPlaybackTime` **同值同源**、只在
-    // 「真在播放且没有外推冻结」时写（与上面 1Hz 对表同一组闸门），每拍下限 1s。
+    // 「真在播放且没有外推冻结」时写（与上面 1Hz 对表同一组闸门），每拍下限 5s（第 216 轮：
+    // 强杀兜底不需要秒级精度，JS 的 pause/stop 边沿另有立即落盘；锁屏亮屏时唤醒减 80%）。
     // 独立成块而不并进上面那段心跳：那一段被契约逐字钉住（lockscreen-tap 的 g1/g3/g7）。
-    if (!paused && !LXNowPlayingClockHold && elapsedRefreshNowMs - LXNowPlayingProgressSavedAtMs >= 1000.0) {
+    if (!paused && !LXNowPlayingClockHold && elapsedRefreshNowMs - LXNowPlayingProgressSavedAtMs >= 5000.0) {
       LXNowPlayingProgressSavedAtMs = elapsedRefreshNowMs;
       // 本函数是 **C 函数**（没有 self）：时长从 Now Playing 缓存取（与喂锁屏同一份）
       double totalDurationSeconds = [LXNowPlayingInfoCache[MPMediaItemPropertyPlaybackDuration] doubleValue];
