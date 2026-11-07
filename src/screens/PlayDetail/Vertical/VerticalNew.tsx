@@ -293,8 +293,10 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
     // 但会清掉可能残留的 animating 闩锁；紧接着的 setPage 才能稳定走动画。
     // 不能用 JS 滚动状态当闸门：回前台 / 重新进入详情 / 压栈返回 / 上一次过渡的事件丢失，
     // 都可能让 JS 停在非 idle，从而把这次清闩锁整段跳过，后面的动画 setPage 继续被原生丢弃。
-    // 小歌词只在封面页可见，因此这里无条件把原生页落回 0 再动画切页。
-    if (!showLyricRef.current) {
+    // 小歌词在封面页可见；从歌词页回滑到一半时 showLyricRef 可能还是 true，
+    // 但此刻的落点就是封面，必须同样先清原生闩锁。
+    const onCover = !showLyricRef.current || isComingCoverRef.current
+    if (onCover) {
       pageScrollStateRef.current = 'idle'
       pager.setPageWithoutAnimation?.(0)
     }
@@ -338,6 +340,10 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
     requestAnimationFrame(() => {
       const pager = pagerViewRef.current
       if (!pager) return
+      // 用户刚发起点击切页（或仍在重试）时绝不回拨：回拨会把刚开始的动画截成闪跳。
+      if (switchRafRef.current != null || switchRetryRef.current != null) return
+      // 真实滑动/过渡正在进行（最近 300ms 有滚动帧）时也不抢：等它自己落页。
+      if (pageScrollStateRef.current !== 'idle' && Date.now() - pagerActivityAtRef.current < 300) return
       clearPagerLatch()
       pager.setPageWithoutAnimation?.(showLyricRef.current ? 1 : 0)
     })
