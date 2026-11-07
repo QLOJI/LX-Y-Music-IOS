@@ -286,15 +286,23 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
   }, [])
 
   const lastSwitchAtRef = useRef(0)
+  const switchRetryRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const handleSwitchToLyricPage = useCallback(() => {
     // 小歌词有两条点击通道（行内 Pressable + 容器触摸判定），一次点击可能进来两次：
     // 250ms 内只认第一次，避免第二次 setPage 把刚起手的切页动画拽回封面。
     const now = Date.now()
     if (now - lastSwitchAtRef.current < 250) return
     lastSwitchAtRef.current = now
-    // 只发一次动画 setPage，不再先发同页非动画 —— 库的 goTo: 会先 disableSwipe，
-    // 未打补丁时同页直接 return 不会恢复交互，反而把整块页面锁死。
+    // 只发动画 setPage，不先发同页非动画（未打补丁时同页 return 不会恢复交互，反而锁死）。
     pagerViewRef.current?.setPage?.(1)
+    // 【第 222 轮】程序化 setPage 可能被原生卡住的 animating 吞掉（手动左滑不走 Manager，
+    // 所以「滑得动、点不动」）。350ms 仍未落页就重发同一条动画指令：不非动画、不重挂。
+    if (switchRetryRef.current) clearTimeout(switchRetryRef.current)
+    switchRetryRef.current = setTimeout(() => {
+      switchRetryRef.current = null
+      if (showLyricRef.current || !pagerViewRef.current) return
+      pagerViewRef.current.setPage?.(1)
+    }, 350)
   }, [])
 
   // 【第 218 轮】回前台 / 回到栈顶 / 触摸起点 / 持续激活心跳只清闩锁，绝不再调
@@ -418,6 +426,10 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
       global.app_event.off('showPlaylist', handleShowPlaylist)
       appstateListener.remove()
       clearInterval(pagerKeepAlive)
+      if (switchRetryRef.current) {
+        clearTimeout(switchRetryRef.current)
+        switchRetryRef.current = null
+      }
       clearPagerWatchdog()
       if (progressDragSafety) {
         clearTimeout(progressDragSafety)
