@@ -9,7 +9,7 @@ import Header, { HEADER_HEIGHT } from './components/Header'
 import Player from './Player'
 import { screenkeepAwake, screenUnkeepAwake } from '@/utils/nativeModules/utils'
 import commonState, { type InitState as CommonState } from '@/store/common/state'
-import { useStatusbarHeight, useNavTransitioning } from '@/store/common/hook'
+import { useStatusbarHeight } from '@/store/common/hook'
 import { createStyle } from '@/utils/tools'
 import { useSettingValue } from '@/store/setting/hook'
 import PlayerPlaylist, { type PlayerPlaylistType } from '@/components/player/PlayerPlaylist.tsx'
@@ -87,11 +87,6 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
   const isSmallWindow = winHeight < 700
   // 正在从左往右滑向歌词页（从封面切到歌词），用于让 LyricPage 提前激活高亮定位
   const pagerViewRef = useRef<PagerView>(null)
-  // 导航转场窗口（push / pop）：窗口内不动 PagerView 的 viewControllers，
-  // 否则 completion 丢失会把交互闩锁留在 NO（见 resyncPagerNativePage）。
-  const navTransitioning = useNavTransitioning()
-  const navTransitioningRef = useRef(navTransitioning)
-  navTransitioningRef.current = navTransitioning
   // 【用户第 59 轮】详情页也接入统一的可恢复 PagerView（与首页 tab / 每日推荐同一套）。
   // 库（react-native-pager-view 6.7.1）在「动画中再切页 / 切页被手势打断」时会把
   // animating 卡住；goTo: 里的 disableSwipe 还会把 reactPageViewController.view 的
@@ -287,27 +282,23 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
     const now = Date.now()
     if (now - lastSwitchAtRef.current < 250) return
     lastSwitchAtRef.current = now
-    // 与左滑同一条路径：只发一次带动画的 setPage，不再有任何探测 / 非动画兜底 / 重挂。
+    // 同页非动画先清 animating / userInteractionEnabled（画面不变），再发与左滑同一条
+    // 动画 setPage；仍不加重试 / 重挂（落点只有这一次动画）。
+    pagerViewRef.current?.setPageWithoutAnimation?.(showLyricRef.current ? 1 : 0)
     pagerViewRef.current?.setPage?.(1)
   }, [])
 
-  // 回前台 / 从压栈页回到本屏：下一帧用非动画落回逻辑页，清掉原生可能卡住的
-  // animating / userInteractionEnabled 闩锁。画面不变，但能保证紧接着的点击动画
-  // 不会因旧闩锁被 Manager 丢弃。
+  // 【第 218 轮】回前台 / 回到栈顶 / 触摸起点只清闩锁，绝不再调 setPageWithoutAnimation：
+  // goTo: 的 disableSwipe + completion 丢失正是「从其他界面/后台切入后整块连点带滑全死」
+  // 的来源，也是返回后重设子控制器导致闪一下的来源。切入时用户还没操作，没有落位需求；
+  // 真正切页时由 handleSwitchToLyricPage 先发同页清理，再发动画 setPage。
   const resyncPagerNativePage = useCallback(() => {
     requestAnimationFrame(() => {
       const pager = pagerViewRef.current
       if (!pager) return
-      // 用户刚点击切页时绝不回拨：回拨会把刚开始的动画截成闪跳。
-      if (Date.now() - lastSwitchAtRef.current < 500) return
-      // 真实滑动/过渡正在进行（最近 300ms 有滚动帧）时也不抢：等它自己落页。
-      if (pageScrollStateRef.current !== 'idle' && Date.now() - pagerActivityAtRef.current < 300) return
       clearPagerLatch()
       // 同值 prop 不会因 diff 再下发：imperative 重发横滑开关，覆盖原生侧被改写/丢事件的场景。
       pager.setScrollEnabled?.(!progressDraggingRef.current)
-      // 转场窗口内不动 UIKit 的 viewControllers：completion 丢失时 userInteractionEnabled
-      // 会停在 NO（整块连点带滑全死）。清理延后到转场结束后的心跳。
-      if (!navTransitioningRef.current) pager.setPageWithoutAnimation?.(showLyricRef.current ? 1 : 0)
     })
   }, [clearPagerLatch])
 
@@ -394,17 +385,6 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
     // 将 PagerView ref 注册给同步手势锁，供进度条拖动时立即禁用原生横滑
     registerPager(pagerViewRef)
 
-    // 【第 217 轮】无触摸自愈心跳（从其他界面 / 后台切入时的整块锁死兜底）：
-    // 库私有 isScrolling 卡住时，触摸在 capture 阶段就被抢走 —— 依赖触摸的清理
-    // 永远等不到。前台可见时周期重发横滑开关并做同页非动画落位（清 animating /
-    // userInteractionEnabled）；转场窗口内不动，避免自己制造同一种锁。
-    const pagerHealTimer = setInterval(() => {
-      if (AppState.currentState !== 'active') return
-      if (navTransitioningRef.current) return
-      if (!isScreenOnTop(commonState.componentIds)) return
-      resyncPagerNativePage()
-    }, 2500)
-
     // 必须用具名函数注册/移除，否则 off 传入新箭头函数无法匹配已注册的监听器，
     // 会导致监听器泄漏（组件多次挂载后点击 ☰ 弹出多个队列面板）。
     const handleShowPlaylist = () => { playlistRef.current?.show() }
@@ -420,7 +400,6 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
       global.app_event.off('switchToLyricPage', handleSwitchToLyricPage)
       global.app_event.off('showPlaylist', handleShowPlaylist)
       appstateListener.remove()
-      clearInterval(pagerHealTimer)
       clearPagerWatchdog()
       if (progressDragSafety) {
         clearTimeout(progressDragSafety)
