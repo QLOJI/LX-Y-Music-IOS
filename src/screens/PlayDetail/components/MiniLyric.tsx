@@ -21,7 +21,7 @@ import { useTheme } from '@/store/theme/hook'
 import { createStyle } from '@/utils/tools'
 import { scaleSizeH, scaleSizeW, setSpText } from '@/utils/pixelRatio'
 import { useWindowSize } from '@/utils/hooks'
-import { useComponentIds, useNavReturning } from '@/store/common/hook'
+import { useAppActive, useComponentIds, useNavReturning } from '@/store/common/hook'
 import { COMPONENT_IDS } from '@/config/constant'
 import playerState from '@/store/player/state'
 import { useIsPlay } from '@/store/player/hook'
@@ -169,8 +169,34 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
   // 返回动画一开始（navReturning）就放行，避免高亮在转场里停在旧帧。
   const ids = useComponentIds()
   const navReturning = useNavReturning()
+  const appActive = useAppActive()
   const pageOnTop = ids.length === 0 || String(ids[ids.length - 1]?.name) === COMPONENT_IDS.playDetail
   const karaokeVisible = pageOnTop || navReturning
+  // 从后台回前台的首个跟随不要播滑动动画：后台期间行可能已经变了，
+  // 回前台再滑一下会被看成小歌词「刷新/跳动」。首帧直接落位。
+  const resumeInstantRef = useRef(false)
+  const resumeInstantTimerRef = useRef<NodeJS.Timeout | null>(null)
+  // 回前台/返回本屏后没有跨行时不会产生跟随，标志必须自然过期，
+  // 否则下一次正常换行会被瞬跳掉。
+  const armResumeInstant = useCallback(() => {
+    resumeInstantRef.current = true
+    if (resumeInstantTimerRef.current) clearTimeout(resumeInstantTimerRef.current)
+    resumeInstantTimerRef.current = setTimeout(() => {
+      resumeInstantTimerRef.current = null
+      resumeInstantRef.current = false
+    }, 500)
+  }, [])
+  const prevAppActiveRef = useRef(appActive)
+  useEffect(() => {
+    if (appActive && !prevAppActiveRef.current) armResumeInstant()
+    prevAppActiveRef.current = appActive
+  }, [appActive, armResumeInstant])
+  // 从压栈页返回本屏同理：首个跟随直接落位，不播纵向滑动。
+  const prevPageOnTopRef = useRef(pageOnTop)
+  useEffect(() => {
+    if (pageOnTop && !prevPageOnTopRef.current) armResumeInstant()
+    prevPageOnTopRef.current = pageOnTop
+  }, [pageOnTop, armResumeInstant])
   // 【第 171 轮】当前播放行缩放（1.0~1.5）：大歌词与小歌词共用同一个设置项。
   // 只动 transform（不改字号/行高/换行），围绕行中心缩放；过渡时长与「换行跟随」
   // 同源（LINE_CHANGE_GLIDE_MS），新旧两行同速交接。
@@ -252,8 +278,10 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
   // 行内播放进度（0~1）：由 KaraokeLyric 内部同一帧的 rAF 写入，不额外起循环。
   const activeScrollProgress = useRef(new Animated.Value(0)).current
   useLayoutEffect(() => {
-    // 换行先回到行首；播放中由 KaraokeLyric 内的逐字循环写真实进度。
-    // 暂停时不主动改成「按时间算的中点」——那会让未播放时也出现一段加载/滚动闪动。
+    // 播放中不要先归零再让子组件的 rAF 补回来 —— 那一帧会把整行横向拨回行首，
+    // 进详情页 / 从后台回来时就是用户看到的「小歌词闪一下刷新」。
+    // KaraokeLyric 的 useLayoutEffect 会在同一帧写入真实进度；暂停时才由这里归零。
+    if (playerState.isPlay) return
     activeScrollProgress.setValue(0)
   }, [activeLine, lyricLines, activeScrollProgress])
 
@@ -495,6 +523,13 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
 
   // 播放行自动跟随：跨行距离很远（进度条 seek / 恢复播放）时直接落位，不做长距离快速滑动
   const followActiveLine = useCallback((index: number) => {
+    // 一次性消费首个跟随标志：任何分支都不留下悬空标志。
+    const instant = resumeInstantRef.current
+    resumeInstantRef.current = false
+    if (resumeInstantTimerRef.current) {
+      clearTimeout(resumeInstantTimerRef.current)
+      resumeInstantTimerRef.current = null
+    }
     // 【第 173 轮】封面页不可见（歌词页在前台）时不跑换行跟随动画（隐藏页里白烧帧）。
     // 但仍做一次无动画落位：切回封面页的第一帧就已经在当前行，不会先露顶部再跳。
     if (!visibleRef.current) {
@@ -504,6 +539,12 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
     }
     const info = scrollInfoRef.current
     const offset = getScrollOffset(index)
+    // 后台回前台的首个跟随直接落位，不播滑动动画（避免看起来像刷新/跳动）。
+    if (instant) {
+      cancelScroll()
+      listRef.current?.scrollToOffset({ offset, animated: false })
+      return
+    }
     // 还没有过任何滚动信息 = 刚挂载 / 刚换歌，第一次定位必须无动画直接落位。
     // 旧写法在这里走 animateToLine，进入详情页（进度不在 0:00）时会看到小歌词
     // 从第 1 行往上滑一下——用户报的「短暂上跳、闪一下」。
@@ -541,17 +582,29 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
   }, [getScrollOffset, cancelScroll])
 
   // 歌词换行：把当前行滑到窗口正中（时长与其他歌词动效同源）
+  const didInitFollowRef = useRef(false)
   useEffect(() => {
     if (activeLine < 0) return
     // 手动定位期间不跟随：否则用户刚拖到位就被自动跟随拽回去
     if (isPauseScrollRef.current) return
+    // 首挂载的定位由 initialContentOffset / 布局阶段完成，commit 后再 follow 一次
+    // 会在进入详情页时看到小歌词刷新一下。
+    if (!didInitFollowRef.current) {
+      didInitFollowRef.current = true
+      return
+    }
     followActiveLine(activeLine)
   }, [activeLine, followActiveLine])
 
   // 从歌词页切回封面页：隐藏期间不跟随，显形首帧必须已经落在当前行。
   // 这里用无动画落位而不是 followActiveLine：切页时任何可见的纵向滑动都会被看成「上下跳动」。
+  const prevVisibleRef = useRef(visible)
   useEffect(() => {
-    if (!visible) return
+    const wasVisible = prevVisibleRef.current
+    prevVisibleRef.current = visible
+    // 首挂载由 initialContentOffset 定位；这里只处理「隐藏 → 显形」的切换，
+    // 否则 commit 后再滚一次会在进入详情页时可见地刷新一下。
+    if (!visible || wasVisible) return
     // 从歌词页回来：上一屏的手动定位态/浮层/倒计时一律作废，回到自动跟随。
     isPauseScrollRef.current = false
     dragStartOffsetRef.current = null
@@ -574,7 +627,14 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
   // 「歌词换行过程中速度特别快」。这条 effect 从此只在整份歌词变更时跑。
   const resetScrollRef = useRef(resetScroll)
   resetScrollRef.current = resetScroll
+  // 首挂载已经由 initialContentOffset 定位；再在 commit 后滚一次会在页面上可见地
+  // 「刷新一下」。只在歌词确实换了一份时复位。
+  const didInitResetScrollRef = useRef(false)
   useEffect(() => {
+    if (!didInitResetScrollRef.current) {
+      didInitResetScrollRef.current = true
+      return
+    }
     resetScrollRef.current()
   }, [lyricLines])
 
@@ -593,6 +653,10 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
     if (scrollTimeoutRef.current) {
       clearTimeout(scrollTimeoutRef.current)
       scrollTimeoutRef.current = null
+    }
+    if (resumeInstantTimerRef.current) {
+      clearTimeout(resumeInstantTimerRef.current)
+      resumeInstantTimerRef.current = null
     }
     cancelScroll()
   }, [cancelScroll])
@@ -768,15 +832,20 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
   // 再补一次无动画对齐（rAF 让原生滚动的 contentSize 先落地）。
   const getScrollOffsetRef = useRef(getScrollOffset)
   getScrollOffsetRef.current = getScrollOffset
-  // 首帧定位：按**进度条时间**先算出当前行（引擎万一还没锚上也不影响），挂载时直接给
-  // FlatList 一个居中的初始 contentOffset。iOS 首帧就按它布局，不会先画第 1 行再滚过去。
+  // 首帧定位：播放中直接取引擎行（进度条是 1Hz，可能落后一行，先按进度条定位会在
+  // 下一帧被 useLayoutEffect 拉回引擎行，表现为进详情页时小歌词「闪一下」）；
+  // 暂停态才用进度条换算。挂载时直接给 FlatList 居中的初始 contentOffset。
   const initialLineRef = useRef<number | null>(null)
   if (initialLineRef.current == null) {
-    const seconds = playerState.progress.nowPlayTime
-    const fromProgress = lyricLines.length && Number.isFinite(seconds)
-      ? findLineIndexByTime(lyricLines, Math.max(0, seconds) * 1000)
-      : -1
-    initialLineRef.current = fromProgress >= 0 ? fromProgress : Math.max(0, activeLine)
+    if (playerState.isPlay) {
+      initialLineRef.current = Math.max(0, activeLine)
+    } else {
+      const seconds = playerState.progress.nowPlayTime
+      const fromProgress = lyricLines.length && Number.isFinite(seconds)
+        ? findLineIndexByTime(lyricLines, Math.max(0, seconds) * 1000)
+        : -1
+      initialLineRef.current = fromProgress >= 0 ? fromProgress : Math.max(0, activeLine)
+    }
   }
   const initialContentOffset = useMemo(() => ({
     x: 0,
@@ -784,8 +853,16 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
   }), [])
   // 最后一次已知偏移：首帧 onScroll 之前也用它给手动拖动的起点，短距离拖动才量得准。
   const lastScrollYRef = useRef(initialContentOffset.y)
+  const hadLyricsAtMountRef = useRef(lyricLines.length > 0)
+  const didInitLyricScrollRef = useRef(false)
+  const mountedOnceRef = useRef(false)
   useEffect(() => {
     if (!lyricLines.length) return
+    if (!didInitLyricScrollRef.current) {
+      didInitLyricScrollRef.current = true
+      // 首挂载已有歌词：initialContentOffset 已定位，rAF 再滚一次会可见地刷新一下。
+      if (hadLyricsAtMountRef.current) return
+    }
     let raf = requestAnimationFrame(() => {
       if (isPauseScrollRef.current) return
       listRef.current?.scrollToOffset({ offset: getScrollOffsetRef.current(activeLineRef.current), animated: false })
@@ -798,7 +875,12 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
   // 就与进度条显示同一行（此前只有大歌词页在激活时按进度重锚，小歌词用的是引擎旧行，
   // 切页时才被拉过去，出现「上跳一下」）。
   useLayoutEffect(() => {
+    const isFirstCommit = !mountedOnceRef.current
+    mountedOnceRef.current = true
     if (!visible) return
+    // 首挂载已有歌词：initialContentOffset 已经给出了正确的首帧位置，这里再滚一次
+    // 会在布局阶段触发一次原生 scrollTo，观感就是小歌词「刷新一下」。
+    const skipScroll = isFirstCommit && hadLyricsAtMountRef.current
     const seconds = playerState.progress.nowPlayTime
     const hasSeconds = Number.isFinite(seconds) && seconds >= 0
     const targetLine = hasSeconds && lyricLines.length
@@ -812,7 +894,7 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
     const scrollLine = playerState.isPlay
       ? activeLineRef.current
       : (targetLine >= 0 ? targetLine : activeLineRef.current)
-    if (!isPauseScrollRef.current) {
+    if (!skipScroll && !isPauseScrollRef.current) {
       // 布局阶段直接落位（不等下一帧）：配合初始 contentOffset，切换瞬间不会先露第 1 行。
       listRef.current?.scrollToOffset({ offset: getScrollOffsetRef.current(scrollLine), animated: false })
     }
