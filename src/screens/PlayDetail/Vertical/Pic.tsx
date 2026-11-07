@@ -8,6 +8,7 @@ import { useSettingValue } from '@/store/setting/hook'
 import Image, { defaultHeaders } from '@/components/common/Image'
 import { useStatusbarHeight, useScreenCovered, useAppActive, useNavTransitioning } from '@/store/common/hook'
 import { useAppInactive } from '@/store/common/hook'
+import { useTheme } from '@/store/theme/hook'
 import { HEADER_HEIGHT } from './components/Header'
 import { createStyle } from '@/utils/tools'
 import CoverLongPressMenu, { type CoverLongPressMenuType } from '@/screens/PlayDetail/components/CoverLongPressMenu'
@@ -105,6 +106,7 @@ export default memo(({ componentId, active = true, coverRegionHeight = 0 }: { co
   const playMusicInfo = usePlayMusicInfo()
   const { width: winWidth, height: winHeight } = useWindowSize()
   const statusBarHeight = useStatusbarHeight()
+  const theme = useTheme()
   const isPlay = useIsPlay()
   const isCoverSpin = useSettingValue('playDetail.isCoverSpin')
   const coverShape = useSettingValue('playDetail.style.coverShape')
@@ -445,6 +447,55 @@ export default memo(({ componentId, active = true, coverRegionHeight = 0 }: { co
     borderRadius: radius,
   } as any), [radius])
 
+  // 【第 219 轮】CD 碟片样式：仅「自转开 + 圆形」时生效（方形封面保持原样）。
+  // 外盘、封面、中心孔/环都在同一个旋转节点里 —— 碟片与封面共同旋转；孔与环是正圆，
+  // 转不转看不出。装饰层 pointerEvents=none，长按仍由外层 Touchable 接收。
+  const cdStyle = useMemo(() => {
+    const coverSize = size * 0.96
+    const innerSize = size * 0.4
+    const holeSize = size * 0.232
+    const holeRingSize = size * 0.22
+    return {
+      disc: {
+        backgroundColor: theme['c-primary-light-400'],
+        alignItems: 'center' as const,
+        justifyContent: 'center' as const,
+      },
+      cover: { width: coverSize, height: coverSize, borderRadius: coverSize / 2 },
+      tint: {
+        position: 'absolute' as const,
+        width: innerSize,
+        height: innerSize,
+        borderRadius: innerSize / 2,
+        backgroundColor: theme['c-primary-light-300-alpha-600'],
+      },
+      hole: {
+        position: 'absolute' as const,
+        width: holeSize,
+        height: holeSize,
+        borderRadius: holeSize / 2,
+        backgroundColor: theme['c-content-background'],
+      },
+      holeRing: {
+        position: 'absolute' as const,
+        width: holeRingSize,
+        height: holeRingSize,
+        borderRadius: holeRingSize / 2,
+        borderWidth: 1.2,
+        borderColor: theme['c-primary-light-300'],
+      },
+      outerRing: {
+        position: 'absolute' as const,
+        width: size,
+        height: size,
+        borderRadius: size / 2,
+        borderWidth: 0.4,
+        borderColor: theme['c-primary-light-300'],
+      },
+    }
+    // radius 与 isSquare 同源（形状真值）；CD 只在圆形分支用，仍按契约口径带上。
+  }, [size, theme, radius])
+
   return (
     <View style={styles.container}>
       <TouchableWithoutFeedback onLongPress={handleLongPress}>
@@ -454,28 +505,49 @@ export default memo(({ componentId, active = true, coverRegionHeight = 0 }: { co
           style={coverContainerStyle}
         >
           {coverUrl && !isLoadError ? (
-            <AnimatedCover
-              source={{
-                uri: coverUrl,
-                headers: defaultHeaders,
-                priority: 'normal',
-                cache: 'immutable',
-              }}
-              // 自转封面的圆角**只由 coverShape 决定**（圆形 = size/2，方形 = 4），不走「按钮圆角」：
-              //  · 「按钮圆角」默认 0（defaultSetting.ts 的 theme.buttonRadius）—— 行内覆盖会把
-              //    「圆形封面」压成**直角方块**，形状设置直接失效；
-              //  · 方块自转时对角的外接半径 = size×√2/2，比圆的 size/2 外扩 0.207×size
-              //    （用户机型 440×956 上 size≈286 ⇒ 约 59pt），四个角会捅出 picContainer、
-              //    压到歌名栏与大歌词上 —— 这正是「封面图片区域跑到其他区域」的成因；
-              //  · 而外层容器按 design 约定**不做 overflow 裁切**（iOS 上 clipsToBounds 祖先 +
-              //    带 transform 的后代会被错误剔除出渲染树，是封面白屏的老根因），越界没有任何东西兜住；
-              //  · 与用户点名的「歌单封面」也不冲突：那三类面是 PlaylistCard / SonglistDetail 的
-              //    封面（由 check-button-radius-coverage.js 钉住），本处是详情页的自转封面，
-              //    形状语义由 playDetail.style.coverShape 这个更具体的设置独占。
-              style={animatedCoverStyle}
-              resizeMode={FastImage.resizeMode.cover}
-              onError={handleCoverError}
-            />
+            allowSpin ? (
+              // 【第 219 轮】CD 碟片：外盘与封面在同一个旋转节点里共同旋转。
+              <Animated.View style={[animatedCoverStyle, cdStyle.disc]}>
+                <AnimatedCover
+                  source={{
+                    uri: coverUrl,
+                    headers: defaultHeaders,
+                    priority: 'normal',
+                    cache: 'immutable',
+                  }}
+                  style={cdStyle.cover}
+                  resizeMode={FastImage.resizeMode.cover}
+                  onError={handleCoverError}
+                />
+                <View pointerEvents="none" style={cdStyle.tint} />
+                <View pointerEvents="none" style={cdStyle.hole} />
+                <View pointerEvents="none" style={cdStyle.holeRing} />
+                <View pointerEvents="none" style={cdStyle.outerRing} />
+              </Animated.View>
+            ) : (
+              <AnimatedCover
+                source={{
+                  uri: coverUrl,
+                  headers: defaultHeaders,
+                  priority: 'normal',
+                  cache: 'immutable',
+                }}
+                // 自转封面的圆角**只由 coverShape 决定**（圆形 = size/2，方形 = 4），不走「按钮圆角」：
+                //  · 「按钮圆角」默认 0（defaultSetting.ts 的 theme.buttonRadius）—— 行内覆盖会把
+                //    「圆形封面」压成**直角方块**，形状设置直接失效；
+                //  · 方块自转时对角的外接半径 = size×√2/2，比圆的 size/2 外扩 0.207×size
+                //    （用户机型 440×956 上 size≈286 ⇒ 约 59pt），四个角会捅出 picContainer、
+                //    压到歌名栏与大歌词上 —— 这正是「封面图片区域跑到其他区域」的成因；
+                //  · 而外层容器按 design 约定**不做 overflow 裁切**（iOS 上 clipsToBounds 祖先 +
+                //    带 transform 的后代会被错误剔除出渲染树，是封面白屏的老根因），越界没有任何东西兜住；
+                //  · 与用户点名的「歌单封面」也不冲突：那三类面是 PlaylistCard / SonglistDetail 的
+                //    封面（由 check-button-radius-coverage.js 钉住），本处是详情页的自转封面，
+                //    形状语义由 playDetail.style.coverShape 这个更具体的设置独占。
+                style={animatedCoverStyle}
+                resizeMode={FastImage.resizeMode.cover}
+                onError={handleCoverError}
+              />
+            )
           ) : (
             <Image url={coverUrl} style={emptyImageStyle} />
           )}

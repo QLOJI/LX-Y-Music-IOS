@@ -145,8 +145,30 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
     detailPageIndexRef.current = showLyricRef.current ? 1 : 0
     setPagerRebuild(v => v + 1)
   }, [])
+  // 【第 219 轮】原生交互被禁用（userInteractionEnabled=NO）时，触摸到不了 PagerView 子树，
+  // 但父容器仍收得到。用「页面区触摸后 250ms 内子页没收到」作判据，重挂原生实例恢复。
+  const pagerTouchAtRef = useRef(0)
+  const pagerProbeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const markPagerTouch = useCallback(() => {
+    pagerTouchAtRef.current = Date.now()
+    return false
+  }, [])
+  useEffect(() => () => {
+    if (pagerProbeTimerRef.current) {
+      clearTimeout(pagerProbeTimerRef.current)
+      pagerProbeTimerRef.current = null
+    }
+  }, [])
   const playlistRef = useRef<PlayerPlaylistType>(null)
   const [pagerHeight, setPagerHeight] = useState(0)
+  // 【第 219 轮】歌词页首次挂载晚 150ms：把「整首歌词渲染 + 测量」从 push 转场里挪开，
+  // 避免点迷你播放器那一下的明显卡顿（用户入口感知为「卡一下再进」）。
+  const [lyricPageReady, setLyricPageReady] = useState(false)
+  useEffect(() => {
+    if (pagerHeight <= 0 || lyricPageReady) return
+    const timer = setTimeout(() => setLyricPageReady(true), 150)
+    return () => clearTimeout(timer)
+  }, [pagerHeight, lyricPageReady])
   // 封面页容器（picPageContainerNew）的实测高度 R（pt）：顶 = 返回栏底边、底 = 控制条顶边。
   // 它由 PagerView 定高，与容器内的封面 / 信息块 / 小歌词完全无关 —— 这正是它取代旧口径
   // （infoContainer 的 onLayout.y，「返回栏底边 → 信息栏顶边」）的原因：旧口径把小歌词
@@ -251,6 +273,8 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
     const coming = e.nativeEvent.position === 0 && e.nativeEvent.offset > 0
     if (coming && !isComingLyricRef.current) {
       isComingLyricRef.current = true
+      // 开始滑向歌词页：立刻挂载（不等那 150ms），落页时歌词已就绪。
+      setLyricPageReady(true)
       setForceUpdate(v => v + 1)
     }
     // 反向：已停在歌词页时，只要滚动采样里出现 position===0，就说明手势正在把封面页滑回来。
@@ -544,7 +568,7 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
           手指刚落下时一定没有手势在跑，此刻抹平不会打断任何东西；返回 false = 不截胡。 */}
       <View
         style={styles.container}
-        onStartShouldSetResponderCapture={() => {
+        onStartShouldSetResponderCapture={(e) => {
           clearPagerLatch()
           // 过渡状态卡死（非 idle 且 1.5s 没有滚动帧）：第一次落在死区的触摸直接触发重挂，
           // 恢复后无需退出重进。
@@ -553,6 +577,19 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
           // 触摸仍会先到本容器（在 PagerView 之外）：借这一拍立即做一次同页清理，
           // 不必等 2.5s 心跳。
           resyncPagerNativePage()
+          // 【第 219 轮】页面区触摸若无响应（子页 capture 没收到）⇒ 原生交互被禁用，
+          // 重挂 PagerView 恢复；不比让用户退出重进差。
+          const y = e.nativeEvent.locationY
+          if (pagerHeight > 0 && y >= 0 && y <= pagerHeight && pagerProbeTimerRef.current == null) {
+            const at = Date.now()
+            pagerProbeTimerRef.current = setTimeout(() => {
+              pagerProbeTimerRef.current = null
+              if (!pagerViewRef.current || pagerTouchAtRef.current >= at) return
+              pageScrollStateRef.current = 'idle'
+              detailPageIndexRef.current = showLyricRef.current ? 1 : 0
+              setPagerRebuild(v => v + 1)
+            }, 250)
+          }
           return false
         }}
       >
@@ -590,7 +627,11 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
             if (h > 0 && h !== pagerHeight) setPagerHeight(h)
           }}
         >
-          <View collapsable={false} style={styles.pageContainer}>
+          <View
+            collapsable={false}
+            style={styles.pageContainer}
+            onStartShouldSetResponderCapture={markPagerTouch}
+          >
             {/* 封面页容器：高度 R 在这里实测（与容器内的小孩完全无关，见上方 pageHeight
                 注释），下传给 Pic 做尺寸上限，也是小歌词可用高度的基准。 */}
             <View
@@ -638,8 +679,12 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
               </View>
             </View>
           </View>
-          <View collapsable={false} style={{ flex: 1, width: '100%', height: '100%' }}>
-            <LyricPage pagerHeight={pagerHeight} isActive={pageIndex === 1 || isComingLyricRef.current} />
+          <View
+            collapsable={false}
+            style={{ flex: 1, width: '100%', height: '100%' }}
+            onStartShouldSetResponderCapture={markPagerTouch}
+          >
+            <LyricPage pagerHeight={lyricPageReady ? pagerHeight : 0} isActive={pageIndex === 1 || isComingLyricRef.current} />
           </View>
         </PagerView>
         {/* Progress bar must live OUTSIDE the PagerView so its horizontal drag never
