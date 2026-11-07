@@ -265,6 +265,9 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
   // 竞争（PagerView / FlatList）下会被取消，导致「点了有概率没反应」。这里用触摸
   // 起点/终点自己判「短按且几乎没移动」，命中就切歌词页；拖动、长按、浮层操作都不算。
   const tapStartRef = useRef<{ x: number, y: number, at: number } | null>(null)
+  // 【第 224 轮】Pressable 的 onPress 在 FlatList/PagerView 手势竞争下可能被取消；
+  // onPressIn/onPressOut 仍会成对到达。用它们自己判一次短按，作为第三条切页通道。
+  const pressStartRef = useRef<{ x: number, y: number, at: number } | null>(null)
   const tapMovedRef = useRef(false)
   const longPressFiredRef = useRef(false)
   const activeLineRef = useRef(activeLine)
@@ -976,8 +979,20 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
       <Pressable
         // 行高逐行化（第 16 轮第 8 条）：当前行带翻译时这一行更高，其余行只占行盒 + 净间距
         style={[styles.line, { height: rowHeights[index] ?? baseRowHeight }]}
-        // 双通道：行内 onPress 与容器 handleTapEnd 任一生效都能切页；长按进入定位态。
+        // 三通道：行内 onPress、onPressOut 自判短按、容器 handleTapEnd，任一生效都能切页；
+        // 长按进入定位态（长按后 onPressOut 不再触发切页）。
         onPress={handlePress}
+        onPressIn={(e) => {
+          pressStartRef.current = { x: e.nativeEvent.pageX, y: e.nativeEvent.pageY, at: Date.now() }
+        }}
+        onPressOut={(e) => {
+          const s = pressStartRef.current
+          pressStartRef.current = null
+          if (!s || longPressFiredRef.current) return
+          if (Date.now() - s.at > 350) return
+          if (Math.abs(e.nativeEvent.pageX - s.x) > 8 || Math.abs(e.nativeEvent.pageY - s.y) > 8) return
+          handlePress()
+        }}
         onLongPress={handleLongPress}
         // 【第 194 轮】「点小歌词偶尔没反应」的兜底：
         // ① 长按阈值 500 → 650ms：慢一点点按仍算点击，不会先被判成长按（长按不会触发 onPress）；

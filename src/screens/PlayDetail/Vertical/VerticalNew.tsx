@@ -9,7 +9,7 @@ import Header, { HEADER_HEIGHT } from './components/Header'
 import Player from './Player'
 import { screenkeepAwake, screenUnkeepAwake } from '@/utils/nativeModules/utils'
 import commonState, { type InitState as CommonState } from '@/store/common/state'
-import { useStatusbarHeight } from '@/store/common/hook'
+import { useStatusbarHeight, useNavTransitioning } from '@/store/common/hook'
 import { createStyle } from '@/utils/tools'
 import { useSettingValue } from '@/store/setting/hook'
 import PlayerPlaylist, { type PlayerPlaylistType } from '@/components/player/PlayerPlaylist.tsx'
@@ -87,6 +87,10 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
   const isSmallWindow = winHeight < 700
   // 正在从左往右滑向歌词页（从封面切到歌词），用于让 LyricPage 提前激活高亮定位
   const pagerViewRef = useRef<PagerView>(null)
+  // 返回转场期间不做任何 PagerView 命令（避免返回时画面被重设/闪一下）。
+  const navTransitioning = useNavTransitioning()
+  const navTransitioningRef = useRef(navTransitioning)
+  navTransitioningRef.current = navTransitioning
   // 【用户第 59 轮】详情页也接入统一的可恢复 PagerView（与首页 tab / 每日推荐同一套）。
   // 库（react-native-pager-view 6.7.1）在「动画中再切页 / 切页被手势打断」时会把
   // animating 卡住；goTo: 里的 disableSwipe 还会把 reactPageViewController.view 的
@@ -144,6 +148,19 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
     pageScrollStateRef.current = 'idle'
     detailPageIndexRef.current = showLyricRef.current ? 1 : 0
     setPagerRebuild(v => v + 1)
+  }, [])
+  // 【第 224 轮】点击小歌词的阶梯兜底：动画 setPage → 重发 → 非动画直达目标页 →
+  // 重挂并初始页 = 歌词页。落页（onPageSelected）后全部撤销。
+  const switchRetryRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const switchFallbackRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const switchRemountRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const clearSwitchTimers = useCallback(() => {
+    for (const ref of [switchRetryRef, switchFallbackRef, switchRemountRef]) {
+      if (ref.current) {
+        clearTimeout(ref.current)
+        ref.current = null
+      }
+    }
   }, [])
   const playlistRef = useRef<PlayerPlaylistType>(null)
   const [pagerHeight, setPagerHeight] = useState(0)
@@ -232,6 +249,7 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
 
   const onPageSelected = ({ nativeEvent }: PagerViewOnPageSelectedEvent) => {
     // 落页 = 过渡结束：撤恢复链、清看门狗与库私有 isScrolling 闩锁。
+    clearSwitchTimers()
     notifyPageSelected(nativeEvent.position)
     detailPageIndexRef.current = nativeEvent.position
     // 【第 176 轮】落页 = 过渡结束：撤掉静默看门狗。
@@ -286,24 +304,38 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
   }, [])
 
   const lastSwitchAtRef = useRef(0)
-  const switchRetryRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const handleSwitchToLyricPage = useCallback(() => {
     // 小歌词有两条点击通道（行内 Pressable + 容器触摸判定），一次点击可能进来两次：
     // 250ms 内只认第一次，避免第二次 setPage 把刚起手的切页动画拽回封面。
     const now = Date.now()
     if (now - lastSwitchAtRef.current < 250) return
     lastSwitchAtRef.current = now
-    // 只发动画 setPage，不先发同页非动画（未打补丁时同页 return 不会恢复交互，反而锁死）。
+    clearSwitchTimers()
     pagerViewRef.current?.setPage?.(1)
-    // 【第 222 轮】程序化 setPage 可能被原生卡住的 animating 吞掉（手动左滑不走 Manager，
-    // 所以「滑得动、点不动」）。350ms 仍未落页就重发同一条动画指令：不非动画、不重挂。
-    if (switchRetryRef.current) clearTimeout(switchRetryRef.current)
+    // 350ms：再发一次动画指令（原生 animating 闩锁可能已由 300ms 扫描清掉）。
     switchRetryRef.current = setTimeout(() => {
       switchRetryRef.current = null
       if (showLyricRef.current || !pagerViewRef.current) return
       pagerViewRef.current.setPage?.(1)
     }, 350)
-  }, [])
+    // 900ms：非动画直达目标页（只去歌词页，绝不先落回封面；跨页会走 setViewControllers，
+    // completion 丢失也有原生 300ms 扫描兜底）。
+    switchFallbackRef.current = setTimeout(() => {
+      switchFallbackRef.current = null
+      if (showLyricRef.current || !pagerViewRef.current) return
+      pagerViewRef.current.setPageWithoutAnimation?.(1)
+    }, 900)
+    // 1500ms：最后一道 —— 重挂 PagerView 并把初始页直接设为歌词页（会闪一下，但保证能到）。
+    switchRemountRef.current = setTimeout(() => {
+      switchRemountRef.current = null
+      if (showLyricRef.current) return
+      showLyricRef.current = true
+      detailPageIndexRef.current = 1
+      pageScrollStateRef.current = 'idle'
+      setPageIndex(1)
+      setPagerRebuild(v => v + 1)
+    }, 1500)
+  }, [clearSwitchTimers])
 
   // 【第 218 轮】回前台 / 回到栈顶 / 触摸起点 / 持续激活心跳只清闩锁，绝不再调
   // setPageWithoutAnimation：库的 goTo: 会先 disableSwipe，未打补丁时同页直接 return
@@ -311,6 +343,8 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
   // 真正的原生交互闩锁由 AppDelegate 的 300ms 扫描兜底（从启动就跑，不重挂、不闪）。
   const resyncPagerNativePage = useCallback(() => {
     requestAnimationFrame(() => {
+      // 返回 / 推入转场期间不发任何 PagerView 命令：转场中的原生命令是返回闪的来源之一。
+      if (navTransitioningRef.current) return
       const pager = pagerViewRef.current
       if (!pager) return
       clearPagerLatch()
@@ -426,10 +460,7 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
       global.app_event.off('showPlaylist', handleShowPlaylist)
       appstateListener.remove()
       clearInterval(pagerKeepAlive)
-      if (switchRetryRef.current) {
-        clearTimeout(switchRetryRef.current)
-        switchRetryRef.current = null
-      }
+      clearSwitchTimers()
       clearPagerWatchdog()
       if (progressDragSafety) {
         clearTimeout(progressDragSafety)
