@@ -34,6 +34,13 @@ export const screenUnkeepAwake = () => {
   UtilsModule.screenUnkeepAwake?.()
 }
 
+// 【第 225 轮】点击切页前立即清 PagerView 的 animating / 交互闩锁，避免第一发 setPage
+// 被原生 Manager 丢弃后干等 350ms 重发（用户感知为「卡一下才跳」）。
+export const healPagerViews = () => {
+  if (!isIOS) return
+  UtilsModule.healPagerViews?.()
+}
+
 /**
  * 【第 124 轮】返回转场开始：刷新仍处于暂停态的液态玻璃冻结帧（不解除暂停）。
  *
