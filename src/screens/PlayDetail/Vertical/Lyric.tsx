@@ -93,9 +93,9 @@ const LrcLine = memo(
       Animated.timing(lineScale, {
         toValue: target,
         duration: LINE_ZOOM_MS,
-        // 【第 194 轮】easeOut(cubic) 起步速度最大、第一帧就冲出去，观感生硬；
-        // 换 easeInOut(cubic) 后起步/收尾连续，260ms 也不会拖沓。
-        easing: Easing.inOut(Easing.cubic),
+        // 260ms 不变；曲线与换行滑行同为 easeInOutSine：起步/收尾的加速度更柔，
+        // 不再是 cubic 那种中段突然加速的「生硬」感。
+        easing: Easing.inOut(Easing.sin),
         useNativeDriver: true,
       }).start()
     }, [isActive, zoom, lineScale])
@@ -350,6 +350,10 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
   // （长句换行后行高更大、跳变越明显），行高测量后的回正修正同样是硬跳；
   // 平滑收敛把这些瞬跳都变成约 200ms 的短滑动，消除换行长句切行时的顿挫感。
   const smoothOffsetRef = useRef(0)
+  // 连续跟随的瞬时速度（pt/s）与本次 glide 的起始速度：快歌连续换行时用它接力，
+  // 避免「ease 被截断 → 指数平滑重新起步」造成的速度断点。
+  const smoothVelocityRef = useRef(0)
+  const glideStartVelocityRef = useRef(0)
   const lastWrittenOffsetRef = useRef(-1)
   const lastFrameTsRef = useRef(0)
   const wasPauseRef = useRef(true)
@@ -578,6 +582,7 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
       // 不会把列表拽回旧位置。非 force（动画滚动）不改动跟随值，交给循环平滑收敛。
       if (force) {
         smoothOffsetRef.current = targetOffset
+        smoothVelocityRef.current = 0
         lastWrittenOffsetRef.current = targetOffset
         // 硬跳定位后取消进行中的切行滑动与未走完的停留窗口，否则下一帧会被滑动轨迹
         // 拉回旧位置、或被停留窗口冻住；同时把“上一次滚动到的行”对齐，避免下一帧把
@@ -709,6 +714,7 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
       glideFromRef.current = smoothOffsetRef.current
       glideToRef.current = continuousOffset
       glideStartTsRef.current = ts
+      glideStartVelocityRef.current = smoothVelocityRef.current
     }
     if (i !== lastContinuousIndexRef.current) {
       // REF 把换行分两类（REF Vertical/Lyric.tsx:290-298）：连续推进一行（diff==1）先停留
@@ -722,6 +728,7 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
         glideFromRef.current = smoothOffsetRef.current
         glideToRef.current = continuousOffset
         glideStartTsRef.current = ts
+        glideStartVelocityRef.current = 0
       } else {
         const runElapsed = lineChangeTsRef.current >= 0 ? ts - lineChangeTsRef.current : Number.POSITIVE_INFINITY
         if (runElapsed > LINE_CHANGE_HOLD_MS + LINE_CHANGE_GLIDE_REF_MS) {
@@ -730,12 +737,15 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
           glideStartedRef.current = false
           glideStartTsRef.current = -1
         } else if (glideStartTsRef.current >= 0) {
-          // 【第 199 轮】同一串连续换行里又来了新行：不再重新起一段 ease —— 每段 ease
-          // 都从零速起步，快歌（行间隔很短）看起来就是一顿一顿。这里取消固定滑动，
-          // 交给下面的指数平滑连续追新目标：目标变化时速度是连续的，不会回弹。
-          glideFromRef.current = 0
-          glideToRef.current = 0
-          glideStartTsRef.current = -1
+          // 同一串连续换行里又来了新行：不取消滑动、不切回零速起步。
+          // 以当前位置和当前速度重新起一段 Hermite，目标换成新行 —— 位置/速度都连续，
+          // 快歌连续换行不会再出现「一顿一顿」。
+          lineChangeTsRef.current = -1
+          glideStartedRef.current = true
+          glideFromRef.current = smoothOffsetRef.current
+          glideToRef.current = continuousOffset
+          glideStartTsRef.current = ts
+          glideStartVelocityRef.current = smoothVelocityRef.current
         }
         // 同一串内、仍在停留窗口：什么都不做——只更新目标（起滑那一帧会用上当帧的
         // continuousOffset），停留锚点绝不重置。这是快歌（行间隔 <600ms）不被冻住的关键。
@@ -743,6 +753,7 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
     }
     const dt = lastFrameTsRef.current > 0 ? Math.min(Math.max((ts - lastFrameTsRef.current) / 1000, 0.001), 0.05) : 0.016
     lastFrameTsRef.current = ts
+    const smoothBefore = smoothOffsetRef.current
     const holdElapsed = lineChangeTsRef.current >= 0 ? ts - lineChangeTsRef.current : Number.POSITIVE_INFINITY
     if (holdElapsed < LINE_CHANGE_HOLD_MS && !glideStartedRef.current) {
       // 停留窗口内：保持原位不动。这里【必须】跳过下面的指数平滑——目标已切到新行，
@@ -754,15 +765,34 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
         glideFromRef.current = smoothOffsetRef.current
         glideToRef.current = continuousOffset
         glideStartTsRef.current = ts
+        glideStartVelocityRef.current = 0
       }
       const glideElapsed = glideStartTsRef.current >= 0 ? ts - glideStartTsRef.current : Number.POSITIVE_INFINITY
       if (glideElapsed < LINE_CHANGE_GLIDE_REF_MS) {
         // 滑动中：easeInOutQuad。终点取起滑/重新锚定当帧记录的新行偏移；若这期间行高测量修正了
         // 目标，滑动结束后由下面的指数平滑继续收敛（小幅位移，无感），不会硬跳。
         const p = glideElapsed / LINE_CHANGE_GLIDE_REF_MS
-        // 【第 194 轮】easeInOutSine：起停更柔，时长不变（不会整体变慢）。
-        const eased = easeInOutSine(p)
-        smoothOffsetRef.current = glideFromRef.current + (glideToRef.current - glideFromRef.current) * eased
+        const from = glideFromRef.current
+        const to = glideToRef.current
+        const distance = to - from
+        const rawMomentum = glideStartVelocityRef.current * (LINE_CHANGE_GLIDE_REF_MS / 1000)
+        // 同向时限制在距离的 1.25 倍内，避免速度过大越过目标再回弹。
+        const momentum = Math.sign(rawMomentum) === Math.sign(distance)
+          ? Math.sign(rawMomentum) * Math.min(Math.abs(rawMomentum), Math.abs(distance) * 1.25)
+          : rawMomentum
+        if (momentum !== 0) {
+          // 三次 Hermite：起点速度 = 上一帧速度，终点速度 = 0，位置/速度连续。
+          const p2 = p * p
+          const p3 = p2 * p
+          const h00 = 2 * p3 - 3 * p2 + 1
+          const h10 = p3 - 2 * p2 + p
+          const h01 = -2 * p3 + 3 * p2
+          smoothOffsetRef.current = h00 * from + h10 * momentum + h01 * to
+        } else {
+          // 【第 194 轮】easeInOutSine：起停更柔，时长不变（不会整体变慢）。
+          const eased = easeInOutSine(p)
+          smoothOffsetRef.current = from + distance * eased
+        }
       } else {
         // 无停留、无滑动（或本串滑动已结束）：指数平滑跟随。同一串内后续换行走这里，
         // 每帧重算目标，天然跟得上；12/s ≈ 200ms 收敛 95%，位移连续。
@@ -772,6 +802,8 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
         else smoothOffsetRef.current += delta * (1 - Math.exp(-dt * SMOOTH_RATE_NORMAL))
       }
     }
+    const measuredVelocity = (smoothOffsetRef.current - smoothBefore) / dt
+    smoothVelocityRef.current = Math.max(-20000, Math.min(20000, measuredVelocity))
     if (Math.abs(smoothOffsetRef.current - lastWrittenOffsetRef.current) < 0.5) return
     try {
       flatListRef.current.scrollToOffset({ offset: smoothOffsetRef.current, animated: false })
@@ -1016,6 +1048,7 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
     scrollYRef.current = 0
     // 平滑跟随基准同步归零，避免切歌后循环把列表从旧位置拽回顶部。
     smoothOffsetRef.current = 0
+    smoothVelocityRef.current = 0
     lastWrittenOffsetRef.current = -1
     lastFrameTsRef.current = 0
     glideStartTsRef.current = -1
@@ -1144,6 +1177,7 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
         if (wasPauseRef.current) {
           wasPauseRef.current = false
           smoothOffsetRef.current = scrollYRef.current
+          smoothVelocityRef.current = 0
           lastWrittenOffsetRef.current = scrollYRef.current
           lastFrameTsRef.current = ts
           // 恢复首帧不承接暂停前的切行滑动/停留窗口：lastContinuousIndexRef 置 -1 后，

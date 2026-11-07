@@ -196,9 +196,9 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
       if (index < 0) return
       Animated.timing(getLineScale(index), {
         toValue,
-        // 【第 194 轮】与大小歌词统一：260ms + easeInOut(cubic)，起步不再冲一下。
+        // 260ms 不变；曲线与换行滑行同为 easeInOutSine，起步/收尾的加速度更柔。
         duration: LINE_ZOOM_MS,
-        easing: Easing.inOut(Easing.cubic),
+        easing: Easing.inOut(Easing.sin),
         useNativeDriver: true,
       }).start()
     }
@@ -217,6 +217,10 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
   const isPauseScrollRef = useRef(false)
   const scrollTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const scrollCancelRef = useRef<(() => void) | null>(null)
+  // 连续换行的速度接力：新一行在上一段滑行没结束时到来，起点速度沿用上一帧，
+  // 不重新从 0 加速（否则快歌每行都「起步-停-起步」，观感生硬）。
+  const animatedPositionRef = useRef<number | null>(null)
+  const scrollVelocityRef = useRef(0)
   // 原生手势结束事件偶发丢失时，停手回位/浮层收起不能永久卡住。
   const isTouchingRef = useRef(false)
   const pauseWatchdogRef = useRef<NodeJS.Timeout | null>(null)
@@ -410,24 +414,61 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
       return
     }
     const offset = getScrollOffset(index)
+    // 上一段滑行还没结束时的新目标：保留当前位置与速度，用 Hermite 接力；
+    // 首段 / 手动回位仍走原来的 easeInOutSine，时长不变。
+    const wasAuto = isAutoScrollRef.current
+    const previousPosition = animatedPositionRef.current
+    const previousVelocity = scrollVelocityRef.current
     cancelScroll()
-    const from = scrollInfoRef.current?.contentOffset.y
+    const from = wasAuto && previousPosition != null
+      ? previousPosition
+      : scrollInfoRef.current?.contentOffset.y
     const distance = from == null ? 0 : offset - from
     // 起点未知（还没滚动过 / 首帧）或位移小到看不见：直接落位，不播动画
     if (from == null || Math.abs(distance) < 1) {
       list.scrollToOffset({ offset, animated: false })
+      animatedPositionRef.current = offset
+      scrollVelocityRef.current = 0
       onDone?.()
       return
     }
     const total = Math.max(duration ?? RETURN_TO_ACTIVE_MS, 1)
+    // 速度换算到本次归一化时间轴：pt/s × total(s) = 整个动画的位移量级。
+    const rawMomentum = wasAuto ? previousVelocity * total / 1000 : 0
+    // 同向时限制在距离的 1.25 倍内，避免速度过大越过目标再弹回来。
+    const momentum = Math.sign(rawMomentum) === Math.sign(distance)
+      ? Math.sign(rawMomentum) * Math.min(Math.abs(rawMomentum), Math.abs(distance) * 1.25)
+      : rawMomentum
     let rafId = 0
     let startTime = 0
+    let lastTime = 0
+    let lastValue = from
     const step = (now: number) => {
-      if (!startTime) startTime = now
+      if (!startTime) {
+        startTime = now
+        lastTime = now
+      }
       const t = Math.min(1, (now - startTime) / total)
-      // 【第 194 轮】easeInOutSine（与大歌词同一条曲线）：起停更柔，时长不变。
-      const eased = easeInOutSine(t)
-      list.scrollToOffset({ offset: from + distance * eased, animated: false })
+      let value: number
+      if (momentum !== 0) {
+        // 三次 Hermite：起点速度 = 上一帧速度，终点速度 = 0，位置和速度都连续。
+        const t2 = t * t
+        const t3 = t2 * t
+        const h00 = 2 * t3 - 3 * t2 + 1
+        const h10 = t3 - 2 * t2 + t
+        const h01 = -2 * t3 + 3 * t2
+        value = h00 * from + h10 * momentum + h01 * offset
+      } else {
+        // 【第 194 轮】easeInOutSine（与大歌词同一条曲线）：起停更柔，时长不变。
+        const eased = easeInOutSine(t)
+        value = from + distance * eased
+      }
+      list.scrollToOffset({ offset: value, animated: false })
+      animatedPositionRef.current = value
+      const dt = Math.max((now - lastTime) / 1000, 0.001)
+      scrollVelocityRef.current = (value - lastValue) / dt
+      lastTime = now
+      lastValue = value
       if (t < 1) {
         rafId = requestAnimationFrame(step)
         return
@@ -435,6 +476,8 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
       rafId = 0
       scrollCancelRef.current = null
       isAutoScrollRef.current = false
+      animatedPositionRef.current = offset
+      scrollVelocityRef.current = 0
       onDone?.()
     }
     isAutoScrollRef.current = true

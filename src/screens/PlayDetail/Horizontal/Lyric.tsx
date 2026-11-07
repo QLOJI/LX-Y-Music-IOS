@@ -79,10 +79,9 @@ const LrcLine = memo(
       appliedScaleRef.current = target
       Animated.timing(lineScale, {
         toValue: target,
-        // 【第 194 轮】与竖屏/小歌词统一为 260ms + easeInOut(cubic)：
-        // 旧值随行高取 120~300ms 且 easeOut 起步太猛，是「缩放生硬」的主因。
+        // 260ms 不变；与竖屏/小歌词统一为 easeInOutSine，起步/收尾更柔。
         duration: LINE_ZOOM_MS,
-        easing: Easing.inOut(Easing.cubic),
+        easing: Easing.inOut(Easing.sin),
         useNativeDriver: true,
       }).start()
     }, [isActive, zoom, lineHeight, lineScale])
