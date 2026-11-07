@@ -7,7 +7,7 @@ import { setNowPlayingCurrentLine, setNowPlayingLyrics, setNowPlayingLyricMusicI
 // 【第 50 轮】开关切换时同时对齐第三条通路：卡片歌词区的状态文案（见 nowPlayingStatus.ts）
 import { syncNowPlayingStatusText } from './nowPlayingStatus'
 import settingState from '@/store/setting/state'
-import { Platform } from 'react-native'
+import { AppState, Platform } from 'react-native'
 
 // 「显示蓝牙歌词」取值：开 = 把当前歌词行推送到系统媒体信息（控制中心/锁屏/车机/音箱
 // 读的都是同一份 MPNowPlayingInfoCenter），关 = 只显示歌名·歌手。
@@ -207,8 +207,11 @@ export default async(setting: LX.AppSetting) => {
   })
   // 暂停态持续校正：进度条是用户看到的真相。每 700ms 比对一次「进度条应有行」与
   // 「引擎当前行」，不一致才重锚（一致时完全不碰引擎，不会让当前行的缩放动画重播）。
-  // 这样进入详情页 / 切歌词页 / 重开软件时，引擎行早就等于进度条行，首帧不需要再跳。
-  setInterval(() => {
+  // 只在「前台 + 暂停」时起表：播放中/后台都不需要它，后台音频常驻时更不能让它
+  // 每 700ms 白白唤醒一次 JS。
+  let pausedLyricSyncTimer: ReturnType<typeof setInterval> | null = null
+  const pausedLyricSync = () => {
+    if (AppState.currentState !== 'active') return
     if (playerState.isPlay || !playerState.musicInfo.id) return
     const seconds = Math.max(0, playerState.progress.nowPlayTime)
     if (seconds <= 0) return
@@ -219,7 +222,27 @@ export default async(setting: LX.AppSetting) => {
     // 前奏的 -1 与首行 0 视为一致（与 verifyLyricLineSync 同一判据）。
     if (target === actual || (target === 0 && actual < 0)) return
     seek(seconds)
-  }, 700)
+  }
+  const stopPausedLyricSync = () => {
+    if (!pausedLyricSyncTimer) return
+    clearInterval(pausedLyricSyncTimer)
+    pausedLyricSyncTimer = null
+  }
+  const startPausedLyricSync = () => {
+    stopPausedLyricSync()
+    if (AppState.currentState !== 'active' || playerState.isPlay || !playerState.musicInfo.id) return
+    pausedLyricSyncTimer = setInterval(pausedLyricSync, 700)
+    pausedLyricSync()
+  }
+  // 注册在这些事件之后：play/pause/stop 已先更新 playerState，再决定起/停表。
+  global.app_event.on('play', stopPausedLyricSync)
+  global.app_event.on('pause', startPausedLyricSync)
+  global.app_event.on('stop', stopPausedLyricSync)
+  AppState.addEventListener('change', (state) => {
+    if (state === 'active') startPausedLyricSync()
+    else stopPausedLyricSync()
+  })
+  startPausedLyricSync()
   // 兜底：某个恢复路径既不广播进度事件、歌词也在 700ms 后才装载 —— 启动后再补一次。
   setTimeout(() => {
     if (playerState.isPlay || !playerState.musicInfo.id) return
