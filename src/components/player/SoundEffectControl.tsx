@@ -230,7 +230,7 @@ const EqualizerSection = memo(({
                         paddingLeft: frequencyIndex == 1 ? 8 : 0,
                       }}>
                       <View style={styles.equalizerSliderRow}>
-                        <Text size={13} style={styles.equalizerLabel}>{frequency >= 1000 ? `${frequency / 1000}k` : `${frequency}`}</Text>
+                        <Text size={13} style={styles.equalizerLabel} numberOfLines={1}>{frequency >= 1000 ? `${frequency / 1000}k` : `${frequency}`}</Text>
                         <View style={styles.sliderWrap}>
                           <Slider
                             minimumValue={minGain}
@@ -241,7 +241,7 @@ const EqualizerSection = memo(({
                             onSlidingComplete={value => { onSlidingComplete(frequency, Number(value)) }}
                           />
                         </View>
-                        <Text size={12} color={theme['c-font-label']} style={styles.equalizerValue}>{formatGain(previewGains[frequency])}</Text>
+                        <Text size={12} color={theme['c-font-label']} style={styles.equalizerValue} numberOfLines={1}>{formatGain(previewGains[frequency])}</Text>
                       </View>
                     </View>
                   ))}
@@ -254,7 +254,7 @@ const EqualizerSection = memo(({
               {equalizerFrequencies.map(frequency => (
                 <View key={frequency} style={styles.stackedEqualizerItem}>
                   <View style={styles.equalizerSliderRow}>
-                    <Text size={13} style={styles.equalizerLabel}>{frequency >= 1000 ? `${frequency / 1000}k` : `${frequency}`}</Text>
+                    <Text size={13} style={styles.equalizerLabel} numberOfLines={1}>{frequency >= 1000 ? `${frequency / 1000}k` : `${frequency}`}</Text>
                     <View style={styles.sliderWrap}>
                       <Slider
                         minimumValue={minGain}
@@ -265,7 +265,7 @@ const EqualizerSection = memo(({
                         onSlidingComplete={value => { onSlidingComplete(frequency, Number(value)) }}
                       />
                     </View>
-                    <Text size={12} color={theme['c-font-label']} style={styles.equalizerValue}>{formatGain(previewGains[frequency])}</Text>
+                    <Text size={12} color={theme['c-font-label']} style={styles.equalizerValue} numberOfLines={1}>{formatGain(previewGains[frequency])}</Text>
                   </View>
                 </View>
               ))}
@@ -1004,10 +1004,13 @@ const styles = createStyle({
     width: '100%',
   },
   equalizerLabel: {
-    width: 24,
+    // 31 / 125 / 16k 都要单行；24pt 会逼出「12\n5」这种换行。
+    width: 34,
+    flexShrink: 0,
   },
   equalizerValue: {
-    width: 38,
+    width: 44,
+    flexShrink: 0,
     textAlign: 'right',
   },
   stackedEqualizerList: {
