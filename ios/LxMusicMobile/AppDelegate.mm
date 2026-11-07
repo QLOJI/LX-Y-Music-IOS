@@ -746,6 +746,8 @@ static void LXNowPlayingLyricStep(void);
 static void LXStartNowPlayingLyricTimer(void);
 static void LXUpdateNowPlayingLyricTickRate(void);
 static void LXSyncNowPlayingLyricTimer(void);
+// PagerView 持续激活扫描（定义在文件后部 Phone Scene 区块；UtilsModule.healPagerViews 直通）
+static void LXPagerHealTick(void);
 // 【第 23 轮】亮度证据记录（定义在文件后部时钟区块；亮度观察者 / 回前台两处调用）
 static void LXRememberScreenBrightness(void);
 static void LXQueueNowPlayingLyricRedraw(void);
@@ -7860,6 +7862,14 @@ RCT_EXPORT_METHOD(screenkeepAwake) {
 RCT_EXPORT_METHOD(screenUnkeepAwake) {
   dispatch_async(dispatch_get_main_queue(), ^{
     [UIApplication sharedApplication].idleTimerDisabled = NO;
+  });
+}
+
+// 【第 225 轮】点击切页前立即清 PagerView 的 animating / 交互闩锁，不等 300ms 周期扫描。
+// 否则第一发动画 setPage 会被 Manager 丢弃，只能等 350ms 重发 —— 用户感知为「卡一下」。
+RCT_EXPORT_METHOD(healPagerViews) {
+  dispatch_async(dispatch_get_main_queue(), ^{
+    LXPagerHealTick();
   });
 }
 
