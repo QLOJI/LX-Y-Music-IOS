@@ -8939,6 +8939,61 @@ RCT_REMAP_METHOD(sha1, sha1:(NSString *)input resolver:(RCTPromiseResolveBlock)r
 
 @end
 
+// 【第 220 轮】PagerView 持续激活（从 App 启动就跑，不等进入详情页）。
+// react-native-pager-view 的 goTo: 会先 disableSwipe（reactPageViewController.view.
+// userInteractionEnabled = NO），completion 在转场被打断 / 起始页设置时可能不回调 ——
+// 表现为播放详情页「封面到小歌词整块连点带滑全死」，而 header 返回按钮与控制条正常。
+// JS 侧改不回这个原生布尔值，重挂 PagerView 又会闪；这里在前台周期遍历当前窗口，
+// 把卡在 NO 的交互直接恢复：不重挂、不闪、首进与切回同一套。
+static dispatch_source_t LXPagerHealTimer = nil;
+
+static void LXPagerHealWalk(UIView *view, NSInteger depth) {
+  if (view == nil || depth > 30) return;
+  if ([NSStringFromClass(view.class) containsString:@"RNCPagerView"]) {
+    if (view.userInteractionEnabled == NO) view.userInteractionEnabled = YES;
+    @try {
+      id pageVC = [view valueForKey:@"reactPageViewController"];
+      if ([pageVC isKindOfClass:[UIViewController class]]) {
+        UIView *pageView = [(UIViewController *)pageVC view];
+        if (pageView != nil && pageView.userInteractionEnabled == NO) pageView.userInteractionEnabled = YES;
+      }
+    } @catch (NSException *exception) {
+      (void)exception;
+    }
+  }
+  for (UIView *sub in view.subviews) LXPagerHealWalk(sub, depth + 1);
+}
+
+static void LXPagerHealTick(void) {
+  if ([UIApplication sharedApplication].applicationState != UIApplicationStateActive) return;
+  UIWindow *window = nil;
+  if (@available(iOS 13.0, *)) {
+    for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
+      if (![scene isKindOfClass:[UIWindowScene class]]) continue;
+      for (UIWindow *candidate in [(UIWindowScene *)scene windows]) {
+        if (candidate.isKeyWindow) { window = candidate; break; }
+      }
+      if (window != nil) break;
+    }
+  }
+  if (window == nil) window = [UIApplication sharedApplication].keyWindow;
+  if (window == nil) return;
+  LXPagerHealWalk(window, 0);
+}
+
+static void LXStartPagerHealTimer(void) {
+  if (LXPagerHealTimer != nil) return;
+  dispatch_queue_t queue = dispatch_queue_create("com.lxmusic.pager.heal", DISPATCH_QUEUE_SERIAL);
+  dispatch_source_t timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, queue);
+  // 300ms：用户点下去基本察觉不到「这一下没反应」，同时避免高频扫描整棵视图树。
+  dispatch_source_set_timer(timer, DISPATCH_TIME_NOW, (uint64_t)(0.3 * NSEC_PER_SEC), (uint64_t)(0.05 * NSEC_PER_SEC));
+  dispatch_source_set_event_handler(timer, ^{
+    dispatch_async(dispatch_get_main_queue(), ^{ LXPagerHealTick(); });
+  });
+  dispatch_resume(timer);
+  LXPagerHealTimer = timer;
+}
+
 #pragma mark - Phone Scene Delegate（iOS 13+ 主 App 窗口）
 
 @interface SceneDelegate : UIResponder <UIWindowSceneDelegate>
@@ -8971,6 +9026,8 @@ RCT_REMAP_METHOD(sha1, sha1:(NSString *)input resolver:(RCTPromiseResolveBlock)r
   }
 
   LXApplyPowerAwareIOBufferPolicy();
+  // 【第 220 轮】从启动就持续激活所有 PagerView，不等进入播放详情页。
+  LXStartPagerHealTimer();
   LXRegisterTrackPlayerLifecycleObserver();
   self.launchOptions = launchOptions;
   self.initialProps = @{};
