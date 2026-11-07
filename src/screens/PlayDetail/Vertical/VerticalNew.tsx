@@ -9,7 +9,7 @@ import Header, { HEADER_HEIGHT } from './components/Header'
 import Player from './Player'
 import { screenkeepAwake, screenUnkeepAwake } from '@/utils/nativeModules/utils'
 import commonState, { type InitState as CommonState } from '@/store/common/state'
-import { useStatusbarHeight } from '@/store/common/hook'
+import { useStatusbarHeight, useNavTransitioning } from '@/store/common/hook'
 import { createStyle } from '@/utils/tools'
 import { useSettingValue } from '@/store/setting/hook'
 import PlayerPlaylist, { type PlayerPlaylistType } from '@/components/player/PlayerPlaylist.tsx'
@@ -87,6 +87,11 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
   const isSmallWindow = winHeight < 700
   // 正在从左往右滑向歌词页（从封面切到歌词），用于让 LyricPage 提前激活高亮定位
   const pagerViewRef = useRef<PagerView>(null)
+  // 导航转场窗口（push / pop）：窗口内不动 PagerView 的 viewControllers，
+  // 否则 completion 丢失会把交互闩锁留在 NO（见 resyncPagerNativePage）。
+  const navTransitioning = useNavTransitioning()
+  const navTransitioningRef = useRef(navTransitioning)
+  navTransitioningRef.current = navTransitioning
   // 【用户第 59 轮】详情页也接入统一的可恢复 PagerView（与首页 tab / 每日推荐同一套）。
   // 库（react-native-pager-view 6.7.1）在「动画中再切页 / 切页被手势打断」时会把
   // animating 卡住；goTo: 里的 disableSwipe 还会把 reactPageViewController.view 的
@@ -205,6 +210,8 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
   const [, setForceUpdate] = useState(0)
 
   const [isProgressDragging, setIsProgressDragging] = useState(false)
+  // 心跳自愈要读最新值（state 闭包会过期）：与 setState 同步维护。
+  const progressDraggingRef = useRef(false)
 
   // 【第 198 轮】PagerView 重挂后清掉所有 JS 侧分页残留：否则新的原生实例是好的，
   // JS 仍记着「正在拖动 / 正在过渡 / 正从歌词页滑回」，右滑回来会被误判并卡住。
@@ -216,6 +223,7 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
     clearPagerLatch()
     isComingLyricRef.current = false
     isComingCoverRef.current = false
+    progressDraggingRef.current = false
     setIsProgressDragging(false)
   }, [pagerRebuild, clearPagerWatchdog, clearPagerLatch])
 
@@ -295,7 +303,11 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
       // 真实滑动/过渡正在进行（最近 300ms 有滚动帧）时也不抢：等它自己落页。
       if (pageScrollStateRef.current !== 'idle' && Date.now() - pagerActivityAtRef.current < 300) return
       clearPagerLatch()
-      pager.setPageWithoutAnimation?.(showLyricRef.current ? 1 : 0)
+      // 同值 prop 不会因 diff 再下发：imperative 重发横滑开关，覆盖原生侧被改写/丢事件的场景。
+      pager.setScrollEnabled?.(!progressDraggingRef.current)
+      // 转场窗口内不动 UIKit 的 viewControllers：completion 丢失时 userInteractionEnabled
+      // 会停在 NO（整块连点带滑全死）。清理延后到转场结束后的心跳。
+      if (!navTransitioningRef.current) pager.setPageWithoutAnimation?.(showLyricRef.current ? 1 : 0)
     })
   }, [clearPagerLatch])
 
@@ -316,6 +328,7 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
           // 【第 176 轮】后台期间原生事件可能丢配对：手势状态一并复位，后续切页不再被误延后。
           clearPagerWatchdog()
           pageScrollStateRef.current = 'idle'
+          progressDraggingRef.current = false
           setIsProgressDragging(false)
           resyncPagerNativePage()
           // 回前台补齐常亮：只有「歌词页在显示 + 本屏可见（未被评论页盖住）」才点亮。
@@ -342,6 +355,7 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
         // idle、撤掉看门狗，否则后续切页请求会被误判成「过渡中」而一直延后。
         clearPagerWatchdog()
         pageScrollStateRef.current = 'idle'
+        progressDraggingRef.current = false
         setIsProgressDragging(false)
         resyncPagerNativePage()
       }
@@ -365,10 +379,12 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
         clearTimeout(progressDragSafety)
         progressDragSafety = null
       }
+      progressDraggingRef.current = dragging
       setIsProgressDragging(dragging)
       if (dragging) {
         progressDragSafety = setTimeout(() => {
           progressDragSafety = null
+          progressDraggingRef.current = false
           setIsProgressDragging(false)
         }, 10000)
       }
@@ -377,6 +393,17 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
 
     // 将 PagerView ref 注册给同步手势锁，供进度条拖动时立即禁用原生横滑
     registerPager(pagerViewRef)
+
+    // 【第 217 轮】无触摸自愈心跳（从其他界面 / 后台切入时的整块锁死兜底）：
+    // 库私有 isScrolling 卡住时，触摸在 capture 阶段就被抢走 —— 依赖触摸的清理
+    // 永远等不到。前台可见时周期重发横滑开关并做同页非动画落位（清 animating /
+    // userInteractionEnabled）；转场窗口内不动，避免自己制造同一种锁。
+    const pagerHealTimer = setInterval(() => {
+      if (AppState.currentState !== 'active') return
+      if (navTransitioningRef.current) return
+      if (!isScreenOnTop(commonState.componentIds)) return
+      resyncPagerNativePage()
+    }, 2500)
 
     // 必须用具名函数注册/移除，否则 off 传入新箭头函数无法匹配已注册的监听器，
     // 会导致监听器泄漏（组件多次挂载后点击 ☰ 弹出多个队列面板）。
@@ -393,6 +420,7 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
       global.app_event.off('switchToLyricPage', handleSwitchToLyricPage)
       global.app_event.off('showPlaylist', handleShowPlaylist)
       appstateListener.remove()
+      clearInterval(pagerHealTimer)
       clearPagerWatchdog()
       if (progressDragSafety) {
         clearTimeout(progressDragSafety)
@@ -542,6 +570,10 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
           // 过渡状态卡死（非 idle 且 1.5s 没有滚动帧）：第一次落在死区的触摸直接触发重挂，
           // 恢复后无需退出重进。
           healStuckPager()
+          // 【第 217 轮】原生 userInteractionEnabled / scrollEnabled 卡在禁用态时，
+          // 触摸仍会先到本容器（在 PagerView 之外）：借这一拍立即做一次同页清理，
+          // 不必等 2.5s 心跳。
+          resyncPagerNativePage()
           return false
         }}
       >
