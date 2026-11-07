@@ -2980,18 +2980,21 @@ public:
 
     float soundR = _soundR.load(std::memory_order_acquire);
     float speed = _speed.load(std::memory_order_acquire);
+    // speed 按「圈/分钟」解释：1 最慢 60s/圈，50 最快 1.2s/圈。
+    // 旧算式把 25 算成约 90s 才转一圈，用户听到的就是「速度不可用」。
+    double phaseStep = (2.0 * M_PI * (MAX((double)speed, 1.0) / 60.0)) / _sampleRate;
     for (NSUInteger frame = 0; frame < frameCount; frame++) {
-      double phaseStep = (M_PI / 180.0) / (MAX((double)speed * 0.01, 0.1) * _sampleRate);
       float angle = (float)(_processedSamples * phaseStep);
       float x = sinf(angle) * soundR;
       float y = cosf(angle) * soundR;
       float z = cosf(angle) * soundR;
       float distance = sqrtf(x * x + y * y + z * z);
-      float attenuation = 1.0f / (1.0f + 0.18f * distance);
+      // 距离要能听出来：近场约 0.96、远场约 0.43，配合后向衰减形成明显环绕。
+      float attenuation = 1.0f / (1.0f + 0.45f * distance);
       float normalizedX = fmaxf(-1.0f, fminf(1.0f, x / fmaxf(soundR, 0.0001f)));
       float leftGain = attenuation * sqrtf(0.5f * (1.0f - normalizedX));
       float rightGain = attenuation * sqrtf(0.5f * (1.0f + normalizedX));
-      float backFactor = z > 0 ? fmaxf(0.72f, 1.0f - 0.12f * z) : 1.0f;
+      float backFactor = z > 0 ? fmaxf(0.55f, 1.0f - 0.22f * z) : 1.0f;
       float sidePreserve = 0.28f * attenuation;
       NSUInteger itdSamples = (NSUInteger)llroundf(fabsf(normalizedX) * (float)_maxDelaySamples);
 
@@ -3655,17 +3658,18 @@ struct LXStreamingPannerDelayLine {
 - (void)processPCMChannels:(float *const *)channels frameCount:(NSUInteger)frameCount activeChannels:(NSUInteger)activeChannels {
   if (channels == NULL || activeChannels < 2 || _sampleRate <= 0) return;
 
+  double phaseStep = (2.0 * M_PI * (MAX((double)_speed, 1.0) / 60.0)) / _sampleRate;
   for (NSUInteger frame = 0; frame < frameCount; frame++) {
-    double phaseStep = (M_PI / 180.0) / (MAX((double)_speed * 0.01, 0.1) * _sampleRate);
     float angle = (float)(_processedSamples * phaseStep);
     float x = sinf(angle) * _soundR;
     float y = cosf(angle) * _soundR;
     float z = cosf(angle) * _soundR;
-    float attenuation = 1.0f;
+    float distance = sqrtf(x * x + y * y + z * z);
+    float attenuation = 1.0f / (1.0f + 0.45f * distance);
     float normalizedX = fmaxf(-1.0f, fminf(1.0f, x / fmaxf(_soundR, 0.0001f)));
     float leftGain = attenuation * sqrtf(0.5f * (1.0f - normalizedX));
     float rightGain = attenuation * sqrtf(0.5f * (1.0f + normalizedX));
-    float backFactor = z > 0 ? fmaxf(0.72f, 1.0f - 0.12f * z) : 1.0f;
+    float backFactor = z > 0 ? fmaxf(0.55f, 1.0f - 0.22f * z) : 1.0f;
     float sidePreserve = 0.28f * attenuation;
     NSUInteger itdSamples = (NSUInteger)llroundf(fabsf(normalizedX) * (float)_maxDelaySamples);
 
