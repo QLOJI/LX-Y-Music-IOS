@@ -4107,17 +4107,34 @@ static NSString *LXStreamingFlacDecoderErrorStatusName(FLAC__StreamDecoderErrorS
 // 非混音口径。策略标记本身继续做第 24 轮那件事：勾选 = 引擎被系统停掉也不对外呈现暂停。
 static BOOL LXPlayWithOthersEnabled = NO;
 
-// 【第 78 轮第 4 条】低电量模式下的抗卡顿。用户原话：「手机进入省电模式后，播放声音出现频繁
-// 卡顿抽搐的情况」。低电量模式会降频 CPU/GPU，实时渲染回调的余量随之变小 —— I/O 缓冲越小越
-// 容易错过截止时间（连续咔哒 / 抽搐就是这一类的听感）。省电模式请求更宽的 I/O 缓冲
-// （0.0232s ≈ 1024 帧 @44.1k；音乐播放听不出这点延迟），退出时交还系统默认（0，等同不设偏好）。
-// 只动「偏好」，不动数据通路：设不上也不影响出声（静默放过，下次恢复拍还会再试）。
+// 抗卡顿 I/O 缓冲：以前正常运行交还系统默认（0 = 不设偏好，可能是很小的缓冲），
+// 打开其它软件 / 首屏 JS 编译等 CPU 抖动时，实时渲染回调很容易错过截止时间——
+// 听感就是连续的电流声、咔哒与断断续续。这里始终请求更宽的缓冲：
+//   正常 0.0232s ≈ 1024 帧 @44.1k；低电量模式 0.0464s ≈ 2048 帧。
+// 只改「偏好」，不动数据通路与采样率；音乐播放听不出这点延迟，换来的抗抖动余量更重要。
+static NSTimeInterval LXLastAppliedIOBufferDuration = -1;
+static void LXInvalidateIOBufferPolicyCache(void) {
+  LXLastAppliedIOBufferDuration = -1;
+}
 static void LXApplyPowerAwareIOBufferPolicy(void) {
-  NSTimeInterval preferred = NSProcessInfo.processInfo.isLowPowerModeEnabled ? 0.0232 : 0.0;
+  NSTimeInterval preferred = NSProcessInfo.processInfo.isLowPowerModeEnabled ? 0.0464 : 0.0232;
+  // 同一个偏好反复写会在活动会话上触发无谓的 I/O 重配；恢复输出链路每秒都可能走到这里。
+  if (fabs(LXLastAppliedIOBufferDuration - preferred) < 0.0001) return;
   NSError *bufferError = nil;
-  if (![[AVAudioSession sharedInstance] setPreferredIOBufferDuration:preferred error:&bufferError]) {
+  if ([[AVAudioSession sharedInstance] setPreferredIOBufferDuration:preferred error:&bufferError]) {
+    LXLastAppliedIOBufferDuration = preferred;
+  } else {
     bufferError = nil;
   }
+}
+
+// 1x 播放时 AVAudioUnitTimePitch 仍是完整的时间伸缩处理链，会持续占用 CPU 并可能给
+// 已经干净的 PCM 引入轻微处理痕迹。rate 回到 1 时直接 bypass；只有用户真的变速
+// （0.5~2x）才让它参与处理。bypass 只影响处理，不改变采样数据与输出格式。
+static void LXApplyTimePitchBypassIfNeeded(AVAudioUnitTimePitch *node, float rate) {
+  if (node == nil) return;
+  BOOL bypass = fabsf(rate - 1.0f) < 0.001f;
+  if (node.bypass != bypass) node.bypass = bypass;
 }
 
 // 【第 75 轮第 2 条】后台保活心跳周期（秒）。一拍只读两个属性，正常播放时读完就返回；
@@ -4168,8 +4185,14 @@ RCT_EXPORT_MODULE();
     _pitchPlaybackRate.store(1.0f, std::memory_order_release);
     _lastRealtimeEqualizerEnabled = NO;
     _streamCondition = [[NSCondition alloc] init];
-    _decoderQueue = dispatch_queue_create("cn.toside.music.mobile.streamingflac.decoder", DISPATCH_QUEUE_SERIAL);
-    _renderQueue = dispatch_queue_create("cn.toside.music.mobile.streamingflac.render", DISPATCH_QUEUE_SERIAL);
+    // 解码与渲染状态更新必须高于普通 UI/后台任务：打开其它软件、首屏编译 JS 时，
+    // 默认 QoS 的解码队列可能被延后，环形缓冲被抽空就是断断续续/咔哒。
+    dispatch_queue_attr_t decoderAttr = dispatch_queue_attr_make_with_qos_class(
+      DISPATCH_QUEUE_SERIAL, QOS_CLASS_USER_INITIATED, 0);
+    dispatch_queue_attr_t renderAttr = dispatch_queue_attr_make_with_qos_class(
+      DISPATCH_QUEUE_SERIAL, QOS_CLASS_USER_INTERACTIVE, 0);
+    _decoderQueue = dispatch_queue_create("cn.toside.music.mobile.streamingflac.decoder", decoderAttr);
+    _renderQueue = dispatch_queue_create("cn.toside.music.mobile.streamingflac.render", renderAttr);
     _currentState = @"idle";
     // 【第 33 轮第 5 条】起播与「缓冲耗尽后重填」要等满 10 秒音频（用户原话「设定缓存歌曲时间为
     // 10 秒，加载歌曲 10 秒缓存后再播放歌曲……缓存下一个 10 秒」）；播放中的解码前瞻水位同步提到
@@ -4597,7 +4620,10 @@ static void LXRememberAudioSessionCombination(LXAudioSessionCombination combinat
   if (![self shouldRestorePlaybackOutputLocked]) return;
   // 【第 59 轮第 3 条】非显式写入（让行在途渐入，见 applyOutputVolumeLocked）
   [self applyOutputVolumeLocked:self.currentVolume explicitWrite:NO];
-  if (self.timePitchNode != nil) self.timePitchNode.rate = self.currentRate;
+  if (self.timePitchNode != nil) {
+    self.timePitchNode.rate = self.currentRate;
+    LXApplyTimePitchBypassIfNeeded(self.timePitchNode, self.currentRate);
+  }
   [self applySoundEffectConfigLocked];
 }
 
@@ -4811,6 +4837,7 @@ static void LXRememberAudioSessionCombination(LXAudioSessionCombination combinat
   if (self.timePitchNode != nil) {
     self.timePitchNode.rate = self.currentRate;
     self.timePitchNode.pitch = 0.0f;
+    LXApplyTimePitchBypassIfNeeded(self.timePitchNode, self.currentRate);
   }
 
   if (self.reverbNode != nil) {
@@ -5105,6 +5132,7 @@ static NSString *LXAudioRouteOutputIdentity(AVAudioSessionRouteDescription *rout
 
 - (void)handleAudioRouteChangeWhileStreaming:(NSNotification *)notification {
   if (self.currentURL.length == 0) return;
+  LXInvalidateIOBufferPolicyCache();
   NSDictionary *userInfo = [notification.userInfo isKindOfClass:[NSDictionary class]] ? notification.userInfo : @{};
   NSNumber *reasonValue = userInfo[AVAudioSessionRouteChangeReasonKey];
   AVAudioSessionRouteChangeReason reason = reasonValue != nil
@@ -5142,6 +5170,7 @@ static NSString *LXAudioRouteOutputIdentity(AVAudioSessionRouteDescription *rout
 
 - (void)handleAudioEngineConfigurationChangeWhileStreaming:(NSNotification *)notification {
   if (self.currentURL.length == 0) return;
+  LXInvalidateIOBufferPolicyCache();
   // 引擎配置变了（采样率 / 通道数 / 路由）：系统通常已把引擎停掉，尽快恢复输出
   [self scheduleStreamingOutputRecoveryWithDelays:@[ @0, @0.3, @1.0 ] treatAsDisconnect:NO];
 }
@@ -5158,6 +5187,7 @@ static NSString *LXAudioRouteOutputIdentity(AVAudioSessionRouteDescription *rout
 // 【第 78 轮第 4 条】低电量模式开关变化：重贴 I/O 缓冲偏好。正在播放时顺手走一次轻量输出
 // 恢复（只重贴输出与音量，不重建引擎 —— 开关本身不该造成一次可听见的中断）。
 - (void)handlePowerStateDidChange:(NSNotification *)notification {
+  LXInvalidateIOBufferPolicyCache();
   LXApplyPowerAwareIOBufferPolicy();
   if (self.currentURL.length == 0) return;
   [self schedulePlaybackOutputRestoreWithDelays:@[ @0.1, @0.5 ]];
@@ -5165,6 +5195,7 @@ static NSString *LXAudioRouteOutputIdentity(AVAudioSessionRouteDescription *rout
 
 - (void)handleMediaServicesWereReset:(NSNotification *)notification {
   if (self.currentURL.length == 0 || self.manualPause) return;
+  LXInvalidateIOBufferPolicyCache();
   dispatch_async(self.renderQueue, ^{
     if (self.engine != nil) [self.engine stop];
   });
@@ -5485,6 +5516,7 @@ static NSString *LXAudioRouteOutputIdentity(AVAudioSessionRouteDescription *rout
     [self.engine connect:self.wetMixerNode to:self.soundEffectMixerNode format:self.outputFormat];
     [self.engine connect:self.soundEffectMixerNode to:self.engine.mainMixerNode format:self.outputFormat];
     self.timePitchNode.rate = self.currentRate;
+    LXApplyTimePitchBypassIfNeeded(self.timePitchNode, self.currentRate);
     self.reverbNode.wetDryMix = 100.0f;
     self.dryMixerNode.outputVolume = 1.0f;
     self.wetMixerNode.outputVolume = 0.0f;
@@ -5619,7 +5651,10 @@ static const int64_t LXResumeFadeStepMs = 40;
   }
   // 【第 59 轮第 3 条】非显式写入：斜坡在跑时让行（否则渐入的第一拍就被这一句顶回满音量）
   [self applyOutputVolumeLocked:self.currentVolume explicitWrite:NO];
-  if (self.timePitchNode != nil) self.timePitchNode.rate = self.currentRate;
+  if (self.timePitchNode != nil) {
+    self.timePitchNode.rate = self.currentRate;
+    LXApplyTimePitchBypassIfNeeded(self.timePitchNode, self.currentRate);
+  }
   [self applySoundEffectConfigLocked];
   return YES;
 }
@@ -5675,6 +5710,9 @@ static const int64_t LXResumeFadeStepMs = 40;
 }
 
 - (void)handleApplicationDidBecomeActive:(NSNotification *)notification {
+  // AVPlayer(非无损档) 不经过 StreamingFlacPlayerModule 的 prepareAudioSession；这里也在
+  // 回前台补一次 I/O 缓冲偏好（有 applied 缓存，同值不会重写会话）。
+  LXApplyPowerAwareIOBufferPolicy();
   // P0 兜底（整屏无响应 / 只能重启）：回到前台时把主窗口的 key 与交互状态恢复一次。
   // 此前这条恢复只挂在文件选择器、分享面板的关闭回调上；其它能把主窗口弄成
   // 非 keyWindow / userInteractionEnabled=NO 的路径（系统浮层收起、控制器转场被
@@ -6320,7 +6358,10 @@ RCT_REMAP_METHOD(setVolume, setStreamVolume:(nonnull NSNumber *)volume resolver:
 RCT_REMAP_METHOD(setRate, setStreamRate:(nonnull NSNumber *)rate resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
   self.currentRate = MAX([rate floatValue], 0.5f);
   dispatch_sync(self.renderQueue, ^{
-    if (self.timePitchNode != nil) self.timePitchNode.rate = self.currentRate;
+    if (self.timePitchNode != nil) {
+      self.timePitchNode.rate = self.currentRate;
+      LXApplyTimePitchBypassIfNeeded(self.timePitchNode, self.currentRate);
+    }
   });
   resolve(nil);
 }
@@ -8924,6 +8965,7 @@ RCT_REMAP_METHOD(sha1, sha1:(NSString *)input resolver:(RCTPromiseResolveBlock)r
           hadHudEnv ? 1 : 0, hadHudForceKey ? 1 : 0);
   }
 
+  LXApplyPowerAwareIOBufferPolicy();
   LXRegisterTrackPlayerLifecycleObserver();
   self.launchOptions = launchOptions;
   self.initialProps = @{};
