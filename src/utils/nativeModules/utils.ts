@@ -41,6 +41,26 @@ export const healPagerViews = () => {
   UtilsModule.healPagerViews?.()
 }
 
+// 【第 227 轮】点击切页直达原生 goTo（同一主线程先清闩锁再动画），绕开 JS 命令队列竞争。
+export const setPagerPage = (reactTag: number, index: number, animated = true): boolean => {
+  if (!isIOS) return false
+  const fn = UtilsModule.setPagerPage
+  if (typeof fn !== 'function') return false
+  fn(reactTag, index, animated)
+  return true
+}
+
+// 【第 227 轮】真挖洞：给视图层加 even-odd 遮罩，中心孔透明，透出下层页面背景。
+export const setViewHole = (reactTag: number, radius: number) => {
+  if (!isIOS) return
+  UtilsModule.setViewHole?.(reactTag, radius)
+}
+
+export const clearViewHole = (reactTag: number) => {
+  if (!isIOS) return
+  UtilsModule.clearViewHole?.(reactTag)
+}
+
 /**
  * 【第 124 轮】返回转场开始：刷新仍处于暂停态的液态玻璃冻结帧（不解除暂停）。
  *
