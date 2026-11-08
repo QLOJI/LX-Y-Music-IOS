@@ -73,6 +73,11 @@ const VerticalPager = forwardRef<VerticalPagerHandle, Props>((props, ref) => {
   const scrollingRef = useRef(false)
   const programmaticRef = useRef(false)
   const lastOffsetRef = useRef(0)
+  // 本次吸附的目标（锁定方向）：动画期间任何 momentum / snap 一律忽略，
+  // 避免松手后先吸过去、又被另一个事件反向吸回来（左右晃动）。
+  const lockTargetRef = useRef<number | null>(null)
+  // 这次拖动从哪一页开始：吸附阈值按「相对起点滑过 1/3」判断。
+  const dragStartPageRef = useRef(0)
   const settleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [enabled, setEnabled] = useState(true)
   const initialPlacedRef = useRef(false)
@@ -100,6 +105,7 @@ const VerticalPager = forwardRef<VerticalPagerHandle, Props>((props, ref) => {
     const next = Math.max(0, Math.min(MAX_INDEX, index))
     scrollingRef.current = true
     programmaticRef.current = true
+    lockTargetRef.current = next
     clearSettleTimer()
     emitState('settling')
     scrollRef.current?.scrollTo({ x: next * width, animated })
@@ -109,26 +115,19 @@ const VerticalPager = forwardRef<VerticalPagerHandle, Props>((props, ref) => {
       lastOffsetRef.current = next * width
       scrollingRef.current = false
       programmaticRef.current = false
+      lockTargetRef.current = null
       emitState('idle')
     }, animated ? PROGRAMMATIC_SETTLE_MS : 0)
   }, [clearSettleTimer, emitState, settle])
 
-  // 惯性结束后按最终偏移吸附到最近页（只做最后那一点点，速度已经交给系统惯性）。
+  // 手势取消等极端路径的兜底：走同一条带锁的 scrollToIndex，避免二次吸附反向。
   const snapToNearest = useCallback(() => {
     const width = widthRef.current
     if (width <= 0) return
-    const offset = lastOffsetRef.current
-    const index = Math.max(0, Math.min(MAX_INDEX, Math.round(offset / width)))
-    const target = index * width
-    if (Math.abs(offset - target) > 0.5) {
-      scrollRef.current?.scrollTo({ x: target, animated: true })
-    }
-    lastOffsetRef.current = target
-    settle(index)
-    scrollingRef.current = false
-    programmaticRef.current = false
-    emitState('idle')
-  }, [emitState, settle])
+    if (lockTargetRef.current != null) return
+    const index = Math.max(0, Math.min(MAX_INDEX, Math.round(lastOffsetRef.current / width)))
+    scrollToIndex(index, true)
+  }, [scrollToIndex])
 
   useImperativeHandle(ref, () => ({
     setPage: (index: number, animated = true) => { scrollToIndex(index, animated) },
@@ -174,22 +173,29 @@ const VerticalPager = forwardRef<VerticalPagerHandle, Props>((props, ref) => {
   const handleScrollBeginDrag = useCallback(() => {
     clearSettleTimer()
     programmaticRef.current = false
+    lockTargetRef.current = null
+    dragStartPageRef.current = currentIndexRef.current
     scrollingRef.current = true
     emitState('dragging')
   }, [clearSettleTimer, emitState])
 
-  // 【第 247 轮】松手立即吸附，动画与点击切页完全相同；目标按**当前偏移是否过半**确定，
-  // 没过半就反向吸附回原页（用户口径）。
+  // 【第 248 轮】松手立即吸附，动画与点击切页完全相同；阈值按「相对起点滑过 1/3」，
+  // 没过 1/3 就反向吸附回起点页。一次手势只认一个目标方向（scrollToIndex 里加锁）。
   const handleScrollEndDrag = useCallback(() => {
     const width = widthRef.current
     if (width <= 0) return
-    const target = lastOffsetRef.current / width >= 0.5 ? 1 : 0
-    scrollToIndex(target, true)
+    const start = dragStartPageRef.current
+    const offset = lastOffsetRef.current / width
+    const delta = offset - start
+    const target = Math.abs(delta) >= 1 / 3
+      ? (delta > 0 ? start + 1 : start - 1)
+      : start
+    scrollToIndex(Math.max(0, Math.min(MAX_INDEX, target)), true)
   }, [scrollToIndex])
 
-  // 手势被系统取消等极端路径的兜底：没有程序化动画在跑时，按当前偏移落页。
+  // 手势被系统取消等极端路径的兜底：有锁定目标 / 程序化动画时一律不动。
   const handleMomentumScrollEnd = useCallback(() => {
-    if (programmaticRef.current) return
+    if (programmaticRef.current || lockTargetRef.current != null) return
     snapToNearest()
   }, [snapToNearest])
 
