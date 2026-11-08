@@ -285,28 +285,12 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
   activeLineRef.current = activeLine
   const visibleRef = useRef(visible)
   visibleRef.current = visible
-  // 【第 236 轮】点击优先：滚动 / 回位 / 浮层状态一律让路，先清理再切页；
-  // 同时短暂（250ms）停掉换行跟随，给 PagerView 的 setPage 命令让出 UI 队列。
+  // 【第 239 轮】点击：手动滑过且还没完成回位时，点击算一次操作 —— 重新显示虚线并重置
+  // idle；自动跟随态才取消当前跟随动画给切页让路。具体实现放在 topPadding 之后。
   const pauseFollowUntilRef = useRef(0)
   const cancelScrollRef = useRef<() => void>(() => {})
   const startIdleTimerRef = useRef<() => void>(() => {})
-  const handlePagerTap = useCallback((event?: any) => {
-    if (isOverlayShownRef.current && event && typeof event.x === 'number' && typeof event.y === 'number' &&
-        typeof event.w === 'number' && typeof event.h === 'number') {
-      // 手动定位浮层的播放三角：保留 seek，不切页。
-      if (event.x > event.w - 96 && Math.abs(event.y - event.h / 2) < 72) return
-    }
-    // 【第 238 轮】手动定位 / 回位态：点击算一次操作，重置 1.5s idle 计时（虚线保持），
-    // 不碰回位动画、不隐藏浮层；自动跟随态才取消当前跟随动画给切页让路。
-    if (isPauseScrollRef.current) startIdleTimerRef.current()
-    else cancelScrollRef.current()
-    pauseFollowUntilRef.current = Date.now() + 250
-    onPress?.()
-  }, [onPress])
-  useEffect(() => {
-    const sub = addPagerTapListener((event) => { handlePagerTap(event) })
-    return () => sub.remove()
-  }, [handlePagerTap])
+  const wasManualScrollRef = useRef(false)
   // 当前行强制单行显示：内容宽度实测值（用于判断是否溢出 + 横向滚动范围）。
   // 带行号，换行首帧不会拿上一行的宽度去算滚动范围。
   const [activeTextSize, setActiveTextSize] = useState<{ line: number, width: number }>({ line: -1, width: 0 })
@@ -398,6 +382,36 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
   // 这条算式对第一行（偏移 0）和最后一行（撞底）也精确成立，不会偏半行。
   const topPadding = Math.max((containerHeight - (rowHeights[0] ?? baseRowHeight)) / 2, 0)
   const bottomPadding = Math.max((containerHeight - (rowHeights[rowHeights.length - 1] ?? baseRowHeight)) / 2, 0)
+
+  // 【第 239 轮】点击：手动滑过但还没完成回位时，点击算一次操作 —— 把浮层重新请出来并
+  // 重置 idle（虚线保持）；自动跟随态才取消当前跟随动画给切页让路。
+  const overlayGeomRef = useRef({ lyricLines, topPadding, rowHeights })
+  overlayGeomRef.current = { lyricLines, topPadding, rowHeights }
+  const handlePagerTap = useCallback((event?: any) => {
+    if (isOverlayShownRef.current && event && typeof event.x === 'number' && typeof event.y === 'number' &&
+        typeof event.w === 'number' && typeof event.h === 'number') {
+      // 手动定位浮层的播放三角：保留 seek，不切页。
+      if (event.x > event.w - 96 && Math.abs(event.y - event.h / 2) < 72) return
+    }
+    if (wasManualScrollRef.current) {
+      cancelScrollRef.current()
+      isPauseScrollRef.current = true
+      isOverlayShownRef.current = true
+      const geom = overlayGeomRef.current
+      playLineRef.current?.updateLyricLines(geom.lyricLines)
+      playLineRef.current?.updateLayoutInfo({ spaceHeight: geom.topPadding, lineHeights: geom.rowHeights })
+      playLineRef.current?.setVisible(true)
+      startIdleTimerRef.current()
+    } else if (!isPauseScrollRef.current) {
+      cancelScrollRef.current()
+    }
+    pauseFollowUntilRef.current = Date.now() + 250
+    onPress?.()
+  }, [onPress])
+  useEffect(() => {
+    const sub = addPagerTapListener((event) => { handlePagerTap(event) })
+    return () => sub.remove()
+  }, [handlePagerTap])
 
   // 把第 index 行滚到窗口正中：定高时代它就是 index × 行高，行高逐行化之后改成
   // 「该行垂直中心 − 窗口中心」（topPadding + 行前缀和 + 行高/2 − containerHeight/2），
@@ -715,6 +729,7 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
       // 落地后再解除锁定；期间若歌曲已经换行（target 已过期），补一次跟随。
       animateToLine(target, undefined, () => {
         isPauseScrollRef.current = false
+        wasManualScrollRef.current = false
         const now = Math.max(0, activeLineRef.current)
         if (now !== target) followActiveLine(now)
       })
@@ -749,6 +764,7 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
       const target = Math.max(0, activeLineRef.current)
       animateToLine(target, undefined, () => {
         isPauseScrollRef.current = false
+        wasManualScrollRef.current = false
         const now = Math.max(0, activeLineRef.current)
         if (now !== target) followActiveLine(now)
       })
@@ -761,6 +777,7 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
     // 【第 225 轮】上下滑动 ≠ 点击：本次触摸已进入列表拖动，后续任何 onPress/onPressOut/
     // onTouchEnd 都不再触发切页。
     scrollMovedRef.current = true
+    wasManualScrollRef.current = true
     isPauseScrollRef.current = true
     isMomentumRef.current = false
     // 先记账、先不显示：等真的动了再显示浮层（横向翻页时列表位移为 0，不该闪浮层）
