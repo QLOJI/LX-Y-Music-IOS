@@ -26,6 +26,7 @@ import { COMPONENT_IDS } from '@/config/constant'
 import playerState from '@/store/player/state'
 import { useIsPlay } from '@/store/player/hook'
 import { IDLE_RETURN_MS, LINE_ZOOM_MS, RETURN_TO_ACTIVE_MS, easeInOutSine } from '@/screens/PlayDetail/lyricAnimation'
+import { attachPagerTap, detachPagerTap, addPagerTapListener } from '@/utils/nativeModules/utils'
 
 // 迷你歌词 = 封面页上的「上一行 / 当前行 / 下一行」**定窗**歌词窗（窗口高度固定，行高逐行算）。
 //
@@ -131,11 +132,9 @@ export interface MiniLyricProps {
   bleedH?: number
   /** 【第 173 轮】封面页是否为当前页：隐藏时不跑逐字 rAF / 换行跟随（不可见，纯耗电）。 */
   visible?: boolean
-  /** 【第 226 轮】正在切到歌词页：立即停掉换行跟随 / 逐字 rAF，避免与 PagerView 转场抢主线程。 */
-  freeze?: boolean
 }
 
-const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true, freeze = false }: MiniLyricProps) => {
+const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: MiniLyricProps) => {
   const theme = useTheme()
   const { line: engineLine } = useLrcPlay()
   const lyricLines = useLrcSet()
@@ -279,8 +278,19 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true, free
   activeLineRef.current = activeLine
   const visibleRef = useRef(visible)
   visibleRef.current = visible
-  const freezeRef = useRef(freeze)
-  freezeRef.current = freeze
+  // 【第 232 轮】原生 tap 手势（隐形按钮）：只识别点击，滑动自动失败、不拦列表滚动。
+  // 浮层 / 手动定位期间忽略，避免点播放三角被当成切页。
+  const tapTagRef = useRef<number | null>(null)
+  useEffect(() => {
+    const sub = addPagerTapListener(() => {
+      if (isPauseScrollRef.current || isOverlayShownRef.current) return
+      onPress?.()
+    })
+    return () => sub.remove()
+  }, [onPress])
+  useEffect(() => () => {
+    if (tapTagRef.current != null) detachPagerTap(tapTagRef.current)
+  }, [])
   // 当前行强制单行显示：内容宽度实测值（用于判断是否溢出 + 横向滚动范围）。
   // 带行号，换行首帧不会拿上一行的宽度去算滚动范围。
   const [activeTextSize, setActiveTextSize] = useState<{ line: number, width: number }>({ line: -1, width: 0 })
@@ -533,8 +543,6 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true, free
 
   // 播放行自动跟随：跨行距离很远（进度条 seek / 恢复播放）时直接落位，不做长距离快速滑动
   const followActiveLine = useCallback((index: number) => {
-    // 【第 226 轮】正在切到歌词页：换行跟随让路，不与 PagerView 转场抢主线程 / UI 命令。
-    if (freezeRef.current) return
     // 一次性消费首个跟随标志：任何分支都不留下悬空标志。
     const instant = resumeInstantRef.current
     resumeInstantRef.current = false
@@ -574,15 +582,6 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true, free
     // 400ms 快一截，同屏对比就是「小歌词窜、大歌词稳」。统一走默认 RETURN_TO_ACTIVE_MS。
     animateToLine(index)
   }, [animateToLine, getScrollOffset, worstRowHeight, cancelScroll])
-
-  // 【第 226 轮】切到歌词页：立即取消正在跑的换行跟随 / 回位动画（rAF + scrollToOffset），
-  // 让 PagerView 的转场独占主线程；落页后 visible=false 本来也会停。
-  useEffect(() => {
-    if (!freeze) return
-    cancelScroll()
-    animatedPositionRef.current = null
-    scrollVelocityRef.current = 0
-  }, [freeze, cancelScroll])
 
   // 复位：歌词换了新的一份（切歌 / 歌词就绪 / 歌词源刷新）时立即（无动画）回到当前行，
   // 避免从上一次的滚动位置长距离滑过去。
@@ -1052,7 +1051,7 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true, free
                   endTime={endTime}
                   size={BASE_FONT_SIZE}
                   style={textStyle}
-                  isActive={visible && karaokeVisible && !freeze}
+                  isActive={visible && karaokeVisible}
                   numberOfLines={1}
                   // 不溢出的一行不做横向滚动：不传进度值，省掉每帧一次 Animated 写入。
                   scrollProgress={canScroll ? activeScrollProgress : undefined}
@@ -1120,6 +1119,13 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true, free
     // 文本内缩改由列表的 contentContainerStyle 承担（见 lineInsetH），文字位置不变。
     <View
       style={[styles.container, { height: containerHeight, marginHorizontal: -bleedH }, style]}
+      onLayout={(e) => {
+        const tag = (e as any).target
+        if (typeof tag === 'number') {
+          tapTagRef.current = tag
+          attachPagerTap(tag)
+        }
+      }}
       // 容器级触摸判定：短按切歌词页（行内 Pressable 在原生手势竞争下会丢 onPress）。
       onTouchStart={handleTapStart}
       onTouchMove={handleTapMove}

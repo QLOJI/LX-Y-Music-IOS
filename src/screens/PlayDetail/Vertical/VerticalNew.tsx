@@ -81,10 +81,6 @@ const estimatePageHeight = (
 
 const VerticalNew = memo(({ componentId }: { componentId: string }) => {
   const [pageIndex, setPageIndex] = useState(0)
-  // 【第 226 轮】正在切到歌词页：冻结小歌词的换行跟随 / 逐字 rAF，避免与 PagerView 转场
-  // 抢主线程（用户现场：换行动画进行中点击，要「卡一下」才跳）。
-  const [switchingToLyric, setSwitchingToLyric] = useState(false)
-  const switchingToLyricRef = useRef(false)
   // 窗口 / 状态栏高度提前读取：首帧布局状态的初始值要用它们算估算（见下面 useState）。
   const { width: winWidth, height: winHeight } = useWindowSize()
   const statusBarHeight = useStatusbarHeight()
@@ -160,9 +156,8 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
   // 不再有非动画直达 / 重挂这类旧跳转兜底。落页（onPageSelected）后全部撤销。
   const switchRetryRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const switchFallbackRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const switchUnfreezeRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const clearSwitchTimers = useCallback(() => {
-    for (const ref of [switchRetryRef, switchFallbackRef, switchUnfreezeRef]) {
+    for (const ref of [switchRetryRef, switchFallbackRef]) {
       if (ref.current) {
         clearTimeout(ref.current)
         ref.current = null
@@ -257,8 +252,6 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
   const onPageSelected = ({ nativeEvent }: PagerViewOnPageSelectedEvent) => {
     // 落页 = 过渡结束：撤恢复链、清看门狗与库私有 isScrolling 闩锁。
     clearSwitchTimers()
-    switchingToLyricRef.current = false
-    setSwitchingToLyric(false)
     notifyPageSelected(nativeEvent.position)
     detailPageIndexRef.current = nativeEvent.position
     // 【第 176 轮】落页 = 过渡结束：撤掉静默看门狗。
@@ -320,16 +313,6 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
     if (now - lastSwitchAtRef.current < 250) return
     lastSwitchAtRef.current = now
     clearSwitchTimers()
-    // 先冻结小歌词的换行跟随 / 逐字 rAF：PagerView 转场开始时不再有每帧 scrollToOffset
-    // 和 Animated 写入抢主线程（这就是用户看到的「卡一下才跳」）。
-    switchingToLyricRef.current = true
-    setSwitchingToLyric(true)
-    // 解冻安全阀：万一没落页，1.6s 后恢复小歌词跟随，不让它永久冻住。
-    switchUnfreezeRef.current = setTimeout(() => {
-      switchUnfreezeRef.current = null
-      switchingToLyricRef.current = false
-      setSwitchingToLyric(false)
-    }, 700)
     // 【第 227 轮】点击 = 左滑同款动画：原生同一主线程先清闩锁再 goTo，顺序确定，
     // 不走 JS 的 setPage 命令队列（返回 / 后台 / 换行同时发生时也不会被抢乱）。
     const requestPage = () => {
@@ -372,8 +355,6 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
     requestAnimationFrame(() => {
       // 返回 / 推入转场期间不发任何 PagerView 命令：转场中的原生命令是返回闪的来源之一。
       if (navTransitioningRef.current) return
-      // 切到歌词页期间也不发：setScrollEnabled 与 setPage 抢同一个原生队列会拖慢转场。
-      if (switchingToLyricRef.current) return
       const pager = pagerViewRef.current
       if (!pager) return
       clearPagerLatch()
@@ -725,7 +706,6 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
                   // 离右缘的距离同大歌词完全一致（用户点名的问题）；歌词文本再按同值内缩回去。
                   bleedH={containerPaddingH}
                   onPress={handleSwitchToLyricPage}
-                  freeze={switchingToLyric}
                   style={miniLyricStyle}
                 />
               </View>
