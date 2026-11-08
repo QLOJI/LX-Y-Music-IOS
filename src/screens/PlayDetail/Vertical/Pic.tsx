@@ -1,12 +1,12 @@
 import { memo, useEffect, useMemo, useRef, useState, useCallback } from 'react'
-import { View, Animated, Easing, TouchableWithoutFeedback, findNodeHandle } from 'react-native'
+import { View, Animated, Easing, TouchableWithoutFeedback } from 'react-native'
 import FastImage from '@d11/react-native-fast-image'
 import { useIsPlay, usePlayerMusicInfo, usePlayMusicInfo } from '@/store/player/hook'
 import playerState from '@/store/player/state'
 import { useWindowSize } from '@/utils/hooks'
 import { useSettingValue } from '@/store/setting/hook'
 import Image, { defaultHeaders } from '@/components/common/Image'
-import { setViewHole, clearViewHole } from '@/utils/nativeModules/utils'
+import { setViewHole } from '@/utils/nativeModules/utils'
 import { useStatusbarHeight, useScreenCovered, useAppActive, useNavTransitioning } from '@/store/common/hook'
 import { useAppInactive } from '@/store/common/hook'
 import { useTheme } from '@/store/theme/hook'
@@ -406,8 +406,6 @@ export default memo(({ componentId, active = true, coverRegionHeight = 0 }: { co
   // 本组件只负责：量出封面位置 → 让菜单弹出来。
   const menuRef = useRef<CoverLongPressMenuType>(null)
   const coverRef = useRef<View>(null)
-  // 【第 227 轮】真挖洞用：旋转层的原生节点（给它的 layer 装 even-odd 遮罩）。
-  const discRef = useRef<View>(null)
 
   const handleLongPress = () => {
     menuRef.current?.show()
@@ -508,22 +506,6 @@ export default memo(({ componentId, active = true, coverRegionHeight = 0 }: { co
     // radius 与 isSquare 同源（形状真值）；CD 只在圆形分支用，仍按契约口径带上。
   }, [size, theme, radius, cdHoleSize])
 
-  // 【第 227 轮】真挖洞：给旋转的碟片层装 even-odd 遮罩，中心孔透明、透出页面背景，
-  // 不再往孔里塞一张图。布局 / 尺寸变化时重设，卸载或切回非 CD 时清掉。
-  useEffect(() => {
-    if (allowSpin) {
-      const raf = requestAnimationFrame(() => {
-        const tag = findNodeHandle(discRef.current)
-        if (tag != null) setViewHole(tag, cdHoleSize / 2)
-      })
-      return () => {
-        cancelAnimationFrame(raf)
-        const tag = findNodeHandle(discRef.current)
-        if (tag != null) clearViewHole(tag)
-      }
-    }
-  }, [allowSpin, size, cdHoleSize])
-
   return (
     <View style={styles.container}>
       <TouchableWithoutFeedback onLongPress={handleLongPress}>
@@ -537,7 +519,14 @@ export default memo(({ componentId, active = true, coverRegionHeight = 0 }: { co
               // 【第 220 轮】CD 碟片：外盘/封面/内圈随碟片转；中心孔是「透出页面背景」的视窗，
               // 不随碟片转，孔环固定 —— 观感就是 CD 压在背景图上。
               <View style={cdStyle.frame}>
-                <Animated.View ref={discRef} style={[animatedCoverStyle, cdStyle.disc]}>
+                <Animated.View
+                  style={[animatedCoverStyle, cdStyle.disc]}
+                  onLayout={(e) => {
+                    // 布局完成才知道 bounds；e.target 就是碟片层的原生 tag，直接装遮罩。
+                    const tag = (e as any).target
+                    if (typeof tag === 'number') setViewHole(tag, cdHoleSize / 2)
+                  }}
+                >
                   <AnimatedCover
                     source={{
                       uri: coverUrl,

@@ -91,6 +91,9 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
   const isSmallWindow = winHeight < 700
   // 正在从左往右滑向歌词页（从封面切到歌词），用于让 LyricPage 提前激活高亮定位
   const pagerViewRef = useRef<PagerView>(null)
+  // 【第 229 轮】PagerView 的原生 tag（onLayout 的 e.target）：点击直达 goTo 用它，
+  // 比 findNodeHandle(ref) 稳（ref 可能是包装组件，拿不到真节点）。
+  const pagerTagRef = useRef<number | null>(null)
   // 返回转场期间不做任何 PagerView 命令（避免返回时画面被重设/闪一下）。
   const navTransitioning = useNavTransitioning()
   const navTransitioningRef = useRef(navTransitioning)
@@ -330,9 +333,29 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
     // 【第 227 轮】点击 = 左滑同款动画：原生同一主线程先清闩锁再 goTo，顺序确定，
     // 不走 JS 的 setPage 命令队列（返回 / 后台 / 换行同时发生时也不会被抢乱）。
     const requestPage = () => {
-      const tag = findNodeHandle(pagerViewRef.current)
-      if (tag != null && setPagerPage(tag, 1, true)) return
-      pagerViewRef.current?.setPage?.(1)
+      const tag = pagerTagRef.current ?? findNodeHandle(pagerViewRef.current)
+      const fallback = () => {
+        if (showLyricRef.current || !pagerViewRef.current) return
+        pagerViewRef.current.setPage?.(1)
+      }
+      if (tag == null) {
+        fallback()
+        return
+      }
+      // 原生直达：成功时页面在同一主线程内立即开始 goTo 动画；失败立即 JS 回退。
+      // goTo 被执行但原生没动（250ms 仍 idle）时，再用 JS 命令兜底。
+      const sent = setPagerPage(tag, 1, true, (ok) => {
+        if (!ok) {
+          fallback()
+          return
+        }
+        setTimeout(() => {
+          if (showLyricRef.current) return
+          if (pageScrollStateRef.current !== 'idle') return
+          fallback()
+        }, 250)
+      })
+      if (!sent) fallback()
     }
     requestPage()
     // 350ms：仍未落页 → 再发一次同一条动画（原生直达或 JS 回退）。
@@ -660,8 +683,10 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
           ref={pagerViewRef}
           scrollEnabled={!isProgressDragging}
           overScrollMode="never"
-          onLayout={({ nativeEvent }) => {
-            const h = Math.round(nativeEvent.layout.height)
+          onLayout={(e) => {
+            const tag = (e as any).target
+            if (typeof tag === 'number') pagerTagRef.current = tag
+            const h = Math.round(e.nativeEvent.layout.height)
             if (h > 0 && h !== pagerHeight) setPagerHeight(h)
           }}
         >
