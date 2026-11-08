@@ -1,5 +1,5 @@
 import { memo, useState, useRef, useMemo, useEffect, useCallback } from 'react'
-import { View, AppState, type LayoutChangeEvent } from 'react-native'
+import { View, AppState, findNodeHandle, type LayoutChangeEvent } from 'react-native'
 import PagerView, { type PagerViewOnPageSelectedEvent } from 'react-native-pager-view'
 import MiniLyric, { getMiniLyricRowHeight } from '../components/MiniLyric'
 import Pic, { getCoverSize, getCoverNaturalSize } from './Pic'
@@ -7,7 +7,7 @@ import Lyric from './Lyric'
 import SongInfo from './components/SongInfo'
 import Header, { HEADER_HEIGHT } from './components/Header'
 import Player from './Player'
-import { screenkeepAwake, screenUnkeepAwake, healPagerViews } from '@/utils/nativeModules/utils'
+import { screenkeepAwake, screenUnkeepAwake, setPagerPage } from '@/utils/nativeModules/utils'
 import commonState, { type InitState as CommonState } from '@/store/common/state'
 import { useStatusbarHeight, useNavTransitioning } from '@/store/common/hook'
 import { createStyle } from '@/utils/tools'
@@ -153,15 +153,13 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
     detailPageIndexRef.current = showLyricRef.current ? 1 : 0
     setPagerRebuild(v => v + 1)
   }, [])
-  // 【第 224 轮】点击小歌词的阶梯兜底：动画 setPage → 重发 → 非动画直达目标页 →
-  // 重挂并初始页 = 歌词页。落页（onPageSelected）后全部撤销。
-  const switchFirstRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // 【第 227 轮】点击只走「左滑同款动画」：原生直达 goTo + 两次同命令重发（均带动画），
+  // 不再有非动画直达 / 重挂这类旧跳转兜底。落页（onPageSelected）后全部撤销。
   const switchRetryRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const switchFallbackRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const switchRemountRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const switchUnfreezeRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const clearSwitchTimers = useCallback(() => {
-    for (const ref of [switchFirstRef, switchRetryRef, switchFallbackRef, switchRemountRef, switchUnfreezeRef]) {
+    for (const ref of [switchRetryRef, switchFallbackRef, switchUnfreezeRef]) {
       if (ref.current) {
         clearTimeout(ref.current)
         ref.current = null
@@ -323,44 +321,32 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
     // 和 Animated 写入抢主线程（这就是用户看到的「卡一下才跳」）。
     switchingToLyricRef.current = true
     setSwitchingToLyric(true)
-    // 解冻安全阀：万一兜底链也没落页，2.6s 后恢复小歌词跟随，不让它永久冻住。
+    // 解冻安全阀：万一没落页，1.6s 后恢复小歌词跟随，不让它永久冻住。
     switchUnfreezeRef.current = setTimeout(() => {
       switchUnfreezeRef.current = null
       switchingToLyricRef.current = false
       setSwitchingToLyric(false)
-    }, 2600)
-    // 【第 225 轮】先让原生立即清 animating / 交互闩锁（不等 300ms 周期），60ms 后再发
-    // 第一次动画 setPage。否则第一发被 Manager 丢弃、只能等 350ms 重发 —— 用户感知
-    // 就是「点下去卡一下才跳」。
-    healPagerViews()
-    switchFirstRef.current = setTimeout(() => {
-      switchFirstRef.current = null
-      if (showLyricRef.current) return
+    }, 1600)
+    // 【第 227 轮】点击 = 左滑同款动画：原生同一主线程先清闩锁再 goTo，顺序确定，
+    // 不走 JS 的 setPage 命令队列（返回 / 后台 / 换行同时发生时也不会被抢乱）。
+    const requestPage = () => {
+      const tag = findNodeHandle(pagerViewRef.current)
+      if (tag != null && setPagerPage(tag, 1, true)) return
       pagerViewRef.current?.setPage?.(1)
-    }, 60)
-    // 350ms：再发一次动画指令（首发的桥调用若慢于 60ms，这一拍补上）。
+    }
+    requestPage()
+    // 350ms：仍未落页 → 再发一次同一条动画（原生直达或 JS 回退）。
     switchRetryRef.current = setTimeout(() => {
       switchRetryRef.current = null
-      if (showLyricRef.current || !pagerViewRef.current) return
-      pagerViewRef.current.setPage?.(1)
+      if (showLyricRef.current) return
+      requestPage()
     }, 350)
-    // 900ms：非动画直达目标页（只去歌词页，绝不先落回封面；跨页会走 setViewControllers，
-    // completion 丢失也有原生 300ms 扫描兜底）。
+    // 900ms：仍未落页 → 只重发同一条动画 setPage；不做非动画、不重挂。
     switchFallbackRef.current = setTimeout(() => {
       switchFallbackRef.current = null
-      if (showLyricRef.current || !pagerViewRef.current) return
-      pagerViewRef.current.setPageWithoutAnimation?.(1)
-    }, 900)
-    // 1500ms：最后一道 —— 重挂 PagerView 并把初始页直接设为歌词页（会闪一下，但保证能到）。
-    switchRemountRef.current = setTimeout(() => {
-      switchRemountRef.current = null
       if (showLyricRef.current) return
-      showLyricRef.current = true
-      detailPageIndexRef.current = 1
-      pageScrollStateRef.current = 'idle'
-      setPageIndex(1)
-      setPagerRebuild(v => v + 1)
-    }, 1500)
+      pagerViewRef.current?.setPage?.(1)
+    }, 900)
   }, [clearSwitchTimers])
 
   // 【第 218 轮】回前台 / 回到栈顶 / 触摸起点 / 持续激活心跳只清闩锁，绝不再调
