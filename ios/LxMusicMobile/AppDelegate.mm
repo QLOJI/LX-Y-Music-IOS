@@ -8,6 +8,8 @@
 #import <React/RCTLinkingManager.h>
 #import <React/RCTScrollView.h>
 #import <React/RCTViewManager.h>
+#import <React/RCTView.h>
+#import <React/RCTComponent.h>
 #import <React/RCTConvert.h>
 #import <objc/runtime.h>
 #import <QuartzCore/QuartzCore.h>
@@ -9432,6 +9434,52 @@ RCT_EXPORT_MODULE(LXHoleView)
 
 RCT_CUSTOM_VIEW_PROPERTY(holeRatio, CGFloat, LXHoleView) {
   view.holeRatio = json ? [RCTConvert CGFloat:json] : 0.232;
+}
+
+@end
+
+#pragma mark - LXPagerTapView（【第 233 轮】小歌词常驻隐形按钮）
+
+// 常驻包裹视图：自己在 didMoveToWindow 安装 UITapGestureRecognizer，只识别点击；
+// cancelsTouchesInView=NO，不拦子视图（FlatList 滚动 / 行内长按照常）。
+@interface LXPagerTapView : RCTView
+@property (nonatomic, copy) RCTDirectEventBlock onTap;
+@property (nonatomic, strong) UITapGestureRecognizer *tapGesture;
+@end
+
+@implementation LXPagerTapView
+
+- (void)didMoveToWindow {
+  [super didMoveToWindow];
+  if (self.window == nil) return;
+  if (self.tapGesture != nil) return;
+  UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(handleTap:)];
+  tap.cancelsTouchesInView = NO;
+  tap.delaysTouchesBegan = NO;
+  tap.delaysTouchesEnded = NO;
+  [self addGestureRecognizer:tap];
+  self.tapGesture = tap;
+}
+
+- (void)handleTap:(UITapGestureRecognizer *)gesture {
+  if (self.onTap != nil) self.onTap(@{});
+}
+
+@end
+
+@interface LXPagerTapViewManager : RCTViewManager
+@end
+
+@implementation LXPagerTapViewManager
+
+RCT_EXPORT_MODULE(LXPagerTapView)
+
+- (UIView *)view {
+  return [LXPagerTapView new];
+}
+
+RCT_CUSTOM_VIEW_PROPERTY(onTap, RCTDirectEventBlock, LXPagerTapView) {
+  view.onTap = json;
 }
 
 @end
