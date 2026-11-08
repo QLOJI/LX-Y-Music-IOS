@@ -1,5 +1,5 @@
 import { memo, useState, useRef, useMemo, useEffect, useCallback } from 'react'
-import { View, AppState, findNodeHandle, type LayoutChangeEvent } from 'react-native'
+import { View, AppState, type LayoutChangeEvent } from 'react-native'
 import PagerView, { type PagerViewOnPageSelectedEvent } from 'react-native-pager-view'
 import MiniLyric, { getMiniLyricRowHeight } from '../components/MiniLyric'
 import Pic, { getCoverSize, getCoverNaturalSize } from './Pic'
@@ -7,7 +7,7 @@ import Lyric from './Lyric'
 import SongInfo from './components/SongInfo'
 import Header, { HEADER_HEIGHT } from './components/Header'
 import Player from './Player'
-import { screenkeepAwake, screenUnkeepAwake, healPagerViews, setPagerPage } from '@/utils/nativeModules/utils'
+import { screenkeepAwake, screenUnkeepAwake, healPagerViews } from '@/utils/nativeModules/utils'
 import commonState, { type InitState as CommonState } from '@/store/common/state'
 import { useStatusbarHeight, useNavTransitioning } from '@/store/common/hook'
 import { createStyle } from '@/utils/tools'
@@ -87,8 +87,6 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
   const isSmallWindow = winHeight < 700
   // 正在从左往右滑向歌词页（从封面切到歌词），用于让 LyricPage 提前激活高亮定位
   const pagerViewRef = useRef<PagerView>(null)
-  // 【第 238 轮】PagerView 原生 tag（onLayout 的 e.target），点击走公开 API 切页用。
-  const pagerTagRef = useRef<number | null>(null)
   // 返回转场期间不做任何 PagerView 命令（避免返回时画面被重设/闪一下）。
   const navTransitioning = useNavTransitioning()
   const navTransitioningRef = useRef(navTransitioning)
@@ -315,19 +313,13 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
     // 【第 227 轮】点击 = 左滑同款动画：原生同一主线程先清闩锁再 goTo，顺序确定，
     // 不走 JS 的 setPage 命令队列（返回 / 后台 / 换行同时发生时也不会被抢乱）。
     const requestPage = () => {
+      // 【第 240 轮】回退：公开 API 会把 UIPageViewController 的实际页与库状态搞不同步，
+      // 直接导致右滑失效。这里只走库自己的 JS setPage；先清原生闩锁再发，失败靠阶梯重发。
       if (showLyricRef.current) return
-      const fallback = () => {
+      healPagerViews()
+      setTimeout(() => {
         if (!showLyricRef.current) pagerViewRef.current?.setPage?.(1)
-      }
-      // 【第 238 轮】公开 API 优先（不 disableSwipe、不锁子树、不吃换行 rAF 竞争）；
-      // 原生不存在 / 取不到控制器时回 JS setPage。原生调用已全 @try，不再用私有方法。
-      const tag = pagerTagRef.current ?? findNodeHandle(pagerViewRef.current)
-      if (tag == null) {
-        fallback()
-        return
-      }
-      const sent = setPagerPage(tag, 1, true, (ok) => { if (!ok) fallback() })
-      if (!sent) fallback()
+      }, 60)
     }
     requestPage()
     // 点击后 120ms 主动清一次原生闩锁（不等 150ms 周期），保证连续点击可用。
@@ -657,8 +649,6 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
           scrollEnabled={!isProgressDragging}
           overScrollMode="never"
           onLayout={(e) => {
-            const tag = (e as any).target
-            if (typeof tag === 'number') pagerTagRef.current = tag
             const h = Math.round(e.nativeEvent.layout.height)
             if (h > 0 && h !== pagerHeight) setPagerHeight(h)
           }}
