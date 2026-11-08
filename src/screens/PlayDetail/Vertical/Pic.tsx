@@ -457,8 +457,9 @@ export default memo(({ componentId, active = true, coverRegionHeight = 0 }: { co
   // 转不转看不出。装饰层 pointerEvents=none，长按仍由外层 Touchable 接收。
   const cdHoleSize = size * 0.232
   const cdStyle = useMemo(() => {
-    // 封面铺满整盘（不留黑边）：cover 模式按圆裁切。
-    const coverSize = size
+    // 【第 251 轮】封面按短边切圆并放大 6%：外圆 mask 把超出盘面的部分裁掉，
+    // 圆内始终铺满，不再出现「圆与盘面之间有空隙」。
+    const coverSize = size * 1.06
     const innerSize = size * 0.4
     const holeSize = cdHoleSize
     const holeRingSize = size * 0.22
@@ -539,9 +540,10 @@ export default memo(({ componentId, active = true, coverRegionHeight = 0 }: { co
                     onError={handleCoverError}
                   />
                   <View pointerEvents="none" style={cdStyle.tint} />
-                  <View pointerEvents="none" style={cdStyle.outerBand} />
-                  <View pointerEvents="none" style={cdStyle.outerRing} />
                 </AnimatedHoleView>
+                {/* 盘边/外圈放在旋转层之外：它们本来就不随封面转，也不会被外圆 mask 裁掉。 */}
+                <View pointerEvents="none" style={cdStyle.outerBand} />
+                <View pointerEvents="none" style={cdStyle.outerRing} />
                 <View pointerEvents="none" style={cdStyle.holeRing} />
               </View>
             ) : (
