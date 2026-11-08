@@ -79,8 +79,6 @@ const VerticalPager = forwardRef<VerticalPagerHandle, Props>((props, ref) => {
   // 本次吸附的目标（锁定方向）：动画期间任何 momentum / snap 一律忽略，
   // 避免松手后先吸过去、又被另一个事件反向吸回来（左右晃动）。
   const lockTargetRef = useRef<number | null>(null)
-  // 这次拖动从哪一页开始：吸附阈值按「相对起点滑过 1/3」判断。
-  const dragStartPageRef = useRef(0)
   const settleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [enabled, setEnabled] = useState(true)
   const initialPlacedRef = useRef(false)
@@ -123,14 +121,24 @@ const VerticalPager = forwardRef<VerticalPagerHandle, Props>((props, ref) => {
     }, animated ? PROGRAMMATIC_SETTLE_MS : 0)
   }, [clearSettleTimer, emitState, settle])
 
-  // 手势取消等极端路径的兜底：走同一条带锁的 scrollToIndex，避免二次吸附反向。
+  // 手势结束的兜底：系统分页通常已经停在整页，只做落页；没停正再补一次吸附。
   const snapToNearest = useCallback(() => {
     const width = widthRef.current
     if (width <= 0) return
     if (lockTargetRef.current != null) return
-    const index = Math.max(0, Math.min(MAX_INDEX, Math.round(lastOffsetRef.current / width)))
+    const offset = lastOffsetRef.current
+    const index = Math.max(0, Math.min(MAX_INDEX, Math.round(offset / width)))
+    const target = index * width
+    if (Math.abs(offset - target) < 0.5) {
+      lastOffsetRef.current = target
+      settle(index)
+      scrollingRef.current = false
+      programmaticRef.current = false
+      emitState('idle')
+      return
+    }
     scrollToIndex(index, true)
-  }, [scrollToIndex])
+  }, [emitState, scrollToIndex, settle])
 
   useImperativeHandle(ref, () => ({
     setPage: (index: number, animated = true) => { scrollToIndex(index, animated) },
@@ -177,26 +185,18 @@ const VerticalPager = forwardRef<VerticalPagerHandle, Props>((props, ref) => {
     clearSettleTimer()
     programmaticRef.current = false
     lockTargetRef.current = null
-    dragStartPageRef.current = currentIndexRef.current
     scrollingRef.current = true
     emitState('dragging')
   }, [clearSettleTimer, emitState])
 
-  // 【第 249 轮】松手立即吸附，动画与点击切页完全相同；阈值按「相对起点滑过 1/8」，
-  // 没过 1/8 就反向吸附回起点页。一次手势只认一个目标方向（scrollToIndex 里加锁）。
+  // 【第 252 轮】手动滑动完全交给系统分页（与评论页 PagerView 同一条系统手感）：
+  // 松手后由 `pagingEnabled + decelerationRate="fast"` 的惯性吸附，脚本不接管。
+  // 点击小歌词的自动左滑仍走 setPage → scrollToIndex，行为不变。
   const handleScrollEndDrag = useCallback(() => {
-    const width = widthRef.current
-    if (width <= 0) return
-    const start = dragStartPageRef.current
-    const offset = lastOffsetRef.current / width
-    const delta = offset - start
-    const target = Math.abs(delta) >= 1 / 8
-      ? (delta > 0 ? start + 1 : start - 1)
-      : start
-    scrollToIndex(Math.max(0, Math.min(MAX_INDEX, target)), true)
-  }, [scrollToIndex])
+    emitState('settling')
+  }, [emitState])
 
-  // 手势被系统取消等极端路径的兜底：有锁定目标 / 程序化动画时一律不动。
+  // 系统分页结束：已停在整页就只落页；没停正才补一次吸附（手势取消兜底）。
   const handleMomentumScrollEnd = useCallback(() => {
     if (programmaticRef.current || lockTargetRef.current != null) return
     snapToNearest()
@@ -219,7 +219,9 @@ const VerticalPager = forwardRef<VerticalPagerHandle, Props>((props, ref) => {
         <ScrollView
           ref={scrollRef}
           horizontal
-          bounces={false}
+          pagingEnabled
+          decelerationRate="fast"
+          bounces={true}
           alwaysBounceHorizontal={false}
           showsHorizontalScrollIndicator={false}
           scrollEnabled={scrollEnabled && enabled}
