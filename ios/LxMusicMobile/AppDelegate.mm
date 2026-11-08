@@ -746,8 +746,10 @@ static void LXNowPlayingLyricStep(void);
 static void LXStartNowPlayingLyricTimer(void);
 static void LXUpdateNowPlayingLyricTickRate(void);
 static void LXSyncNowPlayingLyricTimer(void);
-// PagerView 持续激活扫描（定义在文件后部 Phone Scene 区块；UtilsModule.healPagerViews 直通）
+// PagerView 持续激活扫描（定义在文件后部 Phone Scene 区块；UtilsModule 直通）
 static void LXPagerHealTick(void);
+static void LXPagerHealOneView(UIView *view);
+static UIView *LXPagerFindPagerView(UIView *view);
 // 【第 23 轮】亮度证据记录（定义在文件后部时钟区块；亮度观察者 / 回前台两处调用）
 static void LXRememberScreenBrightness(void);
 static void LXQueueNowPlayingLyricRedraw(void);
@@ -7865,6 +7867,57 @@ RCT_EXPORT_METHOD(screenUnkeepAwake) {
   });
 }
 
+// 【第 227 轮】点击小歌词：主线程同一拍先清 PagerView 闩锁，再走库的 goTo 动画。
+// 顺序确定，不与 JS 侧 setPage 命令队列抢先后；找不到原生实例时静默返回（JS 回退）。
+RCT_EXPORT_METHOD(setPagerPage:(nonnull NSNumber *)reactTag index:(double)index animated:(BOOL)animated) {
+  dispatch_async(dispatch_get_main_queue(), ^{
+    UIView *view = [self.bridge.uiManager viewForReactTag:reactTag];
+    if (view == nil) return;
+    UIView *pager = LXPagerFindPagerView(view);
+    if (pager == nil) {
+      UIView *parent = view.superview;
+      while (parent != nil && pager == nil) {
+        if ([NSStringFromClass(parent.class) containsString:@"RNCPagerView"]) pager = parent;
+        parent = parent.superview;
+      }
+    }
+    if (pager == nil) return;
+    LXPagerHealOneView(pager);
+    SEL goTo = @selector(goTo:animated:disableSwipe:);
+    if (![pager respondsToSelector:goTo]) return;
+    typedef void (*LXPagerGoToFn)(id, SEL, NSInteger, BOOL, BOOL);
+    LXPagerGoToFn fn = (LXPagerGoToFn)[pager methodForSelector:goTo];
+    if (fn != NULL) fn(pager, goTo, (NSInteger)index, animated, YES);
+  });
+}
+
+// 【第 227 轮】真挖洞：给封面旋转层加 even-odd 遮罩，中心孔透明、透出下层页面背景。
+RCT_EXPORT_METHOD(setViewHole:(nonnull NSNumber *)reactTag radius:(double)radius) {
+  dispatch_async(dispatch_get_main_queue(), ^{
+    UIView *view = [self.bridge.uiManager viewForReactTag:reactTag];
+    if (view == nil || radius <= 0) return;
+    CGRect bounds = view.bounds;
+    if (bounds.size.width <= 0 || bounds.size.height <= 0) return;
+    CAShapeLayer *mask = [CAShapeLayer layer];
+    mask.frame = bounds;
+    UIBezierPath *path = [UIBezierPath bezierPathWithRect:bounds];
+    UIBezierPath *hole = [UIBezierPath bezierPathWithOvalInRect:CGRectMake(
+      CGRectGetMidX(bounds) - radius, CGRectGetMidY(bounds) - radius, radius * 2, radius * 2)];
+    [path appendPath:hole];
+    path.usesEvenOddFillRule = YES;
+    mask.path = path.CGPath;
+    mask.fillRule = kCAFillRuleEvenOdd;
+    view.layer.mask = mask;
+  });
+}
+
+RCT_EXPORT_METHOD(clearViewHole:(nonnull NSNumber *)reactTag) {
+  dispatch_async(dispatch_get_main_queue(), ^{
+    UIView *view = [self.bridge.uiManager viewForReactTag:reactTag];
+    if (view != nil) view.layer.mask = nil;
+  });
+}
+
 // 【第 225 轮】点击切页前立即清 PagerView 的 animating / 交互闩锁，不等 300ms 周期扫描。
 // 否则第一发动画 setPage 会被 Manager 丢弃，只能等 350ms 重发 —— 用户感知为「卡一下」。
 RCT_EXPORT_METHOD(healPagerViews) {
@@ -8957,42 +9010,57 @@ RCT_REMAP_METHOD(sha1, sha1:(NSString *)input resolver:(RCTPromiseResolveBlock)r
 // 把卡在 NO 的交互直接恢复：不重挂、不闪、首进与切回同一套。
 static dispatch_source_t LXPagerHealTimer = nil;
 
-static void LXPagerHealWalk(UIView *view, NSInteger depth) {
-  if (view == nil || depth > 30) return;
-  if ([NSStringFromClass(view.class) containsString:@"RNCPagerView"]) {
-    if (view.userInteractionEnabled == NO) view.userInteractionEnabled = YES;
-    @try {
-      id pageVC = [view valueForKey:@"reactPageViewController"];
-      if ([pageVC isKindOfClass:[UIViewController class]]) {
-        UIView *pageView = [(UIViewController *)pageVC view];
-        if (pageView != nil && pageView.userInteractionEnabled == NO) pageView.userInteractionEnabled = YES;
-      }
-    } @catch (NSException *exception) {
-      (void)exception;
+// 【第 227 轮】抽成单视图清理：周期扫描与「点击直达 goTo」共用同一段恢复逻辑。
+static void LXPagerHealOneView(UIView *view) {
+  if (view == nil) return;
+  if (view.userInteractionEnabled == NO) view.userInteractionEnabled = YES;
+  @try {
+    id pageVC = [view valueForKey:@"reactPageViewController"];
+    if ([pageVC isKindOfClass:[UIViewController class]]) {
+      UIView *pageView = [(UIViewController *)pageVC view];
+      if (pageView != nil && pageView.userInteractionEnabled == NO) pageView.userInteractionEnabled = YES;
     }
-    // 【第 222 轮】清卡住的 animating：库的 Manager 在 animated && animating 时直接丢弃
-    // 程序化 setPage（手动左滑不走这条，所以「滑得动、点不动」）。起始页 / 被打断的
-    // 转场 completion 丢失后它会永久停在 YES。只在没有拖动 / 惯性时清，避免打断真实手势。
-    BOOL busy = NO;
+  } @catch (NSException *exception) {
+    (void)exception;
+  }
+  // 【第 222 轮】清卡住的 animating：库的 Manager 在 animated && animating 时直接丢弃
+  // 程序化 setPage（手动左滑不走这条，所以「滑得动、点不动」）。起始页 / 被打断的
+  // 转场 completion 丢失后它会永久停在 YES。只在没有拖动 / 惯性时清，避免打断真实手势。
+  BOOL busy = NO;
+  @try {
+    UIScrollView *scrollView = [view valueForKey:@"scrollView"];
+    busy = scrollView != nil && (scrollView.isDragging || scrollView.isDecelerating);
+  } @catch (NSException *exception) {
+    (void)exception;
+  }
+  if (!busy) {
     @try {
-      UIScrollView *scrollView = [view valueForKey:@"scrollView"];
-      busy = scrollView != nil && (scrollView.isDragging || scrollView.isDecelerating);
+      if ([[view valueForKey:@"animating"] boolValue]) [view setValue:@NO forKey:@"animating"];
     } @catch (NSException *exception) {
-      (void)exception;
-    }
-    if (!busy) {
-      @try {
-        if ([[view valueForKey:@"animating"] boolValue]) [view setValue:@NO forKey:@"animating"];
-      } @catch (NSException *exception) {
-        // KVC 不可见时直接写私有 ivar（第 224 轮补的兜底）。
-        Ivar ivar = class_getInstanceVariable([view class], "_animating");
-        if (ivar != NULL) {
-          BOOL *flag = (BOOL *)((uint8_t *)(__bridge void *)view + ivar_getOffset(ivar));
-          if (flag != NULL && *flag) *flag = NO;
-        }
+      // KVC 不可见时直接写私有 ivar（第 224 轮补的兜底）。
+      Ivar ivar = class_getInstanceVariable([view class], "_animating");
+      if (ivar != NULL) {
+        BOOL *flag = (BOOL *)((uint8_t *)(__bridge void *)view + ivar_getOffset(ivar));
+        if (flag != NULL && *flag) *flag = NO;
       }
     }
   }
+}
+
+// 在视图自身 / 子树 / 父链里找 RNCPagerView：ref 拿到的 tag 可能是包装宿主。
+static UIView *LXPagerFindPagerView(UIView *view) {
+  if (view == nil) return nil;
+  if ([NSStringFromClass(view.class) containsString:@"RNCPagerView"]) return view;
+  for (UIView *sub in view.subviews) {
+    UIView *found = LXPagerFindPagerView(sub);
+    if (found != nil) return found;
+  }
+  return nil;
+}
+
+static void LXPagerHealWalk(UIView *view, NSInteger depth) {
+  if (view == nil || depth > 30) return;
+  if ([NSStringFromClass(view.class) containsString:@"RNCPagerView"]) LXPagerHealOneView(view);
   for (UIView *sub in view.subviews) LXPagerHealWalk(sub, depth + 1);
 }
 
