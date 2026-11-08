@@ -7957,25 +7957,37 @@ RCT_EXPORT_METHOD(setPagerPage:(nonnull NSNumber *)reactTag index:(double)index 
       (void)exception;
     }
     NSArray *controllers = LXPagerControllers(pager);
-    if (pageVC != nil && controllers.count > (NSUInteger)index) {
-      UIViewController *target = controllers[(NSUInteger)index];
-      if ([target isKindOfClass:[UIViewController class]]) {
-        UIViewController *current = pageVC.viewControllers.firstObject;
-        NSUInteger currentIndex = current != nil ? [controllers indexOfObject:current] : NSNotFound;
-        UIPageViewControllerNavigationDirection direction =
-          (currentIndex != NSNotFound && (NSUInteger)index < currentIndex)
-            ? UIPageViewControllerNavigationDirectionReverse
-            : UIPageViewControllerNavigationDirectionForward;
-        @try {
-          [pageVC setViewControllers:@[target] direction:direction animated:animated completion:^(BOOL finished) {
-            LXPagerHealOneView(pager);
-            @try { [pager setValue:@(-1) forKey:@"destinationIndex"]; } @catch (NSException *exception) { (void)exception; }
-          }];
-          done(YES);
-          return;
-        } @catch (NSException *exception) {
-          (void)exception;
+    UIViewController *target = nil;
+    if (controllers.count > (NSUInteger)index) {
+      id candidate = controllers[(NSUInteger)index];
+      if ([candidate isKindOfClass:[UIViewController class]]) target = candidate;
+    }
+    if (target == nil && pageVC != nil) {
+      // 库私有数组取不到时，用 UIPageViewController 的公开 dataSource 取相邻页 ——
+      // 不依赖私有属性，也不经过 goTo / disableSwipe。
+      UIViewController *current = pageVC.viewControllers.firstObject;
+      id<UIPageViewControllerDataSource> dataSource = pageVC.dataSource;
+      if (current != nil && dataSource != nil) {
+        if (index >= 1) {
+          target = [dataSource pageViewController:pageVC viewControllerAfterViewController:current];
+        } else {
+          target = [dataSource pageViewController:pageVC viewControllerBeforeViewController:current];
         }
+      }
+    }
+    if (pageVC != nil && target != nil) {
+      UIPageViewControllerNavigationDirection direction = (index >= 1)
+        ? UIPageViewControllerNavigationDirectionForward
+        : UIPageViewControllerNavigationDirectionReverse;
+      @try {
+        [pageVC setViewControllers:@[target] direction:direction animated:animated completion:^(BOOL finished) {
+          LXPagerHealOneView(pager);
+          @try { [pager setValue:@(-1) forKey:@"destinationIndex"]; } @catch (NSException *exception) { (void)exception; }
+        }];
+        done(YES);
+        return;
+      } @catch (NSException *exception) {
+        (void)exception;
       }
     }
     // 公开 API 不可用：交回 JS `setPage` 兜底。**不再调用私有 goTo** ——
