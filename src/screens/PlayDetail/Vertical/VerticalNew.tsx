@@ -7,7 +7,7 @@ import Lyric from './Lyric'
 import SongInfo from './components/SongInfo'
 import Header, { HEADER_HEIGHT } from './components/Header'
 import Player from './Player'
-import { screenkeepAwake, screenUnkeepAwake } from '@/utils/nativeModules/utils'
+import { screenkeepAwake, screenUnkeepAwake, healPagerViews } from '@/utils/nativeModules/utils'
 import commonState, { type InitState as CommonState } from '@/store/common/state'
 import { useStatusbarHeight, useNavTransitioning } from '@/store/common/hook'
 import { createStyle } from '@/utils/tools'
@@ -318,7 +318,9 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
       pagerViewRef.current?.setPage?.(1)
     }
     requestPage()
-    // 350ms：仍未落页 → 再发一次同一条动画（原生直达或 JS 回退）。
+    // 点击后 120ms 主动清一次原生闩锁（不等 150ms 周期），保证连续点击可用。
+    setTimeout(() => { healPagerViews() }, 120)
+    // 600ms：仍未落页 → 再发一次同一条动画（JS 回退）。
     switchRetryRef.current = setTimeout(() => {
       switchRetryRef.current = null
       if (showLyricRef.current) return
@@ -431,13 +433,14 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
     // 将 PagerView ref 注册给同步手势锁，供进度条拖动时立即禁用原生横滑
     registerPager(pagerViewRef)
 
-    // 【第 220 轮】持续激活：前台可见时每秒重发横滑开关 + 清 JS 闩锁，不碰 viewControllers；
-    // 原生 userInteractionEnabled 闩锁另由 AppDelegate 的 300ms 扫描兜底（从 App 启动就跑）。
+    // 【第 236 轮】持续激活：前台可见时 250ms 重发横滑开关 + 清 JS 闩锁，不碰 viewControllers；
+    // 原生 userInteractionEnabled / animating 另有 150ms 扫描兜底。换行、连续点击、
+    // 切出画面、后台回来都能很快恢复可点击。
     const pagerKeepAlive = setInterval(() => {
       if (AppState.currentState !== 'active') return
       if (!isScreenOnTop(commonState.componentIds)) return
       resyncPagerNativePage()
-    }, 1000)
+    }, 250)
 
     // 必须用具名函数注册/移除，否则 off 传入新箭头函数无法匹配已注册的监听器，
     // 会导致监听器泄漏（组件多次挂载后点击 ☰ 弹出多个队列面板）。

@@ -285,14 +285,30 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
   activeLineRef.current = activeLine
   const visibleRef = useRef(visible)
   visibleRef.current = visible
-  // 【第 233 轮】常驻隐形按钮的回调：滚动 / 惯性 / 浮层期间一律忽略，
-  // 只有真正的点击（含连续点击）才切页；点击不再冻结换行。
-  const handlePagerTap = useCallback(() => {
-    if (isPauseScrollRef.current || isOverlayShownRef.current || isMomentumRef.current) return
+  // 【第 236 轮】点击优先：滚动 / 回位 / 浮层状态一律让路，先清理再切页；
+  // 同时短暂（250ms）停掉换行跟随，给 PagerView 的 setPage 命令让出 UI 队列。
+  const pauseFollowUntilRef = useRef(0)
+  const cancelScrollRef = useRef<() => void>(() => {})
+  const handlePagerTap = useCallback((event?: any) => {
+    if (isOverlayShownRef.current && event && typeof event.x === 'number' && typeof event.y === 'number' &&
+        typeof event.w === 'number' && typeof event.h === 'number') {
+      // 手动定位浮层的播放三角：保留 seek，不切页。
+      if (event.x > event.w - 96 && Math.abs(event.y - event.h / 2) < 72) return
+    }
+    if (scrollTimeoutRef.current) {
+      clearTimeout(scrollTimeoutRef.current)
+      scrollTimeoutRef.current = null
+    }
+    isPauseScrollRef.current = false
+    isOverlayShownRef.current = false
+    isMomentumRef.current = false
+    playLineRef.current?.setVisible(false)
+    cancelScrollRef.current()
+    pauseFollowUntilRef.current = Date.now() + 250
     onPress?.()
   }, [onPress])
   useEffect(() => {
-    const sub = addPagerTapListener(() => { handlePagerTap() })
+    const sub = addPagerTapListener((event) => { handlePagerTap(event) })
     return () => sub.remove()
   }, [handlePagerTap])
   // 当前行强制单行显示：内容宽度实测值（用于判断是否溢出 + 横向滚动范围）。
@@ -446,6 +462,7 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
     }
     isAutoScrollRef.current = false
   }, [])
+  cancelScrollRef.current = cancelScroll
 
   /**
    * 平滑滚动到第 index 行居中。
@@ -547,6 +564,8 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
 
   // 播放行自动跟随：跨行距离很远（进度条 seek / 恢复播放）时直接落位，不做长距离快速滑动
   const followActiveLine = useCallback((index: number) => {
+    // 【第 236 轮】点击切页后的 250ms 内不启动跟随动画，给 setPage 让路。
+    if (Date.now() < pauseFollowUntilRef.current) return
     // 一次性消费首个跟随标志：任何分支都不留下悬空标志。
     const instant = resumeInstantRef.current
     resumeInstantRef.current = false
