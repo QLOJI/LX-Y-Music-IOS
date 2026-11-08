@@ -1,6 +1,7 @@
 import { memo, useState, useRef, useMemo, useEffect, useCallback } from 'react'
 import { View, AppState, type LayoutChangeEvent } from 'react-native'
-import PagerView, { type PagerViewOnPageSelectedEvent } from 'react-native-pager-view'
+import type { PagerViewOnPageSelectedEvent } from 'react-native-pager-view'
+import VerticalPager, { type VerticalPagerHandle } from './VerticalPager'
 import MiniLyric, { getMiniLyricRowHeight } from '../components/MiniLyric'
 import Pic, { getCoverSize, getCoverNaturalSize } from './Pic'
 import Lyric from './Lyric'
@@ -86,7 +87,7 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
   const statusBarHeight = useStatusbarHeight()
   const isSmallWindow = winHeight < 700
   // 正在从左往右滑向歌词页（从封面切到歌词），用于让 LyricPage 提前激活高亮定位
-  const pagerViewRef = useRef<PagerView>(null)
+  const pagerViewRef = useRef<VerticalPagerHandle>(null)
   // 返回转场期间不做任何 PagerView 命令（避免返回时画面被重设/闪一下）。
   const navTransitioning = useNavTransitioning()
   const navTransitioningRef = useRef(navTransitioning)
@@ -104,7 +105,7 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
     clearPagerLatch,
     onPageScroll: trackPagerScroll,
     onPageScrollStateChanged: trackPagerState,
-  } = useRecoverablePager(pagerViewRef, {
+  } = useRecoverablePager(pagerViewRef as any, {
     navId: 'nav_play_detail',
     activeIndexRef: detailPageIndexRef,
     resyncOnEnter: false,
@@ -435,7 +436,7 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
     global.app_event.on('progressDragState', handleProgressDragState)
 
     // 将 PagerView ref 注册给同步手势锁，供进度条拖动时立即禁用原生横滑
-    registerPager(pagerViewRef)
+    registerPager(pagerViewRef as any)
 
     // 【第 236 轮】持续激活：前台可见时 250ms 重发横滑开关 + 清 JS 闩锁，不碰 viewControllers；
     // 原生 userInteractionEnabled / animating 另有 150ms 扫描兜底。换行、连续点击、
@@ -619,8 +620,8 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
           return false
         }}
       >
-        <PagerView
-          // 恢复链最后一级：重挂原生实例（保留当前页）。
+        <VerticalPager
+          // 恢复链最后一级：重挂实例（保留当前页）。
           key={`${pagerKey}#${pagerRebuild}`}
           initialPage={showLyricRef.current ? 1 : 0}
           onPageSelected={onPageSelected}
@@ -647,7 +648,6 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
           style={styles.pagerView}
           ref={pagerViewRef}
           scrollEnabled={!isProgressDragging}
-          overScrollMode="never"
           onLayout={(e) => {
             const h = Math.round(e.nativeEvent.layout.height)
             if (h > 0 && h !== pagerHeight) setPagerHeight(h)
@@ -704,7 +704,7 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
           <View collapsable={false} style={{ flex: 1, width: '100%', height: '100%' }}>
             <LyricPage pagerHeight={lyricPageReady ? pagerHeight : 0} isActive={pageIndex === 1 || isComingLyricRef.current} />
           </View>
-        </PagerView>
+        </VerticalPager>
         {/* Progress bar must live OUTSIDE the PagerView so its horizontal drag never
             enters the native pager gesture domain (otherwise left-drag stutters / is
             hijacked as a page swipe).
