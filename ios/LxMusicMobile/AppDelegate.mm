@@ -7912,8 +7912,9 @@ RCT_EXPORT_METHOD(detachPagerTap:(nonnull NSNumber *)reactTag) {
 
 - (void)handlePagerTapNotification:(NSNotification *)notification {
   if (!self.hasListeners) return;
+  NSDictionary *info = [notification.userInfo isKindOfClass:[NSDictionary class]] ? notification.userInfo : @{};
   dispatch_async(dispatch_get_main_queue(), ^{
-    [self sendEventWithName:@"pagerTap" body:@{}];
+    [self sendEventWithName:@"pagerTap" body:info];
   });
 }
 
@@ -9205,7 +9206,8 @@ static void LXStartPagerHealTimer(void) {
   dispatch_queue_t queue = dispatch_queue_create("com.lxmusic.pager.heal", DISPATCH_QUEUE_SERIAL);
   dispatch_source_t timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, queue);
   // 300ms：用户点下去基本察觉不到「这一下没反应」，同时避免高频扫描整棵视图树。
-  dispatch_source_set_timer(timer, DISPATCH_TIME_NOW, (uint64_t)(0.3 * NSEC_PER_SEC), (uint64_t)(0.05 * NSEC_PER_SEC));
+  // 【第 236 轮】150ms：换行 / 连续点击 / 切出画面后都能尽快把 PagerView 重新激活。
+  dispatch_source_set_timer(timer, DISPATCH_TIME_NOW, (uint64_t)(0.15 * NSEC_PER_SEC), (uint64_t)(0.05 * NSEC_PER_SEC));
   dispatch_source_set_event_handler(timer, ^{
     dispatch_async(dispatch_get_main_queue(), ^{ LXPagerHealTick(); });
   });
@@ -9451,7 +9453,15 @@ RCT_CUSTOM_VIEW_PROPERTY(holeRatio, CGFloat, LXHoleView) {
 
 - (void)handleTap:(UITapGestureRecognizer *)gesture {
   @try {
-    [[NSNotificationCenter defaultCenter] postNotificationName:@"LXPagerTapNotification" object:nil];
+    // 带上点击坐标：JS 用来区分「点播放三角（seek）」与「点区域（切页）」。
+    CGPoint point = [gesture locationInView:self];
+    NSDictionary *info = @{
+      @"x": @(point.x),
+      @"y": @(point.y),
+      @"w": @(CGRectGetWidth(self.bounds)),
+      @"h": @(CGRectGetHeight(self.bounds)),
+    };
+    [[NSNotificationCenter defaultCenter] postNotificationName:@"LXPagerTapNotification" object:nil userInfo:info];
   } @catch (NSException *exception) {
     (void)exception;
   }
