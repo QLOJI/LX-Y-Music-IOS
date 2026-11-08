@@ -295,15 +295,9 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
       // 手动定位浮层的播放三角：保留 seek，不切页。
       if (event.x > event.w - 96 && Math.abs(event.y - event.h / 2) < 72) return
     }
-    if (scrollTimeoutRef.current) {
-      clearTimeout(scrollTimeoutRef.current)
-      scrollTimeoutRef.current = null
-    }
-    isPauseScrollRef.current = false
-    isOverlayShownRef.current = false
-    isMomentumRef.current = false
-    playLineRef.current?.setVisible(false)
-    cancelScrollRef.current()
+    // 【第 237 轮】只给自动跟随让路，绝不清手动定位 / 浮层状态：
+    // 虚线该留就留，长时间没操作仍由原有 idle 定时器回位。手动定位态也不取消回位动画。
+    if (!isPauseScrollRef.current) cancelScrollRef.current()
     pauseFollowUntilRef.current = Date.now() + 250
     onPress?.()
   }, [onPress])
