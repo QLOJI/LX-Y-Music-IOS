@@ -9428,7 +9428,9 @@ static void LXStartPagerHealTimer(void) {
     self.layer.mask = mask;
   }
   mask.frame = bounds;
-  UIBezierPath *path = [UIBezierPath bezierPathWithRect:bounds];
+  // 【第 251 轮】外形状改成整圆：封面放大后溢出的边角由这里裁掉，圆内永远铺满；
+  // 中心孔仍在 even-odd 里挖空。
+  UIBezierPath *path = [UIBezierPath bezierPathWithOvalInRect:bounds];
   [path appendPath:[UIBezierPath bezierPathWithOvalInRect:CGRectMake(
     CGRectGetMidX(bounds) - radius, CGRectGetMidY(bounds) - radius, radius * 2, radius * 2)]];
   path.usesEvenOddFillRule = YES;
