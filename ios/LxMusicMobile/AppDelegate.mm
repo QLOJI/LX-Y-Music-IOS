@@ -9103,6 +9103,15 @@ RCT_REMAP_METHOD(sha1, sha1:(NSString *)input resolver:(RCTPromiseResolveBlock)r
 // 把卡在 NO 的交互直接恢复：不重挂、不闪、首进与切回同一套。
 static dispatch_source_t LXPagerHealTimer = nil;
 
+// 【第 237 轮】把 PagerView 子树里被 disableSwipe 置 NO 的交互全部恢复：
+// goTo 的 completion 丢失时，reactPageViewController 的 view 与内部 scrollView 会永久禁用，
+// 点击手势根本收不到 —— 现场就是「点一次没反应，之后一直点都没反应」。
+static void LXPagerEnableInteraction(UIView *view, NSInteger depth) {
+  if (view == nil || depth > 12) return;
+  if (view.userInteractionEnabled == NO) view.userInteractionEnabled = YES;
+  for (UIView *sub in view.subviews) LXPagerEnableInteraction(sub, depth + 1);
+}
+
 // 【第 227 轮】抽成单视图清理：周期扫描与「点击直达 goTo」共用同一段恢复逻辑。
 static void LXPagerHealOneView(UIView *view) {
   if (view == nil) return;
@@ -9137,7 +9146,14 @@ static void LXPagerHealOneView(UIView *view) {
         if (flag != NULL && *flag) *flag = NO;
       }
     }
+    UIScrollView *scrollView = nil;
+    @try { scrollView = [view valueForKey:@"scrollView"]; } @catch (NSException *exception) { (void)exception; }
+    if (scrollView != nil) {
+      if (!scrollView.scrollEnabled) scrollView.scrollEnabled = YES;
+      if (!scrollView.panGestureRecognizer.enabled) scrollView.panGestureRecognizer.enabled = YES;
+    }
   }
+  LXPagerEnableInteraction(view, 0);
 }
 
 // 在视图自身 / 子树 / 父链里找 RNCPagerView：ref 拿到的 tag 可能是包装宿主。
