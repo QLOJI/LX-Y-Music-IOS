@@ -342,18 +342,10 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
         fallback()
         return
       }
-      // 原生直达：成功时页面在同一主线程内立即开始 goTo 动画；失败立即 JS 回退。
-      // goTo 被执行但原生没动（250ms 仍 idle）时，再用 JS 命令兜底。
+      // 原生直达：公开 setViewControllers 在主线程立即开始 UIKit 转场；失败立即 JS 回退。
+      // 原生侧对同一目标 0.8s 防重入，重发不会打断正在跑的转场。
       const sent = setPagerPage(tag, 1, true, (ok) => {
-        if (!ok) {
-          fallback()
-          return
-        }
-        setTimeout(() => {
-          if (showLyricRef.current) return
-          if (pageScrollStateRef.current !== 'idle') return
-          fallback()
-        }, 250)
+        if (!ok) fallback()
       })
       if (!sent) fallback()
     }
@@ -363,13 +355,13 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
       switchRetryRef.current = null
       if (showLyricRef.current) return
       requestPage()
-    }, 350)
-    // 900ms：仍未落页 → 只重发同一条动画 setPage；不做非动画、不重挂。
+    }, 600)
+    // 1200ms：仍未落页 → 只重发同一条动画 setPage；不做非动画、不重挂。
     switchFallbackRef.current = setTimeout(() => {
       switchFallbackRef.current = null
       if (showLyricRef.current) return
       pagerViewRef.current?.setPage?.(1)
-    }, 900)
+    }, 1200)
   }, [clearSwitchTimers])
 
   // 【第 218 轮】回前台 / 回到栈顶 / 触摸起点 / 持续激活心跳只清闩锁，绝不再调
