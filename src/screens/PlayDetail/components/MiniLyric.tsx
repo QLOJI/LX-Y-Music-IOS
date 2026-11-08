@@ -28,6 +28,7 @@ import { COMPONENT_IDS } from '@/config/constant'
 import playerState from '@/store/player/state'
 import { useIsPlay } from '@/store/player/hook'
 import { IDLE_RETURN_MS, LINE_ZOOM_MS, RETURN_TO_ACTIVE_MS, easeInOutSine } from '@/screens/PlayDetail/lyricAnimation'
+import { addPagerTapListener } from '@/utils/nativeModules/utils'
 
 // 迷你歌词 = 封面页上的「上一行 / 当前行 / 下一行」**定窗**歌词窗（窗口高度固定，行高逐行算）。
 //
@@ -110,7 +111,7 @@ const BLANK = ' '
 // 【第 233 轮】常驻隐形按钮：原生 RCTView 子类在 didMoveToWindow 自己装 tap 手势，
 // 只识别点击、滑动不拦；不依赖 tag / 桥，页面重建后自动恢复。
 const PagerTapView = Platform.OS === 'ios'
-  ? requireNativeComponent<{ onTap?: () => void }>('LXPagerTapView')
+  ? requireNativeComponent<any>('LXPagerTapView')
   : View
 
 export interface MiniLyricProps {
@@ -290,6 +291,10 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
     if (isPauseScrollRef.current || isOverlayShownRef.current || isMomentumRef.current) return
     onPress?.()
   }, [onPress])
+  useEffect(() => {
+    const sub = addPagerTapListener(() => { handlePagerTap() })
+    return () => sub.remove()
+  }, [handlePagerTap])
   // 当前行强制单行显示：内容宽度实测值（用于判断是否溢出 + 横向滚动范围）。
   // 带行号，换行首帧不会拿上一行的宽度去算滚动范围。
   const [activeTextSize, setActiveTextSize] = useState<{ line: number, width: number }>({ line: -1, width: 0 })
@@ -1118,7 +1123,6 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
     // 文本内缩改由列表的 contentContainerStyle 承担（见 lineInsetH），文字位置不变。
     <PagerTapView
       style={[styles.container, { height: containerHeight, marginHorizontal: -bleedH }, style]}
-      onTap={handlePagerTap}
       // 容器级触摸判定：短按切歌词页（行内 Pressable 在原生手势竞争下会丢 onPress）。
       onTouchStart={handleTapStart}
       onTouchMove={handleTapMove}
