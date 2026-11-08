@@ -7678,7 +7678,7 @@ RCT_EXPORT_MODULE();
 - (NSArray<NSString *> *)supportedEvents {
   // screen-size-changed 已移除：iOS 端从未发送该事件（窗口尺寸由 JS 侧 SizeView onLayout 同步），
   // 声明而不发送属于死事件，且避免误导后续接入
-  return @[ @"headphones-disconnected", @"remote-command", @"screen-state", @"tabBarCollapseChanged", @"player-position", @"player-seeked", @"bluetooth-device-changed" ];
+  return @[ @"headphones-disconnected", @"remote-command", @"screen-state", @"tabBarCollapseChanged", @"player-position", @"player-seeked", @"bluetooth-device-changed", @"pagerTap" ];
 }
 
 // Tab 栏收起状态（原生跟踪器维护，JS 经 tabBarCollapseChanged 事件与 setTabBarExpanded 命令交互）
@@ -7868,6 +7868,39 @@ RCT_EXPORT_METHOD(screenUnkeepAwake) {
   dispatch_async(dispatch_get_main_queue(), ^{
     [UIApplication sharedApplication].idleTimerDisabled = NO;
   });
+}
+
+// 【第 232 轮】小歌词区域的「隐形按钮」：原生 tap 手势挂在目标视图上，只识别点击，
+// 滑动时自动失败、不拦 FlatList 滚动；点击异步广播 pagerTap 给 JS 触发切页。
+static NSMutableDictionary<NSNumber *, UITapGestureRecognizer *> *LXPagerTapGestures = nil;
+
+RCT_EXPORT_METHOD(attachPagerTap:(nonnull NSNumber *)reactTag) {
+  dispatch_async(dispatch_get_main_queue(), ^{
+    UIView *view = [self.bridge.uiManager viewForReactTag:reactTag];
+    if (view == nil) return;
+    if (LXPagerTapGestures == nil) LXPagerTapGestures = [NSMutableDictionary dictionary];
+    if (LXPagerTapGestures[reactTag] != nil) return;
+    UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(handlePagerTapGesture:)];
+    tap.cancelsTouchesInView = NO;
+    tap.delaysTouchesBegan = NO;
+    tap.delaysTouchesEnded = NO;
+    [view addGestureRecognizer:tap];
+    LXPagerTapGestures[reactTag] = tap;
+  });
+}
+
+RCT_EXPORT_METHOD(detachPagerTap:(nonnull NSNumber *)reactTag) {
+  dispatch_async(dispatch_get_main_queue(), ^{
+    UITapGestureRecognizer *tap = LXPagerTapGestures[reactTag];
+    if (tap == nil) return;
+    [tap.view removeGestureRecognizer:tap];
+    [LXPagerTapGestures removeObjectForKey:reactTag];
+  });
+}
+
+- (void)handlePagerTapGesture:(UITapGestureRecognizer *)gesture {
+  if (!self.hasListeners) return;
+  [self sendEventWithName:@"pagerTap" body:@{}];
 }
 
 // 【第 227 轮】点击小歌词：主线程同一拍先清 PagerView 闩锁，再走库的 goTo 动画。
