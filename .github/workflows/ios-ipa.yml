@@ -24,6 +24,9 @@ jobs:
       IOS_BUNDLE_IDENTIFIER: com.LX-YMusic.shuhao
       DERIVED_DATA_PATH: build/DerivedData
       ARCHIVE_PATH: build/LxMusicMobile.xcarchive
+      # 新增：Electron 二进制走国内镜像，避免 npm install 时连 GitHub 超时（504）
+      ELECTRON_MIRROR: https://npmmirror.com/mirrors/electron/
+      ELECTRON_BUILDER_BINARIES_MIRROR: https://npmmirror.com/mirrors/electron-builder-binaries/
     steps:
       - name: Check out git repository
         uses: actions/checkout@v4
@@ -31,7 +34,8 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version-file: .nvmrc
+          # 修改：由读取 .nvmrc 改为显式指定 Node 20，满足项目 engine 要求（>= 20）
+          node-version: '20'
           cache: npm
 
       - name: Setup Ruby
