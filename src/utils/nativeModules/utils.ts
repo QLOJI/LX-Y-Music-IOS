@@ -41,6 +41,22 @@ export const healPagerViews = () => {
   UtilsModule.healPagerViews?.()
 }
 
+// 【第 232 轮】小歌词区域的隐形按钮：原生 tap 手势只识别点击，滑动不拦（见 AppDelegate）。
+export const attachPagerTap = (reactTag: number) => {
+  if (!isIOS) return
+  UtilsModule.attachPagerTap?.(reactTag)
+}
+
+export const detachPagerTap = (reactTag: number) => {
+  if (!isIOS) return
+  UtilsModule.detachPagerTap?.(reactTag)
+}
+
+export const addPagerTapListener = (callback: () => void) => {
+  if (!isIOS) return { remove: () => {} }
+  return new NativeEventEmitter(UtilsModule).addListener('pagerTap', callback)
+}
+
 // 【第 227 轮】点击切页直达原生 goTo（同一主线程先清闩锁再动画），绕开 JS 命令队列竞争。
 export const setPagerPage = (
   reactTag: number,
