@@ -7869,10 +7869,13 @@ RCT_EXPORT_METHOD(screenUnkeepAwake) {
 
 // 【第 227 轮】点击小歌词：主线程同一拍先清 PagerView 闩锁，再走库的 goTo 动画。
 // 顺序确定，不与 JS 侧 setPage 命令队列抢先后；找不到原生实例时静默返回（JS 回退）。
-RCT_EXPORT_METHOD(setPagerPage:(nonnull NSNumber *)reactTag index:(double)index animated:(BOOL)animated) {
+RCT_EXPORT_METHOD(setPagerPage:(nonnull NSNumber *)reactTag index:(double)index animated:(BOOL)animated callback:(RCTResponseSenderBlock)callback) {
   dispatch_async(dispatch_get_main_queue(), ^{
+    void (^done)(BOOL) = ^(BOOL ok) {
+      if (callback != nil) callback(@[@(ok)]);
+    };
     UIView *view = [self.bridge.uiManager viewForReactTag:reactTag];
-    if (view == nil) return;
+    if (view == nil) { done(NO); return; }
     UIView *pager = LXPagerFindPagerView(view);
     if (pager == nil) {
       UIView *parent = view.superview;
@@ -7881,13 +7884,15 @@ RCT_EXPORT_METHOD(setPagerPage:(nonnull NSNumber *)reactTag index:(double)index 
         parent = parent.superview;
       }
     }
-    if (pager == nil) return;
+    if (pager == nil) { done(NO); return; }
     LXPagerHealOneView(pager);
     SEL goTo = @selector(goTo:animated:disableSwipe:);
-    if (![pager respondsToSelector:goTo]) return;
+    if (![pager respondsToSelector:goTo]) { done(NO); return; }
     typedef void (*LXPagerGoToFn)(id, SEL, NSInteger, BOOL, BOOL);
     LXPagerGoToFn fn = (LXPagerGoToFn)[pager methodForSelector:goTo];
-    if (fn != NULL) fn(pager, goTo, (NSInteger)index, animated, YES);
+    if (fn == NULL) { done(NO); return; }
+    fn(pager, goTo, (NSInteger)index, animated, YES);
+    done(YES);
   });
 }
 
