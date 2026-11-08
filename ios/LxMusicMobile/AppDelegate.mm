@@ -752,6 +752,7 @@ static void LXSyncNowPlayingLyricTimer(void);
 static void LXPagerHealTick(void);
 static void LXPagerHealOneView(UIView *view);
 static UIView *LXPagerFindPagerView(UIView *view);
+static NSArray *LXPagerControllers(UIView *pager);
 // 【第 23 轮】亮度证据记录（定义在文件后部时钟区块；亮度观察者 / 回前台两处调用）
 static void LXRememberScreenBrightness(void);
 static void LXQueueNowPlayingLyricRedraw(void);
@@ -7888,8 +7889,44 @@ RCT_EXPORT_METHOD(setPagerPage:(nonnull NSNumber *)reactTag index:(double)index 
     }
     if (pager == nil) { done(NO); return; }
     LXPagerHealOneView(pager);
-    // 清残留的目标页闩锁：goTo 在 _destinationIndex 仍指向目标时会提前返回，
-    // 表现为「第一次点击把目标写进去、之后怎么点都不动」。
+    // 防重入：同一目标 0.8s 内只放行一次，避免 JS 阶梯重发打断正在跑的 UIKit 转场。
+    static CFTimeInterval LXLastPagerSetAt = 0;
+    static NSInteger LXLastPagerSetIndex = -1;
+    CFTimeInterval now = CACurrentMediaTime();
+    if (now - LXLastPagerSetAt < 0.8 && LXLastPagerSetIndex == (NSInteger)index) {
+      done(YES);
+      return;
+    }
+    LXLastPagerSetAt = now;
+    LXLastPagerSetIndex = (NSInteger)index;
+    // 公开 API 优先：直接对 UIPageViewController 调 setViewControllers，绕开库的
+    // goTo / disableSwipe / animating / _destinationIndex 全部闩锁（手动左滑走的也是这条）。
+    UIPageViewController *pageVC = nil;
+    @try {
+      id value = [pager valueForKey:@"reactPageViewController"];
+      if ([value isKindOfClass:[UIPageViewController class]]) pageVC = value;
+    } @catch (NSException *exception) {
+      (void)exception;
+    }
+    NSArray *controllers = LXPagerControllers(pager);
+    if (pageVC != nil && controllers.count > (NSUInteger)index) {
+      UIViewController *target = controllers[(NSUInteger)index];
+      if ([target isKindOfClass:[UIViewController class]]) {
+        UIViewController *current = pageVC.viewControllers.firstObject;
+        NSUInteger currentIndex = current != nil ? [controllers indexOfObject:current] : NSNotFound;
+        UIPageViewControllerNavigationDirection direction =
+          (currentIndex != NSNotFound && (NSUInteger)index < currentIndex)
+            ? UIPageViewControllerNavigationDirectionReverse
+            : UIPageViewControllerNavigationDirectionForward;
+        [pageVC setViewControllers:@[target] direction:direction animated:animated completion:^(BOOL finished) {
+          LXPagerHealOneView(pager);
+          @try { [pager setValue:@(-1) forKey:@"destinationIndex"]; } @catch (NSException *exception) { (void)exception; }
+        }];
+        done(YES);
+        return;
+      }
+    }
+    // 回退：库的 goTo（清残留目标页闩锁后调用）
     @try {
       [pager setValue:@(-1) forKey:@"destinationIndex"];
     } @catch (NSException *exception) {
@@ -9074,6 +9111,48 @@ static UIView *LXPagerFindPagerView(UIView *view) {
     if (found != nil) return found;
   }
   return nil;
+}
+
+// 【第 231 轮】取库维护的页面控制器数组：优先 KVC，其次 runtime 扫描（数组 / 字典两种形态）。
+// 这是「公开 setViewControllers 切页」的输入；拿不到时调用方回退到 goTo。
+static NSArray *LXPagerControllers(UIView *pager) {
+  @try {
+    id value = [pager valueForKey:@"reactViewControllers"];
+    if ([value isKindOfClass:[NSArray class]] && [(NSArray *)value count] > 0) return value;
+    if ([value isKindOfClass:[NSDictionary class]]) {
+      NSDictionary *dict = (NSDictionary *)value;
+      NSArray *keys = [dict.allKeys sortedArrayUsingComparator:^NSComparisonResult(id a, id b) {
+        return [a compare:b];
+      }];
+      NSMutableArray *out = [NSMutableArray array];
+      for (id key in keys) {
+        id controller = dict[key];
+        if ([controller isKindOfClass:[UIViewController class]]) [out addObject:controller];
+      }
+      if (out.count > 0) return out;
+    }
+  } @catch (NSException *exception) {
+    (void)exception;
+  }
+  unsigned int count = 0;
+  Ivar *ivars = class_copyIvarList([pager class], &count);
+  NSArray *result = nil;
+  for (unsigned int i = 0; i < count; i++) {
+    const char *name = ivar_getName(ivars[i]);
+    if (name == NULL) continue;
+    NSString *ivarName = [NSString stringWithUTF8String:name];
+    if (![ivarName containsString:@"ontroller"]) continue;
+    id value = object_getIvar(pager, ivars[i]);
+    if ([value isKindOfClass:[NSArray class]]) {
+      NSArray *arr = (NSArray *)value;
+      if (arr.count > 0 && [arr.firstObject isKindOfClass:[UIViewController class]]) {
+        result = arr;
+        break;
+      }
+    }
+  }
+  if (ivars != NULL) free(ivars);
+  return result;
 }
 
 static void LXPagerHealWalk(UIView *view, NSInteger depth) {
