@@ -42,11 +42,24 @@ export const healPagerViews = () => {
 }
 
 // 【第 227 轮】点击切页直达原生 goTo（同一主线程先清闩锁再动画），绕开 JS 命令队列竞争。
-export const setPagerPage = (reactTag: number, index: number, animated = true): boolean => {
-  if (!isIOS) return false
+export const setPagerPage = (
+  reactTag: number,
+  index: number,
+  animated = true,
+  onDone?: (ok: boolean) => void,
+): boolean => {
+  if (!isIOS) {
+    onDone?.(false)
+    return false
+  }
   const fn = UtilsModule.setPagerPage
-  if (typeof fn !== 'function') return false
-  fn(reactTag, index, animated)
+  if (typeof fn !== 'function') {
+    onDone?.(false)
+    return false
+  }
+  fn(reactTag, index, animated, (result: unknown[]) => {
+    onDone?.(result?.[0] === true)
+  })
   return true
 }
 
