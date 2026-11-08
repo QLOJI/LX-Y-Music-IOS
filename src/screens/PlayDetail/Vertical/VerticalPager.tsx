@@ -58,16 +58,12 @@ const VerticalPager = forwardRef<VerticalPagerHandle, Props>((props, ref) => {
   const { initialPage = 0, scrollEnabled = true } = props
   const swipeBackRef = useRef(props.onSwipeBack)
   swipeBackRef.current = props.onSwipeBack
-  // 【第 246 轮】横向 ScrollView 会吃掉 RNN 的左边缘右滑返回手势；在根 View 的 capture
-  // 阶段抢回「从左边缘开始、水平向右」的手势，松手距离够就 pop。
+  // 【第 247 轮】起点就在左边缘 14pt 内时直接 capture：封面页和歌词页都稳定生效，
+  // 不再等移动阶段（子 ScrollView 会先抢）。松手水平向右且距离够才 pop。
   const panResponder = useMemo(() => PanResponder.create({
-    onMoveShouldSetPanResponderCapture: (event, gesture) => {
-      if (gesture.x0 > 24) return false
-      if (gesture.dx <= 8) return false
-      return Math.abs(gesture.dx) > Math.abs(gesture.dy) * 1.2
-    },
+    onStartShouldSetPanResponderCapture: (event) => event.nativeEvent.pageX <= 14,
     onPanResponderRelease: (event, gesture) => {
-      if (gesture.dx > 60) swipeBackRef.current?.()
+      if (gesture.dx > 60 && Math.abs(gesture.dx) > Math.abs(gesture.dy)) swipeBackRef.current?.()
     },
   }), [])
   const scrollRef = useRef<ScrollView>(null)
@@ -77,7 +73,6 @@ const VerticalPager = forwardRef<VerticalPagerHandle, Props>((props, ref) => {
   const scrollingRef = useRef(false)
   const programmaticRef = useRef(false)
   const lastOffsetRef = useRef(0)
-  const dragStartXRef = useRef(0)
   const settleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [enabled, setEnabled] = useState(true)
   const initialPlacedRef = useRef(false)
@@ -179,23 +174,16 @@ const VerticalPager = forwardRef<VerticalPagerHandle, Props>((props, ref) => {
   const handleScrollBeginDrag = useCallback(() => {
     clearSettleTimer()
     programmaticRef.current = false
-    dragStartXRef.current = lastOffsetRef.current
     scrollingRef.current = true
     emitState('dragging')
   }, [clearSettleTimer, emitState])
 
-  // 【第 245 轮】一松手立刻吸附，动画与点击切页完全相同（PROGRAMMATIC_SETTLE_MS）：
-  // 按「这次拖动的方向」决定目标页（位移 > 8pt 就认方向），避免半路停留，也避免
-  // 轻扫一点因为没过半而滑不过去。
+  // 【第 247 轮】松手立即吸附，动画与点击切页完全相同；目标按**当前偏移是否过半**确定，
+  // 没过半就反向吸附回原页（用户口径）。
   const handleScrollEndDrag = useCallback(() => {
     const width = widthRef.current
     if (width <= 0) return
-    const delta = lastOffsetRef.current - dragStartXRef.current
-    const offset = lastOffsetRef.current / width
-    let target: number
-    if (delta > 8) target = 1
-    else if (delta < -8) target = 0
-    else target = offset >= 0.5 ? 1 : 0
+    const target = lastOffsetRef.current / width >= 0.5 ? 1 : 0
     scrollToIndex(target, true)
   }, [scrollToIndex])
 
