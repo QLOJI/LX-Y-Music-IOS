@@ -329,7 +329,7 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
       switchUnfreezeRef.current = null
       switchingToLyricRef.current = false
       setSwitchingToLyric(false)
-    }, 1600)
+    }, 700)
     // 【第 227 轮】点击 = 左滑同款动画：原生同一主线程先清闩锁再 goTo，顺序确定，
     // 不走 JS 的 setPage 命令队列（返回 / 后台 / 换行同时发生时也不会被抢乱）。
     const requestPage = () => {

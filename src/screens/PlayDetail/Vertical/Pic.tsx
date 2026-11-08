@@ -1,12 +1,11 @@
 import { memo, useEffect, useMemo, useRef, useState, useCallback } from 'react'
-import { View, Animated, Easing, TouchableWithoutFeedback } from 'react-native'
+import { View, Animated, Easing, TouchableWithoutFeedback, Platform, requireNativeComponent } from 'react-native'
 import FastImage from '@d11/react-native-fast-image'
 import { useIsPlay, usePlayerMusicInfo, usePlayMusicInfo } from '@/store/player/hook'
 import playerState from '@/store/player/state'
 import { useWindowSize } from '@/utils/hooks'
 import { useSettingValue } from '@/store/setting/hook'
 import Image, { defaultHeaders } from '@/components/common/Image'
-import { setViewHole } from '@/utils/nativeModules/utils'
 import { useStatusbarHeight, useScreenCovered, useAppActive, useNavTransitioning } from '@/store/common/hook'
 import { useAppInactive } from '@/store/common/hook'
 import { useTheme } from '@/store/theme/hook'
@@ -15,6 +14,11 @@ import { createStyle } from '@/utils/tools'
 import CoverLongPressMenu, { type CoverLongPressMenuType } from '@/screens/PlayDetail/components/CoverLongPressMenu'
 
 const AnimatedCover = Animated.createAnimatedComponent(FastImage)
+// 【第 230 轮】原生挖洞视图：layoutSubviews 自己装 even-odd 遮罩，中心孔透明。
+const HoleView = Platform.OS === 'ios'
+  ? requireNativeComponent<{ holeRatio?: number }>('LXHoleView')
+  : View
+const AnimatedHoleView = Animated.createAnimatedComponent(HoleView as any)
 
 // 封面自转的循环周期（ms）：25s 转满一圈后无缝重来，是持续循环动画。
 // 刻意不引用 designMotion —— 那组常量管的是「跳转 / 切行 / 淡入」这类一次性交互过渡；
@@ -519,13 +523,9 @@ export default memo(({ componentId, active = true, coverRegionHeight = 0 }: { co
               // 【第 220 轮】CD 碟片：外盘/封面/内圈随碟片转；中心孔是「透出页面背景」的视窗，
               // 不随碟片转，孔环固定 —— 观感就是 CD 压在背景图上。
               <View style={cdStyle.frame}>
-                <Animated.View
+                <AnimatedHoleView
                   style={[animatedCoverStyle, cdStyle.disc]}
-                  onLayout={(e) => {
-                    // 布局完成才知道 bounds；e.target 就是碟片层的原生 tag，直接装遮罩。
-                    const tag = (e as any).target
-                    if (typeof tag === 'number') setViewHole(tag, cdHoleSize / 2)
-                  }}
+                  holeRatio={0.232}
                 >
                   <AnimatedCover
                     source={{
@@ -541,7 +541,7 @@ export default memo(({ componentId, active = true, coverRegionHeight = 0 }: { co
                   <View pointerEvents="none" style={cdStyle.tint} />
                   <View pointerEvents="none" style={cdStyle.outerBand} />
                   <View pointerEvents="none" style={cdStyle.outerRing} />
-                </Animated.View>
+                </AnimatedHoleView>
                 <View pointerEvents="none" style={cdStyle.holeRing} />
               </View>
             ) : (
