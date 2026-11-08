@@ -52,7 +52,7 @@ export const detachPagerTap = (reactTag: number) => {
   UtilsModule.detachPagerTap?.(reactTag)
 }
 
-export const addPagerTapListener = (callback: () => void) => {
+export const addPagerTapListener = (callback: (event: any) => void) => {
   if (!isIOS) return { remove: () => {} }
   return new NativeEventEmitter(UtilsModule).addListener('pagerTap', callback)
 }
