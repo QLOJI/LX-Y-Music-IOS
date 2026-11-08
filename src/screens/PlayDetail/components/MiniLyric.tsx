@@ -289,15 +289,17 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
   // 同时短暂（250ms）停掉换行跟随，给 PagerView 的 setPage 命令让出 UI 队列。
   const pauseFollowUntilRef = useRef(0)
   const cancelScrollRef = useRef<() => void>(() => {})
+  const startIdleTimerRef = useRef<() => void>(() => {})
   const handlePagerTap = useCallback((event?: any) => {
     if (isOverlayShownRef.current && event && typeof event.x === 'number' && typeof event.y === 'number' &&
         typeof event.w === 'number' && typeof event.h === 'number') {
       // 手动定位浮层的播放三角：保留 seek，不切页。
       if (event.x > event.w - 96 && Math.abs(event.y - event.h / 2) < 72) return
     }
-    // 【第 237 轮】只给自动跟随让路，绝不清手动定位 / 浮层状态：
-    // 虚线该留就留，长时间没操作仍由原有 idle 定时器回位。手动定位态也不取消回位动画。
-    if (!isPauseScrollRef.current) cancelScrollRef.current()
+    // 【第 238 轮】手动定位 / 回位态：点击算一次操作，重置 1.5s idle 计时（虚线保持），
+    // 不碰回位动画、不隐藏浮层；自动跟随态才取消当前跟随动画给切页让路。
+    if (isPauseScrollRef.current) startIdleTimerRef.current()
+    else cancelScrollRef.current()
     pauseFollowUntilRef.current = Date.now() + 250
     onPress?.()
   }, [onPress])
@@ -718,6 +720,7 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
       })
     }, IDLE_RETURN_MS)
   }, [animateToLine, followActiveLine])
+  startIdleTimerRef.current = startIdleTimer
 
   const clearPauseWatchdog = useCallback(() => {
     if (!pauseWatchdogRef.current) return
