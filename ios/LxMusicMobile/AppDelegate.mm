@@ -7,6 +7,8 @@
 #import <React/RCTEventEmitter.h>
 #import <React/RCTLinkingManager.h>
 #import <React/RCTScrollView.h>
+#import <React/RCTViewManager.h>
+#import <React/RCTConvert.h>
 #import <objc/runtime.h>
 #import <QuartzCore/QuartzCore.h>
 #import <ReactNativeNavigation/ReactNativeNavigation.h>
@@ -7886,6 +7888,17 @@ RCT_EXPORT_METHOD(setPagerPage:(nonnull NSNumber *)reactTag index:(double)index 
     }
     if (pager == nil) { done(NO); return; }
     LXPagerHealOneView(pager);
+    // 清残留的目标页闩锁：goTo 在 _destinationIndex 仍指向目标时会提前返回，
+    // 表现为「第一次点击把目标写进去、之后怎么点都不动」。
+    @try {
+      [pager setValue:@(-1) forKey:@"destinationIndex"];
+    } @catch (NSException *exception) {
+      Ivar ivar = class_getInstanceVariable([pager class], "_destinationIndex");
+      if (ivar != NULL) {
+        NSInteger *value = (NSInteger *)((uint8_t *)(__bridge void *)pager + ivar_getOffset(ivar));
+        if (value != NULL) *value = -1;
+      }
+    }
     SEL goTo = @selector(goTo:animated:disableSwipe:);
     if (![pager respondsToSelector:goTo]) { done(NO); return; }
     typedef void (*LXPagerGoToFn)(id, SEL, NSInteger, BOOL, BOOL);
@@ -9253,6 +9266,60 @@ static void LXStartPagerHealTimer(void) {
   NSLog(@"###NATIVE_DEBUG### bootstrapping ReactNativeNavigation");
   [ReactNativeNavigation bootstrapWithBridge:appDelegate.bridge];
   NSLog(@"###NATIVE_DEBUG### ReactNativeNavigation bootstrap returned");
+}
+
+@end
+
+#pragma mark - LXHoleView（【第 230 轮】CD 中心真挖洞）
+
+// 在 layoutSubviews 里给自身 layer 装 even-odd 遮罩：中心透明，直接透出下层页面背景。
+// 比「JS 传 tag 再设置 mask」可靠 —— 不依赖 tag、桥调用时机和布局是否完成。
+@interface LXHoleView : UIView
+@property (nonatomic, assign) CGFloat holeRatio;
+@end
+
+@implementation LXHoleView
+
+- (void)setHoleRatio:(CGFloat)holeRatio {
+  _holeRatio = holeRatio;
+  [self setNeedsLayout];
+}
+
+- (void)layoutSubviews {
+  [super layoutSubviews];
+  CGRect bounds = self.bounds;
+  if (bounds.size.width <= 0 || bounds.size.height <= 0) return;
+  CGFloat ratio = self.holeRatio > 0 ? self.holeRatio : 0.232;
+  CGFloat radius = bounds.size.width * ratio / 2.0;
+  CAShapeLayer *mask = (CAShapeLayer *)self.layer.mask;
+  if (![mask isKindOfClass:[CAShapeLayer class]]) {
+    mask = [CAShapeLayer layer];
+    self.layer.mask = mask;
+  }
+  mask.frame = bounds;
+  UIBezierPath *path = [UIBezierPath bezierPathWithRect:bounds];
+  [path appendPath:[UIBezierPath bezierPathWithOvalInRect:CGRectMake(
+    CGRectGetMidX(bounds) - radius, CGRectGetMidY(bounds) - radius, radius * 2, radius * 2)]];
+  path.usesEvenOddFillRule = YES;
+  mask.path = path.CGPath;
+  mask.fillRule = kCAFillRuleEvenOdd;
+}
+
+@end
+
+@interface LXHoleViewManager : RCTViewManager
+@end
+
+@implementation LXHoleViewManager
+
+RCT_EXPORT_MODULE(LXHoleView)
+
+- (UIView *)view {
+  return [LXHoleView new];
+}
+
+RCT_CUSTOM_VIEW_PROPERTY(holeRatio, CGFloat, LXHoleView) {
+  view.holeRatio = json ? [RCTConvert CGFloat:json] : 0.232;
 }
 
 @end
