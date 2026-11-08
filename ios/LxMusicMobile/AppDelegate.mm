@@ -7953,31 +7953,21 @@ RCT_EXPORT_METHOD(setPagerPage:(nonnull NSNumber *)reactTag index:(double)index 
           (currentIndex != NSNotFound && (NSUInteger)index < currentIndex)
             ? UIPageViewControllerNavigationDirectionReverse
             : UIPageViewControllerNavigationDirectionForward;
-        [pageVC setViewControllers:@[target] direction:direction animated:animated completion:^(BOOL finished) {
-          LXPagerHealOneView(pager);
-          @try { [pager setValue:@(-1) forKey:@"destinationIndex"]; } @catch (NSException *exception) { (void)exception; }
-        }];
-        done(YES);
-        return;
+        @try {
+          [pageVC setViewControllers:@[target] direction:direction animated:animated completion:^(BOOL finished) {
+            LXPagerHealOneView(pager);
+            @try { [pager setValue:@(-1) forKey:@"destinationIndex"]; } @catch (NSException *exception) { (void)exception; }
+          }];
+          done(YES);
+          return;
+        } @catch (NSException *exception) {
+          (void)exception;
+        }
       }
     }
-    // 回退：库的 goTo（清残留目标页闩锁后调用）
-    @try {
-      [pager setValue:@(-1) forKey:@"destinationIndex"];
-    } @catch (NSException *exception) {
-      Ivar ivar = class_getInstanceVariable([pager class], "_destinationIndex");
-      if (ivar != NULL) {
-        NSInteger *value = (NSInteger *)((uint8_t *)(__bridge void *)pager + ivar_getOffset(ivar));
-        if (value != NULL) *value = -1;
-      }
-    }
-    SEL goTo = @selector(goTo:animated:disableSwipe:);
-    if (![pager respondsToSelector:goTo]) { done(NO); return; }
-    typedef void (*LXPagerGoToFn)(id, SEL, NSInteger, BOOL, BOOL);
-    LXPagerGoToFn fn = (LXPagerGoToFn)[pager methodForSelector:goTo];
-    if (fn == NULL) { done(NO); return; }
-    fn(pager, goTo, (NSInteger)index, animated, YES);
-    done(YES);
+    // 公开 API 不可用：交回 JS `setPage` 兜底。**不再调用私有 goTo** ——
+    // IMP 签名随库版本漂移，之前就是它把 App 打崩的。
+    done(NO);
   });
 }
 
@@ -9148,12 +9138,15 @@ static UIView *LXPagerFindPagerView(UIView *view) {
   return nil;
 }
 
-// 【第 231 轮】取库维护的页面控制器数组：优先 KVC，其次 runtime 扫描（数组 / 字典两种形态）。
-// 这是「公开 setViewControllers 切页」的输入；拿不到时调用方回退到 goTo。
+// 【第 234 轮】只走 KVC：runtime 扫描 ivar 时 `object_getIvar` 对非对象 / weak ivar 不安全，
+// 是点击闪退的嫌疑源。拿不到就返回 nil，由调用方 `done(NO)` 让 JS `setPage` 兜底。
 static NSArray *LXPagerControllers(UIView *pager) {
   @try {
     id value = [pager valueForKey:@"reactViewControllers"];
-    if ([value isKindOfClass:[NSArray class]] && [(NSArray *)value count] > 0) return value;
+    if ([value isKindOfClass:[NSArray class]]) {
+      NSArray *arr = (NSArray *)value;
+      if (arr.count > 0 && [arr.firstObject isKindOfClass:[UIViewController class]]) return arr;
+    }
     if ([value isKindOfClass:[NSDictionary class]]) {
       NSDictionary *dict = (NSDictionary *)value;
       NSArray *keys = [dict.allKeys sortedArrayUsingComparator:^NSComparisonResult(id a, id b) {
@@ -9169,25 +9162,7 @@ static NSArray *LXPagerControllers(UIView *pager) {
   } @catch (NSException *exception) {
     (void)exception;
   }
-  unsigned int count = 0;
-  Ivar *ivars = class_copyIvarList([pager class], &count);
-  NSArray *result = nil;
-  for (unsigned int i = 0; i < count; i++) {
-    const char *name = ivar_getName(ivars[i]);
-    if (name == NULL) continue;
-    NSString *ivarName = [NSString stringWithUTF8String:name];
-    if (![ivarName containsString:@"ontroller"]) continue;
-    id value = object_getIvar(pager, ivars[i]);
-    if ([value isKindOfClass:[NSArray class]]) {
-      NSArray *arr = (NSArray *)value;
-      if (arr.count > 0 && [arr.firstObject isKindOfClass:[UIViewController class]]) {
-        result = arr;
-        break;
-      }
-    }
-  }
-  if (ivars != NULL) free(ivars);
-  return result;
+  return nil;
 }
 
 static void LXPagerHealWalk(UIView *view, NSInteger depth) {
