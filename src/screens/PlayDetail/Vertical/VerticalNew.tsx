@@ -20,6 +20,7 @@ import { designTypography } from '@/theme/DesignTokens'
 import { useWindowSize } from '@/utils/hooks'
 import { COMPONENT_IDS } from '@/config/constant'
 import { useRecoverablePager } from '@/screens/Home/Views/useRecoverablePager'
+import { pop } from '@/navigation/utils'
 
 const LyricPage = ({ pagerHeight = 0, isActive = false }: { pagerHeight?: number, isActive?: boolean }) => {
   // 歌词页始终预挂载（pagerHeight 就绪后），isActive 只控制滚动/定位：
@@ -648,6 +649,7 @@ const VerticalNew = memo(({ componentId }: { componentId: string }) => {
           style={styles.pagerView}
           ref={pagerViewRef}
           scrollEnabled={!isProgressDragging}
+          onSwipeBack={() => { void pop(componentId) }}
           onLayout={(e) => {
             const h = Math.round(e.nativeEvent.layout.height)
             if (h > 0 && h !== pagerHeight) setPagerHeight(h)

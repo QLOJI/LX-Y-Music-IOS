@@ -1,5 +1,6 @@
 import { Children, forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
 import {
+  PanResponder,
   ScrollView,
   View,
   type LayoutChangeEvent,
@@ -43,28 +44,41 @@ interface Props {
   onPageScroll?: (event: ScrollEvent) => void
   onPageScrollStateChanged?: (event: PageStateEvent) => void
   onLayout?: (event: LayoutChangeEvent) => void
+  /** 从屏幕左边缘向右滑返回上一页（替代被横向 ScrollView 吃掉的 RNN 边缘返回手势）。 */
+  onSwipeBack?: () => void
   style?: StyleProp<ViewStyle>
   children?: React.ReactNode
 }
 
 // 程序化滚动的落页兜底：iOS 的 scrollTo(animated:true) 不保证触发 onMomentumScrollEnd。
 const PROGRAMMATIC_SETTLE_MS = 360
-// 零速度松手不会产生 momentum：等这么久仍没有 momentum 就按当前偏移吸附。
-const NO_MOMENTUM_SNAP_MS = 180
 const MAX_INDEX = 1
 
 const VerticalPager = forwardRef<VerticalPagerHandle, Props>((props, ref) => {
   const { initialPage = 0, scrollEnabled = true } = props
+  const swipeBackRef = useRef(props.onSwipeBack)
+  swipeBackRef.current = props.onSwipeBack
+  // 【第 246 轮】横向 ScrollView 会吃掉 RNN 的左边缘右滑返回手势；在根 View 的 capture
+  // 阶段抢回「从左边缘开始、水平向右」的手势，松手距离够就 pop。
+  const panResponder = useMemo(() => PanResponder.create({
+    onMoveShouldSetPanResponderCapture: (event, gesture) => {
+      if (gesture.x0 > 24) return false
+      if (gesture.dx <= 8) return false
+      return Math.abs(gesture.dx) > Math.abs(gesture.dy) * 1.2
+    },
+    onPanResponderRelease: (event, gesture) => {
+      if (gesture.dx > 60) swipeBackRef.current?.()
+    },
+  }), [])
   const scrollRef = useRef<ScrollView>(null)
   const [size, setSize] = useState({ width: 0, height: 0 })
   const widthRef = useRef(0)
   const currentIndexRef = useRef(Math.max(0, Math.min(MAX_INDEX, initialPage)))
   const scrollingRef = useRef(false)
   const programmaticRef = useRef(false)
-  const momentumRef = useRef(false)
   const lastOffsetRef = useRef(0)
+  const dragStartXRef = useRef(0)
   const settleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const dragTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [enabled, setEnabled] = useState(true)
   const initialPlacedRef = useRef(false)
 
@@ -85,20 +99,12 @@ const VerticalPager = forwardRef<VerticalPagerHandle, Props>((props, ref) => {
       settleTimerRef.current = null
     }
   }, [])
-  const clearDragTimer = useCallback(() => {
-    if (dragTimerRef.current) {
-      clearTimeout(dragTimerRef.current)
-      dragTimerRef.current = null
-    }
-  }, [])
-
   const scrollToIndex = useCallback((index: number, animated: boolean) => {
     const width = widthRef.current
     if (width <= 0) return
     const next = Math.max(0, Math.min(MAX_INDEX, index))
     scrollingRef.current = true
     programmaticRef.current = true
-    clearDragTimer()
     clearSettleTimer()
     emitState('settling')
     scrollRef.current?.scrollTo({ x: next * width, animated })
@@ -110,7 +116,7 @@ const VerticalPager = forwardRef<VerticalPagerHandle, Props>((props, ref) => {
       programmaticRef.current = false
       emitState('idle')
     }, animated ? PROGRAMMATIC_SETTLE_MS : 0)
-  }, [clearDragTimer, clearSettleTimer, emitState, settle])
+  }, [clearSettleTimer, emitState, settle])
 
   // 惯性结束后按最终偏移吸附到最近页（只做最后那一点点，速度已经交给系统惯性）。
   const snapToNearest = useCallback(() => {
@@ -172,35 +178,29 @@ const VerticalPager = forwardRef<VerticalPagerHandle, Props>((props, ref) => {
 
   const handleScrollBeginDrag = useCallback(() => {
     clearSettleTimer()
-    clearDragTimer()
     programmaticRef.current = false
-    momentumRef.current = false
+    dragStartXRef.current = lastOffsetRef.current
     scrollingRef.current = true
     emitState('dragging')
-  }, [clearDragTimer, clearSettleTimer, emitState])
+  }, [clearSettleTimer, emitState])
 
-  // 【第 244 轮】松手不再接管：让系统按用户原来的速度继续惯性滚动（不再用固定动画把速度
-  // 重置，用户报「阻力太大 / 滑不过去」）。只有零速度松手不会产生 momentum，才在 180ms
-  // 后按当前偏移吸附；惯性结束后的最后一点吸附由 onMomentumScrollEnd 做。
+  // 【第 245 轮】一松手立刻吸附，动画与点击切页完全相同（PROGRAMMATIC_SETTLE_MS）：
+  // 按「这次拖动的方向」决定目标页（位移 > 8pt 就认方向），避免半路停留，也避免
+  // 轻扫一点因为没过半而滑不过去。
   const handleScrollEndDrag = useCallback(() => {
-    emitState('settling')
-    clearDragTimer()
-    dragTimerRef.current = setTimeout(() => {
-      dragTimerRef.current = null
-      if (momentumRef.current) return
-      snapToNearest()
-    }, NO_MOMENTUM_SNAP_MS)
-  }, [clearDragTimer, emitState, snapToNearest])
+    const width = widthRef.current
+    if (width <= 0) return
+    const delta = lastOffsetRef.current - dragStartXRef.current
+    const offset = lastOffsetRef.current / width
+    let target: number
+    if (delta > 8) target = 1
+    else if (delta < -8) target = 0
+    else target = offset >= 0.5 ? 1 : 0
+    scrollToIndex(target, true)
+  }, [scrollToIndex])
 
-  const handleMomentumScrollBegin = useCallback(() => {
-    clearDragTimer()
-    momentumRef.current = true
-    scrollingRef.current = true
-    emitState('settling')
-  }, [clearDragTimer, emitState])
-
+  // 手势被系统取消等极端路径的兜底：没有程序化动画在跑时，按当前偏移落页。
   const handleMomentumScrollEnd = useCallback(() => {
-    momentumRef.current = false
     if (programmaticRef.current) return
     snapToNearest()
   }, [snapToNearest])
@@ -217,7 +217,7 @@ const VerticalPager = forwardRef<VerticalPagerHandle, Props>((props, ref) => {
   )
 
   return (
-    <View style={props.style} collapsable={false} onLayout={handleLayout}>
+    <View style={props.style} collapsable={false} onLayout={handleLayout} {...panResponder.panHandlers}>
       {size.width > 0 && size.height > 0 ? (
         <ScrollView
           ref={scrollRef}
@@ -230,7 +230,6 @@ const VerticalPager = forwardRef<VerticalPagerHandle, Props>((props, ref) => {
           onScroll={handleScroll}
           onScrollBeginDrag={handleScrollBeginDrag}
           onScrollEndDrag={handleScrollEndDrag}
-          onMomentumScrollBegin={handleMomentumScrollBegin}
           onMomentumScrollEnd={handleMomentumScrollEnd}
           style={{ flex: 1 }}
           contentContainerStyle={contentStyle}
