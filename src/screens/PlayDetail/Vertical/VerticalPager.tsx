@@ -1,4 +1,4 @@
-import { Children, forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react'
+import { Children, forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
 import {
   ScrollView,
   View,
@@ -194,6 +194,15 @@ const VerticalPager = forwardRef<VerticalPagerHandle, Props>((props, ref) => {
   }, [emitState, settle])
 
   const pages = Children.toArray(props.children)
+  // 只在尺寸变化时重建样式对象：每次父渲染都传新对象会让原生反复重排内容。
+  const contentStyle = useMemo(
+    () => ({ width: size.width * (MAX_INDEX + 1), height: size.height }),
+    [size.width, size.height],
+  )
+  const pageStyles = useMemo(
+    () => [0, 1].map(() => ({ width: size.width, height: size.height })),
+    [size.width, size.height],
+  )
 
   return (
     <View style={props.style} collapsable={false} onLayout={handleLayout}>
@@ -213,11 +222,12 @@ const VerticalPager = forwardRef<VerticalPagerHandle, Props>((props, ref) => {
           onMomentumScrollBegin={handleMomentumScrollBegin}
           onMomentumScrollEnd={handleMomentumScrollEnd}
           style={{ flex: 1 }}
-          contentContainerStyle={{ width: size.width * (MAX_INDEX + 1), height: size.height }}
-          contentOffset={{ x: currentIndexRef.current * size.width, y: 0 }}
+          contentContainerStyle={contentStyle}
+          // 不传 contentOffset：它每次 prop diff 都会把原生滚动位置写回旧值，
+          // 滑动中会表现为「被拉回 / 左右抖」。初始页由尺寸就绪后的 scrollTo 定位。
         >
           {[0, 1].map(index => (
-            <View key={index} style={{ width: size.width, height: size.height }}>
+            <View key={index} style={pageStyles[index]}>
               {pages[index] ?? null}
             </View>
           ))}
