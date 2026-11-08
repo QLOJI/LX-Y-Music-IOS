@@ -1380,6 +1380,19 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
   // 那条通道本轮一字未动。
   const lastLineTapRef = useRef<{ index: number, at: number }>({ index: -1, at: 0 })
   const handleLinePress = useCallback((index: number) => {
+    // 【第 249 轮】暂停时没有自动跟随循环：单击歌词行如果正处于手动定位/偏离态，
+    // 立即回位到当前加载进度（播放时由循环跟随，这里统一兜底）。虚线随之收起。
+    if (isPauseScrollRef.current || isOverlayShownRef.current) {
+      isPauseScrollRef.current = false
+      dragStartOffsetRef.current = null
+      isOverlayShownRef.current = false
+      playLineRef.current?.setVisible(false)
+      if (scrollTimoutRef.current) {
+        clearTimeout(scrollTimoutRef.current)
+        scrollTimoutRef.current = null
+      }
+      handleScrollToActive(lineRef.current.line, true)
+    }
     const now = Date.now()
     const lastTap = lastLineTapRef.current
     if (lastTap.index !== index || now - lastTap.at > LYRIC_DOUBLE_TAP_MS) {

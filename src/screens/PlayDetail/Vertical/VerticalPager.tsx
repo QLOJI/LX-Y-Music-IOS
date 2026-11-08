@@ -58,10 +58,13 @@ const VerticalPager = forwardRef<VerticalPagerHandle, Props>((props, ref) => {
   const { initialPage = 0, scrollEnabled = true } = props
   const swipeBackRef = useRef(props.onSwipeBack)
   swipeBackRef.current = props.onSwipeBack
-  // 【第 247 轮】起点就在左边缘 14pt 内时直接 capture：封面页和歌词页都稳定生效，
-  // 不再等移动阶段（子 ScrollView 会先抢）。松手水平向右且距离够才 pop。
+  // 【第 249 轮】只有封面页的左边缘才接管右滑返回：歌词页不 pop（边缘右滑照常滚回封面）。
   const panResponder = useMemo(() => PanResponder.create({
-    onStartShouldSetPanResponderCapture: (event) => event.nativeEvent.pageX <= 14,
+    onStartShouldSetPanResponderCapture: (event) => {
+      if (currentIndexRef.current !== 0) return false
+      if (lastOffsetRef.current > widthRef.current * 0.05) return false
+      return event.nativeEvent.pageX <= 14
+    },
     onPanResponderRelease: (event, gesture) => {
       if (gesture.dx > 60 && Math.abs(gesture.dx) > Math.abs(gesture.dy)) swipeBackRef.current?.()
     },
@@ -179,15 +182,15 @@ const VerticalPager = forwardRef<VerticalPagerHandle, Props>((props, ref) => {
     emitState('dragging')
   }, [clearSettleTimer, emitState])
 
-  // 【第 248 轮】松手立即吸附，动画与点击切页完全相同；阈值按「相对起点滑过 1/3」，
-  // 没过 1/3 就反向吸附回起点页。一次手势只认一个目标方向（scrollToIndex 里加锁）。
+  // 【第 249 轮】松手立即吸附，动画与点击切页完全相同；阈值按「相对起点滑过 1/8」，
+  // 没过 1/8 就反向吸附回起点页。一次手势只认一个目标方向（scrollToIndex 里加锁）。
   const handleScrollEndDrag = useCallback(() => {
     const width = widthRef.current
     if (width <= 0) return
     const start = dragStartPageRef.current
     const offset = lastOffsetRef.current / width
     const delta = offset - start
-    const target = Math.abs(delta) >= 1 / 3
+    const target = Math.abs(delta) >= 1 / 8
       ? (delta > 0 ? start + 1 : start - 1)
       : start
     scrollToIndex(Math.max(0, Math.min(MAX_INDEX, target)), true)
