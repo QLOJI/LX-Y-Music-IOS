@@ -7669,6 +7669,11 @@ RCT_EXPORT_MODULE();
                                              selector:@selector(handlePlayerSeeked:)
                                                  name:LXTrackPlayerLifecycleNotificationName
                                                object:nil];
+    // 【第 235 轮】小歌词常驻按钮点击 → 转成 pagerTap 事件（JS 侧监听）。
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(handlePagerTapNotification:)
+                                                 name:@"LXPagerTapNotification"
+                                               object:nil];
   }
   return self;
 }
@@ -7903,6 +7908,13 @@ RCT_EXPORT_METHOD(detachPagerTap:(nonnull NSNumber *)reactTag) {
 - (void)handlePagerTapGesture:(UITapGestureRecognizer *)gesture {
   if (!self.hasListeners) return;
   [self sendEventWithName:@"pagerTap" body:@{}];
+}
+
+- (void)handlePagerTapNotification:(NSNotification *)notification {
+  if (!self.hasListeners) return;
+  dispatch_async(dispatch_get_main_queue(), ^{
+    [self sendEventWithName:@"pagerTap" body:@{}];
+  });
 }
 
 // 【第 227 轮】点击小歌词：主线程同一拍先清 PagerView 闩锁，再走库的 goTo 动画。
@@ -9417,8 +9429,9 @@ RCT_CUSTOM_VIEW_PROPERTY(holeRatio, CGFloat, LXHoleView) {
 
 // 常驻包裹视图：自己在 didMoveToWindow 安装 UITapGestureRecognizer，只识别点击；
 // cancelsTouchesInView=NO，不拦子视图（FlatList 滚动 / 行内长按照常）。
+// 【第 235 轮】点击只发 NSNotification，由 UtilsModule 转成既有的 pagerTap 事件 ——
+// 不再用 RCTDirectEventBlock（上一轮点一下就闪退的嫌疑源）。
 @interface LXPagerTapView : RCTView
-@property (nonatomic, copy) RCTDirectEventBlock onTap;
 @property (nonatomic, strong) UITapGestureRecognizer *tapGesture;
 @end
 
@@ -9437,7 +9450,11 @@ RCT_CUSTOM_VIEW_PROPERTY(holeRatio, CGFloat, LXHoleView) {
 }
 
 - (void)handleTap:(UITapGestureRecognizer *)gesture {
-  if (self.onTap != nil) self.onTap(@{});
+  @try {
+    [[NSNotificationCenter defaultCenter] postNotificationName:@"LXPagerTapNotification" object:nil];
+  } @catch (NSException *exception) {
+    (void)exception;
+  }
 }
 
 @end
@@ -9451,10 +9468,6 @@ RCT_EXPORT_MODULE(LXPagerTapView)
 
 - (UIView *)view {
   return [LXPagerTapView new];
-}
-
-RCT_CUSTOM_VIEW_PROPERTY(onTap, RCTDirectEventBlock, LXPagerTapView) {
-  view.onTap = json;
 }
 
 @end
