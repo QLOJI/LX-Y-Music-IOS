@@ -11,6 +11,8 @@ import {
   View,
   Animated,
   Easing,
+  Platform,
+  requireNativeComponent,
 } from 'react-native'
 import Text from '@/components/common/Text'
 import KaraokeLyric from './KaraokeLyric'
@@ -26,7 +28,6 @@ import { COMPONENT_IDS } from '@/config/constant'
 import playerState from '@/store/player/state'
 import { useIsPlay } from '@/store/player/hook'
 import { IDLE_RETURN_MS, LINE_ZOOM_MS, RETURN_TO_ACTIVE_MS, easeInOutSine } from '@/screens/PlayDetail/lyricAnimation'
-import { attachPagerTap, detachPagerTap, addPagerTapListener } from '@/utils/nativeModules/utils'
 
 // 迷你歌词 = 封面页上的「上一行 / 当前行 / 下一行」**定窗**歌词窗（窗口高度固定，行高逐行算）。
 //
@@ -106,6 +107,11 @@ export const getMiniLyricRowHeight = (hasTranslation: boolean) => {
 const hasRealTranslation = (line: Line | undefined) => ((line?.extendedLyrics?.[0] ?? '').trim().length > 0)
 // 空占位必须用不换行空格：RN 里空字符串的 <Text> 高度为 0
 const BLANK = ' '
+// 【第 233 轮】常驻隐形按钮：原生 RCTView 子类在 didMoveToWindow 自己装 tap 手势，
+// 只识别点击、滑动不拦；不依赖 tag / 桥，页面重建后自动恢复。
+const PagerTapView = Platform.OS === 'ios'
+  ? requireNativeComponent<{ onTap?: () => void }>('LXPagerTapView')
+  : View
 
 export interface MiniLyricProps {
   /** 点击歌词：切换到歌词页（保持向后兼容）。 */
@@ -278,19 +284,12 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
   activeLineRef.current = activeLine
   const visibleRef = useRef(visible)
   visibleRef.current = visible
-  // 【第 232 轮】原生 tap 手势（隐形按钮）：只识别点击，滑动自动失败、不拦列表滚动。
-  // 浮层 / 手动定位期间忽略，避免点播放三角被当成切页。
-  const tapTagRef = useRef<number | null>(null)
-  useEffect(() => {
-    const sub = addPagerTapListener(() => {
-      if (isPauseScrollRef.current || isOverlayShownRef.current) return
-      onPress?.()
-    })
-    return () => sub.remove()
+  // 【第 233 轮】常驻隐形按钮的回调：滚动 / 惯性 / 浮层期间一律忽略，
+  // 只有真正的点击（含连续点击）才切页；点击不再冻结换行。
+  const handlePagerTap = useCallback(() => {
+    if (isPauseScrollRef.current || isOverlayShownRef.current || isMomentumRef.current) return
+    onPress?.()
   }, [onPress])
-  useEffect(() => () => {
-    if (tapTagRef.current != null) detachPagerTap(tapTagRef.current)
-  }, [])
   // 当前行强制单行显示：内容宽度实测值（用于判断是否溢出 + 横向滚动范围）。
   // 带行号，换行首帧不会拿上一行的宽度去算滚动范围。
   const [activeTextSize, setActiveTextSize] = useState<{ line: number, width: number }>({ line: -1, width: 0 })
@@ -1117,15 +1116,9 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
     // 根节点自己不再带左右内边距，于是绝对定位的定位浮层（left/right 0）与大歌词一样贴到屏幕边：
     // 虚线右端、播放三角离右缘的距离与大歌词完全一致（用户点名的问题）。
     // 文本内缩改由列表的 contentContainerStyle 承担（见 lineInsetH），文字位置不变。
-    <View
+    <PagerTapView
       style={[styles.container, { height: containerHeight, marginHorizontal: -bleedH }, style]}
-      onLayout={(e) => {
-        const tag = (e as any).target
-        if (typeof tag === 'number') {
-          tapTagRef.current = tag
-          attachPagerTap(tag)
-        }
-      }}
+      onTap={handlePagerTap}
       // 容器级触摸判定：短按切歌词页（行内 Pressable 在原生手势竞争下会丢 onPress）。
       onTouchStart={handleTapStart}
       onTouchMove={handleTapMove}
@@ -1173,7 +1166,7 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
           <PlayLine ref={playLineRef} topPercent={0.5} onPlayLine={handlePlayLine} />
         ) : null
       }
-    </View>
+    </PagerTapView>
   )
 }
 
