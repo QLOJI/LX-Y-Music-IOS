@@ -49,8 +49,6 @@ interface Props {
 
 // 程序化滚动的落页兜底：iOS 的 scrollTo(animated:true) 不保证触发 onMomentumScrollEnd。
 const PROGRAMMATIC_SETTLE_MS = 360
-// 松手后没有惯性（慢拖/零速度）时，等这么久仍无 momentum 就按当前偏移落页。
-const DRAG_SETTLE_MS = 150
 const MAX_INDEX = 1
 
 const VerticalPager = forwardRef<VerticalPagerHandle, Props>((props, ref) => {
@@ -60,10 +58,8 @@ const VerticalPager = forwardRef<VerticalPagerHandle, Props>((props, ref) => {
   const widthRef = useRef(0)
   const currentIndexRef = useRef(Math.max(0, Math.min(MAX_INDEX, initialPage)))
   const scrollingRef = useRef(false)
-  const momentumRef = useRef(false)
   const lastOffsetRef = useRef(0)
   const settleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const dragTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [enabled, setEnabled] = useState(true)
   const initialPlacedRef = useRef(false)
 
@@ -84,19 +80,11 @@ const VerticalPager = forwardRef<VerticalPagerHandle, Props>((props, ref) => {
       settleTimerRef.current = null
     }
   }, [])
-  const clearDragTimer = useCallback(() => {
-    if (dragTimerRef.current) {
-      clearTimeout(dragTimerRef.current)
-      dragTimerRef.current = null
-    }
-  }, [])
-
   const scrollToIndex = useCallback((index: number, animated: boolean) => {
     const width = widthRef.current
     if (width <= 0) return
     const next = Math.max(0, Math.min(MAX_INDEX, index))
     scrollingRef.current = true
-    clearDragTimer()
     clearSettleTimer()
     emitState('settling')
     scrollRef.current?.scrollTo({ x: next * width, animated })
@@ -105,10 +93,9 @@ const VerticalPager = forwardRef<VerticalPagerHandle, Props>((props, ref) => {
       settle(next)
       lastOffsetRef.current = next * width
       scrollingRef.current = false
-      momentumRef.current = false
       emitState('idle')
     }, animated ? PROGRAMMATIC_SETTLE_MS : 0)
-  }, [clearDragTimer, clearSettleTimer, emitState, settle])
+  }, [clearSettleTimer, emitState, settle])
 
   useImperativeHandle(ref, () => ({
     setPage: (index: number, animated = true) => { scrollToIndex(index, animated) },
@@ -153,43 +140,28 @@ const VerticalPager = forwardRef<VerticalPagerHandle, Props>((props, ref) => {
 
   const handleScrollBeginDrag = useCallback(() => {
     clearSettleTimer()
-    clearDragTimer()
-    momentumRef.current = false
     scrollingRef.current = true
     emitState('dragging')
-  }, [clearDragTimer, clearSettleTimer, emitState])
+  }, [clearSettleTimer, emitState])
 
+  // 【第 243 轮】手动松手后由我们自己接管吸附：pagingEnabled 的系统减速在尾部会突然放慢
+  // （用户报「快到位时顿一下」），点击切页的 scrollTo 固定动画反而顺滑。这里统一成同一条
+  // scrollTo 动画 —— 按当前偏移是否过半决定目标页，动画曲线与点击切页完全一致。
   const handleScrollEndDrag = useCallback(() => {
-    emitState('settling')
-    clearDragTimer()
-    dragTimerRef.current = setTimeout(() => {
-      dragTimerRef.current = null
-      if (momentumRef.current) return
-      const width = widthRef.current
-      if (width <= 0) return
-      const index = Math.max(0, Math.min(MAX_INDEX, Math.round(lastOffsetRef.current / width)))
-      scrollRef.current?.scrollTo({ x: index * width, animated: false })
-      lastOffsetRef.current = index * width
-      settle(index)
-      scrollingRef.current = false
-      emitState('idle')
-    }, DRAG_SETTLE_MS)
-  }, [clearDragTimer, emitState, settle])
-
-  const handleMomentumScrollBegin = useCallback(() => {
-    clearDragTimer()
-    momentumRef.current = true
-    scrollingRef.current = true
-    emitState('settling')
-  }, [clearDragTimer, emitState])
-
-  const handleMomentumScrollEnd = useCallback(() => {
     const width = widthRef.current
     if (width <= 0) return
-    momentumRef.current = false
+    const offset = lastOffsetRef.current / width
+    const target = offset >= 0.5 ? 1 : 0
+    scrollToIndex(target, true)
+  }, [scrollToIndex])
+
+  // 手势被系统取消等极端路径的兜底：没有程序化动画在跑时，按当前偏移落页。
+  const handleMomentumScrollEnd = useCallback(() => {
+    if (scrollingRef.current) return
+    const width = widthRef.current
+    if (width <= 0) return
     const index = Math.max(0, Math.min(MAX_INDEX, Math.round(lastOffsetRef.current / width)))
     settle(index)
-    scrollingRef.current = false
     emitState('idle')
   }, [emitState, settle])
 
@@ -210,7 +182,6 @@ const VerticalPager = forwardRef<VerticalPagerHandle, Props>((props, ref) => {
         <ScrollView
           ref={scrollRef}
           horizontal
-          pagingEnabled
           bounces={false}
           alwaysBounceHorizontal={false}
           showsHorizontalScrollIndicator={false}
@@ -219,7 +190,6 @@ const VerticalPager = forwardRef<VerticalPagerHandle, Props>((props, ref) => {
           onScroll={handleScroll}
           onScrollBeginDrag={handleScrollBeginDrag}
           onScrollEndDrag={handleScrollEndDrag}
-          onMomentumScrollBegin={handleMomentumScrollBegin}
           onMomentumScrollEnd={handleMomentumScrollEnd}
           style={{ flex: 1 }}
           contentContainerStyle={contentStyle}

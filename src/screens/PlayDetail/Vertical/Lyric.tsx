@@ -926,8 +926,10 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
     }
     isPauseScrollRef.current = false
     dragStartOffsetRef.current = null
-    isOverlayShownRef.current = false
-    playLineRef.current?.setVisible(false)
+    // 【第 243 轮】点击三角只 seek，浮层保持可见；1.5s 后由 armIdleReturn 统一隐藏并回位。
+    isOverlayShownRef.current = true
+    playLineRef.current?.setVisible(true)
+    armIdleReturn()
     // 目标时间若等于/超过歌曲总时长，会被当作「已播放到结尾」而直接切下一首，
     // 这里收回到总长之前一小段（与参考工程同源，防误跳歌）
     const maxTime = playerState.progress.maxPlayTime
@@ -1396,11 +1398,12 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
       scrollCancelRef.current = null
     }
     isPauseScrollRef.current = false
-    // 双击歌词行是一次主动跳转，等同于点了浮层的播放三角：无论浮层当时是否显示，
-    // 都要清掉定位态与浮层，避免「跳完行之后浮层还挂在屏幕上」。
+    // 【第 243 轮】双击 seek 不再立刻收起浮层：点击算一次操作，浮层保持可见，
+    // 1.5s 后由 armIdleReturn 统一隐藏并回位（与三角 seek 同一口径）。
     dragStartOffsetRef.current = null
-    isOverlayShownRef.current = false
-    playLineRef.current?.setVisible(false)
+    isOverlayShownRef.current = true
+    playLineRef.current?.setVisible(true)
+    armIdleReturn()
     const line = lyricLines[index]
     if (line) {
       // 对齐上游：行跳转（双击）只 seek 音频（setProgress），歌词行不立即镜像——歌词跟

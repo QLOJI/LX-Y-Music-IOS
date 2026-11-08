@@ -623,6 +623,19 @@ export default () => {
     }
   }
 
+  // 【第 243 轮】停手回位的统一入口：松手、双击 seek、三角 seek 共用。
+  const armIdleReturn = () => {
+    if (scrollTimoutRef.current) clearTimeout(scrollTimoutRef.current)
+    scrollTimoutRef.current = setTimeout(() => {
+      scrollTimoutRef.current = null
+      isPauseScrollRef.current = false
+      dragStartOffsetRef.current = null
+      isOverlayShownRef.current = false
+      playLineRef.current?.setVisible(false)
+      handleScrollToActive()
+    }, IDLE_RETURN_MS)
+  }
+
   const onScrollEndDrag = () => {
     if (!isPauseScrollRef.current) return
     if (dragStartOffsetRef.current == null) return
@@ -643,19 +656,7 @@ export default () => {
       playLineRef.current?.setVisible(false)
       return
     }
-    if (scrollTimoutRef.current) clearTimeout(scrollTimoutRef.current)
-    scrollTimoutRef.current = setTimeout(() => {
-      scrollTimoutRef.current = null
-      isPauseScrollRef.current = false
-      // 回位的同时收起浮层：浮层虚线是按滚动偏移实时算的，回位动画期间不收，
-      // 虚线会从用户停手的位置一路扫回当前行，像一条乱窜的线。
-      dragStartOffsetRef.current = null
-      isOverlayShownRef.current = false
-      playLineRef.current?.setVisible(false)
-      // 到时即回位，与是否在播放无关（Bug 5，对齐竖屏与同屏小歌词的停手回位）。
-      // 参考工程此回调带「暂停即 return」守卫，本行属有意分歧，勿以参考为准改回。
-      handleScrollToActive()
-    }, IDLE_RETURN_MS)
+    armIdleReturn()
   }
 
   // 点浮层的播放三角：从虚线指向的那一行开始播。
@@ -667,8 +668,10 @@ export default () => {
     }
     isPauseScrollRef.current = false
     dragStartOffsetRef.current = null
-    isOverlayShownRef.current = false
-    playLineRef.current?.setVisible(false)
+    // 【第 243 轮】三角 seek 后浮层保持，1.5s 后由 armIdleReturn 统一隐藏并回位。
+    isOverlayShownRef.current = true
+    playLineRef.current?.setVisible(true)
+    armIdleReturn()
     // 目标时间若等于/超过歌曲总时长，会被当作「已播放到结尾」而直接切下一首，
     // 这里收回到总长之前一小段（与参考工程同源，防误跳歌）
     const maxTime = playerState.progress.maxPlayTime
@@ -982,11 +985,12 @@ export default () => {
       scrollCancelRef.current = null
     }
     isPauseScrollRef.current = false
-    // 双击歌词行是一次主动跳转，等同于点了浮层的播放三角：无论浮层当时是否显示，
-    // 都要清掉定位态与浮层，避免「跳完行之后浮层还挂在屏幕上」。
+    // 【第 243 轮】双击 seek 不再立刻收起浮层：点击算一次操作，浮层保持，
+    // 1.5s 后由 armIdleReturn 统一隐藏并回位。
     dragStartOffsetRef.current = null
-    isOverlayShownRef.current = false
-    playLineRef.current?.setVisible(false)
+    isOverlayShownRef.current = true
+    playLineRef.current?.setVisible(true)
+    armIdleReturn()
     // 双击歌词视为用户主动跳转：强制立即定位，越过连续滚动循环，使高亮行与音频绝对同步。
     setForceScroll(true)
     const line = lyricLines[index]

@@ -967,8 +967,10 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
     }
     isPauseScrollRef.current = false
     dragStartOffsetRef.current = null
-    isOverlayShownRef.current = false
-    playLineRef.current?.setVisible(false)
+    // 【第 243 轮】点击三角只 seek，浮层保持可见；1.5s 后由 idle 定时器统一隐藏并回位。
+    isOverlayShownRef.current = true
+    playLineRef.current?.setVisible(true)
+    startIdleTimerRef.current()
     // 目标时间若等于/超过歌曲总时长，会被当作「已播放到结尾」而直接切下一首，
     // 这里收回到总长之前一小段（与 REF 同源，防误跳歌）
     const maxTime = playerState.progress.maxPlayTime
