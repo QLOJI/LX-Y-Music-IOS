@@ -74,39 +74,6 @@ const handleScrollY = (
 
   const animateScroll = () => {
     element.lx_scrollTimeout = undefined
-    // if (element.lx_scrollNextParams && currentTime > duration * 0.75) {
-    //   const [_element, info, _to, duration, fn] = element.lx_scrollNextParams
-    //   if (to > _to && info.contentOffset.y < val) info.contentOffset.y = val
-    //   clean()
-    //   handleScrollY(_element, info, _to, duration, fn)
-    //   return
-    // }
-    // if (element.lx_scrollLockKey != key) {
-    //   if (element.lx_scrollNextParams) {
-    //     // element.lx_scrollNextParams[1].contentOffset.y = val
-    //     // handleScrollY(element.lx_scrollNextParams[0], element.lx_scrollNextParams[1], element.lx_scrollNextParams[2], element.lx_scrollNextParams[3], element.lx_scrollNextParams[4])
-    //     start = val
-    //     info = element.lx_scrollNextParams[1]
-    //     to = element.lx_scrollNextParams[2]
-    //     fn = element.lx_scrollNextParams[4]
-    //     if (to > start) {
-    //       let maxScrollTop = info.contentSize.height - info.layoutMeasurement.height
-    //       if (to > maxScrollTop) to = maxScrollTop
-    //     } else if (to < start) {
-    //       if (to < 0) to = 0
-    //     } else {
-    //       clean()
-    //       fn()
-    //       return
-    //     }
-    //     change = to - val
-
-    //     element.lx_scrollLockKey = key
-    //   } else {
-    //     fn()
-    //     return
-    //   }
-    // }
     currentTime += increment
     val = Math.trunc(easeInOutQuad(currentTime, start, change, duration))
     element.scrollToOffset({ offset: val, animated: false })
@@ -139,6 +106,63 @@ const handleScrollY = (
  * @param fn 滚动完成后的回调
  * @param delay 延迟执行时间
  */
+/**
+ * rAF 版定时长滚动：与 scrollTo 的边界/回调口径一致，区别是逐帧按**浮点**偏移写入，
+ * 不跟 10ms 定时器错拍（120Hz 下尤其明显），用于歌词回位这类必须丝滑的路径。
+ * 取消函数被调用时不触发完成回调。
+ */
+export const scrollToRaf = (
+  element: ScrollElement<FlatList<any>> | null,
+  info: NativeSyntheticEvent<NativeScrollEvent>['nativeEvent'],
+  to: number,
+  duration = 300,
+  fn = noop,
+  ease: (p: number) => number = (p: number) => p,
+): Noop => {
+  if (element == null) {
+    fn()
+    return noop
+  }
+  const start = info.contentOffset.y
+  const maxScrollTop = info.contentSize.height - info.layoutMeasurement.height
+  if (to > start) {
+    if (to > maxScrollTop) to = Math.max(maxScrollTop, 0)
+  } else if (to < start) {
+    if (to < 0) to = 0
+  }
+  const change = to - start
+  if (!change) {
+    fn()
+    return noop
+  }
+
+  const total = Math.max(duration, 1)
+  let rafId = 0
+  let startTs = 0
+  let done = false
+  const step = (ts: number) => {
+    if (!startTs) startTs = ts
+    const p = Math.min(1, (ts - startTs) / total)
+    if (p >= 1) {
+      rafId = 0
+      done = true
+      element.scrollToOffset({ offset: to, animated: false })
+      fn()
+      return
+    }
+    element.scrollToOffset({ offset: start + change * ease(p), animated: false })
+    rafId = requestAnimationFrame(step)
+  }
+  rafId = requestAnimationFrame(step)
+
+  return () => {
+    if (done) return
+    done = true
+    if (rafId) cancelAnimationFrame(rafId)
+    rafId = 0
+  }
+}
+
 export const scrollTo = (
   element: ScrollElement<FlatList<any>>,
   info: NativeSyntheticEvent<NativeScrollEvent>['nativeEvent'],
