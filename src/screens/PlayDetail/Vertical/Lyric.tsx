@@ -18,7 +18,7 @@ import { getPosition } from '@/plugins/player'
 import { LyricScrollLayout } from '@/utils/lyricScroll'
 import { audioClock } from '@/core/player/audioClock'
 import { createStyle } from '@/utils/tools'
-import { scrollTo } from '@/utils/scroll'
+import { scrollToRaf } from '@/utils/scroll'
 import { updateSetting } from '@/core/common'
 import { useTheme } from '@/store/theme/hook'
 import { useSettingValue } from '@/store/setting/hook'
@@ -344,7 +344,7 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
   const lyricScrollLayoutRef = useRef(new LyricScrollLayout(isSmallWindow ? 40 : 54))
   const scrollCancelRef = useRef<(() => void) | null>(null)
   const scrollYRef = useRef(0)
-  // 最近的完整滚动信息：固定时长回位动画（scrollTo）要用它的内容高/视口高做边界钳制。
+  // 最近的完整滚动信息：固定时长回位动画（scrollToRaf）要用它的内容高/视口高做边界钳制。
   const scrollInfoRef = useRef<NativeSyntheticEvent<NativeScrollEvent>['nativeEvent'] | null>(null)
   // 连续滚动指数平滑：rAF 算出的目标 offset 不直接写入列表，而是让跟随值按固定速率收敛到目标。
   // 逐字歌词「句内停住」模式下两句之间没有间隙时，切行瞬间目标会从当前行中心硬跳到下一行中心
@@ -569,9 +569,10 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
         // RETURN_TO_ACTIVE_MS）；原生的 animated:true 时长随距离变化，最上端/最下端回中更慢。
         const info = scrollInfoRef.current
         if (info) {
-          scrollCancelRef.current = scrollTo(flatListRef.current, info, targetOffset, RETURN_TO_ACTIVE_MS, () => {
+          // 【第 253 轮】回位改 rAF 逐帧写浮点偏移：不再跟 10ms 定时器错拍。
+          scrollCancelRef.current = scrollToRaf(flatListRef.current, info, targetOffset, RETURN_TO_ACTIVE_MS, () => {
             scrollCancelRef.current = null
-          })
+          }, easeInOutSine)
           lastScrolledLineRef.current = index
           return
         }
@@ -858,6 +859,8 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
     if (scrollTimoutRef.current) clearTimeout(scrollTimoutRef.current)
     scrollTimoutRef.current = setTimeout(() => {
       scrollTimoutRef.current = null
+      // 【第 253 轮】正常回位到点：看门狗不再重复触发。
+      clearPauseWatchdog()
       isPauseScrollRef.current = false
       // 回位的同时收起浮层：浮层虚线是按滚动偏移实时算的，回位动画期间不收，
       // 虚线会从用户停手的位置一路扫回当前行，像一条乱窜的线。
@@ -1034,7 +1037,7 @@ export default ({ active = true, pagerHeight = 0 }: { active?: boolean, pagerHei
   // 逐行偏小、高亮行越来越靠下（用户录屏中的现象：高亮行从居中一路漂到屏幕下方）。
   // active 同理：切页只应重新定位，不该清空缓存（下面的 [active] effect 负责定位）。
   useEffect(() => {
-    // 切歌时取消仍在跑的固定时长回位（scrollTo 是 10ms 定时步进，不取消会跟下面的归零抢偏移）。
+    // 切歌时取消仍在跑的固定时长回位（不取消会跟下面的归零抢偏移）。
     if (scrollCancelRef.current) {
       scrollCancelRef.current()
       scrollCancelRef.current = null

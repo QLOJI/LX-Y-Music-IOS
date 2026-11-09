@@ -291,6 +291,8 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
   const cancelScrollRef = useRef<() => void>(() => {})
   const startIdleTimerRef = useRef<() => void>(() => {})
   const wasManualScrollRef = useRef(false)
+  // 【第 253 轮】自动回位动画进行中：换行跟随让位，避免中途取消回位造成一顿。
+  const isReturningRef = useRef(false)
   // 当前行强制单行显示：内容宽度实测值（用于判断是否溢出 + 横向滚动范围）。
   // 带行号，换行首帧不会拿上一行的宽度去算滚动范围。
   const [activeTextSize, setActiveTextSize] = useState<{ line: number, width: number }>({ line: -1, width: 0 })
@@ -394,6 +396,8 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
       if (event.x > event.w - 96 && Math.abs(event.y - event.h / 2) < 72) return
     }
     if (wasManualScrollRef.current) {
+      // 【第 253 轮】点击重新接管：先解除回位让位，再重起 idle。
+      isReturningRef.current = false
       cancelScrollRef.current()
       isPauseScrollRef.current = true
       isOverlayShownRef.current = true
@@ -574,6 +578,8 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
 
   // 播放行自动跟随：跨行距离很远（进度条 seek / 恢复播放）时直接落位，不做长距离快速滑动
   const followActiveLine = useCallback((index: number) => {
+    // 【第 253 轮】自动回位动画进行中：换行跟随让位，别把回位半路取消（那一下就是卡顿）。
+    if (isReturningRef.current) return
     // 【第 236 轮】点击切页后的 250ms 内不启动跟随动画，给 setPage 让路。
     if (Date.now() < pauseFollowUntilRef.current) return
     // 一次性消费首个跟随标志：任何分支都不留下悬空标志。
@@ -623,6 +629,8 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
   // 松手后的回位由 startIdleTimer 以 RETURN_TO_ACTIVE_MS 统一滑行完成，本函数不参与。
   const resetScroll = useCallback(() => {
     if (isPauseScrollRef.current) return
+    // 【第 253 轮】换歌/换歌词会取消进行中的回位：标记一起清，别让跟随永久让位。
+    isReturningRef.current = false
     dragStartOffsetRef.current = null
     isOverlayShownRef.current = false
     if (scrollTimeoutRef.current) {
@@ -660,6 +668,8 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
     if (!visible || wasVisible) return
     // 从歌词页回来：上一屏的手动定位态/浮层/倒计时一律作废，回到自动跟随。
     isPauseScrollRef.current = false
+    // 【第 253 轮】硬落位会取消回位：让位标记一并解除。
+    isReturningRef.current = false
     dragStartOffsetRef.current = null
     isOverlayShownRef.current = false
     playLineRef.current?.setVisible(false)
@@ -721,13 +731,17 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
     if (scrollTimeoutRef.current) clearTimeout(scrollTimeoutRef.current)
     scrollTimeoutRef.current = setTimeout(() => {
       scrollTimeoutRef.current = null
+      // 【第 253 轮】看门狗已经先一步起了回位：不重复起第二条，避免半路取消重滑。
+      if (isReturningRef.current) return
       isOverlayShownRef.current = false
       playLineRef.current?.setVisible(false)
       const target = Math.max(0, activeLineRef.current)
       // 回位动画期间继续扣住 isPauseScrollRef：否则「换行跟随」的 effect 会在回位没落地时插队，
       // 两条动画抢同一个滚动偏移，观感就是先朝一个方向窜一下、再慢慢沉回去。
       // 落地后再解除锁定；期间若歌曲已经换行（target 已过期），补一次跟随。
+      isReturningRef.current = true
       animateToLine(target, undefined, () => {
+        isReturningRef.current = false
         isPauseScrollRef.current = false
         wasManualScrollRef.current = false
         const now = Math.max(0, activeLineRef.current)
@@ -750,6 +764,8 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
     pauseWatchdogRef.current = setTimeout(() => {
       pauseWatchdogRef.current = null
       if (!isPauseScrollRef.current) return
+      // 【第 253 轮】正常 idle 回位已经在跑：看门狗不插队。
+      if (isReturningRef.current) return
       if (isTouchingRef.current || isMomentumRef.current) {
         armPauseWatchdogRef.current()
         return
@@ -762,7 +778,9 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
       isOverlayShownRef.current = false
       playLineRef.current?.setVisible(false)
       const target = Math.max(0, activeLineRef.current)
+      isReturningRef.current = true
       animateToLine(target, undefined, () => {
+        isReturningRef.current = false
         isPauseScrollRef.current = false
         wasManualScrollRef.current = false
         const now = Math.max(0, activeLineRef.current)
@@ -776,6 +794,8 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
   const handleScrollBeginDrag = useCallback(() => {
     // 【第 225 轮】上下滑动 ≠ 点击：本次触摸已进入列表拖动，后续任何 onPress/onPressOut/
     // onTouchEnd 都不再触发切页。
+    // 【第 253 轮】用户重新触摸 = 打断自动回位，解除回位让位标记。
+    isReturningRef.current = false
     scrollMovedRef.current = true
     wasManualScrollRef.current = true
     isPauseScrollRef.current = true
@@ -805,6 +825,7 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
     isPauseScrollRef.current = true
     dragStartOffsetRef.current = null
     isOverlayShownRef.current = true
+    isReturningRef.current = false
     cancelScroll()
     playLineRef.current?.setVisible(true)
     if (!scrollInfoRef.current) {
@@ -838,6 +859,7 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
   }, [])
   const releasePauseWithoutMotion = useCallback(() => {
     isPauseScrollRef.current = false
+    isReturningRef.current = false
     dragStartOffsetRef.current = null
     isOverlayShownRef.current = false
     playLineRef.current?.setVisible(false)
@@ -966,6 +988,7 @@ const MiniLyric = ({ onPress, style, maxHeight, bleedH = 0, visible = true }: Mi
       scrollTimeoutRef.current = null
     }
     isPauseScrollRef.current = false
+    isReturningRef.current = false
     dragStartOffsetRef.current = null
     // 【第 243 轮】点击三角只 seek，浮层保持可见；1.5s 后由 idle 定时器统一隐藏并回位。
     isOverlayShownRef.current = true

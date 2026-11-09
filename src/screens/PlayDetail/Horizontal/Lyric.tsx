@@ -21,7 +21,7 @@ import { COMPONENT_IDS } from '@/config/constant'
 import { AnimatedColorText } from '@/components/common/Text'
 import { setSpText } from '@/utils/pixelRatio'
 import settingState from '@/store/setting/state'
-import { scrollTo } from '@/utils/scroll'
+import { scrollToRaf } from '@/utils/scroll'
 import { LyricScrollLayout } from '@/utils/lyricScroll'
 import { audioClock } from '@/core/player/audioClock'
 import KaraokeLyric from '@/screens/PlayDetail/components/KaraokeLyric'
@@ -263,6 +263,9 @@ export default () => {
   const lastContinuousTimeRef = useRef(-1)
   // 上一帧的高亮行索引（用于判断是否切行）。
   const lastContinuousIndexRef = useRef(-1)
+  // 【第 253 轮】与竖屏同一条单写者不变式：循环在跑时，回位不另起动画，排队交给循环。
+  const isScrollLoopRunningRef = useRef(false)
+  const pendingGlideRef = useRef<{ index: number, target: number } | null>(null)
   // 切行滑动：起点偏移 / 终点偏移 / 滑动起始时间戳（< 0 表示不在滑动中）；与竖屏同一套参数。
   const glideFromRef = useRef(0)
   const glideToRef = useRef(0)
@@ -447,17 +450,22 @@ export default () => {
       glideStartedRef.current = true
       lastContinuousIndexRef.current = index
     } else {
-      const currentOffset = scrollInfoRef.current.contentOffset.y
+      // 【第 253 轮】循环在跑时把回位排给它（单写者）；否则才自己起 rAF 动画。
+      if (isScrollLoopRunningRef.current) {
+        pendingGlideRef.current = { index, target: targetOffset }
+        lastContinuousIndexRef.current = index
+        return
+      }
       // 【第 190 轮】回位时长统一为固定 RETURN_TO_ACTIVE_MS（与竖屏大歌词、小歌词同源）：
       // 原先按距离取 [120,300]，最上端/最下端回中距离最长，比中段明显慢一拍。
-      const duration = RETURN_TO_ACTIVE_MS
       try {
-        scrollCancelRef.current = scrollTo(
+        scrollCancelRef.current = scrollToRaf(
           flatListRef.current,
           scrollInfoRef.current,
           targetOffset,
-          duration,
+          RETURN_TO_ACTIVE_MS,
           () => { scrollCancelRef.current = null },
+          easeInOutSine,
         )
       } catch { }
     }
@@ -500,7 +508,20 @@ export default () => {
     // 横屏「当前行之前」全为已播放（bold）行，累计偏移统一用 bold 档，避免高亮行持续偏低。
     // 留白与 contentContainerStyle 同源（50% 视高），与 handleScrollToActive 保持同一居中基准。
     const paddingV = listHeight * 0.5
-    const offset = layout.getTargetOffsetPrecise(i, listHeight, lyricLines, 0.5, paddingV, 0, false, true)
+    let offset = layout.getTargetOffsetPrecise(i, listHeight, lyricLines, 0.5, paddingV, 0, false, true)
+    // 【第 253 轮】消费停手回位排进来的定位：按循环自己的固定时长轨迹滑过去。
+    const pendingGlide = pendingGlideRef.current
+    if (pendingGlide) {
+      pendingGlideRef.current = null
+      i = pendingGlide.index
+      offset = pendingGlide.target
+      lineChangeTsRef.current = -1
+      glideStartedRef.current = true
+      lastContinuousIndexRef.current = i
+      glideFromRef.current = smoothOffsetRef.current
+      glideToRef.current = offset
+      glideStartTsRef.current = ts
+    }
     if (i !== lastContinuousIndexRef.current) {
       // REF 把换行分两类（REF Horizontal/Lyric.tsx:244-258）：连续推进一行（diff==1）先停留
       // 600ms 再滑；非连续跳变立即定位。恢复首帧 lastContinuousIndexRef=-1 属未知态，按跳变处理。
@@ -755,7 +776,7 @@ export default () => {
   // 两行及以上的歌词行真实高度约 71pt，每行少算约 17pt，偏移随播放逐行偏小，
   // 高亮行越来越靠下（与竖屏同源问题，iPad 横屏同样存在）。
   useEffect(() => {
-    // 切歌时取消仍在跑的固定时长回位（scrollTo 是 10ms 定时步进，不取消会跟下面的归零抢偏移）。
+    // 切歌时取消仍在跑的固定时长回位（不取消会跟下面的归零抢偏移）。
     if (scrollCancelRef.current) {
       scrollCancelRef.current()
       scrollCancelRef.current = null
@@ -842,6 +863,7 @@ export default () => {
       return
     }
     let rafId = 0
+    isScrollLoopRunningRef.current = true
     const loop = (ts: number) => {
       if (isPauseScrollRef.current) {
         wasPauseRef.current = true
@@ -874,7 +896,10 @@ export default () => {
       rafId = requestAnimationFrame(loop)
     }
     rafId = requestAnimationFrame(loop)
-    return () => { cancelAnimationFrame(rafId) }
+    return () => {
+      isScrollLoopRunningRef.current = false
+      cancelAnimationFrame(rafId)
+    }
   }, [isPlay, panelVisible, appActive, lyricLines, scrollToActiveContinuous])
 
   // 拖动进度条 / 跳转 / 恢复播放等用户动作期间强制让歌词列表立即滚动到高亮行，
