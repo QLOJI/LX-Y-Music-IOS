@@ -185,6 +185,7 @@ const List = ({ source, lists, onPlay }: {
 }
 
 const SourceDetail = ({ info, onConfirm, toggleSource }: { info: LX.Music.MusicInfo, onConfirm: (info: LX.Music.MusicInfoOnline) => void, toggleSource: LX.Music.MusicInfoOnline | null }) => {
+  const t = useI18n()
   const theme = useTheme()
   const buttonOpacity = useSettingValue('theme.buttonOpacity')
   // 确认按钮无静态高度：paddingVertical 6×2 + 14 号字行高 ≈ 32
