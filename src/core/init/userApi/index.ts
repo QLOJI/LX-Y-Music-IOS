@@ -15,6 +15,21 @@ import { confirmDialog, openUrl, tipDialog } from '@/utils/tools'
 
 const LOSSLESS_QUALITYS = new Set(['master', 'atmos', 'atmos_plus', 'hires', 'flac24bit', 'flac'])
 
+// 【第 258 轮】源回传的 quality/type 可能是**展示文案**（如 IKUN-API 的「臻品母带」「无损音质 FLAC」
+// 「高音质 320K」），不是 LX 档位枚举。旧逻辑直接把它当 LX.Quality 用：音质标变成中文串、
+// shouldUseNativeFlacPlayer 判定失败→所有 FLAC 档被迫走 AVPlayer；播放一失败，
+// getNextTryQuality 又因档位找不到位次回落到 master——用户看到的「手动选 atmos/24bit/SQ，
+// 取两次链接后自动跳回 master，只有 HQ 正常」。这里只接受合法枚举，其余一律忽略。
+const VALID_QUALITY_VALUES = new Set<string>([...LOSSLESS_QUALITYS, '320k', '192k', '128k'])
+const normalizeReportedQuality = (value: unknown): LX.Quality | undefined => {
+  const raw = typeof value === 'object' && value != null
+    ? (value as { type?: unknown }).type
+    : value
+  return typeof raw === 'string' && VALID_QUALITY_VALUES.has(raw)
+    ? raw as LX.Quality
+    : undefined
+}
+
 // 只看容器格式判断是否发生了「明显降级」。无损档之间的大小差异受源侧切片影响，
 // 不能拿曲目元数据里的 size 反推（会把 Master 误判成 24bit）。
 const getActualQualityByFormat = (url: string, contentType: string, requested: LX.Quality): LX.Quality => {
@@ -148,9 +163,11 @@ export default async(_setting: LX.AppSetting) => {
                           ? payload
                           : (typeof payload?.url === 'string' ? payload.url : '')
                         const extraQuality = payload?.extra?.quality
-                        const explicitQuality = typeof extraQuality === 'object'
-                          ? extraQuality?.type
-                          : (extraQuality ?? payload?.type ?? payload?.quality)
+                        // 只采信合法枚举；源回传中文展示名（见 normalizeReportedQuality）时忽略，
+                        // 回退到本次请求档 + 容器格式判断。
+                        const explicitQuality = normalizeReportedQuality(extraQuality)
+                          ?? normalizeReportedQuality(payload?.type)
+                          ?? normalizeReportedQuality(payload?.quality)
                         let actualQuality: LX.Quality = explicitQuality || type
 
                         // 源显式回传的音质优先；只有源没回传时才做容器格式兜底。
