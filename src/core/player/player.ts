@@ -79,6 +79,23 @@ const currentStreamInfo = {
   url: '',
   quality: null as LX.Quality | null,
 }
+// 【第 255 轮】当前这条链接是否已经做过「nativeFlac 失败 → AVPlayer 同链接兜底」。
+// 每条链接只兜底一次，之后仍走 controller 的重取/降档，避免两引擎来回打转。
+let currentUrlAvFallbackUsed = false
+/**
+ * nativeFlac 运行时失败（多声道 / 高采样率解码、流下载中断）时，用同一条链接改走 AVPlayer。
+ * 只在「引擎里装的就是这首歌、URL 还在」时生效；返回 true 表示已接管，调用方跳过本次降档。
+ */
+export const retryCurrentUrlWithAvPlayer = async(): Promise<boolean> => {
+  if (currentUrlAvFallbackUsed) return false
+  const raw = playerState.playMusicInfo.musicInfo
+  if (!raw || !currentStreamInfo.url || currentStreamInfo.musicId !== raw.id) return false
+  if (('progress' in raw ? raw.metadata.musicInfo : raw).source === 'local') return false
+  currentUrlAvFallbackUsed = true
+  const position = await getPosition().catch(() => playerState.progress.nowPlayTime)
+  setResource(raw, currentStreamInfo.url, position, currentStreamInfo.quality, true)
+  return true
+}
 /**
  * 检查音乐信息是否已更改
  */
@@ -109,7 +126,23 @@ const delayRetry = async(musicInfo: LX.Music.MusicInfo | LX.Download.ListItem, i
     }
   })
 }
+// 【第 255 轮】错误恢复起点档的单次提示：controller 在 setMusicUrl 之前写入，
+// getMusicPlayUrl 按曲目键消费一次。不加第 5 个位置参数，是因为 setMusicUrl 的第 4 参
+// 是「恢复起播」契约（契约脚本按位置校验），新增位置参数会让整条契约漂移。
+const pendingStartQualities = new Map<string, LX.Quality>()
+export const setNextStartQuality = (musicInfo: LX.Music.MusicInfo | LX.Download.ListItem, quality?: LX.Quality | null) => {
+  const key = createGettingUrlId(musicInfo)
+  if (quality) pendingStartQualities.set(key, quality)
+  else pendingStartQualities.delete(key)
+}
+const takeNextStartQuality = (musicInfo: LX.Music.MusicInfo | LX.Download.ListItem) => {
+  const key = createGettingUrlId(musicInfo)
+  const quality = pendingStartQualities.get(key)
+  if (quality) pendingStartQualities.delete(key)
+  return quality
+}
 const getMusicPlayUrl = async(musicInfo: LX.Music.MusicInfo | LX.Download.ListItem, isRefresh = false, isRetryed = false, quality?: LX.Quality): Promise<PlayUrlInfo | null> => {
+  const startQuality = takeNextStartQuality(musicInfo)
   // this.musicInfo.url = await getMusicPlayUrl(targetSong, type)
   setStatusText(global.i18n.t('player__getting_url'))
   addLoadTimeout()
@@ -121,12 +154,14 @@ const getMusicPlayUrl = async(musicInfo: LX.Music.MusicInfo | LX.Download.ListIt
     musicInfo: toggleMusicInfo,
     isRefresh,
     quality,
+    startQuality,
     allowToggleSource: false,
   }) : Promise.reject(new Error('not found'))).catch(async() => {
     return getMusicUrlInfo({
       musicInfo,
       isRefresh,
       quality,
+      startQuality,
       onToggleSource(_mInfo) {
         if (diffCurrentMusicInfo(musicInfo)) return
         setStatusText(global.i18n.t('toggle_source_try'))
@@ -216,6 +251,7 @@ export const switchMusicQuality = async(quality: LX.Quality): Promise<boolean> =
     currentStreamInfo.musicId = raw.id
     currentStreamInfo.url = url
     currentStreamInfo.quality = achievedQuality
+    currentUrlAvFallbackUsed = false
     setStatusText('')
     setResource(raw, url, position, achievedQuality)
     return true
@@ -310,6 +346,8 @@ export const setMusicUrl = (musicInfo: LX.Music.MusicInfo | LX.Download.ListItem
     currentStreamInfo.musicId = musicInfo.id
     currentStreamInfo.url = result.url
     currentStreamInfo.quality = result.quality
+    // 新链接 = 新的一次 native→AV 兜底机会
+    currentUrlAvFallbackUsed = false
     setResource(musicInfo, result.url, currentTime, result.quality)
   }).catch((err: any) => {
     setStatusText(err.message as string)

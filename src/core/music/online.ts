@@ -50,6 +50,7 @@ export const setPic = (datas: {
 export const getMusicUrlInfo = async({
   musicInfo,
   quality,
+  startQuality,
   isRefresh,
   allowToggleSource = true,
   onToggleSource = () => {},
@@ -57,6 +58,9 @@ export const getMusicUrlInfo = async({
 }: {
   musicInfo: LX.Music.MusicInfoOnline
   quality?: LX.Quality
+  // 错误恢复专用：从这一档开始跑候选链，但语义仍是「未显式指定档」（可向下降级）。
+  // 与 quality 的区别：quality 只请求单档且命中/写入缓存都按显式档处理。
+  startQuality?: LX.Quality
   isRefresh: boolean
   allowToggleSource?: boolean
   onToggleSource?: (musicInfo?: LX.Music.MusicInfoOnline) => void
@@ -136,6 +140,7 @@ export const getMusicUrlInfo = async({
       const result = await handleGetOnlineMusicUrl({
         musicInfo: currentMusicInfo,
         quality,
+        startQuality,
         onToggleSource,
         isRefresh,
         allowToggleSource,
@@ -147,7 +152,9 @@ export const getMusicUrlInfo = async({
       // 让后续按请求档读缓存的调用方（最后 10 秒预取后的复用 / 切歌起播）能命中
       // 预取刚写入的这条链接，不再重复请求。显式指定档不写（下载等链路语义不同）。
       if (quality == null && result.quality !== targetQuality) {
-        void saveMusicUrlRequestQuality(currentMusicInfo, targetQuality, result.quality)
+        // 错误恢复从 startQuality 起跑时，别把「偏好档→当前达成档」写成映射：
+        // 那会让下次正常播放从偏好档直接命中低档缓存。
+        if (!startQuality) void saveMusicUrlRequestQuality(currentMusicInfo, targetQuality, result.quality)
       }
       setLastTryQuality(currentMusicInfo.id, result.quality)
       // result.quality 是 handleGetOnlineMusicUrl 回传的「达成档」（含固定天梯降级/换源结果），原样带出
@@ -160,7 +167,8 @@ export const getMusicUrlInfo = async({
 
   if (musicInfo.source == 'wy' && settingState.setting['common.wy_cookie']) {
     try {
-      const { url } = await wySdk.cookie.getMusicUrl(currentMusicInfo, targetQuality).promise
+      // 错误恢复从当前档起取（startQuality），别回到偏好档把音质又拉上去
+      const { url } = await wySdk.cookie.getMusicUrl(currentMusicInfo, startQuality ?? targetQuality).promise
       if (url) {
         void saveMusicUrl(currentMusicInfo, targetQuality, url)
         setLastTryQuality(currentMusicInfo.id, targetQuality)
@@ -177,6 +185,7 @@ export const getMusicUrlInfo = async({
     musicInfo: currentMusicInfo,
     // 同上面的 preferApi 分支：传显式档而非 targetQuality，让固定天梯降级链生效
     quality,
+    startQuality,
     onToggleSource,
     isRefresh,
     allowToggleSource,
@@ -185,8 +194,11 @@ export const getMusicUrlInfo = async({
     void saveMusicUrl(currentMusicInfo, achievedQuality, url)
     // 【第 16 轮第 3 条】同 preferApi 分支：天梯模式下降级达成时补写「请求档 → 达成档」映射
     if (quality == null && achievedQuality !== targetQuality) {
-      void saveMusicUrlRequestQuality(currentMusicInfo, targetQuality, achievedQuality)
-      if (currentMusicInfo.id !== musicInfo.id) void saveMusicUrlRequestQuality(musicInfo, targetQuality, achievedQuality)
+      // 同上：错误恢复起点档不写映射
+      if (!startQuality) {
+        void saveMusicUrlRequestQuality(currentMusicInfo, targetQuality, achievedQuality)
+        if (currentMusicInfo.id !== musicInfo.id) void saveMusicUrlRequestQuality(musicInfo, targetQuality, achievedQuality)
+      }
     }
     setLastTryQuality(currentMusicInfo.id, achievedQuality)
     if (currentMusicInfo.id !== musicInfo.id) void saveMusicUrl(musicInfo, achievedQuality, url)

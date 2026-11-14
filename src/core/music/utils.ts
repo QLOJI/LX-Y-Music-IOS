@@ -1,4 +1,5 @@
 import musicSdk, { findMusic } from '@/utils/musicSdk'
+import { resolveQualityAlias } from '@/utils/musicSdk/utils'
 import {
   // getOtherSource as getOtherSourceFromStore,
   // saveOtherSource as saveOtherSourceFromStore,
@@ -503,7 +504,13 @@ export const getNextTryQuality = (highQuality: LX.Quality, musicInfo: LX.Music.M
   // 而跳回候选链首档（向上重试）
   const index = tryList.indexOf(normalizeQuality(lastQuality))
   // index == -1（上次达成档完全不在候选链里）→ 从候选链首档重试，仅剩防御意义
-  return index == -1 ? tryList[0] : (tryList[index + 1] ?? null)
+  if (index == -1) return tryList[0]
+  // 【第 255 轮】源侧别名（如源不支持 flac24bit 时 flac24bit→hires）会让下一个名义档
+  // 实际请求回上一档：hires 失败 → 降 flac24bit → 实际又请求 hires → 死循环。
+  // 按「实际请求档」比较，跳过会别名回上一档的档位。
+  const effectiveQuality = (q: LX.Quality) => normalizeQuality(resolveQualityAlias(musicInfo.source, q) as LX.Quality)
+  const lastEffective = effectiveQuality(normalizeQuality(lastQuality))
+  return tryList.slice(index + 1).find(q => effectiveQuality(q) !== lastEffective) ?? null
 }
 // 清除指定歌曲+音质的缓存 URL（失败音质重试前清掉，避免重复命中坏链）
 export const removeMusicUrl = async(musicInfo: LX.Music.MusicInfo | LX.Download.ListItem, quality: LX.Quality) => {
@@ -550,12 +557,14 @@ export const getPlayQuality = (
 export const getOnlineOtherSourceMusicUrl = async({
   musicInfos,
   quality,
+  startQuality,
   onToggleSource,
   isRefresh,
   retryedSource = [],
 }: {
   musicInfos: LX.Music.MusicInfoOnline[]
   quality?: LX.Quality
+  startQuality?: LX.Quality
   onToggleSource: (musicInfo?: LX.Music.MusicInfoOnline) => void
   isRefresh: boolean
   retryedSource?: LX.OnlineSource[]
@@ -605,7 +614,7 @@ export const getOnlineOtherSourceMusicUrl = async({
     // 显式指定档（下载 / 失败降级重试）只请求该档；未指定则从偏好档开始逐级降级，128k 兜底。
     const candidates = quality
       ? [quality]
-      : getTryQualityList(settingState.setting['player.playQuality'], musicInfo)
+      : getTryQualityList(startQuality ?? settingState.setting['player.playQuality'], musicInfo)
 
     userApiLog.info(`[换源播放]   候选音质链: ${candidates.join(' -> ')}`)
     userApiLog.info('[换源播放]   选择该音源进行尝试')
@@ -699,12 +708,15 @@ export const getUserDefinedSourceList = (
 export const handleGetOnlineMusicUrl = async({
   musicInfo,
   quality,
+  startQuality,
   onToggleSource,
   isRefresh,
   allowToggleSource,
 }: {
   musicInfo: LX.Music.MusicInfoOnline
   quality?: LX.Quality
+  // 错误恢复起点档：仍按天梯向下降级，但不从偏好档重新爬（避免降档后又跳回高檔）
+  startQuality?: LX.Quality
   isRefresh: boolean
   allowToggleSource: boolean
   onToggleSource: (musicInfo?: LX.Music.MusicInfoOnline) => void
@@ -759,7 +771,7 @@ export const handleGetOnlineMusicUrl = async({
   // 未指定（播放主链路）从用户偏好档开始逐级降级，128k 恒为兜底。
   const candidates = quality
     ? [quality]
-    : getTryQualityList(settingState.setting['player.playQuality'], musicInfo)
+    : getTryQualityList(startQuality ?? settingState.setting['player.playQuality'], musicInfo)
   // 首档即本次请求的起始档（沿用 targetQuality 旧名，少改下方缓存/日志）
   const targetQuality = candidates[0]
   userApiLog.info(`[在线播放] 用户偏好音质: ${preferredQuality}`)
@@ -866,6 +878,7 @@ export const handleGetOnlineMusicUrl = async({
             musicInfos: [...otherSource],
             onToggleSource,
             quality,
+            startQuality,
             isRefresh,
             retryedSource: [musicInfo.source],
           })
