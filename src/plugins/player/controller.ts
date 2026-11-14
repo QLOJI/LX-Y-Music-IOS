@@ -217,14 +217,17 @@ export const initUnifiedPlayerController = () => {
       case 'state':
         switch (event.state) {
           case 'loading':
+            // 【第 133 轮】启动恢复（未点播放）不显示加载文案；点播放后照常。
+            if (global.lx.hasPlayIntent) setStatusText(global.i18n.t('player__loading'))
+            if (!global.lx.isPlayedStop && playerState.musicInfo.id) startLoadingTimeout()
             if (!global.lx.isPlayedStop && playerState.musicInfo.id) {
-              startLoadingTimeout()
+              // 【第 256 轮】新一轮装载开始：作废上一轮错误排下的「5s 自动跳歌」，
+              // 否则手动切档/重取已拿到链接后，旧定时器仍会把这首歌恶意跳过。
+              clearDelayNextTimeout()
               // nativeFlac 可能既不报错也不出声（多声道/高采样率）：12s 未 playing 就换 AVPlayer
               if (event.driver == 'nativeFlac') armNativeStartWatchdog()
             }
             global.app_event.playerLoadstart()
-            // 【第 133 轮】启动恢复（未点播放）不显示加载文案；点播放后照常。
-            if (global.lx.hasPlayIntent) setStatusText(global.i18n.t('player__loading'))
             break
           case 'buffering':
             // 【第 117 轮】「缓存中」文案如实显示，不受 seek 宽限影响：宽限只用来拦住
@@ -263,6 +266,8 @@ export const initUnifiedPlayerController = () => {
           case 'playing':
             clearLoadingTimeout()
             clearNativeStartWatchdog()
+            // 【第 256 轮】已经出声 = 这条链接可用：作废任何在途的自动跳歌
+            clearDelayNextTimeout()
             setStatusText('')
             if (event.driver == 'nativeFlac') {
               global.lx.playerTrackId = getNativeFlacTrackId()
