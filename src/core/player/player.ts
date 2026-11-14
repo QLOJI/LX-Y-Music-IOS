@@ -92,6 +92,8 @@ export const retryCurrentUrlWithAvPlayer = async(): Promise<boolean> => {
   if (!raw || !currentStreamInfo.url || currentStreamInfo.musicId !== raw.id) return false
   if (('progress' in raw ? raw.metadata.musicInfo : raw).source === 'local') return false
   currentUrlAvFallbackUsed = true
+  // 这次兜底 = 新一轮装载：作废在途的 5s 自动跳歌
+  clearDelayNextTimeout()
   const position = await getPosition().catch(() => playerState.progress.nowPlayTime)
   setResource(raw, currentStreamInfo.url, position, currentStreamInfo.quality, true)
   return true
@@ -252,6 +254,8 @@ export const switchMusicQuality = async(quality: LX.Quality): Promise<boolean> =
     currentStreamInfo.url = url
     currentStreamInfo.quality = achievedQuality
     currentUrlAvFallbackUsed = false
+    // 【第 256 轮】手动切档成功拿到链接：作废旧错误排下的 5s 自动跳歌
+    clearDelayNextTimeout()
     setStatusText('')
     setResource(raw, url, position, achievedQuality)
     return true
@@ -307,6 +311,9 @@ export const setMusicUrl = (musicInfo: LX.Music.MusicInfo | LX.Download.ListItem
   // addLoadTimeout()
   if (!diffCurrentMusicInfo(musicInfo)) return
   if (cancelDelayRetry) cancelDelayRetry()
+  // 【第 256 轮】新一轮取链开始：作废上一次取链失败排下的 5s 跳歌。
+  // 用户规则：获取成功后不能被旧定时器恶意跳过（手动切档尤其明显）。
+  clearDelayNextTimeout()
   global.lx.gettingUrlId = createGettingUrlId(musicInfo)
   // 恢复意图的消费点必须前移到「发起请求之前」，且无论是否匹配都无条件清空：
   // - 前移：请求存在 result=null（取消/竞态）与抛错（走 5s 延迟跳歌）等中断分支，
