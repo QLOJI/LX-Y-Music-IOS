@@ -137,34 +137,37 @@ export const initUnifiedPlayerController = () => {
     if (global.lx.isPlayedStop) return
     if (!isEmpty()) void setStop()
 
-    // 【对齐上游 usePlayEvent.handleError】失败策略：① 音质逐级降级重试 →
-    // ② 同 URL 刷新 ×2 → ③ 失败终态（错误状态 + 延迟自动跳下一首）
+    // 【第 254 轮】失败策略重排：① 重新取链 ×2 → ② 音质降一档 → ③ 失败终态。
+    // 链接已经取到 = 用户要的音质已被音源确认；一次播放/下载抖动（nativeFlac 下载错误、
+    // AVPlayer 瞬时失败）不该立刻降档。旧顺序先降档，用户看到的就是「源返回了 Master，
+    // 却马上去请求 24bit」，而源侧自己的降级根本没机会生效。
     if (playerState.playMusicInfo.musicInfo) {
       const currentMusicInfo = playerState.playMusicInfo.musicInfo
-      // ① 高音质 URL 可能返回无法解码的加密内容，逐级降低音质重试（在线、非本地）
-      if ('source' in currentMusicInfo && currentMusicInfo.source != 'local') {
-        const onlineInfo = currentMusicInfo
-        const urlSourceInfo = (onlineInfo.meta.toggleMusicInfo ?? onlineInfo)
-        const lastQuality = getLastTryQuality(urlSourceInfo.id) ?? getLastTryQuality(currentMusicInfo.id)
-        const nextQuality = getNextTryQuality(settingState.setting['player.playQuality'], urlSourceInfo, lastQuality)
-        // 【C-11-6】nextQuality 为 null（候选链已到 128k 链尾）或与上次达成档相同（无从降级）
-        // 时不再原档空转，直接落到 ② 同 URL 刷新
-        if (nextQuality && nextQuality !== lastQuality) {
-          if (lastQuality) {
-            void removeMusicUrl(urlSourceInfo, lastQuality).catch(() => {})
-            if (urlSourceInfo !== currentMusicInfo) void removeMusicUrl(currentMusicInfo as LX.Music.MusicInfo, lastQuality).catch(() => {})
-          }
-          setMusicUrl(currentMusicInfo, true, nextQuality)
-          setStatusText(global.i18n.t('player__refresh_url'))
-          return
-        }
-      }
-      // ② 若音频 URL 无效则尝试刷新 2 次 URL
+      // ① 重新取链：isRefresh 恒穿透缓存重新问源；源若已自行降级，会把低档 URL 带回来。
       if (retryNum < 2) {
         retryNum++
         setMusicUrl(currentMusicInfo, true)
         setStatusText(global.i18n.t('player__refresh_url'))
         return
+      }
+      // ② 同链接两次仍失败，才按天梯降一档（高音质可能返回无法解码的加密内容，留作兜底）
+      if ('source' in currentMusicInfo && currentMusicInfo.source != 'local') {
+        const onlineInfo = currentMusicInfo
+        const urlSourceInfo = (onlineInfo.meta.toggleMusicInfo ?? onlineInfo)
+        const lastQuality = getLastTryQuality(urlSourceInfo.id) ?? getLastTryQuality(currentMusicInfo.id)
+        const nextQuality = getNextTryQuality(settingState.setting['player.playQuality'], urlSourceInfo, lastQuality)
+        // nextQuality 为 null（已到 128k 链尾）或与上次达成档相同（无从降级）时直接落到 ③
+        if (nextQuality && nextQuality !== lastQuality) {
+          if (lastQuality) {
+            void removeMusicUrl(urlSourceInfo, lastQuality).catch(() => {})
+            if (urlSourceInfo !== currentMusicInfo) void removeMusicUrl(currentMusicInfo as LX.Music.MusicInfo, lastQuality).catch(() => {})
+          }
+          // 降档 = 新的一档重新计数：否则新档第一次出错就直接跳下一首
+          retryNum = 0
+          setMusicUrl(currentMusicInfo, true, nextQuality)
+          setStatusText(global.i18n.t('player__refresh_url'))
+          return
+        }
       }
     }
 
