@@ -12,7 +12,6 @@ import { createStyle, toast } from '@/utils/tools'
 import { applyFixedOpacity } from '@/utils/colorOpacity'
 import { getQualityBadgeByQuality } from '@/utils/musicQualityBadge'
 import { switchMusicQuality } from '@/core/player/player'
-import { updateSetting } from '@/core/common'
 
 // 平台英文缩写映射（用户指定：酷狗=KG，网易=WY，企鹅=QQ，酷我=KW，咪咕=MG）
 const SOURCE_ABBR: Record<string, string> = {
@@ -95,9 +94,8 @@ export default memo(({ size = 11 }: { size?: number }) => {
   const handleSelect = (q: LX.Quality) => {
     modalRef.current?.setVisible(false)
     if (switchingRef.current || q === currentOption) return
-    // 【第 254 轮】弹层选择同时写回「优先播放音质」：否则下一首仍从默认档（320k）起跳，
-    // 用户看到的就是「这首歌选了 Atmos，下一首直接播 HQ，高档全跳过」。
-    updateSetting({ 'player.playQuality': q })
+    // 【第 255 轮】手动选档只对当前这首歌生效；下一首仍按「设置 → 优先播放音质」取流
+    // （用户明确要求，不要写回 playQuality）。
     switchingRef.current = true
     void switchMusicQuality(q).then((ok) => {
       switchingRef.current = false
