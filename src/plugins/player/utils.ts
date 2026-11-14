@@ -95,7 +95,7 @@ export const isEngineOnMusic = (musicInfo: LX.Music.MusicInfo | LX.Download.List
 
 // }
 
-const playMusic = ((fn: (musicInfo: LX.Player.PlayMusic, url: string, time: number, quality?: LX.Quality | null) => void, delay = 800) => {
+const playMusic = ((fn: (musicInfo: LX.Player.PlayMusic, url: string, time: number, quality?: LX.Quality | null, forceTrackPlayer?: boolean) => void, delay = 800) => {
   let delayTimer: number | null = null
   let isDelayRun = false
   let timer: number | null = null
@@ -103,11 +103,13 @@ const playMusic = ((fn: (musicInfo: LX.Player.PlayMusic, url: string, time: numb
   let _url = ''
   let _time = 0
   let _quality: LX.Quality | null = null
-  return (musicInfo: LX.Player.PlayMusic, url: string, time: number, quality?: LX.Quality | null) => {
+  let _forceTrackPlayer = false
+  return (musicInfo: LX.Player.PlayMusic, url: string, time: number, quality?: LX.Quality | null, forceTrackPlayer = false) => {
     _musicInfo = musicInfo
     _url = url
     _time = time
     _quality = quality ?? null
+    _forceTrackPlayer = forceTrackPlayer
     if (timer) {
       BackgroundTimer.clearTimeout(timer)
       timer = null
@@ -123,31 +125,33 @@ const playMusic = ((fn: (musicInfo: LX.Player.PlayMusic, url: string, time: numb
         let url = _url
         let time = _time
         let quality = _quality
+        let forceTrackPlayer = _forceTrackPlayer
         _musicInfo = null
         _url = ''
         _time = 0
         _quality = null
+        _forceTrackPlayer = false
         isDelayRun = false
-        fn(musicInfo!, url, time, quality)
+        fn(musicInfo!, url, time, quality, forceTrackPlayer)
       }, delay)
     } else {
       isDelayRun = true
-      fn(musicInfo, url, time, quality ?? null)
+      fn(musicInfo, url, time, quality ?? null, forceTrackPlayer)
       delayTimer = BackgroundTimer.setTimeout(() => {
         delayTimer = null
         isDelayRun = false
       }, 500)
     }
   }
-})((musicInfo, url, time, quality) => {
-  handlePlayMusic(musicInfo, url, time, quality)
+})((musicInfo, url, time, quality, forceTrackPlayer) => {
+  handlePlayMusic(musicInfo, url, time, quality, forceTrackPlayer)
 })
 
-export const setResource = (musicInfo: LX.Player.PlayMusic, url: string, duration?: number, quality?: LX.Quality | null) => {
+export const setResource = (musicInfo: LX.Player.PlayMusic, url: string, duration?: number, quality?: LX.Quality | null, forceTrackPlayer = false) => {
   playerState.quality = quality ?? null
   // 【第 203 轮】实际音质（含降级后的达成档）变化：详情页音质标与弹层需要即时刷新。
   global.state_event.playQualityChanged()
-  playMusic(musicInfo, url, duration ?? 0, quality)
+  playMusic(musicInfo, url, duration ?? 0, quality, forceTrackPlayer)
 }
 
 export const setPlay = async() => {

@@ -10,7 +10,7 @@ import { getPositionStamped, elapsedSnapshotFields, isEmpty, isEngineOnMusic, se
 // 【第 39 轮第 4 条】播放真正开始时的音量落地（带渐入预约时走斜坡）——见 volumeFade.ts
 import { applyVolumeOnPlayStart } from './volumeFade'
 import { exitApp } from '@/core/common'
-import { playNext, setMusicUrl } from '@/core/player/player'
+import { playNext, retryCurrentUrlWithAvPlayer, setMusicUrl, setNextStartQuality } from '@/core/player/player'
 import { isManualPause } from '@/core/player/manualPause'
 import { getNextTryQuality, getLastTryQuality, removeMusicUrl, clearAllLastTryQuality } from '@/core/music/utils'
 import { setStatusText } from '@/core/player/playStatus'
@@ -83,6 +83,25 @@ export const initUnifiedPlayerController = () => {
   let prevTimeoutId: string | null = null
   let loadingTimeout: number | null = null
   let delayNextTimeout: number | null = null
+  // 【第 255 轮】nativeFlac 起播看门狗：多声道/高采样率 FLAC 可能既不报错也不出声，
+  // 界面永远「加载中」。超过 12s 还没 playing，就用同链接改走 AVPlayer。
+  let nativeStartWatchdog: number | null = null
+
+  const clearNativeStartWatchdog = () => {
+    if (!nativeStartWatchdog) return
+    BackgroundTimer.clearTimeout(nativeStartWatchdog)
+    nativeStartWatchdog = null
+  }
+  const armNativeStartWatchdog = () => {
+    if (nativeStartWatchdog) return
+    nativeStartWatchdog = BackgroundTimer.setTimeout(() => {
+      nativeStartWatchdog = null
+      if (global.lx.isPlayedStop || !playerState.musicInfo.id) return
+      void retryCurrentUrlWithAvPlayer().then((ok) => {
+        if (ok) setStatusText(global.i18n.t('player__loading'))
+      }).catch(() => {})
+    }, 12_000)
+  }
 
 
   const clearLoadingTimeout = () => {
@@ -129,11 +148,13 @@ export const initUnifiedPlayerController = () => {
     prevTimeoutId = null
     clearDelayNextTimeout()
     clearLoadingTimeout()
+    clearNativeStartWatchdog()
   }
 
   const handleControllerError = () => {
     if (!playerState.musicInfo.id) return
     clearLoadingTimeout()
+    clearNativeStartWatchdog()
     if (global.lx.isPlayedStop) return
     if (!isEmpty()) void setStop()
 
@@ -143,18 +164,22 @@ export const initUnifiedPlayerController = () => {
     // 却马上去请求 24bit」，而源侧自己的降级根本没机会生效。
     if (playerState.playMusicInfo.musicInfo) {
       const currentMusicInfo = playerState.playMusicInfo.musicInfo
-      // ① 重新取链：isRefresh 恒穿透缓存重新问源；源若已自行降级，会把低档 URL 带回来。
+      const onlineInfo = 'source' in currentMusicInfo && currentMusicInfo.source != 'local' ? currentMusicInfo : null
+      const urlSourceInfo = onlineInfo ? (onlineInfo.meta.toggleMusicInfo ?? onlineInfo) : null
+      const lastQuality = urlSourceInfo
+        ? (getLastTryQuality(urlSourceInfo.id) ?? getLastTryQuality(currentMusicInfo.id))
+        : null
+      // ① 重新取链：isRefresh 恒穿透缓存重新问源；**从当前达成档**起跑，
+      // 不从偏好档重爬（用户设置 master、手动切 atmos 时，否则一刷新又跳回 master）。
       if (retryNum < 2) {
         retryNum++
+        setNextStartQuality(currentMusicInfo, lastQuality)
         setMusicUrl(currentMusicInfo, true)
         setStatusText(global.i18n.t('player__refresh_url'))
         return
       }
-      // ② 同链接两次仍失败，才按天梯降一档（高音质可能返回无法解码的加密内容，留作兜底）
-      if ('source' in currentMusicInfo && currentMusicInfo.source != 'local') {
-        const onlineInfo = currentMusicInfo
-        const urlSourceInfo = (onlineInfo.meta.toggleMusicInfo ?? onlineInfo)
-        const lastQuality = getLastTryQuality(urlSourceInfo.id) ?? getLastTryQuality(currentMusicInfo.id)
+      // ② 当前档两次仍失败，才按天梯降一档（高音质可能返回无法解码的加密内容，留作兜底）
+      if (urlSourceInfo) {
         const nextQuality = getNextTryQuality(settingState.setting['player.playQuality'], urlSourceInfo, lastQuality)
         // nextQuality 为 null（已到 128k 链尾）或与上次达成档相同（无从降级）时直接落到 ③
         if (nextQuality && nextQuality !== lastQuality) {
@@ -162,9 +187,11 @@ export const initUnifiedPlayerController = () => {
             void removeMusicUrl(urlSourceInfo, lastQuality).catch(() => {})
             if (urlSourceInfo !== currentMusicInfo) void removeMusicUrl(currentMusicInfo as LX.Music.MusicInfo, lastQuality).catch(() => {})
           }
-          // 降档 = 新的一档重新计数：否则新档第一次出错就直接跳下一首
+          // 降档 = 新的一档重新计数：否则新档第一次出错就直接跳下一首。
+          // 用 startQuality 而非显式 quality：新档若也失败，同一轮里还能继续向下降。
           retryNum = 0
-          setMusicUrl(currentMusicInfo, true, nextQuality)
+          setNextStartQuality(currentMusicInfo, nextQuality)
+          setMusicUrl(currentMusicInfo, true)
           setStatusText(global.i18n.t('player__refresh_url'))
           return
         }
@@ -190,7 +217,11 @@ export const initUnifiedPlayerController = () => {
       case 'state':
         switch (event.state) {
           case 'loading':
-            if (!global.lx.isPlayedStop && playerState.musicInfo.id) startLoadingTimeout()
+            if (!global.lx.isPlayedStop && playerState.musicInfo.id) {
+              startLoadingTimeout()
+              // nativeFlac 可能既不报错也不出声（多声道/高采样率）：12s 未 playing 就换 AVPlayer
+              if (event.driver == 'nativeFlac') armNativeStartWatchdog()
+            }
             global.app_event.playerLoadstart()
             // 【第 133 轮】启动恢复（未点播放）不显示加载文案；点播放后照常。
             if (global.lx.hasPlayIntent) setStatusText(global.i18n.t('player__loading'))
@@ -231,6 +262,7 @@ export const initUnifiedPlayerController = () => {
             break
           case 'playing':
             clearLoadingTimeout()
+            clearNativeStartWatchdog()
             setStatusText('')
             if (event.driver == 'nativeFlac') {
               global.lx.playerTrackId = getNativeFlacTrackId()
@@ -265,6 +297,7 @@ export const initUnifiedPlayerController = () => {
           case 'stopped':
           case 'idle':
             clearLoadingTimeout()
+            clearNativeStartWatchdog()
             if (event.driver == 'nativeFlac' && event.state != 'paused') global.lx.playerTrackId = ''
             global.app_event.playerPause()
             if (event.driver == 'nativeFlac') void getPositionStamped().then(async(stamped) => pauseNowPlaying({ elapsedTime: stamped.position, ...elapsedSnapshotFields(stamped) }).catch(() => {}))
@@ -275,6 +308,14 @@ export const initUnifiedPlayerController = () => {
         break
       case 'error':
         stopPreload()
+        clearNativeStartWatchdog()
+        // 【第 255 轮】nativeFlac 运行时失败先用**同一条链接**改走 AVPlayer：
+        // 多声道（Atmos 5.1）、192kHz/24bit 母带、流下载中断都可能让原生解码器报错，
+        // 这不是「音质不支持」，不该直接降档。每条链接只兜底一次，失败仍走原降级链。
+        if (event.driver == 'nativeFlac' && await retryCurrentUrlWithAvPlayer()) {
+          setStatusText(global.i18n.t('player__loading'))
+          break
+        }
         global.app_event.error()
         global.app_event.playerError()
         handleControllerError()

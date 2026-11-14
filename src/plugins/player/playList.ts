@@ -71,16 +71,16 @@ export const initTrackInfo = async(musicInfo: LX.Player.PlayMusic, mInfo: LX.Pla
   await handleInitTrackInfo(musicInfo, mInfo, delayUpdateMusicInfo)
 }
 
-const handlePlayMusic = async(musicInfo: LX.Player.PlayMusic, url: string, time: number, quality?: LX.Quality | null) => {
-  await loadPlaybackResource({ musicInfo, url, time, quality })
+const handlePlayMusic = async(musicInfo: LX.Player.PlayMusic, url: string, time: number, quality?: LX.Quality | null, forceTrackPlayer = false) => {
+  await loadPlaybackResource({ musicInfo, url, time, quality, forceTrackPlayer })
 }
 let playPromise = Promise.resolve()
 let actionId = Math.random()
-export const playMusic = (musicInfo: LX.Player.PlayMusic, url: string, time: number, quality?: LX.Quality | null) => {
+export const playMusic = (musicInfo: LX.Player.PlayMusic, url: string, time: number, quality?: LX.Quality | null, forceTrackPlayer = false) => {
   const id = actionId = Math.random()
   void playPromise.finally(() => {
     if (id != actionId) return
-    playPromise = handlePlayMusic(musicInfo, url, time, quality).catch((err: Error & { lxHandled?: boolean }) => {
+    playPromise = handlePlayMusic(musicInfo, url, time, quality, forceTrackPlayer).catch((err: Error & { lxHandled?: boolean }) => {
       console.log(err)
       if (!err?.lxHandled) {
         global.app_event.error()

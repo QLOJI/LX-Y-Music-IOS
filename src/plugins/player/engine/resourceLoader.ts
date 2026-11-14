@@ -33,11 +33,14 @@ export const loadPlaybackResource = async({
   url,
   time,
   quality,
+  forceTrackPlayer = false,
 }: {
   musicInfo: LX.Player.PlayMusic
   url: string
   time: number
   quality?: LX.Quality | null
+  // true = 跳过 nativeFlac，直接用 AVPlayer（nativeFlac 运行时失败后的同链接兜底）
+  forceTrackPlayer?: boolean
 }) => {
   const currentTrackIndex = await TrackPlayer.getCurrentTrack()
   const shouldAutoStart = resolveShouldAutoStart(currentTrackIndex)
@@ -46,7 +49,7 @@ export const loadPlaybackResource = async({
   // 注意只兜「非法值」，不能写成「非恢复就强制 0」——恢复曲本来就该从保存的非零进度起播。
   const startTime = Number.isFinite(time) && time > 0 ? time : 0
 
-  if (Platform.OS == 'ios' && await shouldUseNativeFlacPlayer(musicInfo, url, quality)) {
+  if (!forceTrackPlayer && Platform.OS == 'ios' && await shouldUseNativeFlacPlayer(musicInfo, url, quality)) {
     global.lx.playerStatus.ignoreTrackPlayerLifecycle = true
     try {
       try {
