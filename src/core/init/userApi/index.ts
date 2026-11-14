@@ -142,23 +142,35 @@ export default async(_setting: LX.AppSetting) => {
                       },
                     })
                       .then(async(res) => {
-                        const extraQuality = res.data.extra?.quality
+                        const payload = res?.data
+                        // 兼容两种常见返回：data 直接是 URL 字符串，或 { url, type/quality }
+                        const url = typeof payload === 'string'
+                          ? payload
+                          : (typeof payload?.url === 'string' ? payload.url : '')
+                        const extraQuality = payload?.extra?.quality
                         const explicitQuality = typeof extraQuality === 'object'
                           ? extraQuality?.type
-                          : extraQuality
-                        const url = res.data.url
+                          : (extraQuality ?? payload?.type ?? payload?.quality)
                         let actualQuality: LX.Quality = explicitQuality || type
 
-                        // 源显式回传的音质优先；只有源没回传时才用容器格式兜底检测降级。
+                        // 源显式回传的音质优先；只有源没回传时才做容器格式兜底。
+                        // URL 本身带 .flac/.mp3/.m4a 扩展名时不再 HEAD：判定结果一样，
+                        // 白白多打一次请求还会拖慢起播（用户要求「取到链接就立即播放」）。
                         if (url && !explicitQuality) {
-                          try {
-                            const headResponse = await fetch(url, { method: 'HEAD' })
-                            actualQuality = getActualQualityByFormat(url, headResponse.headers.get('content-type') || '', actualQuality)
-                          } catch {
+                          if (/\.(flac|mp3|m4a|aac)(\?|#|$)/i.test(url)) {
                             actualQuality = getActualQualityByFormat(url, '', actualQuality)
+                          } else {
+                            try {
+                              const headResponse = await fetch(url, { method: 'HEAD' })
+                              actualQuality = getActualQualityByFormat(url, headResponse.headers.get('content-type') || '', actualQuality)
+                            } catch {
+                              actualQuality = getActualQualityByFormat(url, '', actualQuality)
+                            }
                           }
                         }
 
+                        // 空 URL 当失败处理：否则天梯会把这一档标成成功，播放器拿到空串又报错
+                        if (!url) throw new Error('empty music url')
                         return { type: actualQuality, url }
                       })
                       .catch((err) => {

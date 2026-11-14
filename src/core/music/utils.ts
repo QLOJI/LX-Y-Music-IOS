@@ -463,6 +463,10 @@ export const TRY_QUALITYS_LIST = ['master', 'atmos_plus', 'atmos', 'hires', 'fla
 // atmos_plus 不入梯（需求 7 档无此档，展示层也隐藏），旧存量设置值由 normalizeQuality 映射兜底。
 const PLAY_LADDER: LX.Quality[] = ['master', 'atmos', 'hires', 'flac24bit', 'flac', '320k', '128k']
 
+// 【第 254 轮】单档最多请求几次再降档：源的一次瞬时失败不该让整条天梯往下掉
+// （用户要求「2 次获取失败或超时才自动降为下一个音质」）。
+const QUALITY_REQUEST_ATTEMPTS = 2
+
 // 旧档位归一到天梯档：历史版本把「优先播放的音质」存成过已取消的 atmos_plus（含旧拼写 atmosplus），
 // 它不在天梯里，按「从其下档 atmos 起降级」处理（REF:src/core/music/utils.ts 230-231 同义）。
 // 为什么旧值不迁移/不清除：迁移会改写用户设置存储，且旧值本身仍须能正常取流，映射兜底即可。
@@ -622,35 +626,41 @@ export const getOnlineOtherSourceMusicUrl = async({
         }
       }
 
-      userApiLog.info(`[换源播放]   尝试音质: ${q}`)
+      // 同一档先试 QUALITY_REQUEST_ATTEMPTS 次，全失败才降档
+      for (let attempt = 0; attempt < QUALITY_REQUEST_ATTEMPTS; attempt++) {
+        userApiLog.info(`[换源播放]   尝试音质: ${q}${attempt ? `（第 ${attempt + 1} 次）` : ''}`)
 
-      let reqPromise
-      try {
-        reqPromise = musicSdk[musicInfo.source].getMusicUrl(
-          toOldMusicInfo(musicInfo),
-          q,
-        ).promise
-      } catch (err: any) {
-        userApiLog.error(`[换源播放]   API调用失败: ${err?.message || err}`)
-        reqPromise = Promise.reject(err)
-      }
-
-      try {
-        const { url, type } = await reqPromise as { url: string, type: LX.Quality }
-        userApiLog.info('[换源播放]   请求成功，获取到播放地址')
-        userApiLog.info(`[换源播放]   播放地址长度: ${url.length} 字符`)
-        userApiLog.info(`[换源播放]   实际音质: ${type}`)
-        userApiLog.info('[换源播放] ========== 换源成功 ==========')
-        userApiLog.info(`[换源播放] 最终音源: "${musicInfo.source}"`)
-        userApiLog.info(`[换源播放] 音质: ${type}`)
-        return { musicInfo, url, quality: type, isFromCache: false }
-      } catch (err: any) {
-        if (err.message == requestMsg.tooManyRequests) {
-          userApiLog.error('[换源播放]   请求失败 - 请求过于频繁')
-          throw err
+        let reqPromise
+        try {
+          reqPromise = musicSdk[musicInfo.source].getMusicUrl(
+            toOldMusicInfo(musicInfo),
+            q,
+          ).promise
+        } catch (err: any) {
+          userApiLog.error(`[换源播放]   API调用失败: ${err?.message || err}`)
+          reqPromise = Promise.reject(err)
         }
-        userApiLog.error(`[换源播放]   音质 ${q} 请求失败: ${err?.message || err}`)
-        tryErr = err
+
+        try {
+          const { url, type } = await reqPromise as { url: string, type: LX.Quality }
+          // 空 URL 不能当成功：否则播放器拿到 undefined 直接报错，而这里已把档位标成达成
+          if (typeof url !== 'string' || !url) throw new Error('empty music url')
+          userApiLog.info('[换源播放]   请求成功，获取到播放地址')
+          userApiLog.info(`[换源播放]   播放地址长度: ${url.length} 字符`)
+          userApiLog.info(`[换源播放]   实际音质: ${type || q}`)
+          userApiLog.info('[换源播放] ========== 换源成功 ==========')
+          userApiLog.info(`[换源播放] 最终音源: "${musicInfo.source}"`)
+          userApiLog.info(`[换源播放] 音质: ${type || q}`)
+          return { musicInfo, url, quality: type || q, isFromCache: false }
+        } catch (err: any) {
+          if (err.message == requestMsg.tooManyRequests) {
+            userApiLog.error('[换源播放]   请求失败 - 请求过于频繁')
+            throw err
+          }
+          userApiLog.error(`[换源播放]   音质 ${q} 请求失败: ${err?.message || err}`)
+          tryErr = err
+          if (attempt + 1 < QUALITY_REQUEST_ATTEMPTS) userApiLog.info('[换源播放]   同档重试...')
+        }
       }
     }
     userApiLog.error(`[换源播放]   该音源候选音质全部失败: ${tryErr?.message || tryErr}`)
@@ -774,7 +784,7 @@ export const handleGetOnlineMusicUrl = async({
     return { url: cached.url, musicInfo, quality: cached.quality, isFromCache: true }
   }
 
-  const tryGetMusicUrlWithFallback = async(qualities: LX.Quality[]): Promise<{ url: string, type: LX.Quality, isFromCache: boolean }> => {
+  const tryGetMusicUrlWithFallback = async(qualities: LX.Quality[], attempt = 0): Promise<{ url: string, type: LX.Quality, isFromCache: boolean }> => {
     if (qualities.length === 0) {
       // 固定天梯恒返回非空候选链，此处仅为不可达兜底（旧实现空链是常态路径）
       throw new Error('no available quality')
@@ -802,10 +812,12 @@ export const handleGetOnlineMusicUrl = async({
 
     return reqPromise
       .then((result: { url: string, type: LX.Quality }) => {
-        if (!result.url || result.url.length < 10) {
+        // 空 URL 不能算成功：否则会把 undefined 交给播放器，档位却已标成达成
+        if (typeof result?.url !== 'string' || !result.url) throw new Error('empty music url')
+        if (result.url.length < 10) {
           userApiLog.warn('[在线播放]   警告: 播放地址可能无效')
         }
-        return { ...result, isFromCache: false }
+        return { ...result, type: result.type || currentQuality, isFromCache: false }
       })
       .catch(async(err: any) => {
         if (err.message == requestMsg.tooManyRequests) {
@@ -813,6 +825,11 @@ export const handleGetOnlineMusicUrl = async({
         }
         userApiLog.error(`[在线播放]   音质 ${currentQuality} 请求失败: ${err?.message || err}`)
 
+        // 同一档先重试：一次瞬时失败不降档（第 254 轮）
+        if (attempt + 1 < QUALITY_REQUEST_ATTEMPTS) {
+          userApiLog.info(`[在线播放]   音质 ${currentQuality} 同档重试...`)
+          return tryGetMusicUrlWithFallback(qualities, attempt + 1)
+        }
         if (qualities.length > 1) {
           userApiLog.info('[在线播放]   尝试更低音质...')
           return tryGetMusicUrlWithFallback(qualities.slice(1))
