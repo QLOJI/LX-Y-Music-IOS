@@ -4060,6 +4060,9 @@ RCT_REMAP_METHOD(updateEqualizerConfig, updateEqualizerConfig:(NSDictionary *)co
 @property (nonatomic, assign) double duration;
 @property (nonatomic, assign) double sampleRate;
 @property (nonatomic, assign) NSUInteger channels;
+// 输出声道数：解码源可能是 5.1（atmos），但 AVAudioEngine 图与环形缓冲统一按立体声；
+// 多声道在 schedulePCMBufferWithFrame 里下混到 2 声道（见 [第 257 轮]）。
+@property (nonatomic, assign) NSUInteger outputChannels;
 @property (nonatomic, assign) NSUInteger bitsPerSample;
 @property (nonatomic, assign) int64_t totalSamples;
 @property (nonatomic, assign) double startThresholdSeconds;
@@ -4582,6 +4585,7 @@ static void LXRememberAudioSessionCombination(LXAudioSessionCombination combinat
   self.duration = 0;
   self.sampleRate = 0;
   self.channels = 0;
+  self.outputChannels = 2;
   self.bitsPerSample = 0;
   self.totalSamples = 0;
   self.expectedContentLength = -1;
@@ -4677,14 +4681,14 @@ static void LXRememberAudioSessionCombination(LXAudioSessionCombination combinat
 
 - (void)restartPannerLockedWithSoundR:(float)soundR speed:(float)speed {
   [self stopPannerLocked];
-  if (self.sampleRate <= 0 || self.channels < 2) return;
+  if (self.sampleRate <= 0 || self.outputChannels < 2) return;
   std::shared_ptr<LXRealtimeSpatialPannerProcessor> processor = std::make_shared<LXRealtimeSpatialPannerProcessor>(self.sampleRate, soundR, speed);
   std::atomic_store_explicit(&_realtimePannerProcessor, processor, std::memory_order_release);
   self.soundEffectMixerNode.pan = 0.0f;
 }
 
 - (BOOL)refreshConvolutionEngineLockedWithAssetUri:(NSString *)assetUri fileName:(NSString *)fileName mainGain:(float)mainGain sendGain:(float)sendGain {
-  if (self.sampleRate <= 0 || self.channels == 0 || fileName.length == 0) {
+  if (self.sampleRate <= 0 || self.outputChannels == 0 || fileName.length == 0) {
     std::atomic_store_explicit(&_realtimeConvolutionProcessor, std::shared_ptr<LXRealtimeConvolutionProcessor>(), std::memory_order_release);
     self.convolutionAssetKey = nil;
     return NO;
@@ -4713,8 +4717,8 @@ static void LXRememberAudioSessionCombination(LXAudioSessionCombination combinat
 
   std::shared_ptr<LXRealtimeConvolutionProcessor> processor = std::make_shared<LXRealtimeConvolutionProcessor>(
     impulse,
-    self.channels,
-    MIN(self.channels, (NSUInteger)2),
+    self.outputChannels,
+    MIN(self.outputChannels, (NSUInteger)2),
     mainGain / 10.0f,
     sendGain / 10.0f
   );
@@ -4730,13 +4734,13 @@ static void LXRememberAudioSessionCombination(LXAudioSessionCombination combinat
 }
 
 - (void)refreshPitchShifterEngineLockedWithPitchFactor:(float)pitchFactor {
-  if (self.sampleRate <= 0 || self.channels == 0 || fabsf(pitchFactor - 1.0f) < 0.01f) {
+  if (self.sampleRate <= 0 || self.outputChannels == 0 || fabsf(pitchFactor - 1.0f) < 0.01f) {
     std::atomic_store_explicit(&_realtimePitchProcessor, std::shared_ptr<LXRealtimePhaseVocoderPitchShifter>(), std::memory_order_release);
     return;
   }
   std::shared_ptr<LXRealtimePhaseVocoderPitchShifter> currentProcessor = std::atomic_load_explicit(&_realtimePitchProcessor, std::memory_order_acquire);
   if (currentProcessor != nullptr) return;
-  std::shared_ptr<LXRealtimePhaseVocoderPitchShifter> processor = std::make_shared<LXRealtimePhaseVocoderPitchShifter>(self.channels);
+  std::shared_ptr<LXRealtimePhaseVocoderPitchShifter> processor = std::make_shared<LXRealtimePhaseVocoderPitchShifter>(self.outputChannels);
   if (!processor->isReady()) return;
   std::atomic_store_explicit(&_realtimePitchProcessor, processor, std::memory_order_release);
 }
@@ -4759,7 +4763,7 @@ static void LXRememberAudioSessionCombination(LXAudioSessionCombination combinat
 }
 
 - (void)refreshEqualizerEngineLockedWithEnabled:(BOOL)enabled gains:(const std::vector<float> &)gains {
-  if (self.sampleRate <= 0 || self.channels == 0 || !enabled) {
+  if (self.sampleRate <= 0 || self.outputChannels == 0 || !enabled) {
     std::atomic_store_explicit(&_realtimeEqualizerProcessor, std::shared_ptr<LXRealtimeEqualizerProcessor>(), std::memory_order_release);
     _lastRealtimeEqualizerEnabled = NO;
     _lastRealtimeEqualizerGains.clear();
@@ -4791,7 +4795,7 @@ static void LXRememberAudioSessionCombination(LXAudioSessionCombination combinat
   }
   if (hasSameConfig) return;
 
-  std::shared_ptr<LXRealtimeEqualizerProcessor> processor = std::make_shared<LXRealtimeEqualizerProcessor>(self.sampleRate, self.channels, gains);
+  std::shared_ptr<LXRealtimeEqualizerProcessor> processor = std::make_shared<LXRealtimeEqualizerProcessor>(self.sampleRate, self.outputChannels, gains);
   if (!processor->isReady()) {
     std::atomic_store_explicit(&_realtimeEqualizerProcessor, std::shared_ptr<LXRealtimeEqualizerProcessor>(), std::memory_order_release);
     _lastRealtimeEqualizerEnabled = NO;
@@ -5429,7 +5433,7 @@ static NSString *LXAudioRouteOutputIdentity(AVAudioSessionRouteDescription *rout
     return noErr;
   }
 
-  NSUInteger activeChannels = MIN((NSUInteger)bufferCount, self.channels);
+  NSUInteger activeChannels = MIN((NSUInteger)bufferCount, self.outputChannels);
   size_t framesRead = _pcmBuffer->read(channelPointers, frameCount, activeChannels);
   if (framesRead > 0) {
     std::shared_ptr<LXRealtimeEqualizerProcessor> equalizerProcessor = std::atomic_load_explicit(&_realtimeEqualizerProcessor, std::memory_order_acquire);
@@ -5872,14 +5876,15 @@ static const int64_t LXResumeFadeStepMs = 40;
   if (startOffset >= blockSize) return;
 
   const NSUInteger playableFrames = blockSize - startOffset;
-  std::vector<std::vector<float>> pcmChannels(self.channels, std::vector<float>(playableFrames, 0));
-  std::vector<float *> channelPointers(self.channels, nullptr);
-  for (NSUInteger channel = 0; channel < self.channels; channel++) {
+  const NSUInteger sourceChannels = MAX(self.channels, (NSUInteger)1);
+  std::vector<std::vector<float>> pcmChannels(sourceChannels, std::vector<float>(playableFrames, 0));
+  std::vector<float *> channelPointers(sourceChannels, nullptr);
+  for (NSUInteger channel = 0; channel < sourceChannels; channel++) {
     channelPointers[channel] = pcmChannels[channel].data();
   }
   double scale = self.bitsPerSample > 1 ? ldexp(1.0, (int)self.bitsPerSample - 1) : 1.0;
   if (scale <= 0) scale = 1.0;
-  for (NSUInteger channel = 0; channel < self.channels; channel++) {
+  for (NSUInteger channel = 0; channel < sourceChannels; channel++) {
     for (NSUInteger sample = 0; sample < playableFrames; sample++) {
       FLAC__int32 value = decodedBuffer[channel][sample + startOffset];
       double normalized = LXClampDouble((double)value / scale, -1.0, 1.0);
@@ -5887,7 +5892,48 @@ static const int64_t LXResumeFadeStepMs = 40;
     }
   }
 
-  size_t writtenFrames = _pcmBuffer->write(channelPointers.data(), playableFrames, self.channels);
+  // [第 257 轮] 多声道（atmos 5.1）在写入环形缓冲前下混成立体声。
+  // AVAudioEngine 的 source/timePitch 节点按 2 声道组图，不再直接吃 6 声道格式；
+  // 2 声道原样拷贝，单声道复制到两声道。ITU 5.1 下混：
+  //   L = FL + 0.707*FC + 0.707*BL + 0.5*LFE
+  //   R = FR + 0.707*FC + 0.707*BR + 0.5*LFE   （再乘 0.5 留足余量）
+  const NSUInteger outChannels = MAX(self.outputChannels, (NSUInteger)1);
+  std::vector<std::vector<float>> mixedChannels(outChannels, std::vector<float>(playableFrames, 0));
+  std::vector<float *> mixedPointers(outChannels, nullptr);
+  for (NSUInteger channel = 0; channel < outChannels; channel++) {
+    mixedPointers[channel] = mixedChannels[channel].data();
+  }
+  if (sourceChannels == outChannels) {
+    for (NSUInteger channel = 0; channel < outChannels; channel++) {
+      if (playableFrames) memcpy(mixedPointers[channel], channelPointers[channel], playableFrames * sizeof(float));
+    }
+  } else if (sourceChannels == 1) {
+    for (NSUInteger channel = 0; channel < outChannels; channel++) {
+      if (playableFrames) memcpy(mixedPointers[channel], channelPointers[0], playableFrames * sizeof(float));
+    }
+  } else {
+    const BOOL hasCenter = sourceChannels >= 3;
+    const BOOL hasLfe = sourceChannels >= 6;
+    const NSUInteger backLeftIndex = sourceChannels >= 6 ? 4 : (sourceChannels == 5 ? 3 : (sourceChannels == 4 ? 2 : 0));
+    const NSUInteger backRightIndex = sourceChannels >= 6 ? 5 : (sourceChannels == 5 ? 4 : (sourceChannels == 4 ? 3 : 0));
+    const float centerGain = hasCenter ? 0.70710678f : 0.0f;
+    const float backGain = sourceChannels >= 4 ? 0.70710678f : 0.0f;
+    const float lfeGain = hasLfe ? 0.5f : 0.0f;
+    for (NSUInteger sample = 0; sample < playableFrames; sample++) {
+      float frontLeft = channelPointers[0][sample];
+      float frontRight = channelPointers[1][sample];
+      float center = hasCenter ? channelPointers[2][sample] : 0.0f;
+      float lfe = hasLfe ? channelPointers[3][sample] : 0.0f;
+      float backLeft = sourceChannels >= 4 ? channelPointers[backLeftIndex][sample] : 0.0f;
+      float backRight = sourceChannels >= 4 ? channelPointers[backRightIndex][sample] : 0.0f;
+      float left = (frontLeft + centerGain * center + backGain * backLeft + lfeGain * lfe) * 0.5f;
+      float right = (frontRight + centerGain * center + backGain * backRight + lfeGain * lfe) * 0.5f;
+      mixedPointers[0][sample] = (float)LXClampDouble(left, -1.0, 1.0);
+      if (outChannels > 1) mixedPointers[1][sample] = (float)LXClampDouble(right, -1.0, 1.0);
+    }
+  }
+
+  size_t writtenFrames = _pcmBuffer->write(mixedPointers.data(), playableFrames, outChannels);
   if (writtenFrames != playableFrames) {
     self.streamError = LXError(@"streaming_flac_buffer", @"Streaming PCM ring buffer overflow");
     [self emitErrorMessage:self.streamError.localizedDescription];
@@ -6539,13 +6585,15 @@ RCT_REMAP_METHOD(getState, getStreamStateWithResolver:(RCTPromiseResolveBlock)re
 
 - (void)handleStreamInfo:(const FLAC__StreamMetadata_StreamInfo *)streamInfo {
   self.sampleRate = streamInfo->sample_rate;
-  self.channels = streamInfo->channels;
+  self.channels = streamInfo->channels > 0 ? (NSUInteger)streamInfo->channels : 1;
+  // 解码侧按源声道数解；引擎图 / 环形缓冲固定立体声（多声道在写入前下混）
+  self.outputChannels = 2;
   self.bitsPerSample = streamInfo->bits_per_sample;
   self.totalSamples = (int64_t)streamInfo->total_samples;
   self.duration = streamInfo->total_samples > 0 && streamInfo->sample_rate > 0
     ? (double)streamInfo->total_samples / streamInfo->sample_rate
     : 0;
-  [self configureAudioGraphWithSampleRate:self.sampleRate channels:self.channels bitsPerSample:self.bitsPerSample];
+  [self configureAudioGraphWithSampleRate:self.sampleRate channels:self.outputChannels bitsPerSample:self.bitsPerSample];
 }
 
 - (FLAC__StreamDecoderWriteStatus)handleFrame:(const FLAC__Frame *)frame buffer:(const FLAC__int32 * const[])decodedBuffer {
