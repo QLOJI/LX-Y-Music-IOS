@@ -15,20 +15,11 @@ import { confirmDialog, openUrl, tipDialog } from '@/utils/tools'
 
 const LOSSLESS_QUALITYS = new Set(['master', 'atmos', 'atmos_plus', 'hires', 'flac24bit', 'flac'])
 
-// 【第 258 轮】源回传的 quality/type 可能是**展示文案**（如 IKUN-API 的「臻品母带」「无损音质 FLAC」
-// 「高音质 320K」），不是 LX 档位枚举。旧逻辑直接把它当 LX.Quality 用：音质标变成中文串、
-// shouldUseNativeFlacPlayer 判定失败→所有 FLAC 档被迫走 AVPlayer；播放一失败，
-// getNextTryQuality 又因档位找不到位次回落到 master——用户看到的「手动选 atmos/24bit/SQ，
-// 取两次链接后自动跳回 master，只有 HQ 正常」。这里只接受合法枚举，其余一律忽略。
-const VALID_QUALITY_VALUES = new Set<string>([...LOSSLESS_QUALITYS, '320k', '192k', '128k'])
-const normalizeReportedQuality = (value: unknown): LX.Quality | undefined => {
-  const raw = typeof value === 'object' && value != null
-    ? (value as { type?: unknown }).type
-    : value
-  return typeof raw === 'string' && VALID_QUALITY_VALUES.has(raw)
-    ? raw as LX.Quality
-    : undefined
-}
+// 【第 259 轮】自定义源回传的 quality/type 不可信：IKUN-API 返回的是中文展示名
+//（「臻品母带」「臻品全景声」「无损音质 FLAC」「高音质 320K」），有的脚本还会统一报成
+// master。用它当 LX.Quality 会让高音质档被迫走 AVPlayer、失败降级又从 master 起跳
+//（用户看到「手动选 atmos/24bit/SQ，取两次链接后自动跳回 master，HQ 正常」）。
+// 定案：实际档位 = **本次请求档 + URL 容器格式**，源的文字标签不参与播放/降级判定。
 
 // 只看容器格式判断是否发生了「明显降级」。无损档之间的大小差异受源侧切片影响，
 // 不能拿曲目元数据里的 size 反推（会把 Master 误判成 24bit）。
@@ -158,22 +149,16 @@ export default async(_setting: LX.AppSetting) => {
                     })
                       .then(async(res) => {
                         const payload = res?.data
-                        // 兼容两种常见返回：data 直接是 URL 字符串，或 { url, type/quality }
+                        // 兼容两种常见返回：data 直接是 URL 字符串，或 { url, ... }
                         const url = typeof payload === 'string'
                           ? payload
                           : (typeof payload?.url === 'string' ? payload.url : '')
-                        const extraQuality = payload?.extra?.quality
-                        // 只采信合法枚举；源回传中文展示名（见 normalizeReportedQuality）时忽略，
-                        // 回退到本次请求档 + 容器格式判断。
-                        const explicitQuality = normalizeReportedQuality(extraQuality)
-                          ?? normalizeReportedQuality(payload?.type)
-                          ?? normalizeReportedQuality(payload?.quality)
-                        let actualQuality: LX.Quality = explicitQuality || type
+                        // 档位只由「请求档 + 容器格式」决定，源回传的 quality/type 一律不采信
+                        let actualQuality: LX.Quality = type
 
-                        // 源显式回传的音质优先；只有源没回传时才做容器格式兜底。
-                        // URL 本身带 .flac/.mp3/.m4a 扩展名时不再 HEAD：判定结果一样，
-                        // 白白多打一次请求还会拖慢起播（用户要求「取到链接就立即播放」）。
-                        if (url && !explicitQuality) {
+                        // URL 带 .flac/.mp3/.m4a 扩展名时按扩展名判定（不再 HEAD）；
+                        // 未知扩展名才 HEAD 一次做容器兜底。
+                        if (url) {
                           if (/\.(flac|mp3|m4a|aac)(\?|#|$)/i.test(url)) {
                             actualQuality = getActualQualityByFormat(url, '', actualQuality)
                           } else {

@@ -244,6 +244,20 @@ export const switchMusicQuality = async(quality: LX.Quality): Promise<boolean> =
   }
   const applyUrl = async(url: string, achievedQuality: LX.Quality | null) => {
     if (!isCurrent()) return false
+    // 【第 259 轮】源对多个档位返回同一条 URL（TX 的 atmos 就是 master 那条）：
+    // 已经在这条链接上播放，禁止重新装载——重开 + seek 会触发原生失败，随后被降级链跳走。
+    if (currentStreamInfo.musicId === raw.id && currentStreamInfo.url === url) {
+      if (achievedQuality) {
+        setLastTryQuality(urlSourceInfo.id, achievedQuality)
+        if (urlSourceInfo.id !== musicInfo.id) setLastTryQuality(musicInfo.id, achievedQuality)
+      }
+      currentStreamInfo.quality = achievedQuality
+      playerState.quality = achievedQuality ?? playerState.quality
+      global.state_event.playQualityChanged()
+      clearDelayNextTimeout()
+      setStatusText('')
+      return true
+    }
     const position = await getPosition().catch(() => playerState.progress.nowPlayTime)
     if (!isCurrent()) return false
     if (achievedQuality) {
